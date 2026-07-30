@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 338 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 342 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -1448,14 +1448,36 @@ asserted for a provider with **no anchor**, where an absent stamp (0) and an abs
 EQUAL: a covering flag computed from the revisions alone reads `true` there, for the single most common
 state in the directory - an ordinary pin nobody has ever confirmed.
 
+**Two asymmetries in `setPinAddressProvenance` follow from the stamp, and getting either one backwards
+reintroduces a hole.** Both were found by the review stage of this slice's own run.
+First, a confirmation is the PAIR (provenance, stamped revision), so **`NoChange` is evaluated on the
+pair, never on the provenance value alone**: refuse only when the write would change neither term -
+`old == provenance` AND the stored stamp already equals the current anchor revision (for a retraction,
+already zero). Testing the value alone refused the one write that ADVANCES a stale-but-still-correct
+confirmation's stamp, so re-affirming one had to round-trip through `SELF_DECLARED` - the very erasure
+the paragraph above calls a false statement in the other direction, and permanent if the second
+transaction never lands. Do not delete the guard to fix this; a genuine no-op must still be refused.
+Second, **`expectedAnchorDigest` is checked on a RAISE ONLY**. The guard is what stops a provider
+capturing a confirmation meant for text the registrar never read, so it must never leave the raise path;
+but a retraction to `SELF_DECLARED` asserts nothing about that text and gains no safety from it, while
+gating it lets an ACTIVE provider block its own retraction by landing a `setProfileAnchor` between the
+registrar's read and its transaction, repeatedly, with the pin still reading `POSTAL_CONFIRMED`
+throughout. Retraction is the corrective direction and no act of the party being retracted may strand
+it - the same rule that makes `canRevoke` the wider rung of the core's issuance ladder. Both directions
+are pinned, and the asymmetry is documented at the function so it is not later tidied into symmetry.
+
 **Losing ACTIVE standing FREEZES a provider's content rather than deleting it, and there is deliberately
 no registrar override**, mirroring the core's own refusal to let a registrar rewrite a frozen service's
 published claims. The cost is that such pins keep their scan slot; the alternative is an authority that
 can silently rewrite a provider's own signed claims, which is worse.
 
-**Open, and an authority-model ruling rather than an implementation choice: a provider's scan weight is
-therefore PERMANENT and no per-provider removal lever exists.** A provider can publish up to 65,535 pins,
-and because the freeze above reclaims nothing, that weight cannot be recovered - not by the provider and
+**Open, and an authority-model ruling rather than an implementation choice: once a provider is no longer
+ACTIVE its scan weight is PERMANENT, and no per-provider REGISTRAR removal lever exists.** Read the
+scoping precisely, because the absolute version of this sentence is false: while a provider IS ACTIVE it
+can reclaim every slot it holds itself, since `removePin` is a per-pin removal lever it may call and
+`_removeFromScan` pops the slot by swap-and-pop. What is permanent is the weight of a provider that has
+lost ACTIVE standing - a provider can publish up to 65,535 pins, and because the freeze above reclaims
+nothing, that weight can then be recovered by nobody: not by the provider, whose writes are frozen, and
 deliberately not by the registrar. Inventing a registrar removal lever would hand a registrar the power
 to erase a provider's published claims, which is exactly what the S-6 core refuses, so it was left out
 rather than added quietly.
@@ -1487,7 +1509,14 @@ a redeclared struct would be a drift risk with nothing to gain - and the test su
 the REAL core rather than a mock.
 
 Nineteen source mutations were applied, run and reverted against a temporary harness (not committed);
-each mapped to a named red test, including all of the claims called out above.
+each mapped to a named red test. Read that as scoped to the claims this section carried when the
+resolver landed, NOT as a running tally - the two asymmetries recorded above postdate it and have their
+own evidence: five further mutations, each likewise mapping to exactly one named red test (the pair rule
+collapsed to a provenance-value compare, its retraction arm collapsed to the current revision, the digest
+guard made symmetric, the digest guard removed outright - that one confirming the guard is still
+load-bearing on the raise path it was never meant to leave - and the event made to emit the provider's
+current anchor on a retraction, which is the mutation the event assertion was added to catch, the two new
+fields having shipped with no coverage at all).
 ## ServiceDomainResolver - three absences, and the router term that is NOT redundant
 
 `contracts/src/ServiceDomainResolver.sol`. Full rationale: `docs/SERVICE_DOMAIN_RESOLVER.md`.

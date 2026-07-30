@@ -426,14 +426,33 @@ contract ProviderDirectory {
     // ---------------------------------------------------------------------------------------------
 
     /// @notice Records the registrar's basis for believing a pin's address.
-    /// @dev The three expected-value arguments are transaction guards, not selectors: they bind the
-    /// assertion to exactly what the registrar checked, so a provider editing in the same block cannot
-    /// capture a confirmation meant for something else. `expectedLat`/`expectedLng` cover the
-    /// coordinate; `expectedAnchorDigest` covers the blob, because the street address these provenance
-    /// values are ABOUT is text inside that blob and not on chain at all.
+    /// @dev The expected-value arguments are transaction guards, not selectors: they bind the assertion
+    /// to exactly what the registrar checked, so a provider editing in the same block cannot capture a
+    /// confirmation meant for something else. `expectedLat`/`expectedLng` cover the coordinate;
+    /// `expectedAnchorDigest` covers the blob, because the street address these provenance values are
+    /// ABOUT is text inside that blob and not on chain at all.
     ///
     /// The confirmation is stamped with the anchor revision it was made against, which is what makes a
     /// later rewrite of that text detectable — see `pinAddressProvenance`.
+    ///
+    /// **`expectedAnchorDigest` is checked on a RAISE ONLY, and that asymmetry must not be tidied into
+    /// symmetry.** A raise asserts something about the address text, so it has to name the text it was
+    /// made against. A retraction to `SELF_DECLARED` asserts nothing about that text and so gains no
+    /// safety from the guard, while gating it would put a provider-controlled input on the critical path
+    /// of the corrective action: an ACTIVE provider could land a `setProfileAnchor` between the
+    /// registrar's read and its transaction, repeatedly, and the pin would keep reading as confirmed
+    /// throughout. Retraction is the safety direction, so no act of the party being retracted may
+    /// strand it — the same reason `canRevoke` is the wider rung of the core's issuance ladder.
+    ///
+    /// A confirmation is the PAIR (provenance, stamped revision), so `NoChange` is evaluated on the
+    /// pair. Re-affirming a stale-but-still-correct confirmation changes the stamp and is therefore a
+    /// real write, available in ONE transaction: the registrar must never have to round-trip through
+    /// `SELF_DECLARED` and transiently disown a check it still stands behind.
+    ///
+    /// The event's `anchorDigest`/`anchorRevision` therefore carry the bound text on a raise and are
+    /// ZERO on a retraction, mirroring the stamp this call stores. A retraction binds no text, so naming
+    /// the provider's current blob there would attribute a reading the registrar never made, and an
+    /// indexer rebuilding `confirmedAtAnchorRevision` from events alone would diverge from the state.
     function setPinAddressProvenance(
         bytes20 providerId,
         uint16 locationNo,
@@ -453,14 +472,19 @@ contract ProviderDirectory {
             revert UnexpectedCoordinates(existing.lat, existing.lng);
         }
         ProfileAnchor storage anchor = _profileAnchors[providerId];
-        if (anchor.digest != expectedAnchorDigest) revert UnexpectedProfileAnchor(anchor.digest);
+        bool retracting = provenance == AddressProvenance.SELF_DECLARED;
+        if (!retracting && anchor.digest != expectedAnchorDigest) {
+            revert UnexpectedProfileAnchor(anchor.digest);
+        }
 
         AddressProvenance old = _provenanceOf(existing.flags);
-        if (old == provenance) revert NoChange();
+        uint64 stamped = _provenanceAnchorRevision[providerId][locationNo];
+        uint64 wouldStamp = retracting ? 0 : anchor.revision;
+        if (old == provenance && stamped == wouldStamp) revert NoChange();
 
         existing.flags = (existing.flags & PIN_FLAG_ACTIVE) | uint8(uint8(provenance) << PIN_PROVENANCE_SHIFT);
         _pinScan[index] = packPin(existing);
-        if (provenance == AddressProvenance.SELF_DECLARED) {
+        if (retracting) {
             delete _provenanceAnchorRevision[providerId][locationNo];
         } else {
             _provenanceAnchorRevision[providerId][locationNo] = anchor.revision;
@@ -471,8 +495,8 @@ contract ProviderDirectory {
             locationNo,
             old,
             provenance,
-            anchor.digest,
-            anchor.revision,
+            retracting ? bytes32(0) : anchor.digest,
+            wouldStamp,
             msg.sender,
             uint64(block.number)
         );
