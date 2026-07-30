@@ -1371,9 +1371,14 @@ pinned block disagrees with the fork's.
 
 `scripts/rehearsal-mutations.sh` is a REPEATABLE mutation gate rather than a one-off log: it applies one
 break at a time, requires the named test to redden, and reports a mutation that stayed green as its own
-failure. It caught an inert one-line mutation on its first run - `_readServiceMetadata` folds the failed
-`owner()` read into a single `metadataOk`, so relaxing only the downstream `liveOwner == address(0)` guard
-changed nothing observable. Check the scrutinee, not just the diff.
+failure. **It has caught two inert mutations, so trust it over your own reading of a diff.** First,
+`_readServiceMetadata` folds the failed `owner()` read into a single `metadataOk`, so relaxing only the
+downstream `liveOwner == address(0)` guard changed nothing observable. Second, and the one worth
+remembering for ANY fork rehearsal: **an assertion that reads through a REAL DEPLOYED contract cannot be
+mutated from this tree at all** - the bytecode comes from the chain, so editing `src/` reaches nothing.
+On a fork the only mutable surface is what the rehearsal itself deploys or does. Every mutation's target
+file must also be listed in the harness's `TARGETS`, or `restore` silently leaves the tree mutated; that
+gap has already occurred once. Check the scrutinee, not just the diff.
 
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 

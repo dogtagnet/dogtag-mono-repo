@@ -74,7 +74,7 @@ A provider cannot be registered at all without the registrar-controlled public i
 
 ## 3. The six assertions
 
-Each corresponds to a distinct way the cutover fails **silently**. All six executed against the fork; all six pass.
+Each corresponds to a distinct way the cutover fails **silently**. All executed against the fork; all pass. Assertion 7 was added at review: C-12 had been *described* as exercised in three places while `delistFor` was declared and never called, and a claim broader than the code is the defect this project removes everywhere.
 
 | # | assertion | test | what a silent failure would look like |
 |---|---|---|---|
@@ -84,6 +84,7 @@ Each corresponds to a distinct way the cutover fails **silently**. All six execu
 | 4 | A generation-2 credential does **not** verify on the generation-1 registry | `test_4_...` | the C-9-before-C-11 ordering constraint would look optional |
 | 5 | An unmigrated relayer fails `!verify-wl` | `test_5_...` | the C-6-before-C-9 ordering constraint would look optional |
 | 6 | A revoked generation-1 root cannot be resurrected in generation 2 | `test_6a_...`, `test_6b_...` | a revoked credential starts verifying again, with nothing reverting |
+| 7 | The generation-1 freeze (C-12) stops new issuance and breaks **no** existing credential | `test_7_...` | either the old registry's `WHITELIST_ADMIN` stays a live trust surface for the new verifier, or the freeze silently invalidates all 19 historical credentials |
 
 Three things about how they are asserted are load-bearing:
 
@@ -117,9 +118,15 @@ It refuses to start on a dirty tree and restores every mutated file through a tr
 | cross-generation write guard removed | 6a | `next call did not revert as expected` |
 | router resolution reversed to newest-first | 6b | `router did not resolve oldest generation first` |
 | core given a legacy-controller adapter | correction 3 | `next call did not revert as expected` |
+| the C-12 delisting is not performed | 7 (issuance half) | `next call did not revert as expected` |
+| the freeze also revokes the anchored root | 7 (history half) | `cred !valid` |
 
-8 of 8 redden. The harness earned its keep on the first run: the legacy-adapter mutation was initially written as a one-line change and **stayed green**, because `_readServiceMetadata` folds the failed-owner read into a single `metadataOk` and the downstream guard it relaxed was already unreachable.
-An inert mutation that "confirms" an assertion is exactly the trap this fleet has been bitten by; the harness caught it rather than it being believed.
+10 of 10 redden. The harness earned its keep **twice**, both times catching an inert mutation of mine rather than being believed:
+
+- The legacy-adapter mutation was first written as a one-line change and **stayed green**, because `_readServiceMetadata` folds the failed-owner read into a single `metadataOk` and the downstream guard it relaxed was already unreachable.
+- Assertion 7 was first paired with a mutation of `src/DogTagIssuer.sol`'s `isValid`, which also **stayed green** - and for a reason worth keeping in mind for any fork rehearsal: **that assertion verifies through the REAL DEPLOYED clone and registry, so no edit to this tree can reach that bytecode.** On a fork the only mutable surface is what the rehearsal itself deploys or does. Both replacements therefore target the freeze the test performs, one per claim.
+
+An inert mutation that "confirms" an assertion is exactly the trap this fleet has been bitten by.
 
 ---
 
