@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 228 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 231 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -106,9 +106,11 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   core's KYC-standing AND owner/delegate predicate, genuine-factory attachment/repoint, service-scoped
   capabilities, real controller/owner/admin key rotations, the widest-first
   `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` ladder against every lifecycle event that stops new
-  issuance, and the registrar-only provider-binding correction; and `IssuerV2.t.sol` covers the
+  issuance, and the registrar-only provider-binding correction; `IssuerV2.t.sol` covers the
   built-but-undeployed generation-2 issuer pair (see "The generation-2 issuer pair is BUILT, NOT
-  DEPLOYED"). Use `forge test`, **not** bare
+  DEPLOYED"); and `IssuerV2ProviderAuthority.t.sol` is the one suite that binds the REAL provider core,
+  pinning that the four functions the pair asks of it are the core's own on both axes a signature has.
+  Use `forge test`, **not** bare
   `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
   import generated `../patched/*` files that aren't present, so it fails with "File not found" - a
   vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency
@@ -1072,14 +1074,20 @@ The six things worth knowing before touching either file:
   C-12 freeze - see the `CloneProvenanceRouter` section below. This S-6 capability ladder supersedes every
   older S-7 sentence saying generation 2 is gated solely by an issuer whitelist; that wording describes
   generation 1, not this pair.
-  **Both halves are now in ONE tree, so that four-function claim is checkable rather than asserted, and it
+  **Both halves are now in ONE tree, so that four-function claim is CHECKED rather than asserted, and it
   holds:** `DogTagIssuerV2.sol`'s `IProviderAuthority` declares those four with signatures byte-identical to
   `ProviderRegistry.sol`'s own `IProviderRegistry`, which is a strict superset (it also declares
   `isRecognizedIssuer` and `isWhitelistedFor`, neither of which the pair consumes) - so the real core
-  satisfies the pair's oracle interface. Read that as a SIGNATURE fact and nothing more: the suite still
-  binds `MockProviderAuthority`, so no test in this tree runs the pair against the real core, and a
-  divergence in either contract's BEHAVIOUR would still leave all 228 green. Wiring the two together is a
-  cutover step, not a coverage gap this branch left open.
+  satisfies the pair's oracle interface. `IssuerV2ProviderAuthority.t.sol` pins it against the REAL core on
+  both axes a signature has: selector equality for the argument lists, and single written external function
+  types both sides are assigned to, so a diverged return type or mutability fails the BUILD rather than
+  surviving to misdecode. It carries a negative control because the loop needs one - a well-formed
+  two-address call differing from `canIssue` in the SELECTOR ALONE, since an arity-mismatched probe reverts
+  inside the ABI decoder before dispatch is established and would pass while proving nothing.
+  Read it as a SIGNATURE fact and nothing more: the ladder tests still bind `MockProviderAuthority`, so no
+  test in this tree runs the pair against the real core, and a divergence in either contract's BEHAVIOUR
+  would leave all 231 green. Wiring the two together is a cutover step, not a coverage gap this branch left
+  open.
 - **`canIssue` and `canRevoke` are a nested ladder and must NOT be substituted for each other.** `issue`
   asks the narrow rung, the ordinary `revoke` arm the wide one. They differ whenever a live-lifecycle
   term unique to `canIssue` drops; a superseded clone and a suspended provider are both exercised examples.

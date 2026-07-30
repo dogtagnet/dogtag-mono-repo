@@ -417,13 +417,31 @@ None of those files is touched here, and nothing in this branch wires a consumer
 ## 9. Build and test
 
 ```sh
-cd contracts && forge test --match-contract IssuerV2Test
+cd contracts && forge test --match-contract IssuerV2
 ```
 
-63 tests in `IssuerV2Test`; 202 in the whole `contracts` suite.
+63 tests in `IssuerV2Test`, 3 more in `IssuerV2ProviderAuthorityInterfaceTest`; 231 in the whole `contracts` suite.
+That total moved from 202 when S-6's `ProviderRegistryTest` landed in the same tree, so a `202` anywhere is stale rather than a different way of counting.
+`--match-contract IssuerV2` (not `IssuerV2Test`) is what runs both of this slice's suites.
 Use `forge test`, never a bare `forge build`: a full build tries to compile the vendored OZ submodule's `certora/harnesses/*`, which import generated `../patched/*` files that are not present, and fails with "File not found" - a submodule artifact, not a project error.
 
 A fresh worktree has no `contracts/lib` contents; run `git submodule update --init --recursive contracts/lib/forge-std contracts/lib/openzeppelin-contracts` first.
+
+### `IssuerV2ProviderAuthorityInterfaceTest`, and why its negative control has the shape it does
+
+The pair reaches the authority core through an interface it declares locally, and Solidity checks nothing across that seam, so this suite pins the agreement against the REAL `ProviderRegistry` on both axes a signature has: selector equality for the argument lists, and single written external function types both sides are assigned to, so a diverged return type or state mutability fails the BUILD instead of surviving to misdecode at runtime.
+
+Five mutations were applied, run and reverted against a temporary harness (not committed, matching §9's convention below). Each landed on its expected outcome, and the tree was asserted byte-identical afterwards:
+
+| mutation | outcome |
+|---|---|
+| the core's `hasRole` loses `view` (interface + impl) | build fails at the `view` binding - the divergence no selector can see |
+| test 3's written return type `bool` to `uint256` | build fails, so the written type is load-bearing rather than decoration |
+| one loop probe aimed at an undeclared selector, well-formed | test red on `assertTrue(ok)` |
+| the core gains a `fallback() external {}` | test red on the negative control, which is the case it exists to catch |
+| the negative control reshaped into an arity-mismatched call against a selector the core genuinely DOES answer | **stays green** |
+
+That last row is the point, and it is a defect being demonstrated rather than a pass. Short calldata reverts inside the ABI decoder before selector dispatch is ever established, so an arity-mismatched control reports "not answered" for every selector including ones the core answers perfectly well - it cannot fail, and a control that cannot fail is worse than none, because it certifies the loop above it. The committed control is therefore a well-formed two-address call differing from `canIssue` in the selector alone.
 
 ### The suite's authority is a stand-in, and its fidelity is the load-bearing risk
 
