@@ -310,16 +310,16 @@ contract ProviderDirectoryTest is Test {
     /// the word was wrong.
     function test_a_decoder_refuses_a_word_no_page_could_have_produced_by_name() public view {
         // Only the flags byte matters here: provenance bits 1-2 set to 3, which is not a value.
-        (bool ok, bytes memory reason) = address(directory).staticcall(
-            abi.encodeCall(ProviderDirectory.pinProvenance, (bytes32(uint256(0x06))))
-        );
+        (bool ok, bytes memory reason) = address(directory)
+            .staticcall(abi.encodeCall(ProviderDirectory.pinProvenance, (bytes32(uint256(0x06)))));
         assertFalse(ok, "provenance 3 decoded as a value");
         assertEq(reason, abi.encodeWithSelector(ProviderDirectory.UnknownProvenance.selector, uint8(3)));
 
         // Standing sits at byte [30] of word 0; 5 is one past RETIRED, the core's last member.
-        (ok, reason) = address(directory).staticcall(
-            abi.encodeCall(ProviderDirectory.unpackListing, (bytes32(uint256(5) << 8), bytes32(0)))
-        );
+        (ok, reason) = address(directory)
+            .staticcall(
+                abi.encodeCall(ProviderDirectory.unpackListing, (bytes32(uint256(5) << 8), bytes32(0)))
+            );
         assertFalse(ok, "a standing the core does not define decoded as a value");
         assertEq(reason, abi.encodeWithSelector(ProviderDirectory.UnknownStanding.selector, uint8(5)));
     }
@@ -506,12 +506,22 @@ contract ProviderDirectoryTest is Test {
         vm.prank(PINNED_CONTROLLER);
         vm.expectRevert(ProviderDirectory.Unauthorized.selector);
         directory.setPinAddressProvenance(
-            PINNED, locationNo, SG_LAT, SG_LNG, ProviderDirectory.AddressProvenance.MATCHED_LICENSING_REGISTER
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            bytes32(0),
+            ProviderDirectory.AddressProvenance.MATCHED_LICENSING_REGISTER
         );
 
         vm.prank(REGISTRAR);
         directory.setPinAddressProvenance(
-            PINNED, locationNo, SG_LAT, SG_LNG, ProviderDirectory.AddressProvenance.MATCHED_LICENSING_REGISTER
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            bytes32(0),
+            ProviderDirectory.AddressProvenance.MATCHED_LICENSING_REGISTER
         );
         assertEq(
             uint8(directory.pinProvenance(directory.pinWord(PINNED, locationNo))),
@@ -527,7 +537,12 @@ contract ProviderDirectoryTest is Test {
         uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
         vm.prank(REGISTRAR);
         directory.setPinAddressProvenance(
-            PINNED, locationNo, SG_LAT, SG_LNG, ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            bytes32(0),
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
         );
 
         vm.prank(PINNED_CONTROLLER);
@@ -547,7 +562,12 @@ contract ProviderDirectoryTest is Test {
         uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
         vm.prank(REGISTRAR);
         directory.setPinAddressProvenance(
-            PINNED, locationNo, SG_LAT, SG_LNG, ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            bytes32(0),
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
         );
 
         vm.prank(PINNED_CONTROLLER);
@@ -573,7 +593,12 @@ contract ProviderDirectoryTest is Test {
             abi.encodeWithSelector(ProviderDirectory.UnexpectedCoordinates.selector, SYD_LAT, SYD_LNG)
         );
         directory.setPinAddressProvenance(
-            PINNED, locationNo, SG_LAT, SG_LNG, ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            bytes32(0),
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
         );
     }
 
@@ -584,11 +609,16 @@ contract ProviderDirectoryTest is Test {
         uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
         vm.startPrank(REGISTRAR);
         directory.setPinAddressProvenance(
-            PINNED, locationNo, SG_LAT, SG_LNG, ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            bytes32(0),
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
         );
         core.setProviderStanding(PINNED, ProviderRegistry.Standing.SUSPENDED);
         directory.setPinAddressProvenance(
-            PINNED, locationNo, SG_LAT, SG_LNG, ProviderDirectory.AddressProvenance.SELF_DECLARED
+            PINNED, locationNo, SG_LAT, SG_LNG, bytes32(0), ProviderDirectory.AddressProvenance.SELF_DECLARED
         );
         vm.stopPrank();
 
@@ -598,13 +628,234 @@ contract ProviderDirectoryTest is Test {
         );
     }
 
+    /// The registrar's confirmation is about a STREET ADDRESS, and that text lives in the provider's
+    /// rewritable blob rather than on chain. Binding only the coordinate left the text channel open:
+    /// a provider could rewrite the address under a standing confirmation and nothing said so. The
+    /// stamped anchor revision is what closes it.
+    function test_rewriting_the_address_text_stops_a_confirmation_covering_it() public {
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+
+        (ProviderDirectory.AddressProvenance provenance, uint64 confirmedAt, uint64 current, bool covers) =
+            directory.pinAddressProvenance(PINNED, locationNo);
+        assertEq(uint8(provenance), uint8(ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED));
+        assertEq(confirmedAt, 1);
+        assertEq(current, 1);
+        assertTrue(covers, "a fresh confirmation must cover the text it was made against");
+
+        // The provider rewrites the blob. Same coordinates, same pin, different address text.
+        _publishAnchor(PINNED, PINNED_CONTROLLER, keccak256("moved the street address"));
+
+        (provenance, confirmedAt, current, covers) = directory.pinAddressProvenance(PINNED, locationNo);
+        assertFalse(covers, "a confirmation survived a rewrite of the very text it describes");
+        assertEq(confirmedAt, 1, "the stamped revision must record what was actually confirmed");
+        assertEq(current, 2);
+        // NOT silently downgraded: the registrar really did confirm something, and erasing that would
+        // be a false statement in the other direction.
+        assertEq(
+            uint8(provenance),
+            uint8(ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED),
+            "a stale confirmation was erased rather than reported as stale"
+        );
+        assertEq(
+            uint8(directory.pinProvenance(directory.pinWord(PINNED, locationNo))),
+            uint8(ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED)
+        );
+    }
+
+    /// The blob carries every one of the provider's addresses, so one rewrite has to unstick every
+    /// confirmation the provider holds - not just the pin someone happens to look at.
+    function test_a_rewrite_stops_every_one_of_that_providers_confirmations_covering() public {
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.startPrank(PINNED_CONTROLLER);
+        uint16 first = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+        uint16 second = directory.publishPin(PINNED, SYD_LAT, SYD_LNG, KIND_GROOMER, true);
+        vm.stopPrank();
+
+        vm.startPrank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED, first, SG_LAT, SG_LNG, ANCHOR_DIGEST, ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+        directory.setPinAddressProvenance(
+            PINNED,
+            second,
+            SYD_LAT,
+            SYD_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.MATCHED_LICENSING_REGISTER
+        );
+        vm.stopPrank();
+
+        (,,, bool coversFirst) = directory.pinAddressProvenance(PINNED, first);
+        (,,, bool coversSecond) = directory.pinAddressProvenance(PINNED, second);
+        assertTrue(coversFirst);
+        assertTrue(coversSecond);
+
+        _publishAnchor(PINNED, PINNED_CONTROLLER, keccak256("v2"));
+
+        (,,, coversFirst) = directory.pinAddressProvenance(PINNED, first);
+        (,,, coversSecond) = directory.pinAddressProvenance(PINNED, second);
+        assertFalse(coversFirst, "a rewrite left one confirmation covering");
+        assertFalse(coversSecond, "a rewrite left another confirmation covering");
+    }
+
+    /// Withdrawing the blob entirely is also a change to the text, so it must unstick confirmations
+    /// exactly as a rewrite does.
+    function test_clearing_the_anchor_stops_a_confirmation_covering_it() public {
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+
+        vm.prank(PINNED_CONTROLLER);
+        directory.clearProfileAnchor(PINNED);
+
+        (,,, bool covers) = directory.pinAddressProvenance(PINNED, locationNo);
+        assertFalse(covers, "a confirmation survived the withdrawal of the text it describes");
+    }
+
+    /// The blob guard is the same transaction guard as the coordinates, for the same reason: the
+    /// registrar asserts about the text it actually read.
+    function test_a_confirmation_cannot_land_on_address_text_the_registrar_did_not_read() public {
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+
+        // The provider swaps the blob before the registrar's transaction lands.
+        _publishAnchor(PINNED, PINNED_CONTROLLER, keccak256("swapped"));
+
+        vm.prank(REGISTRAR);
+        vm.expectRevert(
+            abi.encodeWithSelector(ProviderDirectory.UnexpectedProfileAnchor.selector, keccak256("swapped"))
+        );
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+    }
+
+    /// A self-declared address has no confirmation at all, so the covering flag must be false rather
+    /// than vacuously true — a consumer reading the flag without branching on the provenance first
+    /// would otherwise treat every ordinary pin as carrying a registrar's word.
+    ///
+    /// The no-anchor case is the one that matters and is easy to miss: there, an absent stamp (0) and an
+    /// absent anchor revision (0) are EQUAL, so a covering flag computed from the revisions alone reads
+    /// true for the single most common state in the whole directory — an ordinary pin nobody has ever
+    /// confirmed. Both cases are asserted here for that reason.
+    function test_a_self_declared_address_reports_no_confirmation_to_cover() public {
+        // No anchor published: stamp 0 and revision 0 coincide.
+        vm.prank(CONTACT_ONLY_CONTROLLER);
+        uint16 bare = directory.publishPin(CONTACT_ONLY, SG_LAT, SG_LNG, KIND_VET, true);
+        (
+            ProviderDirectory.AddressProvenance bareProvenance,
+            uint64 bareConfirmedAt,
+            uint64 bareCurrent,
+            bool bareCovers
+        ) = directory.pinAddressProvenance(CONTACT_ONLY, bare);
+        assertEq(uint8(bareProvenance), uint8(ProviderDirectory.AddressProvenance.SELF_DECLARED));
+        assertEq(bareConfirmedAt, 0);
+        assertEq(bareCurrent, 0, "a provider with no anchor should be at revision 0");
+        assertFalse(
+            bareCovers, "an unconfirmed pin on an anchorless provider claimed a covering confirmation"
+        );
+
+        // And with an anchor published, where the two revisions differ.
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+
+        (ProviderDirectory.AddressProvenance provenance, uint64 confirmedAt, uint64 current, bool covers) =
+            directory.pinAddressProvenance(PINNED, locationNo);
+        assertEq(uint8(provenance), uint8(ProviderDirectory.AddressProvenance.SELF_DECLARED));
+        assertEq(confirmedAt, 0);
+        assertEq(current, 1);
+        assertFalse(covers, "a self-declared address claimed to carry a covering confirmation");
+    }
+
+    /// Moving the pin already drops the confirmation; the stamped revision has to go with it, or a
+    /// later re-confirmation could pair a fresh provenance with a stale stamp.
+    function test_moving_a_pin_clears_the_stamped_anchor_revision() public {
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+
+        vm.prank(PINNED_CONTROLLER);
+        directory.updatePin(PINNED, locationNo, SYD_LAT, SYD_LNG, KIND_VET, true);
+
+        (ProviderDirectory.AddressProvenance provenance, uint64 confirmedAt,, bool covers) =
+            directory.pinAddressProvenance(PINNED, locationNo);
+        assertEq(uint8(provenance), uint8(ProviderDirectory.AddressProvenance.SELF_DECLARED));
+        // The view reports the STORED stamp, so a leftover is visible here rather than hidden behind a
+        // hardcoded zero — which is what makes this assertion able to fail at all.
+        assertEq(confirmedAt, 0, "the stamped revision outlived the confirmation it belonged to");
+        assertFalse(covers);
+    }
+
+    /// A pin-only provider that publishes no address text at all can still be confirmed - the registrar
+    /// mailed a code to a physical place - and publishing text afterwards makes that confirmation stop
+    /// covering it, because the text is new information the registrar never saw.
+    function test_a_provider_with_no_address_text_can_be_confirmed_and_then_goes_stale() public {
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            bytes32(0),
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+        (,, uint64 current, bool covers) = directory.pinAddressProvenance(PINNED, locationNo);
+        assertEq(current, 0, "a provider with no anchor should be at revision 0");
+        assertTrue(covers, "a confirmation with no published text must cover the absence of text");
+
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+
+        (,,, covers) = directory.pinAddressProvenance(PINNED, locationNo);
+        assertFalse(covers, "newly published address text was covered by an earlier confirmation");
+    }
+
     function test_a_provenance_that_changes_nothing_is_refused() public {
         vm.prank(PINNED_CONTROLLER);
         uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
         vm.prank(REGISTRAR);
         vm.expectRevert(ProviderDirectory.NoChange.selector);
         directory.setPinAddressProvenance(
-            PINNED, locationNo, SG_LAT, SG_LNG, ProviderDirectory.AddressProvenance.SELF_DECLARED
+            PINNED, locationNo, SG_LAT, SG_LNG, bytes32(0), ProviderDirectory.AddressProvenance.SELF_DECLARED
         );
     }
 
@@ -638,7 +889,7 @@ contract ProviderDirectoryTest is Test {
         vm.prank(REGISTRAR);
         vm.expectRevert(ProviderDirectory.ResolverNotApproved.selector);
         directory.setPinAddressProvenance(
-            PINNED, 0, SG_LAT, SG_LNG, ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+            PINNED, 0, SG_LAT, SG_LNG, bytes32(0), ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
         );
     }
 

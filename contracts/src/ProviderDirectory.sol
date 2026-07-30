@@ -48,6 +48,12 @@ import {ProviderRegistry} from "./ProviderRegistry.sol";
 /// does. `AddressProvenance` records who asserted the address and on what basis so a consumer can
 /// state the observation; a consumer MUST NOT render a location as verified.
 ///
+/// A registrar's confirmation is about a STREET ADDRESS, and that text is in the profile blob rather
+/// than on chain, so binding the coordinate alone would let a provider rewrite the text underneath a
+/// standing confirmation. Confirmations are therefore stamped with the anchor revision they were made
+/// against and read back through `pinAddressProvenance`, which reports whether the confirmation still
+/// covers the text the provider currently publishes.
+///
 /// ## A provider that loses ACTIVE standing has its content FROZEN, not deleted
 ///
 /// Every provider write goes through the core's `canWriteProvider`, which requires ACTIVE standing,
@@ -177,6 +183,15 @@ contract ProviderDirectory {
     mapping(bytes20 => uint16) private _nextLocationNumber;
     mapping(bytes20 => uint16) private _pinCount;
 
+    /// @dev The profile-anchor revision a registrar's confirmation was made against. Meaningful only
+    /// when the pin's provenance is not `SELF_DECLARED` — the provenance value is what records that a
+    /// confirmation exists, so this field does not have to encode its own presence, which matters
+    /// because revision 0 is the legitimate "no anchor has ever been published" state.
+    ///
+    /// It is stored here rather than in the pin word because that word is full to the bit and is the
+    /// distance primitive; provenance detail is a per-pin read, never a scan field.
+    mapping(bytes20 => mapping(uint16 => uint64)) private _provenanceAnchorRevision;
+
     event ProviderListed(bytes20 indexed providerId, uint256 index);
     event PinPublished(
         bytes20 indexed providerId,
@@ -206,6 +221,8 @@ contract ProviderDirectory {
         uint16 indexed locationNo,
         AddressProvenance oldProvenance,
         AddressProvenance newProvenance,
+        bytes32 anchorDigest,
+        uint64 anchorRevision,
         address setBy,
         uint64 atBlock
     );
@@ -238,6 +255,7 @@ contract ProviderDirectory {
     error UnknownStanding(uint8 standing);
     error LocationNumbersExhausted();
     error UnexpectedCoordinates(int32 lat, int32 lng);
+    error UnexpectedProfileAnchor(bytes32 digest);
     error BadProfileAnchor();
     error ContenthashTooLong();
     error NoProfileAnchor();
@@ -371,6 +389,9 @@ contract ProviderDirectory {
         );
         if (word == _pinScan[index]) revert NoChange();
         _pinScan[index] = word;
+        // A move drops the confirmation, so its stamped revision must go with it rather than linger
+        // beside a SELF_DECLARED provenance where a later read could pair the two.
+        if (moved) delete _provenanceAnchorRevision[providerId][locationNo];
 
         emit PinUpdated(
             providerId,
@@ -395,6 +416,7 @@ contract ProviderDirectory {
 
         _removeFromScan(providerId, locationNo);
         _pinCount[providerId] -= 1;
+        delete _provenanceAnchorRevision[providerId][locationNo];
 
         emit PinRemoved(providerId, locationNo, msg.sender, uint64(block.number));
     }
@@ -404,14 +426,20 @@ contract ProviderDirectory {
     // ---------------------------------------------------------------------------------------------
 
     /// @notice Records the registrar's basis for believing a pin's address.
-    /// @dev `expectedLat`/`expectedLng` are a transaction guard, not a selector: they bind the
-    /// assertion to the exact coordinates the registrar checked, so a provider that moves the pin in
-    /// the same block cannot capture a confirmation meant for the old address.
+    /// @dev The three expected-value arguments are transaction guards, not selectors: they bind the
+    /// assertion to exactly what the registrar checked, so a provider editing in the same block cannot
+    /// capture a confirmation meant for something else. `expectedLat`/`expectedLng` cover the
+    /// coordinate; `expectedAnchorDigest` covers the blob, because the street address these provenance
+    /// values are ABOUT is text inside that blob and not on chain at all.
+    ///
+    /// The confirmation is stamped with the anchor revision it was made against, which is what makes a
+    /// later rewrite of that text detectable — see `pinAddressProvenance`.
     function setPinAddressProvenance(
         bytes20 providerId,
         uint16 locationNo,
         int32 expectedLat,
         int32 expectedLng,
+        bytes32 expectedAnchorDigest,
         AddressProvenance provenance
     ) external {
         _requireLiveResolver(providerId);
@@ -424,15 +452,29 @@ contract ProviderDirectory {
         if (existing.lat != expectedLat || existing.lng != expectedLng) {
             revert UnexpectedCoordinates(existing.lat, existing.lng);
         }
+        ProfileAnchor storage anchor = _profileAnchors[providerId];
+        if (anchor.digest != expectedAnchorDigest) revert UnexpectedProfileAnchor(anchor.digest);
 
         AddressProvenance old = _provenanceOf(existing.flags);
         if (old == provenance) revert NoChange();
 
         existing.flags = (existing.flags & PIN_FLAG_ACTIVE) | uint8(uint8(provenance) << PIN_PROVENANCE_SHIFT);
         _pinScan[index] = packPin(existing);
+        if (provenance == AddressProvenance.SELF_DECLARED) {
+            delete _provenanceAnchorRevision[providerId][locationNo];
+        } else {
+            _provenanceAnchorRevision[providerId][locationNo] = anchor.revision;
+        }
 
         emit PinAddressProvenanceSet(
-            providerId, locationNo, old, provenance, msg.sender, uint64(block.number)
+            providerId,
+            locationNo,
+            old,
+            provenance,
+            anchor.digest,
+            anchor.revision,
+            msg.sender,
+            uint64(block.number)
         );
     }
 
@@ -558,6 +600,46 @@ contract ProviderDirectory {
 
     function pin(bytes20 providerId, uint16 locationNo) external view returns (Pin memory) {
         return unpackPin(pinWord(providerId, locationNo));
+    }
+
+    /// @notice A pin's address provenance together with whether it still covers the address text the
+    /// provider currently publishes.
+    ///
+    /// `MATCHED_LICENSING_REGISTER` and `POSTAL_CONFIRMED` are assertions about a STREET ADDRESS, and
+    /// that text lives in the provider-rewritable profile blob rather than on chain — so binding the
+    /// coordinate is not enough. Each confirmation is stamped with the anchor revision it was made
+    /// against, and every `setProfileAnchor` or `clearProfileAnchor` advances that revision, so a
+    /// rewrite of the text makes `coversCurrentAddressText` false with no loop over the provider's pins
+    /// and no cooperation from the provider.
+    ///
+    /// **A stale confirmation is NOT silently downgraded to `SELF_DECLARED`.** The registrar really did
+    /// confirm something, and erasing that would be a false statement in the other direction; the
+    /// honest report is "confirmed, against an earlier revision of the address text". A consumer MUST
+    /// require `coversCurrentAddressText` before presenting a confirmation as describing what it now
+    /// shows, exactly as a stale-but-valid credential keeps its label and loses its freshness rather
+    /// than collapsing to invalid.
+    ///
+    /// `coversCurrentAddressText` is false for `SELF_DECLARED` because there is no confirmation to
+    /// cover anything — branch on `provenance` first, never read the flag alone.
+    function pinAddressProvenance(bytes20 providerId, uint16 locationNo)
+        external
+        view
+        returns (
+            AddressProvenance provenance,
+            uint64 confirmedAtAnchorRevision,
+            uint64 currentAnchorRevision,
+            bool coversCurrentAddressText
+        )
+    {
+        provenance = pinProvenance(pinWord(providerId, locationNo));
+        currentAnchorRevision = _profileAnchors[providerId].revision;
+        // The STORED stamp, never a hardcoded zero for the self-declared case. Zeroing it there would
+        // read identically whenever the "no stamp without a confirmation" invariant holds and hide the
+        // one case where it does not — which makes a leftover stamp unobservable and any test of the
+        // clearing paths vacuous.
+        confirmedAtAnchorRevision = _provenanceAnchorRevision[providerId][locationNo];
+        coversCurrentAddressText = provenance != AddressProvenance.SELF_DECLARED
+            && confirmedAtAnchorRevision == currentAnchorRevision;
     }
 
     /// @notice One 32-byte word per pin, in scan order.
