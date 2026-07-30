@@ -1491,18 +1491,54 @@ bounds a provider to 65,535 of them (0 through 65,534) and exhaustion reverts ra
 binary, and there is no "verified location" checkmark anywhere.** Nothing in this system establishes
 that a provider occupies a coordinate. A provider may only ever publish `SELF_DECLARED`; raising to
 `MATCHED_LICENSING_REGISTER` or `POSTAL_CONFIRMED` is the registrar's assertion ABOUT a provider, so it
-is `core.owner()`-only and bound to the exact coordinates checked via an expected-lat/lng transaction
-guard. **Moving a pin RESETS provenance to `SELF_DECLARED`** - the registrar checked one address, and
-carrying its confirmation to another attributes a check that was never made - while changing only
-`kind` or `active` PRESERVES it, since neither restates the address. Both directions are pinned; the
-second matters because always-resetting would silently drop a postal confirmation every time a provider
-fixed a typo. That one registrar write deliberately does NOT require ACTIVE standing, so a confirmation
-stays RETRACTABLE after a suspension.
+is `core.owner()`-only and bound, by expected-value transaction guards, to the exact coordinates AND the
+exact profile-anchor digest the registrar checked. **Moving a pin RESETS provenance to `SELF_DECLARED`** -
+the registrar checked one address, and carrying its confirmation to another attributes a check that was
+never made - while changing only `kind` or `active` PRESERVES it, since neither restates the address.
+Both directions are pinned; the second matters because always-resetting would silently drop a postal
+confirmation every time a provider fixed a typo. That one registrar write deliberately does NOT require
+ACTIVE standing, so a confirmation stays RETRACTABLE after a suspension.
+
+**Binding the COORDINATE is not enough, and that gap shipped in #118 before being closed as a
+follow-up.** Both raised values are assertions about a STREET ADDRESS, and that text lives inside the
+provider-rewritable profile blob rather than on chain - so a provider could rewrite its address text
+underneath a standing confirmation with nothing resetting it and nothing reporting it. Exactly the
+misattribution the move-resets rule refuses on the coordinate axis, through its twin channel.
+Two tempting fixes are both wrong: narrowing the claim to the coordinate guts it (you cannot mail a code
+to a lat/lng), and resetting on every anchor write needs a loop over every pin, which is unbounded gas
+and would stop a many-pin provider updating its blob at all.
+What it does instead: each confirmation is STAMPED with the anchor revision it was made against, and
+`pinAddressProvenance` REPORTS whether it still covers the text the provider currently publishes. The
+revision already advances on every `setProfileAnchor` and `clearProfileAnchor`, so it is the epoch -
+O(1), no loop, no cooperation from the provider.
+**A stale confirmation is NOT downgraded to `SELF_DECLARED`**: the registrar really did confirm
+something, and erasing that is a false statement in the other direction, so the honest report is
+"confirmed, against an earlier revision of the address text" - the same rule that keeps a stale-but-valid
+credential's label and drops only its freshness. A consumer MUST require `coversCurrentAddressText`
+before presenting a confirmation as describing what it now shows, and MUST branch on `provenance` first,
+because that flag is false for `SELF_DECLARED` (there is no confirmation to cover anything).
+Two details are load-bearing and each is there because a mutation initially survived without it. The view
+returns the **stored** stamp rather than a hardcoded zero for the self-declared case - zeroing reads
+identically whenever the "no stamp without a confirmation" invariant holds and hides the one case where
+it does not, which makes every test of the clearing paths vacuous. And the self-declared case must be
+asserted for a provider with **no anchor**, where an absent stamp (0) and an absent revision (0) are
+EQUAL: a covering flag computed from the revisions alone reads `true` there, for the single most common
+state in the directory - an ordinary pin nobody has ever confirmed.
 
 **Losing ACTIVE standing FREEZES a provider's content rather than deleting it, and there is deliberately
 no registrar override**, mirroring the core's own refusal to let a registrar rewrite a frozen service's
 published claims. The cost is that such pins keep their scan slot; the alternative is an authority that
 can silently rewrite a provider's own signed claims, which is worse.
+
+**Open, and an authority-model ruling rather than an implementation choice: a provider's scan weight is
+therefore PERMANENT and no per-provider removal lever exists.** A provider can publish up to 65,535 pins,
+and because the freeze above reclaims nothing, that weight cannot be recovered - not by the provider and
+deliberately not by the registrar. Inventing a registrar removal lever would hand a registrar the power
+to erase a provider's published claims, which is exactly what the S-6 core refuses, so it was left out
+rather than added quietly.
+State it as a design question and not a live risk, with the arithmetic: `publishPin` measures ~109k gas,
+so reaching one provider's bound costs ~7.1 billion gas, and every `providerId` is registrar-issued and
+must be in ACTIVE standing to publish at all.
 
 **Contacts are in the anchored blob, not on chain.** `ProfileAnchor` publishes only the integrity
 anchor (digest + schema/codec/hashAlgorithm + contenthash + revision + block + setBy) for the blob
@@ -3633,8 +3669,11 @@ rather than filtering the directory.
 Nearby consumers read through `ProviderDirectory.read()`, which deliberately takes **no query**:
 `centralDirectory` performs the same full `GET /v1/businesses` for every caller, and the future
 `onchainDirectory` keeps paging/RPC details behind the same interface. The on-chain implementation is
-currently an honest stub because the provider registry and packed paging ABI do not exist; it resolves
-`unavailable` and makes no RPC call, never `empty`.
+currently an honest stub; it resolves `unavailable` and makes no RPC call, never `empty`.
+The reason has MOVED and the distinction matters: the packed paging ABI now exists (S-10's
+`ProviderDirectory`, see that section), so the stub is no longer waiting on a design - it is waiting on a
+DEPLOYMENT, since nothing is deployed and there is no address to read. A future implementation of this
+seam is where that contract's `pinPage`/`listingPage` would be consumed.
 
 - **There is no in-app map.** Nearby is a list; a row hands its already-held destination to the
   platform's maps app / Google Maps. Consequently `ProviderDirectory` must never acquire a viewport,
