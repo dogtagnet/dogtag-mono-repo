@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 363 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 374 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std

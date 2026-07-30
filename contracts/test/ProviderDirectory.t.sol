@@ -880,7 +880,12 @@ contract ProviderDirectoryTest is Test {
         // round trip through SELF_DECLARED.
         vm.prank(REGISTRAR);
         directory.setPinAddressProvenance(
-            PINNED, locationNo, SG_LAT, SG_LNG, rewritten, ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            rewritten,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
         );
 
         ProviderDirectory.AddressProvenance provenance;
