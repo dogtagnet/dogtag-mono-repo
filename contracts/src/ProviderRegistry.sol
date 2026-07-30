@@ -483,6 +483,19 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         emit FactoryGenerationAdded(generationId, factory, uint64(block.number));
     }
 
+    /// @notice Terminal and generation-wide: there is deliberately no reactivation path. Beyond
+    /// stopping new issuance it freezes EVERY service-level write on that generation, because
+    /// `canWriteService` requires `_serviceStandingIsEffective`, which requires an active generation.
+    /// `setDomainResolver` is included, so a service's last-selected domain resolver can no longer be
+    /// changed or cleared - not by its owner, not by a delegate, and deliberately not by a registrar
+    /// override, which would be an authority to rewrite a superseded generation's published claims.
+    ///
+    /// The provider axis is deliberately ASYMMETRIC: `Provider.directoryResolver` stays writable and
+    /// clearable throughout, because `canWriteProvider` consults provider standing only and a provider
+    /// outlives any one generation of its services. That asymmetry is the intended shape rather than an
+    /// oversight - a frozen service's stored selector is history, not a live claim (see
+    /// `setDomainResolver`), and withdrawing what such a selector still resolves is the typed resolver
+    /// allowlist's job, not this write predicate's.
     function deprecateFactoryGeneration(bytes32 generationId) external onlyOwner {
         FactoryGeneration storage generation = _requireFactoryGeneration(generationId);
         if (!generation.active) revert FactoryGenerationInactive();
@@ -717,11 +730,8 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     /// is a pre-issue gate ONLY and never a verification input.
     function canIssue(address serviceAddress, address signer) public view override returns (bool) {
         Service storage s = _services[serviceAddress];
-        if (!_isRecognizedIssuer(serviceAddress, s, signer) || !_isOwnerConfirmed(serviceAddress, s)) {
-            return false;
-        }
-        if (!_serviceStandingIsEffective(serviceAddress, s)) return false;
-        return _currentService[s.providerId][s.recordType] == serviceAddress;
+        return _isRecognizedIssuer(serviceAddress, s, signer)
+            && _serviceIssuanceEligible(serviceAddress, s);
     }
 
     function _isRecognizedIssuer(address serviceAddress, Service storage s, address signer)
@@ -732,9 +742,28 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         return s.providerId != bytes20(0) && _issuanceCapabilities[serviceAddress][signer];
     }
 
+    /// @dev The signer-agnostic half of `canIssue`, shared with `effectiveService` so the gate and the
+    /// oversight read cannot drift: a read that folded fewer terms than the gate would report a
+    /// service as ready to issue while every issuance through it reverts.
+    function _serviceIssuanceEligible(address serviceAddress, Service storage s)
+        internal
+        view
+        returns (bool)
+    {
+        return _isOwnerConfirmed(serviceAddress, s) && _serviceStandingIsEffective(serviceAddress, s)
+            && _currentService[s.providerId][s.recordType] == serviceAddress;
+    }
+
+    /// @dev Fails closed intrinsically rather than relying on each caller evaluating some other term
+    /// first. An address the registrar never attached whose `owner()` answers the zero address would
+    /// otherwise match its unwritten `confirmedOwner` and report a confirmed owner for a service that
+    /// does not exist here. Neither added guard can fire for an attached service - `attachService` and
+    /// `confirmServiceOwner` both refuse a zero `owner()`, and a later renounce to zero already fails
+    /// the equality - so this removes the fail-open without narrowing any live answer.
     function _isOwnerConfirmed(address serviceAddress, Service storage s) internal view returns (bool) {
+        if (s.providerId == bytes20(0)) return false;
         (bool ownerOk, address liveOwner) = _readServiceOwner(serviceAddress);
-        return ownerOk && liveOwner == s.confirmedOwner;
+        return ownerOk && liveOwner != address(0) && liveOwner == s.confirmedOwner;
     }
 
     function setVerifierCapability(bytes32 purpose, address relayer, bool allowed) external onlyOwner {
@@ -822,6 +851,16 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         emit DirectoryResolverSet(providerId, oldResolver, resolver, msg.sender);
     }
 
+    /// @notice Selects one service's typed DOMAIN resolver. The stored selector is a HISTORICAL record
+    /// of the last selection this core accepted: it is never cleared here, neither by resolver
+    /// deapproval nor by the generation deprecation that freezes this write permanently (see
+    /// `deprecateFactoryGeneration`).
+    ///
+    /// So a consumer computing a service's EFFECTIVE domain resolver must require BOTH that this stored
+    /// selector still names the resolver AND that `isResolverApproved(ResolverKind.DOMAIN, resolver)`
+    /// still holds. Reading the selector alone would defeat the registry authority's fleet-wide
+    /// `setResolverApproved(DOMAIN, resolver, false)` lever, which is the only way to disable a resolver
+    /// for the services this predicate has already frozen.
     function setDomainResolver(address serviceAddress, address resolver) external {
         Service storage s = _requireService(serviceAddress);
         if (!canWriteService(serviceAddress, msg.sender, SERVICE_PERMISSION_DOMAIN_RESOLVER)) {
@@ -884,6 +923,11 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         return _serviceDelegates[serviceAddress][delegate];
     }
 
+    /// @notice The per-term breakdown behind the issuance ladder, for oversight. `ownerConfirmed` and
+    /// `hasActiveIssuer` are COMPOSED from the same helpers `canIssue` folds rather than re-derived
+    /// here, so `hasActiveIssuer` is exactly `canIssue` with the per-signer grant replaced by the
+    /// service's active-issuer count. Never re-inline those terms to save the duplicated `isClone`
+    /// staticcall: this is a `view`, and a second copy of the predicate is what drifts.
     function effectiveService(address serviceAddress)
         external
         view
@@ -900,12 +944,9 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         serviceStanding = s.standing;
         FactoryGeneration storage generation = _factoryGenerations[s.factoryGeneration];
         factoryActive = generation.active && _factoryRecognizes(generation.factory, serviceAddress);
-        (bool ownerOk, address liveOwner) = _readServiceOwner(serviceAddress);
-        ownerConfirmed =
-            s.providerId != bytes20(0) && ownerOk && liveOwner != address(0) && liveOwner == s.confirmedOwner;
-        hasActiveIssuer = _activeIssuerCount[serviceAddress] != 0 && providerStanding == Standing.ACTIVE
-            && serviceStanding == Standing.ACTIVE && factoryActive && ownerConfirmed
-            && _currentService[s.providerId][s.recordType] == serviceAddress;
+        ownerConfirmed = _isOwnerConfirmed(serviceAddress, s);
+        hasActiveIssuer =
+            _activeIssuerCount[serviceAddress] != 0 && _serviceIssuanceEligible(serviceAddress, s);
     }
 
     function providerCount() external view returns (uint256) {

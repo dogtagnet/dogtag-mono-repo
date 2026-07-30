@@ -1126,7 +1126,11 @@ contract ProviderRegistryTest is Test {
     // re-reading storage. So an event that carries the wrong field, indexes the wrong argument, or
     // reports the post-state where the transition is the fact is not a cosmetic slip - it is
     // silently undecodable, or decodably wrong, at exactly the consumer that cannot ask again.
-    // These assert the transition events by full signature and topic layout.
+    // These assert, by full signature and topic layout, every announcement carrying a term no getter
+    // answers: both ends of a provider AND a service standing change, each handover rung's own nonce,
+    // and the epoch a provider or service delegation is scoped to. The announcements not pinned here
+    // (`ControllerTransferCancelled`, `ServiceCreationApprovalSet`, `DirectoryResolverSet`,
+    // `DomainResolverSet`) are the ones whose fact a caller can still read back off this core.
     // ---------------------------------------------------------------------------------------------
 
     event ProviderRegistered(bytes20 indexed providerId, address indexed controller);
@@ -1160,6 +1164,13 @@ contract ProviderRegistryTest is Test {
         address indexed newController,
         uint64 controllerEpoch
     );
+    event ProviderDelegateSet(
+        bytes20 indexed providerId,
+        address indexed delegate,
+        uint32 permissions,
+        uint64 validUntil,
+        uint64 controllerEpoch
+    );
     event FactoryGenerationAdded(bytes32 indexed generationId, address indexed factory, uint64 atBlock);
     event FactoryGenerationDeprecated(bytes32 indexed generationId, address indexed factory, uint64 atBlock);
     event ServiceAttached(
@@ -1175,8 +1186,20 @@ contract ProviderRegistryTest is Test {
         bytes20 indexed newProviderId,
         address reassignedBy
     );
+    event ServiceStandingChanged(
+        address indexed service,
+        ProviderRegistry.Standing oldStanding,
+        ProviderRegistry.Standing newStanding
+    );
     event ServiceOwnerConfirmed(
         address indexed service, address indexed oldOwner, address indexed newOwner, uint64 ownerEpoch
+    );
+    event ServiceDelegateSet(
+        address indexed service,
+        address indexed delegate,
+        uint32 permissions,
+        uint64 validUntil,
+        uint64 ownerEpoch
     );
     event CurrentServiceChanged(
         bytes20 indexed providerId,
@@ -1235,9 +1258,29 @@ contract ProviderRegistryTest is Test {
         );
         vm.prank(AUTHORITY);
         registry.setProviderStanding(provider, ProviderRegistry.Standing.SUSPENDED);
+
+        // The service axis carries both ends for the same reason, and its event is the ONLY record of
+        // the transition: `Service.standing` holds the post-state alone, so a consumer reading storage
+        // cannot tell a service suspended from ACTIVE for review from one that never cleared review.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ServiceStandingChanged(
+            address(serviceA), ProviderRegistry.Standing.ACTIVE, ProviderRegistry.Standing.SUSPENDED
+        );
+        vm.prank(AUTHORITY);
+        registry.setServiceStanding(address(serviceA), ProviderRegistry.Standing.SUSPENDED);
     }
 
     function test_every_safe_handover_step_is_separately_announced_with_its_nonce_and_epoch() public {
+        uint64 validUntil = uint64(block.timestamp + 7 days);
+
+        // A delegation announces the epoch it is SCOPED to, which is the term a rotation invalidates.
+        // Without it the feed shows a grant with no way to tell, at any later block, whether it is
+        // still live: the consumer joins this epoch against the rotation events below.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ProviderDelegateSet(providerA, DELEGATE, PROVIDER_DIRECTORY_PERMISSION, validUntil, 1);
+        vm.prank(CONTROLLER);
+        registry.setProviderDelegate(providerA, DELEGATE, PROVIDER_DIRECTORY_PERMISSION, validUntil);
+
         // Each rung of the controller handover is its own event. Collapsing them would make a
         // requested-but-unaccepted transfer indistinguishable from a completed one - the exact
         // ambiguity the request/accept/confirm split exists to remove.
@@ -1258,6 +1301,23 @@ contract ProviderRegistryTest is Test {
         vm.prank(AUTHORITY);
         registry.confirmControllerTransfer(providerA, NEXT_CONTROLLER, 1);
 
+        // The epoch on the confirmation is what orphans every grant announced under the previous one,
+        // so a re-grant of the SAME delegate and permissions is distinguishable on the feed only by
+        // this field. The two announcements are otherwise byte-identical.
+        assertFalse(registry.canWriteProvider(providerA, DELEGATE, PROVIDER_DIRECTORY_PERMISSION));
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ProviderDelegateSet(providerA, DELEGATE, PROVIDER_DIRECTORY_PERMISSION, validUntil, 2);
+        vm.prank(NEXT_CONTROLLER);
+        registry.setProviderDelegate(providerA, DELEGATE, PROVIDER_DIRECTORY_PERMISSION, validUntil);
+        assertTrue(registry.canWriteProvider(providerA, DELEGATE, PROVIDER_DIRECTORY_PERMISSION));
+
+        // The service-delegate axis is scoped to the owner epoch instead, and announces it for the
+        // same reason.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ServiceDelegateSet(address(serviceA), DELEGATE, SERVICE_DOMAIN_PERMISSION, validUntil, 1);
+        vm.prank(SERVICE_OWNER);
+        registry.setServiceDelegate(address(serviceA), DELEGATE, SERVICE_DOMAIN_PERMISSION, validUntil);
+
         // The clone-owner axis announces its own handover with the bumped owner epoch, which is the
         // term that un-quarantines service writes and `canRevoke`.
         vm.prank(SERVICE_OWNER);
@@ -1268,6 +1328,13 @@ contract ProviderRegistryTest is Test {
         emit ServiceOwnerConfirmed(address(serviceA), SERVICE_OWNER, NEXT_SERVICE_OWNER, 2);
         vm.prank(AUTHORITY);
         registry.confirmServiceOwner(address(serviceA), NEXT_SERVICE_OWNER, 1);
+
+        assertFalse(registry.canWriteService(address(serviceA), DELEGATE, SERVICE_DOMAIN_PERMISSION));
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ServiceDelegateSet(address(serviceA), DELEGATE, SERVICE_DOMAIN_PERMISSION, validUntil, 2);
+        vm.prank(NEXT_SERVICE_OWNER);
+        registry.setServiceDelegate(address(serviceA), DELEGATE, SERVICE_DOMAIN_PERMISSION, validUntil);
+        assertTrue(registry.canWriteService(address(serviceA), DELEGATE, SERVICE_DOMAIN_PERMISSION));
 
         // The registry authority's own two-step rotation announces through OZ's own event, so the
         // one key this generation trusts is auditable on the same feed.
