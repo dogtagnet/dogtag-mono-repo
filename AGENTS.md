@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 360 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 362 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -118,8 +118,10 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   compose" is actually exercised rather than mocked (see "ServiceDomainResolver - three absences, and
   the router term that is NOT redundant");
   and `ProtocolRegistryV2.t.sol` + `DeployProtocolRegistryV2.t.sol` cover the built-but-undeployed
-  generation-2 discovery registry, including the constructor timelock floor and the golden ABI encoding
-  both mobile anchor decoders are pinned against (see "ProtocolRegistryV2 is BUILT, NOT DEPLOYED").
+  generation-2 discovery registry, including the constructor timelock floor, the golden ABI encoding
+  both mobile anchor decoders are pinned against, and the publish script's execute-phase re-preflight
+  refusing a `zkVerifier` swapped inside the publish window (see "ProtocolRegistryV2 is BUILT, NOT
+  DEPLOYED").
   Use `forge test`, **not** bare
   `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
   import generated `../patched/*` files that aren't present, so it fails with "File not found" - a

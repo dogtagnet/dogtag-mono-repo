@@ -485,8 +485,6 @@ pub fn reconcile(
     })
 }
 
-/// Exact (case-sensitive) string comparison — for the on-chain string members (`artifactBaseUrl`,
-/// `minAppVersion`) where case is significant, unlike the case-folded hex/address fields.
 /// Compare a mirrored field CASE-INSENSITIVELY (checksum vs lowercase hex must not read as a conflict;
 /// the pins are lowercase on both sides, so it is harmless for them too).
 ///
@@ -503,6 +501,8 @@ fn cmp(conflicts: &mut Vec<FieldConflict>, field: &'static str, oc: &str, mf: &s
     }
 }
 
+/// Exact (case-sensitive) string comparison - for the on-chain string members (`artifactBaseUrl`,
+/// `minAppVersion`) where case is significant, unlike the case-folded hex/address fields.
 fn cmp_str(conflicts: &mut Vec<FieldConflict>, field: &'static str, oc: &str, mf: &str) {
     if oc != mf {
         conflicts.push(FieldConflict {
@@ -513,48 +513,58 @@ fn cmp_str(conflicts: &mut Vec<FieldConflict>, field: &'static str, oc: &str, mf
     }
 }
 
+/// The presence/case-folding rule shared by every optional member: case-insensitive when both sides are
+/// present, agreement when both are absent, and a conflict whenever presence itself differs.
+///
+/// `absent` is the word rendered into a conflict for the missing side, and it is a PARAMETER rather than
+/// a constant because the two kinds of optional member mean different things by absence - see
+/// [`cmp_opt`] and [`cmp_opt_addr`], which are the only callers and exist solely to fix that word. The
+/// rule lives here once so a future change to the presence semantics cannot land on one kind and not the
+/// other.
+fn cmp_opt_with(
+    conflicts: &mut Vec<FieldConflict>,
+    field: &'static str,
+    oc: &Option<String>,
+    mf: &Option<String>,
+    absent: &str,
+) {
+    let same = match (oc, mf) {
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+        (None, None) => true,
+        _ => false,
+    };
+    if !same {
+        conflicts.push(FieldConflict {
+            field,
+            onchain: oc.clone().unwrap_or_else(|| absent.into()),
+            manifest: mf.clone().unwrap_or_else(|| absent.into()),
+        });
+    }
+}
+
+/// An optional PIN. Absence renders as `<unpinned>`: the artifact exists and somebody chose not to pin
+/// its hash.
 fn cmp_opt(
     conflicts: &mut Vec<FieldConflict>,
     field: &'static str,
     oc: &Option<String>,
     mf: &Option<String>,
 ) {
-    let same = match (oc, mf) {
-        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
-        (None, None) => true,
-        _ => false,
-    };
-    if !same {
-        conflicts.push(FieldConflict {
-            field,
-            onchain: oc.clone().unwrap_or_else(|| "<unpinned>".into()),
-            manifest: mf.clone().unwrap_or_else(|| "<unpinned>".into()),
-        });
-    }
+    cmp_opt_with(conflicts, field, oc, mf, "<unpinned>");
 }
 
-/// [`cmp_opt`] for an optional ADDRESS member rather than an optional pin. Identical comparison rules —
-/// case-insensitive when both are present, a conflict whenever presence differs — and a different word for
-/// absence, because `<unpinned>` would describe a hash nobody chose to pin, while these two members are
-/// simply not part of a generation-1 record.
+/// An optional ADDRESS member. Same comparison rule as [`cmp_opt`] and a DIFFERENT word for absence,
+/// which is the whole reason the two wrappers exist: `<unpinned>` would describe a hash nobody chose to
+/// pin, while these two members are simply not part of a generation-1 record. Do not collapse the two
+/// placeholders - the word is what tells a reader whether a record lacks the member or merely lacks a
+/// hash for it.
 fn cmp_opt_addr(
     conflicts: &mut Vec<FieldConflict>,
     field: &'static str,
     oc: &Option<String>,
     mf: &Option<String>,
 ) {
-    let same = match (oc, mf) {
-        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
-        (None, None) => true,
-        _ => false,
-    };
-    if !same {
-        conflicts.push(FieldConflict {
-            field,
-            onchain: oc.clone().unwrap_or_else(|| "<absent>".into()),
-            manifest: mf.clone().unwrap_or_else(|| "<absent>".into()),
-        });
-    }
+    cmp_opt_with(conflicts, field, oc, mf, "<absent>");
 }
 
 #[cfg(test)]

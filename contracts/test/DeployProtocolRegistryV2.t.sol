@@ -235,6 +235,96 @@ contract DeployProtocolRegistryV2Test is Test {
         assertGt(registry.discoverySetEta(ProtocolVersionsV2.levelBV2Id()), 0);
     }
 
+    /// @notice The one relation that can drift INSIDE the publish window, driven for real rather than
+    /// asserted: `zkVerifier` is the verification registry's only mutable member and its own timelock is
+    /// 2 days, the same length as the mainnet publish timelock, so a swap proposed shortly before a
+    /// publish executes squarely inside that window. The other four relations are immutable slots or the
+    /// router's append-only membership, so this is the whole of what the execute-phase re-preflight buys.
+    ///
+    /// Every `vm.setEnv` here writes the canonical values, deliberately: `vm.setEnv` mutates the PROCESS
+    /// environment, so a test that wrote a divergent one would race every other test in this file.
+    function test_execute_refuses_a_verifier_that_moved_inside_the_publish_window() public {
+        ProtocolRegistryV2 registry = _deployRegistry();
+        _setPublishEnv(registry);
+        // Both scripts are constructed UP FRONT: `vm.expectRevert` applies to the next call, and a
+        // `new ...()` on the same statement would consume it, so the refusals below would be asserted
+        // against a contract creation that never reverts.
+        PublishProtocolVersionsV2Propose propose = new PublishProtocolVersionsV2Propose();
+        PublishProtocolVersionsV2Execute execute = new PublishProtocolVersionsV2Execute();
+        propose.run();
+
+        // The registry's REAL swap, through its own timelock - not a storage poke.
+        Groth16VerifierConsent replacement = new Groth16VerifierConsent();
+        assertTrue(address(replacement) != address(verifier), "the swap must actually change the address");
+        vm.prank(GOV);
+        verificationRegistry.proposeZkVerifier(address(replacement));
+        vm.warp(block.timestamp + 2 days);
+        vm.prank(GOV);
+        verificationRegistry.executeZkVerifier();
+
+        // Asserted BEFORE the refusal: a setup that silently failed would leave the old verifier in
+        // place, the preflight would pass, and the refusal below would then have to come from somewhere
+        // else - so this test would be pinning nothing.
+        assertEq(
+            address(verificationRegistry.zkVerifier()),
+            address(replacement),
+            "the verifier really moved on-chain"
+        );
+        bytes32 versionId = ProtocolVersionsV2.levelBV2Id();
+        assertLe(
+            registry.discoverySetEta(versionId),
+            block.timestamp,
+            "the publish window has elapsed, so a refusal cannot be the timelock's"
+        );
+
+        vm.expectRevert(bytes("verifier != verificationRegistry.zkVerifier()"));
+        execute.run();
+
+        // The remedy is a fresh propose, so the propose phase must refuse this record too until the
+        // operator names the new verifier. This also pins the re-preflight's PLACEMENT: it runs before
+        // `vm.startBroadcast()`, so the refusal above left no broadcast open - were it placed after,
+        // this call would fail with a cheatcode error instead of the protocol revert asserted here.
+        vm.expectRevert(bytes("verifier != verificationRegistry.zkVerifier()"));
+        propose.run();
+    }
+
+    /// @notice The other half of the execute-phase re-check, on its own because it is a different claim:
+    /// `executeDiscoverySet` writes the STAGED bytes and never reads the environment, so preflighting the
+    /// environment alone would pass for an operator who reacted to a mid-window verifier swap by editing
+    /// `GEN2_VERIFIER` - while the retired verifier stayed staged and got published as certified.
+    ///
+    /// The divergence is created by RE-STAGING a different record straight on the registry rather than by
+    /// mutating `GEN2_VERIFIER`: `vm.setEnv` writes the process-global environment, so a divergent value
+    /// would race every other test in this file. The environment stays canonical throughout, which also
+    /// makes the refusal attributable - a preflight over that environment would pass.
+    function test_the_execute_phase_refuses_a_record_re_staged_since_the_environment_was_read() public {
+        ProtocolRegistryV2 registry = _deployRegistry();
+        _setPublishEnv(registry);
+        PublishProtocolVersionsV2Execute execute = new PublishProtocolVersionsV2Execute();
+        new PublishProtocolVersionsV2Propose().run();
+
+        // Same id, one different member - so this REPLACES what `executeDiscoverySet` would write.
+        ProtocolRegistryV2.DiscoverySet memory reStaged = ProtocolVersionsV2.levelBV2Discovery(
+            address(factoryV2),
+            address(verificationRegistry),
+            address(sbt),
+            address(new Groth16VerifierConsent()),
+            address(providerCore),
+            address(router)
+        );
+        vm.prank(DEFAULT_SENDER);
+        registry.proposeDiscoverySet(reStaged);
+        assertEq(
+            registry.getPendingDiscoverySet(ProtocolVersionsV2.levelBV2Id()).verifier,
+            reStaged.verifier,
+            "the staged record really was replaced"
+        );
+
+        vm.warp(block.timestamp + registry.PUBLISH_TIMELOCK());
+        vm.expectRevert(bytes("staged discovery set differs from this environment"));
+        execute.run();
+    }
+
     /// @notice The preflight accepts generation 1's factory too, because the router holds both generations
     /// and either is a legitimate `factory` member — the check is membership, not recency.
     function test_the_preflight_accepts_any_generation_the_router_holds() public {

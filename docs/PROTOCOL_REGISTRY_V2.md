@@ -70,7 +70,7 @@ Two guards, at different layers, and neither is redundant:
 
 - The CONSTRUCTOR refuses anything below `MIN_PUBLISH_TIMELOCK` and reverts `PublishTimelockBelowFloor(given, floor)`.
   That is what makes a zero-delay registry impossible even for someone deploying the contract directly, without the script.
-- `DeployProtocolRegistryV2.s.sol` additionally requires exactly the 2-day production default unless `TESTNET_DEPLOY=true` is stated aloud.
+- `DeployProtocolRegistryV2.s.sol` additionally requires exactly the 2-day production default unless `GEN2_TESTNET_DEPLOY=true` is stated aloud.
   A testnet may go shorter, but not below the contract's floor and never to zero.
   This is the deliberate divergence from generation 1's deploy script, whose testnet opt-in accepts zero (it has a passing test named `test_explicit_testnet_opt_in_accepts_zero_timelock`).
 
@@ -136,6 +136,25 @@ The deploy script takes `GEN2_ADMIN` (mandatory, no default), `GEN2_PUBLISHER`, 
 
 `PUBLISHER_ROLE` is `keccak256("PUBLISHER")`, not `keccak256("PUBLISHER_ROLE")`.
 Read it off the deployed contract rather than recomputing it from the variable name.
+
+### This pair is FIRST-ROLLOUT only
+
+`PublishProtocolVersionsV2Propose` stages all three writes unconditionally, so the two phases send six transactions between them.
+Reaching for it to move ONE axis re-executes the discovery set: `executeDiscoverySet` assigns the record unconditionally, so it restamps `publishedAt` and re-emits `DiscoverySetPublished` for a change that moves no address, rewriting the generation's on-chain provenance and destroying the previous `publishedAt` with nothing recording it.
+The same trap is recorded for generation 1's script in AGENTS.md.
+
+A later artifact-only rotation is `proposeArtifactSet` plus `proposeArtifactBinding` and their two executes, with no `DiscoverySet` write at all.
+`contracts/script/PinConsentWitnessGraph.s.sol` is the narrow single-axis shape to copy.
+
+### Why phase 2 re-runs the preflight
+
+The preflight is a snapshot of relations that held when the record was staged, and the record is not activated until a whole timelock later.
+Four of the five relations cannot move in between: `issuerRegistry`, `sbt` and `rootIndex` are `immutable` on `VerificationRegistryConsent`, and the router's `isGeneration` is append-only monotone.
+The single drifting relation is `verifier == verificationRegistry.zkVerifier()`, because `zkVerifier` is that registry's one mutable member and is swappable behind `ZK_TIMELOCK = 2 days` - the same length as the mainnet publish timelock, so a swap proposed shortly before a publish executes squarely inside the publish window.
+Without the re-check, `executeDiscoverySet` would write a verifier the registry no longer uses and publish it as dogtag-certified.
+
+Phase 2 additionally asserts that the staged bytes still equal the record this environment describes, because `executeDiscoverySet` writes the staged bytes and never reads the environment.
+The remedy after either refusal is a fresh propose, and therefore a fresh timelock - never editing the environment to agree with the chain, which would leave the retired verifier staged while the preflight reported everything in order.
 
 ### Why the `GEN2_` namespace, rather than reusing generation 1's names
 
@@ -209,7 +228,12 @@ Deferred, deliberately:
 ## Tests
 
 - `contracts/test/ProtocolRegistryV2.t.sol` (22): the constructor floor as a boundary rather than a `!= 0` check, the delay actually gating every write, the selector rename and the exact 10-word arity, `factory != rootIndex`, per-member zero refusals, R-5 independence in both directions, deprecate-cancels-a-stale-proposal, binding lifecycle, fail-closed reads, role gating, and the golden encoding the two mobile suites are pinned against.
-- `contracts/test/DeployProtocolRegistryV2.t.sol` (7): the mainnet guard, the testnet opt-in that cannot reach zero, the contract floor holding without the script, the real scripts end to end against a REAL stack (real router over real factories, real SBT, real verifier, real verification registry), and each of the preflight's five relations broken in turn.
+- `contracts/test/DeployProtocolRegistryV2.t.sol` (9): the mainnet guard, the testnet opt-in that cannot reach zero, the contract floor holding without the script, the real scripts end to end against a REAL stack (real router over real factories, real SBT, real verifier, real verification registry), each of the preflight's five relations broken in turn, a real mid-window verifier swap driven through the verification registry's own 2-day timelock so the execute phase's re-preflight refuses it, and a record re-staged after the environment was read so the staged-versus-environment check refuses it.
+
+Note that this suite is currently flaky at forge's default thread count, for a reason that predates the execute-phase work: `vm.setEnv` writes the PROCESS environment while forge 1.5.1 runs a suite's test functions concurrently, so any test writing a non-canonical `GEN2_*` value races the tests reading it.
+The `GEN2_` namespace closed the cross-suite collision but not this within-suite one.
+`forge test --threads 1` is deterministically green.
+The two tests added for the execute-phase re-check deliberately write no divergent value - one moves the verifier on-chain and the other re-stages the record on the registry - so they do not widen the window.
 - `crates/dogtag-standard-rs` `discovery::tests`: the generation-2 anchor validating and surfacing both members, every unusable-address form failing closed, absence passing, the error naming the member, and a platform lie still outranking the shape check.
 - `crates/dogtag-prover-rs` `manifest::tests`: the additive-serialization property, a generation-2 manifest signing over both members, the generation mismatch as a conflict in both directions, and on-chain precedence on the new members.
 - `stacks/vet/api/tests/discovery_validation.rs`: both members travelling manifest to reconcile to anchor to validated version, and a stale manifest unable to steer the root index.
