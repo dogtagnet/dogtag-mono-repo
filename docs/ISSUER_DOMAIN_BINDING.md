@@ -4,6 +4,20 @@
 This document defines the DNS record convention, the verification chain, and the display rules.
 Implementations that disagree with this document are wrong.
 
+**A successor to the on-chain half exists in source and is not deployed.**
+Registry-plan slice S-9 adds `contracts/src/ServiceDomainResolver.sol`, which supersedes
+`IssuerDomainRegistry` — see [SERVICE_DOMAIN_RESOLVER.md](./SERVICE_DOMAIN_RESOLVER.md).
+Nothing in this document changes because of it today: the deployed `IssuerDomainRegistry` is still the
+wired contract, the record convention and the six display states are unchanged, and every consumer still
+reads the address it always did.
+Two things below become specific to the superseded contract once the cutover happens.
+"Who may write a binding" describes its three tiers, which the successor replaces with the authority
+core's cleared-standing-AND-confirmed-owner predicate.
+And `noDomainClaimed` will be reachable only from a real `NO_DOMAIN` disposition rather than from any
+empty string — the successor distinguishes "nobody has written anything", "there is deliberately no
+domain" and "a claim was withdrawn", which are one state here, so the two new absences need their own
+copy rather than borrowing that sentence.
+
 ## What problem this solves
 
 An audit demonstrated live that the issuer a user sees is attacker-controlled.
