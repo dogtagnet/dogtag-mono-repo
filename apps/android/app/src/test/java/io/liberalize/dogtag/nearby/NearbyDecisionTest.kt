@@ -640,4 +640,59 @@ class NearbyDecisionTest {
 
         assertNull(age(-1))
     }
+
+    // ---- The Directions handoff ----
+
+    /**
+     * THE property of this affordance: the URI carries the provider's published destination and no
+     * trace of where the owner is. The `geo:` scheme has no source parameter and none is synthesised,
+     * so a URI handed to another application can never disclose the owner's own position - the same
+     * confinement the body-only nearest request exists to provide.
+     *
+     * Mirrors iOS `test_theDirectionsHandoffCarriesTheDestinationAndNeverTheOrigin`.
+     */
+    @Test
+    fun theDirectionsHandoffCarriesTheDestinationAndNeverTheOrigin() {
+        val uri = NearbyDecision.directionsUri(provider("a", geo = GeoPoint(1.35249, 103.81951)))
+
+        assertEquals("geo:1.352490,103.819510", uri)
+        // The owner's own fix from this file's `origin` is 1.3521,103.8198 - no part of it may appear.
+        assertFalse("the origin must never reach the maps handoff", uri!!.contains("1.3521"))
+        assertFalse("the origin must never reach the maps handoff", uri.contains("103.8198"))
+        assertFalse("the geo: scheme has no source parameter", uri.contains("saddr"))
+    }
+
+    /**
+     * A provider that published no location offers no Directions. Absence is `geo == null` and only
+     * that: `(0, 0)` is a real coordinate off the coast of Ghana, so it routes like anywhere else.
+     * Reading it as absence is the bug this repo already fixed once in the admin directory.
+     */
+    @Test
+    fun onlyAnAbsentLocationWithholdsDirectionsAndZeroZeroIsARealDestination() {
+        assertNull(NearbyDecision.directionsUri(provider("contact-only", geo = null)))
+        assertEquals(
+            "geo:0.000000,0.000000",
+            NearbyDecision.directionsUri(provider("gulf-of-guinea", geo = GeoPoint(0.0, 0.0))),
+        )
+        // An unusable coordinate is not a destination either.
+        assertNull(NearbyDecision.directionsUri(provider("broken", geo = GeoPoint(91.0, 0.0))))
+        assertNull(NearbyDecision.directionsUri(provider("nan", geo = GeoPoint(Double.NaN, 0.0))))
+    }
+
+    /**
+     * Fixed-point, locale-independent, and signed. `Double.toString()` would emit `1.0E-5` just off
+     * the meridian - which no maps app parses - and a default-locale formatter would emit `1,35` in a
+     * comma-decimal locale, silently splitting the pair into two coordinates.
+     */
+    @Test
+    fun directionsCoordinatesAreFixedPointAndSurviveBothSigns() {
+        assertEquals(
+            "geo:-33.865510,-151.209900",
+            NearbyDecision.directionsUri(provider("s", geo = GeoPoint(-33.86551, -151.2099))),
+        )
+        assertEquals(
+            "geo:0.000010,0.000000",
+            NearbyDecision.directionsUri(provider("meridian", geo = GeoPoint(0.00001, 0.0))),
+        )
+    }
 }

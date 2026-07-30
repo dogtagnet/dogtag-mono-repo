@@ -3,8 +3,13 @@
 **Status: DECLINED 2026-07-29. No in-app map, no location autocomplete, no paid third-party location provider.**
 
 > **Decision.** dogtag ships no embedded map and no location autocomplete, and pays no location vendor.
-> Nearby stays what it is today: a list, searched by provider name on-device, with distance computed on-device from a position the owner already holds.
+> Nearby stays a list that hands off to whatever maps app is installed, rather than drawing a map itself.
 > The research below is kept so that revisiting this costs a reading rather than a second round of vendor research.
+
+> **Amended 2026-07-30, and read this before quoting anything below as current.**
+> The decision above is unchanged - no embedded map, no hosted autocomplete, no location vendor - but the shape of Nearby it described was superseded the next day by the captain's server-nearest ruling.
+> Search, ranking and distance are now the indexer's (`POST /v1/businesses/nearest`, paged), the device sends its exact fix in a request body, and the typed-coordinate origin UI is gone.
+> §1 and §5 below argue from the older on-device shape in places; the argument they make about *placement* survives, but treat any statement about what ships as dated unless it is in the table in §1, which has been brought up to date.
 
 **Audience:** anyone about to add a map view, a place-search field, an address geocoder, or a location vendor key to any dogtag surface.
 
@@ -27,11 +32,11 @@ What it does not have is an embedded map and a hosted place-search field, both d
 
 | Capability | How it works today | Third party |
 |---|---|---|
-| Find a provider by name | On-device substring match over the already-fetched provider set (`apps/ios/DogTag/NearbyDecision.swift:344`, Kotlin mirror in `apps/android/.../nearby/NearbyDecision.kt`) | none |
-| Filter to the right kind of provider | `vet` or `groomer`, and `active != false`, applied before proximity or contact search (`NearbyDecision.swift:369-370`) | none |
-| Distance and ordering | The platform geodesic, on-device: `CLLocation.distance(from:)` on iOS (`NearbyScreen.swift:801`) and `Location.distanceBetween` on Android (`NearbyScreen.kt:901`), with the mirrored `NearbyDecision` rule ordering rows on that raw measurement and coarsening it for display | none |
-| The owner's position | Coarse device fix after an explicit tap, or decimal coordinates typed by hand and parsed on-device | none |
-| Getting there | The row hands the public destination out after a deliberate tap, and the origin is never included in the handoff. iOS opens Apple Maps (`MKMapItem.openInMaps`); Android fires `Intent.createChooser` over an `ACTION_VIEW` `geo:` URI, so the destination goes to whichever installed app the owner picks, which need not be the OS's own maps app | whatever maps app is installed, no key, no cost |
+| Find a provider by name | A `name` query parameter on the indexer's paged directory routes; the service filters and pages, and the device renders the page it is given | none |
+| Filter to the right kind of provider | `kind=vet&kind=groomer` on the request, re-checked on-device (`active != false`) before a provider is shown | none |
+| Distance and ordering | **The server's**, since the 2026-07-30 captain ruling: `POST /v1/businesses/nearest` ranks by Haversine and returns `distanceKm` per row, and both apps preserve that order rather than remeasuring. The device's only distance job is display precision - `NearbyDecision` floors the printed label at the fix's own reported accuracy so a number is never finer than the fix supports | none |
+| The owner's position | Coarse device fix after an explicit tap, sent **exactly** - unrounded - in the JSON body of the nearest request, and never in a URL, log or stored row. There is no typed-coordinate entry: the chosen-coordinate UI was removed with the pivot | none |
+| Getting there | The row hands the public destination out after a deliberate tap, and the origin is never included in the handoff. `NearbyDecision.directionsURL` / `directionsUri` build it: an `https://maps.apple.com/?daddr=…` URL on iOS and a `geo:` URI on Android, so the destination goes to whichever app the OS opens | whatever maps app is installed, no key, no cost |
 
 So there is already a map in the product: it is another app's, it is reached by an explicit tap, and it costs nothing.
 What was declined is an *embedded* map inside dogtag and a *hosted* autocomplete field.
@@ -42,12 +47,12 @@ A hosted-autocomplete integration does not have to trade any of them away, and �
 - `packages/ui/src/geo/` performs no I/O, and its header forbids turning a position into a query parameter, a request path, a network cache key, or a log line.
   It is the shared TypeScript geo core - haversine, bearing, display formatting, sorting, geohash - and Nearby is native-only, so the only symbol of it on the shipped path is `isValidLatLng`, reached through `directory/providers.ts` and `directory/sources.ts` to validate a provider's coordinates.
   Its measuring helpers do not produce a mobile Nearby distance: editing `haversineKm` changes no shipped Nearby number, and the boundary it enforces is what a future TypeScript consumer inherits.
-- `ProviderDirectory.read()` deliberately takes no query, so a position has nowhere to go even by accident.
-- The manual-entry copy on both platforms promises exactly this, verbatim: *"They are parsed on this phone; DogTag does not geocode or send them anywhere."* (`apps/ios/DogTag/NearbyScreen.swift:361`, with the Kotlin equivalent at `apps/android/.../ui/screens/NearbyScreen.kt:460`.)
+- The directory seam confines where a position may travel. It read `ProviderDirectory.read()` - queryless, so a position had nowhere to go even by accident - and is now `nearest(position, query)` / `contacts(query)`: exactly one method takes a position, it travels in a request body rather than a query string, and the contact path cannot carry one at all.
+- The disclosure beside the permission action promises what actually happens, verbatim on both platforms: *"Your location is sent to DogTag to find nearby vets and groomers. It is not stored."* (`NearbyDecision.locationDisclosure` and `NearbyDecision.LOCATION_DISCLOSURE`, pinned byte-for-byte by a unit test on each side, and byte-identical to the iOS `NSLocationWhenInUseUsageDescription`.)
 
 That last one is a claim, not a caption.
-Read it narrowly, because its scope is what decides whether a later integration falsifies it: it is a promise about the **typed-coordinate** flow, and it stays true for as long as that flow keeps parsing locally.
-A hosted search field is a different flow needing its own disclosure, not a contradiction of this sentence.
+It replaced a narrower promise about a **typed-coordinate** flow that no longer exists, and the replacement is the point: the server-side search made "never leaves this phone" untrue, so the sentence had to change in the same commit that made the transfer real.
+A hosted search field would be a further flow needing its own disclosure again, not a contradiction of this sentence.
 See §5.
 
 ---
@@ -449,21 +454,21 @@ Not in `packages/ui/src/geo/`, whose header forbids acquiring I/O and forbids tu
 Not in `packages/ui/src/directory/` either, whose `read()` deliberately takes no query so there is nowhere for a position to go.
 An autocomplete client is a **new sibling module** - `packages/ui/src/placesearch/`, say - that resolves typed text to a `LatLng` and hands it to `geo/` as an already-held position, with native mirrors alongside `NearbyDecision.swift` and `NearbyDecision.kt`.
 
-It should carry the same resolve-do-not-throw and explicit-unavailable discipline `ProviderDirectory.read()` already uses (`found | empty | unavailable`), because a place search that fails silently and a place search that found nothing are different answers to the owner.
+It should carry the same resolve-do-not-throw and explicit-unavailable discipline the `ProviderDirectory` seam already uses (`found | empty | unavailable`), because a place search that fails silently and a place search that found nothing are different answers to the owner.
 
 A sibling module keeps all three §1 properties intact, and it is worth being precise about why, because "hosted search breaks the privacy boundaries" is the intuition and it is not right.
 `geo/` stays pure: it receives an already-resolved `LatLng` and still performs no I/O and still turns no position into a request.
-`ProviderDirectory.read()` stays queryless: place search resolves an origin, it does not filter the directory, so no query is added to that seam.
-And the typed-coordinate flow keeps parsing locally, because a hosted field is an **additional** way to name an origin rather than a replacement for the manual one.
+The `ProviderDirectory` seam stays as it is: place search resolves an origin, it does not filter the directory, so nothing is added to `nearest`/`contacts`.
+The third property has moved, though, and a revisit must not quote its old form: the origin is no longer resolved only on-device, so the guarantee is now confinement of the position the device sends, not the absence of a transfer.
 
 **The disclosure that must ship in the same commit.**
 The new surface needs its own disclosure, stating plainly that what the owner types into the *search field* is sent to the provider that answers it.
 That is a new sentence next to a new control, and it is not optional: this codebase treats a claim made to the owner as load-bearing, so it ships with the integration rather than in a follow-up.
 That is the same rule that governs verdict badges and pillar states elsewhere: a surface may not state something the code no longer does.
 
-**The existing copy changes only if the flow it describes changes.**
-`apps/ios/DogTag/NearbyScreen.swift:361` promises *"They are parsed on this phone; DogTag does not geocode or send them anywhere."*, and `apps/android/.../ui/screens/NearbyScreen.kt:460` promises *"They are parsed here and never geocoded or sent anywhere."*
-Both sentences are scoped to the **manually typed coordinates** they sit beside.
-Adding a separate hosted search field does not falsify either one, and rewriting them as though it had would be its own inaccuracy, since it would tell an owner their typed coordinates leave the phone when they still do not.
-What *would* falsify them is routing the manual-entry field itself through a hosted geocoder, so if a revisit does that, these two sentences change in that commit.
-Check which flow is being changed before touching either string.
+**The existing copy changes only if the flow it describes changes - and it already has, once.**
+This section used to point at two typed-coordinate promises (*"They are parsed on this phone; DogTag does not geocode or send them anywhere."*) and reason about when they would stop being true.
+The server-nearest pivot is exactly the change that falsified them: the typed-coordinate entry was removed and the position now really is transmitted, so both strings are gone rather than reworded.
+What stands in their place is `NearbyDecision.locationDisclosure` / `LOCATION_DISCLOSURE`, test-pinned on both platforms precisely so it cannot drift back toward a never-leaves-this-phone claim.
+The rule this illustrates is the durable part: a surface may not state something the code no longer does, so the copy moves in the same commit as the flow.
+Adding a separate hosted search field would need its own new sentence beside its own new control, not an edit to that one.
