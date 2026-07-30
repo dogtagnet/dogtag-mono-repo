@@ -557,9 +557,13 @@ private fun NearbyResults(
                     )
                 }
                 // The contact row deliberately: it renders identity and contacts and makes no
-                // proximity claim, which is exactly what a remembered record can support.
+                // proximity claim, which is exactly what a remembered record can support. It DOES
+                // offer Directions here (captain's ruling, 2026-07-30) - an owner with no signal is
+                // exactly who needs it, and the coordinate is part of the saved provider record
+                // rather than anything derived from the owner's position. `storedRecord` also
+                // carries the row's own stored-not-current note, so the offer stays honest.
                 items(presentation.providers, key = { it.providerId }) { provider ->
-                    ContactProviderRow(provider, onOpen)
+                    ContactProviderRow(provider, onOpen, storedRecord = true)
                 }
                 item { Spacer(Modifier.height(16.dp)) }
             }
@@ -683,10 +687,19 @@ private fun NearbyProviderRow(
     }
 }
 
+/**
+ * The scope-neutral row: identity and contacts, and no proximity claim.
+ *
+ * [storedRecord] says this row came off the device's own saved copy rather than a live read. It is
+ * what turns the Directions handoff on, and it is deliberately ONE flag doing both jobs - the offer
+ * and its stored-not-current labelling arrive together, so the affordance cannot appear without the
+ * sentence that qualifies it.
+ */
 @Composable
 private fun ContactProviderRow(
     provider: DirectoryProvider,
     onOpen: (Uri, Boolean) -> Unit,
+    storedRecord: Boolean = false,
 ) {
     val c = DogTagTheme.colors
     Column(
@@ -702,6 +715,9 @@ private fun ContactProviderRow(
             )
         }
         ProviderBindingChip(provider)
+        if (storedRecord) {
+            ProviderDirectionsAction(provider, onOpen, storedRecord = true)
+        }
         ProviderContactActions(provider, onOpen)
     }
 }
@@ -709,10 +725,15 @@ private fun ContactProviderRow(
 /**
  * Hands this provider's published destination to whichever maps app the chooser offers.
  *
- * **Nearby rows only** - deliberately not on [ContactProviderRow]. That row serves the Provider
- * contacts scope, whose own copy promises the list sends no position and shows no map, and it also
- * renders the offline stored fallback, whose whole framing is that the service could not be reached.
- * Keeping the handoff on the proximity surface leaves both promises intact, and mirrors iOS.
+ * Offered on nearby rows and on OFFLINE STORED rows (captain's ruling, 2026-07-30: an owner with no
+ * signal is exactly who most needs directions, the cached coordinate is part of the provider record
+ * rather than anything derived from the owner's position, and a handoff to another app does not
+ * break the no-embedded-map promise).
+ *
+ * It is deliberately NOT on the Provider contacts SEARCH scope, which shares [ContactProviderRow]:
+ * that list's own copy promises it sends no position and shows no map, and the captain's ruling was
+ * about the offline case rather than that promise. `storedRecord` is what tells the two apart, and
+ * `apps/ios/maestro/nearby_scope_separation.yaml` pins the separation from both sides.
  *
  * Deliberately its own composable rather than a sixth entry in [ProviderContactActions]: a published
  * location is not a contact channel, and folding it in there would make it count toward the
@@ -727,9 +748,15 @@ private fun ContactProviderRow(
 private fun ProviderDirectionsAction(
     provider: DirectoryProvider,
     onOpen: (Uri, Boolean) -> Unit,
+    storedRecord: Boolean = false,
 ) {
     val uri = NearbyDecision.directionsUri(provider) ?: return
-    ContactAction(Icons.Filled.Directions, "Directions", "Open in your maps app") {
+    val subtitle = if (storedRecord) {
+        NearbyDecision.STORED_DIRECTIONS_NOTE
+    } else {
+        "Open in your maps app"
+    }
+    ContactAction(Icons.Filled.Directions, "Directions", subtitle) {
         onOpen(Uri.parse(uri), false)
     }
 }
