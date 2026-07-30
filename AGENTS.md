@@ -111,9 +111,10 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   tree sizes, asserts the frozen seven-signal order and SDK root parity, and runs the negative tests.
   Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`.
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
-- `cd apps/android && gradle test` - the JVM unit suites (`RoaxRpcSelectorTest`, `QrPayloadTest`,
-  `PublicSignalIndexTest`, `ZkeyAssetTest`, `ProfileTreeParityTest`, `OwnerSecretRecordsTest`,
-  `OwnerSecretCodecTest`, `OwnerSecretRecoveryJourneyTest`).
+- `cd apps/android && gradle test` - the JVM unit suites (this naming is a partial list, not the whole
+  set: `RoaxRpcSelectorTest`, `QrPayloadTest`, `PublicSignalIndexTest`, `ZkeyAssetTest`,
+  `ProfileTreeParityTest`, `OwnerSecretRecordsTest`, `OwnerSecretCodecTest`,
+  `OwnerSecretRecoveryJourneyTest`, `DirectoryCacheTest`).
   Needs `apps/android/local.properties` with `sdk.dir=…` (gitignored; the CI job writes it).
   **`ProfileTreeParityTest` calls the REAL Rust core from the host JVM.**
   That needs two things the rest of the module does not: the desktop `net.java.dev.jna:jna` jar, since the `@aar` variant ships `libjnidispatch` for Android ABIs only, and a HOST build of `dogtag-standard-rs`, since `jniLibs/`'s `.so` files are Android-ABI-only and gitignored and so can never load on a dev machine.
@@ -1537,6 +1538,16 @@ build the staticlib (`cargo build -p dogtag-standard-rs --lib --features prover`
 generated `dogtag_standardFFI.modulemap` (`-Xcc -fmodule-map-file=...`). Pass the `.a` positionally
 to force static linking (a `-L/-l` pair prefers a stale dylib). Full-app typecheck without linking:
 `swiftc -typecheck -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -target arm64-apple-ios17.0-simulator <all app .swift> -I <gen> -Xcc -fmodule-map-file=<gen>/dogtag_standardFFI.modulemap`.
+
+**With no xcframework at all you can still typecheck everything EXCEPT the FFI closure**, which is
+`dogtag_standard.swift` plus the three symbols `InclusionProof.swift` calls out of it (`hashLeafHex`,
+`hashNodeHex`, `verifyInclusionProofHex`). Exclude that one file and expect exactly those three errors;
+anything else is yours. **Build the file list as a zsh ARRAY, not a string** - the default shell does
+not word-split an unquoted `$SRC`, so `swiftc $SRC` passes every path as ONE argument and answers
+`error: unexpected input file: <every file concatenated>`. That single line contains most of the repo's
+filenames, so a `grep -v` filter aimed at expected failures swallows it and the run reads as clean -
+the same false-clean shape as piping an uncoloured `git diff` into `grep '^-'`. Count `error:` lines
+from a `tee`'d log and check `${pipestatus[1]}`, never the exit of the last command in the pipe.
 
 ### Selective-Disclosure Protocol (DSDP) — Merkle inclusion proofs (plan §2.3)
 
@@ -3096,6 +3107,159 @@ universal full-set cache that is never keyed by a position.
   `Net.swift` `parseProviders`) and all three refuse a repeated `providerId` as malformed rather than
   rendering two rows under one list identity.
 
+### The stored directory copy is ONE decorator, and its whole job is not saying "empty"
+
+The offline local copy exists so an owner with no signal still sees the providers their phone already
+knows about. `packages/ui/src/directory/cache.ts` is the reference; `CachedProviderDirectory` in
+`apps/android/.../nearby/DirectoryCache.kt` and in `apps/ios/DogTag/NearbyDecision.swift` are ports of
+it, not independent designs. Change one, change all three.
+
+- **The source holds no cache, and there is exactly one wrapper.** Both apps originally fused an
+  in-process snapshot into `CentralProviderDirectory`, which did nothing in the case it existed for:
+  a cache in a field is empty on every cold launch, which is precisely the state a phone is in when
+  the owner opens the app somewhere with no signal. It is now one decorator over the `ProviderDirectory`
+  / `ProviderDirectoryReading` seam. Do NOT re-add an
+  inner cache: an inner wrapper hands the outer a snapshot already labelled `stored`, and treating that
+  as a successful refresh renews a deadline that is supposed to be hard. That branch is ported (a
+  `stored` result is passed through, never re-stored) but the second layer should simply not exist.
+- **The on-chain directory will not need its own cache implementation, but it does NOT inherit this one
+  for free.** What holds today is the decorator SHAPE: it wraps the seam rather than a concrete adapter,
+  so a second source is wrapped, not re-implemented. Four things must be fixed first, none of them
+  reachable while there is exactly one directory implementation, all four silent when they land:
+  (1) iOS `ProviderDirectoryCacheCodec.encode` returns `nil` unless the snapshot source is `.central`,
+  so an on-chain snapshot would simply never be stored - the wrapper's write is skipped with no error;
+  (2) both platforms hard-code a single cache filename with no namespace in the PATH
+  (`FileProviderDirectoryCacheStore.fileName` / `FILE_NAME`), so two wrapped directories sharing a cache
+  dir would mutually evict - each success overwrites the other's document and each offline read clears
+  on namespace mismatch, so neither would ever serve a replay; (3) Android's result model carries no
+  `source` at all, so its codec would write an on-chain snapshot under central's stored shape, the
+  inverse asymmetry to iOS; and (4) iOS's stored shape carries no BLOCK ANCHOR - `StoredEntry` has no
+  `blockNumber` member and `decode` reconstructs the snapshot with `blockNumber: nil` - so an on-chain
+  snapshot's anchor would be dropped on every replay, while the reference requires a cache fallback to
+  preserve the original read time AND block anchor. Item (4) is inert today for two independent reasons,
+  which is exactly why it is easy to trust the list as complete: item (1)'s central-source gate means no
+  on-chain snapshot is written at all, and central legitimately has no anchor to carry (its
+  `{ businesses }` response publishes no chain height), so no iOS consumer reads
+  `ProviderDirectorySnapshot.blockNumber` yet.
+- **The TTL bounds ONLY the offline window, and it is SEVEN DAYS.** Read the constant's own comment
+  (`CachedProviderDirectory.DEFAULT_TTL_MS` / `.defaultTtl`) before changing it - the reasoning is
+  written there because this class first inherited fifteen minutes across a change of role, from an
+  in-process snapshot where the number meant something else. The wrapper is re-check-first: a live read
+  is attempted on every read and always replaces the stored copy, so an owner with signal has ~0
+  staleness whatever this value is. Shortening it therefore buys no freshness and does not help with
+  delisting (which propagates on the next live read); it only cuts an offline owner off sooner. What
+  licenses a multi-day window is that a replay is LABELLED WITH ITS AGE: `NearbyDecision.formatStoredAge`
+  (mirrored in Kotlin and Swift, pinned case for case in both suites) renders a coarse
+  minutes/hours/days phrase beside the existing stored-copy wording. It rounds the age OUTWARD, so for
+  the `now` it is given the stated age is never smaller than the true one, and answers null for a
+  `readAt` in the future rather than inventing "0 minutes ago". Derive it from `readAt`, never from
+  `expiresAt` minus the TTL - the deadline is the MINIMUM of the local window and any the source
+  declared. **Not understating staleness is a JOINT property of that rounding and the caller
+  re-sampling the clock**, and the rounding alone cannot carry it: a label derived once and left
+  composed goes on asserting an age that has stopped being true, so an owner who backgrounds Nearby for
+  a day returns to the age they left. A surface must therefore re-derive the label when the owner comes
+  back to it - Android keys the `remember` on an `ON_RESUME` epoch, iOS reads `scenePhase` in
+  `storedAgeClause` so the body re-evaluates and `Date()` is sampled afresh. Both re-read the CLOCK
+  only and leave `refreshKey` alone, because whether returning to the app should re-attempt the live
+  read is a separate product call. Neither is a ticker, and neither suite can reach a lifecycle
+  callback, so this half is documented rather than pinned.
+- **A non-positive TTL is a DISCLOSED asymmetry between the two ports, and both arms are safe.** Android
+  refuses it at construction (`require(ttlMs > 0)` in `DirectoryCache.kt`, pinned by
+  `aNonPositiveTtlIsRefusedRatherThanSilentlyDisablingTheCopy`); iOS instead disables the copy - it
+  clears the store and returns the live answer, pinned by
+  `test_aNonPositiveTtlDisablesTheCopyRatherThanStoringAnUnevaluableDeadline`. So the two suites really
+  do assert opposite rules, and neither is a defect: neither arm is reachable from production wiring,
+  since both screens construct the wrapper on the positive default. Recorded because "change one, change
+  all three" otherwise reads as a promise that these two agree. Note the iOS guard runs BEFORE the replay
+  branch, so a misconfigured lifetime there destroys a stored copy Android would never have accepted in
+  the first place - align them only deliberately, and if you do, move both suites' cases with them.
+- **`expiresAt` is nullable ON PURPOSE.** `null` means "no wrapper set a deadline", and it is the only
+  thing that distinguishes a fresh source read from an inner replay. A non-null default would make
+  those two indistinguishable and the never-expires bug unrepresentable in a test.
+- **`snapshotIsWellFormed` runs on WRITE and on REPLAY, and the replay half is the load-bearing one.**
+  TypeScript makes an empty `found` unrepresentable (`readonly [P, ...P[]]`); Kotlin's `List` and
+  Swift's `[DirectoryProvider]` cannot, so a `found` carrying zero providers becomes possible the moment
+  a snapshot arrives from disk rather than from the live path - and it renders as "no vets near you".
+  The store is an extension point, so an entry handed back by a persistent adapter was not necessarily
+  written by the live path.
+- **The namespace is derived from the configured endpoint** (`central:$requestUrl` / the same in Swift),
+  never a shared literal. Repointing `CENTRAL_API` / `centralApi` changes it, so one deployment's
+  persisted snapshot can never be replayed as another's. A future on-chain directory must put its own
+  chain/registry identity there.
+- **The stored document is VERSION-stamped and a stale version is dropped, never migrated.** Concretely:
+  before S-1 a location-less provider was persisted as the real coordinate `0,0`, which this file
+  already records as unreinterpretable by code. No released build carries this cache, so the field cost
+  nothing to add and forecloses that permanently.
+- **`observation` and a `verified` binding state are NOT stored.** A document read off disk is a replay
+  by definition and the wrapper relabels it, so persisting `"live"` would let a hand-edited file present
+  a remembered answer as a fresh one; and a directory source runs no DNS or chain check, so a stored
+  `verified` would assert work nobody did. Both degrade on read (`stored`, `unavailable`).
+- **Kotlin `catch (Exception)` swallows `CancellationException`** (it is a `RuntimeException` on the JVM),
+  turning "the owner left the screen" into a fabricated source failure that then spends a replay. Both
+  the wrapper and the adapter rethrow it before mapping anything to `unavailable`. **iOS needs no such
+  catch and must not grow a decorative one:** `read()` is a non-throwing `async` function, so the
+  compiler enforces there what Android enforces at runtime. `DirectoryCacheTests` pins that asymmetry by
+  calling the seam without `try` - making it `async throws` breaks that line, which is the signal that
+  the catch-before-replay has become mandatory.
+- **A failure of the COPY may only ever cost a replay, never the live answer - and only Android has to
+  say so in code.** iOS gets it from the compiler: `ProviderDirectoryCacheStore.write`/`clear` are
+  non-throwing protocol requirements, and `encode` is `try? JSONEncoder().encode(...)` behind an
+  `if let document = ... { store.write(document) }`, so an unencodable snapshot is simply not written.
+  Kotlin can express neither, so `storedEntry`/`storeEntry`/`clearStore` each carry an explicit
+  rethrow-cancellation-then-swallow pair. **Write them out; never reach for `runCatching`**, which
+  catches `Throwable` and so swallows the `CancellationException` the arm above it exists to rethrow.
+  This is not hypothetical tidiness: nothing on the wrapper path rejects a non-finite coordinate
+  (`providerDirectorySnapshotIsWellFormed` reads only the timestamp and the provider count, and the
+  range check lives in the SOURCE, which is exactly the seam a second directory replaces), while
+  `JSONObject.put(String, double)` throws on one - so an unguarded `encode` turned a successful
+  directory read into a thrown exception. Both suites carry
+  `aSnapshotThisCodecCannotExpressCostsTheStoredCopyNotTheLiveAnswer`, and both assert the refused
+  encode as a PRECONDITION so the case cannot pass for the wrong reason should `org.json` or
+  `JSONEncoder` ever start serialising `NaN`. Android adds the three failing-store cases and
+  `aCancelledStoreTouchPropagatesRatherThanBeingSwallowed`; the failing-store half has NO iOS
+  counterpart, because a conforming store there cannot throw. Do NOT instead "fix" this by validating
+  geo in `providerDirectorySnapshotIsWellFormed`: that would turn a SUCCESSFUL read into `unavailable`,
+  and `NearbyDecision` already treats a non-usable coordinate as unlocated, so returning such a row
+  live is harmless.
+- **Neither file store is covered by a test, so two things about them are stated here rather than
+  pinned.** Both suites inject `MemoryProviderDirectoryCacheStore` (Android adds a deliberately
+  failing store for the bullet above), which is the whole point of the seam but means the disk paths
+  are reasoned about, not exercised.
+  - **Android: every store touch AND the codec work on the same document hop to `Dispatchers.IO` in
+    the WRAPPER** (`storedEntry`, `storeEntry`, `clearStore`). A Kotlin `suspend fun` does not change
+    dispatcher - it runs on the caller's - and `NearbyScreen`'s `LaunchedEffect` is on Main. The old
+    adapter was safe there only because `Http.getJson` does its own `withContext(Dispatchers.IO)`, so a
+    synchronous `File.readText` added beside it is disk I/O on the UI thread. Moving only the file
+    touch closes half the hazard: `JSONObject(document)` plus per-provider construction over the whole
+    provider set is at least as heavy as the read or write beside it, and an `encode(...)` passed as an
+    ARGUMENT to a suspend function is evaluated on the caller's dispatcher before the hop is entered.
+    So the codec calls live INSIDE the `withContext` blocks, not beside them. The hop is in the
+    wrapper, not in `ProviderDirectoryCacheStore`, so the interface stays plain non-suspend for the
+    memory store. The read is three-state (`Absent` / `Unreadable` / `Present`) rather than a nullable,
+    because "nothing is stored" leaves the store alone while "stored but undecodable" clears it, and a
+    single `null` would collapse those into either clearing on every ordinary miss or keeping a corrupt
+    document. The namespace comparison stays in `replay()` and must not move into the codec, which has
+    no access to `delegate.cacheNamespace` - moving it is how its mutation test starts passing
+    vacuously.
+  - **iOS writes straight to the destination with `Data.write(options: .atomic)`**, which already
+    writes an auxiliary file and renames it in. Do NOT "improve" this into a staging file plus
+    `FileManager.replaceItemAt`: that call is modelled on replacing an item that ALREADY EXISTS, so on
+    a fresh install it would be the one call between the owner and a local copy, on a path no test
+    covers - and a write that only fails on first run leaves the cache permanently inert, silently, in
+    exactly the offline case it exists for.
+- **Storage is the CACHE dir on both platforms, with no protection or backup-exclusion flags.** Copying
+  the owner-secret store's `.completeFileProtection` / `isExcludedFromBackup` by reflex would misstate
+  this file: it is one public endpoint's response, holds no owner position and nothing the phone could
+  not fetch again. OS eviction therefore reads as a missing entry - `unavailable`, never `empty`.
+  `AppReset.resetEverything()` deliberately does NOT sweep it, for the reason it already skips theme
+  preferences, plus a sharper one: it would put a re-fetchable public file inside the partial-failure
+  short-circuit, where failing to delete it would block the wallet wipe.
+
+Testing note: the Android suite lives in `nearby/DirectoryCacheTest.kt` (`Context`-free, so plain
+`gradle test`), the iOS one in `DogTagTests/DirectoryCacheTests.swift`. The iOS test bundle is HOST-LESS,
+so it uses no `@testable import DogTag` - it compiles the listed sources directly, and adding that import
+fails with `Unable to find module dependency: 'DogTag'`.
+
 ### A provider may have no location, and `0,0` is the shape that defect takes
 
 The seam half of this is stated above (`DirectoryProvider.geo` is nullable and a geo-less row is
@@ -3127,9 +3291,41 @@ field lists). Verified by mutation - adding a sixth channel reddens exactly thos
 Kotlin and Swift cannot import that list: `ProviderContact` in
 `apps/android/.../nearby/NearbyDecision.kt` and `apps/ios/DogTag/NearbyDecision.swift` each name it
 as the source they mirror, and both must move in the same change as the data class, its parser, its
-`hasAny` fold, AND its screen row. `hasAny` alone renders a website-only provider as an empty card,
-which is a silent blank rather than a false claim - worse, not better. Do NOT close a future gap by
-making either parser strict about unknown keys.
+`hasAny` fold, its screen row, AND the stored-copy codec.
+`hasAny` alone renders a website-only provider as an empty card, which is a silent blank rather than a
+false claim - worse, not better. Do NOT close a future gap by making either parser strict about
+unknown keys.
+
+**The stored-copy codec added two more hand-mirrored enumeration sites on Android and three on iOS,
+and its version of this failure only shows up OFFLINE.**
+The sites are Kotlin `ProviderDirectoryCacheCodec.encodeProvider` and `decodeProvider`
+(`apps/android/.../nearby/DirectoryCache.kt`), and Swift `ProviderDirectoryCacheCodec.StoredContact`
+plus BOTH of its mapping blocks - the `StoredContact(...)` construction in `encode` and the
+`ProviderContact(...)` construction in `decode` (`apps/ios/DogTag/NearbyDecision.swift`).
+A sixth channel added to the data class, the parser, the fold and the screen row COMPILES CLEAN on both
+platforms while the codec silently drops it, because `StoredContact`'s members are all optional and the
+Kotlin codec reads named keys one at a time.
+The consequence is the `website` incident replayed on the replay path: the stored copy comes back with
+an empty contact block, `hasAny` reads false, and the phone tells the owner a provider published no way
+to reach it.
+It is strictly harder to catch than the original, since anyone testing a new channel WITH SIGNAL only
+ever sees the live path, which is unaffected.
+The `theStoredDocumentRoundTripsEveryFieldIncludingAbsentLocation` case in each cache suite is where a
+new channel's round trip is asserted.
+It can only carry that claim because of HOW it asserts, and both halves are load-bearing: it populates
+every channel on one row, and it compares the decoded rows to the fixture rows WHOLE rather than
+naming fields one at a time.
+Pinned by mutation, one platform at a time: dropping the `telegram` line from Kotlin `encodeProvider`
+reddens it (`AssertionError` on the row comparison), and dropping `telegram` from the
+`StoredContact(...)` construction in Swift `encode` reddens its iOS twin - `StoredContact`'s members
+are optional `var`s, so that deletion COMPILES, which is precisely the silent drop being guarded.
+It first shipped as a per-field spot check over two rows that between them set only `phone` and
+`website` and named no other field, so neither mutation could have reddened anything: a channel
+nobody wrote is a channel the codec is free to forget.
+So when a sixth channel arrives, adding it to the fully-populated fixture is the whole of the test
+change; do not replace the equality with per-field assertions.
+The same fixture carries a non-null `active`, which central never populates - the codec has that slot
+either way, and with both rows null a dropped `active` line would round-trip clean.
 
 **`website` is the first channel whose SCHEME comes from the directory string.** `tel:`, `https://wa.me/`,
 `https://t.me/` and `mailto:` are all constructed by the renderer, so the value can only fill a slot;

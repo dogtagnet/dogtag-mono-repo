@@ -62,6 +62,9 @@ targets:
       # copy discipline are covered here rather than only by inspection.
       # (Keccak256 already comes along below via Wallet's link-time closure.)
       - path: DogTag/IssuerDomainBinding.swift
+      # Net carries the directory SOURCE adapter plus the file-backed cache store. Both are
+      # Foundation-only; the store's own I/O is not exercised here, but compiling it keeps the
+      # `ProviderDirectoryCacheStore` conformance and `ProviderDirectories.central()` honest.
       - path: DogTag/Net.swift
       # Models is Foundation-only (JSONSerialization) and carries `rootCoveredIssuerLeaf`, which the DID
       # assertion reads. SwiftUI lives in the screens, not here.

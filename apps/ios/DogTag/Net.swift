@@ -919,71 +919,72 @@ enum DnsVerify {
 
 // MARK: - Provider directory
 
-/// Native adapter for the shared ProviderDirectory contract.
+/// Native adapter for the shared ProviderDirectory contract. It is a SOURCE only: it holds no cache.
 ///
 /// The screen receives this seam and never performs HTTP itself. `read()` accepts no query, and the
 /// endpoint builder rejects a configured base that already contains one, so neither a current nor a
-/// chosen position has a request-shaped place to go. A failed live read may replay the same universal,
-/// full-set snapshot while its hard TTL remains open; that replay is labelled `.stored`.
+/// chosen position has a request-shaped place to go.
+///
+/// The local copy lives in `CachedProviderDirectory`, one decorator around this seam, so the future
+/// on-chain directory inherits the same offline behaviour without reimplementing it - and so there is
+/// only one place that can get "a replay never renews its deadline" wrong.
 struct CentralProviderDirectory: ProviderDirectoryReading {
     let source: ProviderDirectorySource = .central
-    static let defaultTtl: TimeInterval = 15 * 60
 
     private let baseURL: String
-    private let ttl: TimeInterval
     private let now: () -> Date
 
     init(
         baseURL: String = AppConfig.centralApi,
-        ttl: TimeInterval = Self.defaultTtl,
         now: @escaping () -> Date = Date.init
     ) {
         self.baseURL = baseURL
-        self.ttl = ttl
         self.now = now
     }
 
     func read() async -> ProviderDirectoryResult {
         let attemptedAt = now()
-        guard ttl.isFinite, ttl > 0,
-              let endpoint = Self.endpoint(baseURL: baseURL) else {
-            return fallbackOrUnavailable(
+        guard let endpoint = Self.endpoint(baseURL: baseURL) else {
+            return .unavailable(ProviderDirectoryUnavailable(
+                source: .central,
                 reason: .sourceUnavailable,
                 detail: "The provider directory is not configured with a valid query-free URL",
                 attemptedAt: attemptedAt
-            )
+            ))
         }
 
         let response = await Http.getJSON(endpoint)
         guard response.ok else {
-            return fallbackOrUnavailable(
+            return .unavailable(ProviderDirectoryUnavailable(
+                source: .central,
                 reason: .sourceUnavailable,
                 detail: response.code < 0
                     ? "The provider directory could not be reached"
                     : "The provider directory returned HTTP \(response.code)",
                 attemptedAt: attemptedAt
-            )
+            ))
         }
         guard let data = response.body.data(using: .utf8),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let providers = Self.parseProviders(object) else {
-            return fallbackOrUnavailable(
+            return .unavailable(ProviderDirectoryUnavailable(
+                source: .central,
                 reason: .malformedResponse,
                 detail: "The provider directory returned an invalid response; it was not treated as empty",
                 attemptedAt: attemptedAt
-            )
+            ))
         }
 
-        let readAt = now()
         let snapshot = ProviderDirectorySnapshot(
             source: .central,
             providers: providers,
             observation: .live,
             blockNumber: nil,
-            readAt: readAt,
-            expiresAt: readAt.addingTimeInterval(ttl)
+            readAt: now(),
+            // No TTL of this source's own. The wrapper sets the hard deadline from THIS observation
+            // time, so a slow read can never lengthen the maximum age.
+            expiresAt: nil
         )
-        ProviderDirectoryMemoryCache.write(snapshot, namespace: cacheNamespace)
         return providers.isEmpty ? .empty(snapshot) : .found(snapshot)
     }
 
@@ -1005,25 +1006,13 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
         return components.url?.absoluteString
     }
 
-    private var cacheNamespace: String {
+    /// Scopes a stored copy to this exact configured endpoint.
+    ///
+    /// Repointing `centralApi` changes it, so one deployment's persisted snapshot can never be
+    /// replayed as another's. A future on-chain directory must carry its own chain/registry identity
+    /// here for the same reason.
+    var cacheNamespace: String {
         "central:\(Self.endpoint(baseURL: baseURL) ?? "unresolved-base")"
-    }
-
-    private func fallbackOrUnavailable(
-        reason: ProviderDirectoryUnavailableReason,
-        detail: String,
-        attemptedAt: Date
-    ) -> ProviderDirectoryResult {
-        if var cached = ProviderDirectoryMemoryCache.read(namespace: cacheNamespace, now: attemptedAt) {
-            cached.observation = .stored
-            return cached.providers.isEmpty ? .empty(cached) : .found(cached)
-        }
-        return .unavailable(ProviderDirectoryUnavailable(
-            source: .central,
-            reason: reason,
-            detail: detail,
-            attemptedAt: attemptedAt
-        ))
     }
 
     /// All-or-nothing validation, except that a genuinely absent/null `geo` is the valid contact-only
@@ -1115,28 +1104,59 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
     }
 }
 
-/// One process-local full-set snapshot per configured directory. The value is never keyed by a
-/// position, name search, radius, geohash, or viewport.
-private enum ProviderDirectoryMemoryCache {
-    private static let lock = NSLock()
-    private static var entries: [String: ProviderDirectorySnapshot] = [:]
+/// One JSON file holding the stored directory copy. Every failure is swallowed into "nothing
+/// stored", which can only ever cost a replay.
+///
+/// Writes stage to a sibling and are replaced in, so a kill mid-write leaves the previous copy rather
+/// than a truncated document. There is deliberately no `.completeFileProtection` and no
+/// backup-exclusion here, unlike the owner-secret store: this holds one public endpoint's response,
+/// carries no owner position and nothing the phone could not fetch again, so borrowing those flags
+/// would misstate its sensitivity. It lives in Caches, so the OS may evict it at any time - and an
+/// evicted file simply reads as nothing stored, which degrades to `unavailable`, never to `empty`.
+struct FileProviderDirectoryCacheStore: ProviderDirectoryCacheStore {
+    static let fileName = "dogtag-provider-directory.json"
 
-    static func write(_ snapshot: ProviderDirectorySnapshot, namespace: String) {
-        lock.lock()
-        entries[namespace] = snapshot
-        lock.unlock()
+    private let url: URL
+
+    init(url: URL? = nil) {
+        if let url {
+            self.url = url
+        } else {
+            let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
+            self.url = (caches.first ?? URL(fileURLWithPath: NSTemporaryDirectory()))
+                .appendingPathComponent(Self.fileName)
+        }
     }
 
-    static func read(namespace: String, now: Date) -> ProviderDirectorySnapshot? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let snapshot = entries[namespace],
-              let expiresAt = snapshot.expiresAt,
-              snapshot.readAt <= now,
-              now < expiresAt else {
-            entries.removeValue(forKey: namespace)
-            return nil
-        }
-        return snapshot
+    func read() -> Data? {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        return data
+    }
+
+    /// `.atomic` already writes an auxiliary file beside the destination and renames it in, so a kill
+    /// mid-write leaves the previous copy rather than a truncated document.
+    ///
+    /// Deliberately NOT a hand-rolled staging file plus `replaceItemAt`: that is what `.atomic` does,
+    /// and `replaceItemAt` is modelled on replacing an item that already exists, so on a fresh install
+    /// - where the destination has never been created - it would be the one call standing between the
+    /// owner and a local copy, on a path no test here exercises. A failure that only ever happens on
+    /// first run is a permanently inert cache in exactly the offline case it exists for.
+    func write(_ document: Data) {
+        // A copy that could not be stored simply is not stored. The live result still stands.
+        try? document.write(to: url, options: .atomic)
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+/// The configured directory, wrapped in the on-device local copy.
+enum ProviderDirectories {
+    static func central() -> ProviderDirectoryReading {
+        CachedProviderDirectory(
+            delegate: CentralProviderDirectory(),
+            store: FileProviderDirectoryCacheStore()
+        )
     }
 }

@@ -1,14 +1,25 @@
 package io.liberalize.dogtag.nearby
 
+import android.content.Context
 import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.net.Http
 import io.liberalize.dogtag.net.IssuerBindingState
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.URI
 
 /** Native adapter for the canonical full-set provider-directory contract. */
 interface ProviderDirectory {
+    /**
+     * Stable identity of the configured source, used ONLY to scope a stored copy.
+     *
+     * It must distinguish two distinct configured endpoints and two future chain/registry
+     * configurations. It must never contain a user position or anything derived from one.
+     */
+    val cacheNamespace: String
+
     /**
      * Reads the same provider set for every caller. There is deliberately no query argument and no
      * request-shaped place for a current/chosen position or name search.
@@ -17,14 +28,16 @@ interface ProviderDirectory {
 }
 
 /**
- * Central `GET /v1/businesses` adapter with a hard-lived in-process snapshot.
+ * Central `GET /v1/businesses` adapter. It is a SOURCE only: it holds no cache and keeps no snapshot.
  *
- * The cache is the same semantic contract as `packages/ui`: a failed live read may replay the last
- * unexpired successful snapshot as [DirectoryObservation.Stored], without renewing its deadline.
+ * The local copy lives in [CachedProviderDirectory], one decorator wrapping this seam, so the future
+ * on-chain directory inherits the same offline behaviour without reimplementing it. Two fused caches
+ * would also have to reason about each other - the inner one hands the outer a snapshot already
+ * labelled [DirectoryObservation.Stored], and treating that as a successful refresh renews a deadline
+ * that is supposed to be hard.
  */
 class CentralProviderDirectory(
     baseUrl: String,
-    private val ttlMs: Long = 15 * 60 * 1_000L,
     private val now: () -> Long = System::currentTimeMillis,
     private val fetch: suspend (String) -> Http.Response = { Http.getJson(it) },
 ) : ProviderDirectory {
@@ -37,71 +50,38 @@ class CentralProviderDirectory(
     }
     internal val requestUrl: String = "${configuredBase.trimEnd('/')}/v1/businesses"
 
-    private data class CacheEntry(
-        val result: ProviderDirectoryResult,
-        val readAt: Long,
-        val expiresAt: Long,
-    )
+    /**
+     * Scopes a stored copy to this exact configured endpoint.
+     *
+     * Repointing `CENTRAL_API` changes it, so one deployment's persisted snapshot can never be
+     * replayed as another's. A future on-chain directory must carry its own chain/registry identity
+     * here for the same reason.
+     */
+    override val cacheNamespace: String get() = "central:$requestUrl"
 
-    private var cache: CacheEntry? = null
-
-    init {
-        require(ttlMs > 0) { "provider directory cache ttlMs must be greater than zero" }
-    }
-
-    override suspend fun read(): ProviderDirectoryResult {
-        val live = try {
-            val response = fetch(requestUrl)
-            if (!response.ok) {
-                ProviderDirectoryResult.Unavailable(
-                    reason = DirectoryUnavailableReason.SourceUnavailable,
-                    detail = "The provider directory returned HTTP ${response.code}",
-                    attemptedAt = now(),
-                )
-            } else {
-                decode(response.body, now())
-            }
-        } catch (error: Exception) {
+    override suspend fun read(): ProviderDirectoryResult = try {
+        val response = fetch(requestUrl)
+        if (!response.ok) {
             ProviderDirectoryResult.Unavailable(
                 reason = DirectoryUnavailableReason.SourceUnavailable,
-                detail = error.message?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: "The provider directory could not be reached",
+                detail = "The provider directory returned HTTP ${response.code}",
                 attemptedAt = now(),
             )
+        } else {
+            decode(response.body, now())
         }
-
-        when (live) {
-            is ProviderDirectoryResult.Found -> {
-                cache = CacheEntry(live, live.readAt, live.expiresAt)
-                return live
-            }
-            is ProviderDirectoryResult.Empty -> {
-                cache = CacheEntry(live, live.readAt, live.expiresAt)
-                return live
-            }
-            is ProviderDirectoryResult.Unavailable -> Unit
-        }
-
-        val current = now()
-        val saved = cache
-        if (
-            saved == null ||
-            saved.readAt > current ||
-            saved.expiresAt < saved.readAt ||
-            saved.expiresAt - saved.readAt > ttlMs ||
-            current >= saved.expiresAt
-        ) {
-            cache = null
-            return live
-        }
-        return when (val snapshot = saved.result) {
-            is ProviderDirectoryResult.Found -> snapshot.copy(observation = DirectoryObservation.Stored)
-            is ProviderDirectoryResult.Empty -> snapshot.copy(observation = DirectoryObservation.Stored)
-            is ProviderDirectoryResult.Unavailable -> {
-                cache = null
-                live
-            }
-        }
+    } catch (cancelled: CancellationException) {
+        // A cancelled read is the caller leaving the screen, not the directory failing. Mapping it
+        // to `unavailable` would fabricate a source failure and make the wrapper replay a stored
+        // copy for a request nobody is waiting on.
+        throw cancelled
+    } catch (error: Exception) {
+        ProviderDirectoryResult.Unavailable(
+            reason = DirectoryUnavailableReason.SourceUnavailable,
+            detail = error.message?.trim()?.takeIf { it.isNotEmpty() }
+                ?: "The provider directory could not be reached",
+            attemptedAt = now(),
+        )
     }
 
     /**
@@ -124,22 +104,21 @@ class CentralProviderDirectory(
             providers += provider
         }
 
-        if (readAt < 0 || readAt > Long.MAX_VALUE - ttlMs) {
-            throw MalformedDirectory("directory timestamp is unusable")
-        }
-        val expiresAt = readAt + ttlMs
+        if (readAt < 0) throw MalformedDirectory("directory timestamp is unusable")
+        // `expiresAt` is null because this source has no TTL of its own. The wrapper sets the hard
+        // deadline from THIS observation time, so a slow read can never lengthen the maximum age.
         if (providers.isEmpty()) {
             ProviderDirectoryResult.Empty(
                 observation = DirectoryObservation.Live,
                 readAt = readAt,
-                expiresAt = expiresAt,
+                expiresAt = null,
             )
         } else {
             ProviderDirectoryResult.Found(
                 providers = providers,
                 observation = DirectoryObservation.Live,
                 readAt = readAt,
-                expiresAt = expiresAt,
+                expiresAt = null,
             )
         }
     } catch (error: MalformedDirectory) {
@@ -239,9 +218,20 @@ class CentralProviderDirectory(
     private class MalformedDirectory(message: String) : IllegalArgumentException(message)
 }
 
-/** One process-wide cache shared across screen visits. */
+/**
+ * The configured directory, wrapped in the on-device local copy.
+ *
+ * Built per call rather than held in a `by lazy`: the stored copy now lives on disk, so there is no
+ * process-lifetime state left to share, and a device-scoped singleton would only pin a `Context`.
+ */
 object ProviderDirectories {
-    val central: ProviderDirectory by lazy {
-        CentralProviderDirectory(AppConfig.CENTRAL_API)
-    }
+    fun central(context: Context): ProviderDirectory = CachedProviderDirectory(
+        delegate = CentralProviderDirectory(AppConfig.CENTRAL_API),
+        store = FileProviderDirectoryCacheStore(
+            // Cache dir, not files dir: this is a re-fetchable copy of a PUBLIC endpoint, so the OS
+            // is welcome to evict it. Eviction then reads as a missing entry - `unavailable` - which
+            // is the honest degradation, never a successful `empty`.
+            File(context.cacheDir, FileProviderDirectoryCacheStore.FILE_NAME),
+        ),
+    )
 }

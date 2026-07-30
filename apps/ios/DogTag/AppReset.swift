@@ -77,6 +77,12 @@ enum AppReset {
     ///
     /// Appearance preferences (theme, brightness) are NOT touched: they hold no account or pet data,
     /// and silently resetting them would misrepresent this as a factory wipe.
+    ///
+    /// The stored provider-directory copy (`FileProviderDirectoryCacheStore`) is NOT touched either,
+    /// for the same reason: it is one public endpoint's response, holds no account, pet or position
+    /// data, and the phone can fetch it again. Folding it in would also put a re-fetchable public
+    /// file inside the short-circuit above, where failing to delete it would block the wallet wipe -
+    /// a cache file veto-ing the action whose whole point is destroying secrets.
     static func resetEverything() -> Outcome {
         var outcome = Outcome()
         outcome.merge(deleteDogTags())

@@ -75,6 +75,7 @@
 		F0AA00000000000000000003 /* NearbyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0AA00000000000000000001 /* NearbyDecision.swift */; };
 		F0AA00000000000000000005 /* NearbyScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0AA00000000000000000004 /* NearbyScreen.swift */; };
 		F0AA00000000000000000007 /* NearbyDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0AA00000000000000000006 /* NearbyDecisionTests.swift */; };
+		F0AA0000000000000000005B /* DirectoryCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0AA0000000000000000005A /* DirectoryCacheTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -132,6 +133,7 @@
 		F0AA00000000000000000001 /* NearbyDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyDecision.swift; sourceTree = "<group>"; };
 		F0AA00000000000000000004 /* NearbyScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyScreen.swift; sourceTree = "<group>"; };
 		F0AA00000000000000000006 /* NearbyDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyDecisionTests.swift; sourceTree = "<group>"; };
+		F0AA0000000000000000005A /* DirectoryCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectoryCacheTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -162,6 +164,7 @@
 				E5DC35D1F973834F7739F3F4 /* IssuerDomainBindingTests.swift */,
 				3774010D8817B22E7B20E2ED /* LocalDataSweepTests.swift */,
 				F0AA00000000000000000006 /* NearbyDecisionTests.swift */,
+				F0AA0000000000000000005A /* DirectoryCacheTests.swift */,
 				6E677AE2F3DE132622C10E9E /* PublicSignalIndexTests.swift */,
 				A38289E086F9DD77EF41997A /* QrPayloadTests.swift */,
 				7B95325FF1F4944402491733 /* SeedBackupGateTests.swift */,
@@ -390,6 +393,7 @@
 				F094B66D48F3C7AEA13F18A2 /* Models.swift in Sources */,
 				F0AA00000000000000000003 /* NearbyDecision.swift in Sources */,
 				F0AA00000000000000000007 /* NearbyDecisionTests.swift in Sources */,
+				F0AA0000000000000000005B /* DirectoryCacheTests.swift in Sources */,
 				A1B2C3D50000000000000003 /* DogTagCard.swift in Sources */,
 				A1B2C3D50000000000000005 /* DogTagCardTests.swift in Sources */,
 				A1B2C3D40000000000000003 /* VerdictDisplay.swift in Sources */,

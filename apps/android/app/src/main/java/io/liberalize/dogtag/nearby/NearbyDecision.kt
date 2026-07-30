@@ -67,13 +67,18 @@ sealed interface ProviderDirectoryResult {
         val providers: List<DirectoryProvider>,
         val observation: DirectoryObservation,
         val readAt: Long,
-        val expiresAt: Long,
+        /**
+         * `null` means this result came from a directory with no cache wrapper around it. It does
+         * NOT mean the facts are permanent, and it is what lets [CachedProviderDirectory] tell a
+         * fresh source read apart from a replay handed up by an inner wrapper.
+         */
+        val expiresAt: Long?,
     ) : ProviderDirectoryResult
 
     data class Empty(
         val observation: DirectoryObservation,
         val readAt: Long,
-        val expiresAt: Long,
+        val expiresAt: Long?,
     ) : ProviderDirectoryResult
 
     data class Unavailable(
@@ -204,6 +209,9 @@ object NearbyDecision {
     private const val FOOT_STEP_M = 25_000.0 / FEET_PER_KM
     private const val TENTH_MILE_M = KM_PER_MILE * 100
     private const val MILE_M = KM_PER_MILE * 1_000
+    private const val MINUTE_MS = 60L * 1_000
+    private const val HOUR_MS = 60L * MINUTE_MS
+    private const val DAY_MS = 24L * HOUR_MS
     private const val TEN_METRE_STEP_M = 10.0
     private const val TENTH_KM_M = 100.0
     private const val KM_STEP_M = 1_000.0
@@ -440,6 +448,47 @@ object NearbyDecision {
         if (minGranularityMetres <= COARSEST_METRIC_M) return "${Math.round(km)} km"
         return null
     }
+
+    /**
+     * How old a stored directory replay is, coarsely.
+     *
+     * The offline window is measured in days, so "stored" and "recent" are no longer the same
+     * statement and the surface has to say which. The ladder is deliberately blunt - under a minute,
+     * then minutes, hours, days - because a remembered public directory supports no finer claim.
+     *
+     * Rounds the age OUTWARD, so for the [nowMillis] it is GIVEN the stated age is never smaller than
+     * the true one. That is the same direction [uncertaintyLabel] rounds a distance bound, and the
+     * safe one here: understating staleness under-warns.
+     *
+     * Never describing a remembered copy as fresher than it is, though, is a JOINT property of that
+     * rounding and the CALLER re-sampling the clock - it is not something this function can carry
+     * alone. A label derived once and left on screen goes on asserting an age that has stopped being
+     * true, which under-warns in precisely the direction the rounding exists to prevent. So a surface
+     * must re-derive this when the owner returns to it: `NearbyScreen` keys its `remember` on an
+     * `ON_RESUME` epoch here, and reads `scenePhase` in `storedAgeClause` on iOS. Neither is a ticker,
+     * and neither suite can reach a lifecycle callback, so this half is a caller obligation stated
+     * here rather than a pinned one.
+     *
+     * Derived from the snapshot's own `readAt`, never from `expiresAt` minus the TTL - the deadline
+     * is the MINIMUM of the local window and any the source declared, so that subtraction is wrong
+     * whenever the source declared a shorter one. A `readAt` in the future is not derivable and
+     * answers null, which the surface renders as saying nothing rather than as "0 minutes ago".
+     */
+    fun formatStoredAge(readAtMillis: Long, nowMillis: Long): String? {
+        val elapsedMs = nowMillis - readAtMillis
+        if (elapsedMs < 0) return null
+        if (elapsedMs < MINUTE_MS) return "less than a minute ago"
+        val minutes = ceilDiv(elapsedMs, MINUTE_MS)
+        if (minutes < 60) return agePhrase(minutes, "minute")
+        val hours = ceilDiv(elapsedMs, HOUR_MS)
+        if (hours < 24) return agePhrase(hours, "hour")
+        return agePhrase(ceilDiv(elapsedMs, DAY_MS), "day")
+    }
+
+    private fun ceilDiv(value: Long, unit: Long): Long = (value + unit - 1) / unit
+
+    private fun agePhrase(count: Long, unit: String): String =
+        if (count == 1L) "1 $unit ago" else "$count ${unit}s ago"
 
     /**
      * What this origin's precision permits the row to say about one measured distance.

@@ -619,4 +619,31 @@ class NearbyDecisionTest {
         assertEquals("NW", NearbyDecision.formatBearing(-45.0))
         assertNull(NearbyDecision.formatBearing(null))
     }
+
+    /**
+     * A replay is labelled with a coarse age, and the rounding never makes it look fresher than it
+     * is. An age that cannot be derived says nothing rather than inventing a number. Mirrors the iOS
+     * `test_theStoredAgeIsCoarseAndNeverUnderstatesStaleness` case for case.
+     */
+    @Test
+    fun theStoredAgeIsCoarseAndNeverUnderstatesStaleness() {
+        val readAt = 1_000_000_000L
+        fun age(elapsedMs: Long) = NearbyDecision.formatStoredAge(readAt, readAt + elapsedMs)
+
+        assertEquals("less than a minute ago", age(0))
+        assertEquals("less than a minute ago", age(59_999))
+        assertEquals("1 minute ago", age(60_000))
+        // Rounds outward: a minute and a second is stated as two minutes, never as one.
+        assertEquals("2 minutes ago", age(61_000))
+        // The ceiling promotes rather than printing "60 minutes ago" or "24 hours ago".
+        assertEquals("1 hour ago", age(3_599_000))
+        assertEquals("1 hour ago", age(3_600_000))
+        assertEquals("2 hours ago", age(3_601_000))
+        assertEquals("1 day ago", age(86_399_000))
+        assertEquals("1 day ago", age(86_400_000))
+        assertEquals("6 days ago", age(6 * 86_400_000L))
+
+        // A snapshot read in the future is a backwards clock, not a fresh copy.
+        assertNull(age(-1))
+    }
 }
