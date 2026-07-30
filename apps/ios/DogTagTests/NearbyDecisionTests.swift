@@ -156,6 +156,19 @@ final class NearbyDecisionTests: XCTestCase {
         ))
     }
 
+    /// Mirrors Android `NearbyDecisionTest.disclosurePlainlyStatesSendPurposeAndRetentionAtTheGrantAction`.
+    /// The nearest search reversed a privacy property the earlier slices were built for, so the sentence
+    /// beside the permission action is part of the contract rather than decoration: it must name what
+    /// leaves the device, why, and that it is not retained. Pinned byte-for-byte against Android because
+    /// two platforms telling the owner different things about the same transfer is the failure mode.
+    func test_disclosurePlainlyStatesSendPurposeAndRetentionAtTheGrantAction() {
+        XCTAssertEqual(
+            "Your approximate location is sent to DogTag to find nearby vets and groomers. "
+                + "It is not stored.",
+            NearbyDecision.locationDisclosure
+        )
+    }
+
     func test_nearestParserRequiresFiniteNonnegativeDistanceAndPreservesServerOrder() throws {
         let object: [String: Any] = [
             "businesses": [

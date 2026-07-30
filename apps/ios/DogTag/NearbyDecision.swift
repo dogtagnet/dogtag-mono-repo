@@ -673,6 +673,14 @@ enum NearbyUnitSystem: Equatable {
 /// The indexer owns distance calculation and ordering. This policy only validates and formats the
 /// returned distance; it never recomputes or re-sorts it on the device.
 enum NearbyDecision {
+    /// The sentence shown immediately beside the action that starts the location permission. It lives
+    /// here, in the pure layer, rather than as a literal in `NearbyScreen`, for the same reason
+    /// `VerdictDisplay` does: this bundle can pin it, so the copy cannot quietly drift from Android's
+    /// `NearbyDecision.LOCATION_DISCLOSURE` or be softened back toward a "never leaves this phone"
+    /// claim that the server-side nearest search made untrue.
+    static let locationDisclosure =
+        "Your approximate location is sent to DogTag to find nearby vets and groomers. It is not stored."
+
     /// Three-decimal coordinates are only about hundred-metre resolution, even when Core Location's
     /// raw fix was more precise. Server distances must never be displayed more finely than the
     /// coordinate the server actually received supports.

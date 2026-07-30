@@ -371,7 +371,7 @@ struct NearbyScreen: View {
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(c.onBackground)
 
-            Text("Your approximate location is sent to DogTag to find nearby vets and groomers. It is not stored.")
+            Text(NearbyDecision.locationDisclosure)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(c.onBackground)
                 .fixedSize(horizontal: false, vertical: true)
