@@ -5,7 +5,6 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.location.Location
 import android.location.LocationManager
 import android.net.Uri
 import android.os.CancellationSignal
@@ -32,7 +31,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Business
-import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
@@ -47,7 +45,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -58,6 +55,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -71,10 +69,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.liberalize.dogtag.nearby.ContactDirectoryPresentation
+import io.liberalize.dogtag.nearby.ApproximateCallerPosition
+import io.liberalize.dogtag.nearby.DEFAULT_PROVIDER_PAGE_SIZE
 import io.liberalize.dogtag.nearby.DirectoryObservation
 import io.liberalize.dogtag.nearby.DirectoryProvider
 import io.liberalize.dogtag.nearby.DistanceClaim
@@ -83,42 +80,45 @@ import io.liberalize.dogtag.nearby.NearbyDecision
 import io.liberalize.dogtag.nearby.NearbyOriginState
 import io.liberalize.dogtag.nearby.NearbyPresentation
 import io.liberalize.dogtag.nearby.NearbyRow
-import io.liberalize.dogtag.nearby.OriginSource
 import io.liberalize.dogtag.nearby.ProviderDirectories
+import io.liberalize.dogtag.nearby.ProviderDirectory
+import io.liberalize.dogtag.nearby.ProviderDirectoryQuery
 import io.liberalize.dogtag.nearby.ProviderDirectoryResult
-import io.liberalize.dogtag.nearby.ProviderMeasurement
+import io.liberalize.dogtag.nearby.StoredProviderRecords
+import io.liberalize.dogtag.nearby.appendDirectoryPage
 import io.liberalize.dogtag.net.BindingTone
 import io.liberalize.dogtag.net.IssuerBinding
 import io.liberalize.dogtag.ui.DogTagTheme
 import java.util.Locale
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private enum class DirectoryScope { Nearby, Contacts }
+private val OWNER_PROVIDER_KINDS = listOf("vet", "groomer")
 
 /**
- * List-first provider discovery. There is deliberately no map view: a destination leaves DogTag only
- * after the owner taps Directions, and the handoff contains that public destination but no origin.
+ * List-first provider discovery. There is deliberately no map, autocomplete, geocoder, manual
+ * coordinate input, or map-app handoff.
  */
 @Composable
 fun NearbyScreen(onBack: () -> Unit) {
     val c = DogTagTheme.colors
     val context = LocalContext.current
-    val directory = remember(context) { ProviderDirectories.central(context) }
+    val directory = remember { ProviderDirectories.central }
+    // The offline fallback. Records only: identity and contacts, never a distance or the ranking.
+    val recordCache = remember { ProviderDirectories.recordCache(context.cacheDir) }
     var directoryResult by remember { mutableStateOf<ProviderDirectoryResult?>(null) }
+    var storedRecords by remember { mutableStateOf<StoredProviderRecords?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
     var scope by rememberSaveable { mutableStateOf(DirectoryScope.Nearby) }
-    // Search and chosen coordinates are deliberately process-memory only. Saving them into the
-    // activity's recreation Bundle would turn private inputs into a second cache.
+    // Search text and the current fix are process-memory only. Neither is saved into the activity's
+    // recreation Bundle, and the directory adapter never caches a position-keyed response.
     var query by remember { mutableStateOf("") }
     var origin by remember { mutableStateOf<NearbyOriginState>(NearbyOriginState.AwaitingChoice) }
-    var showCoordinates by rememberSaveable { mutableStateOf(false) }
-    var latitude by remember { mutableStateOf("") }
-    var longitude by remember { mutableStateOf("") }
-    var handoffError by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(refreshKey) {
-        directoryResult = null
-        directoryResult = directory.read()
-    }
+    var actionError by remember { mutableStateOf<String?>(null) }
+    var requestGeneration by remember { mutableIntStateOf(0) }
+    var loadingMore by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     val locationManager = remember {
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -171,11 +171,9 @@ fun NearbyScreen(onBack: () -> Unit) {
                     origin = if (point?.isUsable == true) {
                         NearbyOriginState.Available(
                             point,
-                            OriginSource.CurrentLocation,
                             // The fix's own horizontal uncertainty, carried so no row can render a
-                            // distance finer than this coarse grant actually supports. Absent is
-                            // NOT zero: it means the device stated no accuracy, which the pure
-                            // policy turns into an explicit non-claim.
+                            // distance finer than either this grant or the request's ~100 m
+                            // coordinate rounding supports. Absent is not zero.
                             accuracyMetres = location.takeIf { it.hasAccuracy() }
                                 ?.accuracy
                                 ?.toDouble(),
@@ -205,9 +203,8 @@ fun NearbyScreen(onBack: () -> Unit) {
         }
     }
 
-    // Coarse only, deliberately. Ranking a 50 km list and rendering its bands needs nothing finer,
-    // and the precise-GPS grant is not something this feature is entitled to ask for. The iOS mirror
-    // requests the same hundred-metre class via `kCLLocationAccuracyHundredMeters`.
+    // Coarse only, deliberately. The service needs only enough precision to rank providers, and the
+    // request is independently rounded to three decimals before networking.
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -224,78 +221,86 @@ fun NearbyScreen(onBack: () -> Unit) {
         }
     }
 
-    val measurements = remember(directoryResult, origin) {
-        val found = directoryResult as? ProviderDirectoryResult.Found
-        val available = origin as? NearbyOriginState.Available
-        if (found == null || available == null) {
-            emptyList()
-        } else {
-            found.providers.mapNotNull { provider ->
-                measure(available.point, provider)
+    val approximatePosition = remember(origin) {
+        (origin as? NearbyOriginState.Available)
+            ?.point
+            ?.let(ApproximateCallerPosition::from)
+    }
+    val trimmedQuery = query.trim()
+
+    LaunchedEffect(scope, trimmedQuery, approximatePosition?.lat, approximatePosition?.lng, refreshKey) {
+        requestGeneration += 1
+        val generation = requestGeneration
+        loadingMore = false
+        directoryResult = null
+        actionError = null
+        if (scope == DirectoryScope.Nearby && approximatePosition == null) {
+            return@LaunchedEffect
+        }
+        if (trimmedQuery.isNotEmpty()) delay(300)
+        val page = loadDirectoryPage(
+            directory = directory,
+            scope = scope,
+            name = trimmedQuery,
+            position = approximatePosition,
+            offset = 0,
+        )
+        if (generation == requestGeneration) {
+            directoryResult = page
+            // Remember what the owner just saw, and reach for the remembered set ONLY when the live
+            // read could not answer at all. An `Empty` is an answer, so it is not a fallback case.
+            when (page) {
+                is ProviderDirectoryResult.Found ->
+                    recordCache.remember(page.providers, System.currentTimeMillis())
+                is ProviderDirectoryResult.Unavailable ->
+                    storedRecords = recordCache.recall(System.currentTimeMillis())
+                is ProviderDirectoryResult.Empty -> Unit
             }
         }
     }
+
+    fun loadMore() {
+        val current = directoryResult as? ProviderDirectoryResult.Found ?: return
+        if (!current.hasMore || loadingMore) return
+        val generation = requestGeneration
+        val nextOffset = current.offset + current.providers.size
+        loadingMore = true
+        coroutineScope.launch {
+            val next = loadDirectoryPage(
+                directory = directory,
+                scope = scope,
+                name = trimmedQuery,
+                position = approximatePosition,
+                offset = nextOffset,
+            )
+            if (generation == requestGeneration) {
+                directoryResult = appendDirectoryPage(current, next)
+                loadingMore = false
+            }
+        }
+    }
+
     val unitSystem = remember {
         NearbyDecision.unitSystemForRegion(Locale.getDefault().toLanguageTag())
     }
-    val nearbyPresentation = NearbyDecision.nearby(
+    val livePresentation = NearbyDecision.nearby(
         directory = directoryResult,
         origin = origin,
-        measurements = measurements,
         query = query,
         unit = unitSystem,
     )
+    // The remembered set may only stand in when the live read could not answer. It never overrides a
+    // real answer, and when there is nothing relevant remembered the live "could not check" stands -
+    // a fallback that answered an empty list would turn could-not-check into an established absence.
+    val nearbyPresentation = if (livePresentation is NearbyPresentation.DirectoryUnavailable) {
+        NearbyDecision.storedFallback(storedRecords, query, System.currentTimeMillis())
+            ?: livePresentation
+    } else {
+        livePresentation
+    }
     val contactPresentation = NearbyDecision.contacts(directoryResult, query)
-    // An age is a claim about NOW, so it is re-sampled whenever the owner comes back to the app: one
-    // who backgrounds a composed Nearby for a day must not return to the age they left behind, which
-    // would understate staleness in exactly the direction the outward rounding exists to prevent.
-    // This re-reads the CLOCK only - `refreshKey` is deliberately untouched, so returning to the app
-    // does not silently re-attempt the live directory read.
-    var foregroundEpoch by remember { mutableIntStateOf(0) }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) foregroundEpoch++
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-    // The clock is read once per snapshot rather than on every recomposition; a coarse age should not
-    // animate, so there is deliberately no ticker. `refreshKey` is part of the key because
-    // `ProviderDirectoryResult` is a data class and `remember` compares keys STRUCTURALLY: a manual
-    // refresh that replays the same stored document produces an equal result, which alone would keep
-    // the previous age and leave the label frozen however often the owner refreshes.
-    val storedAge = remember(refreshKey, foregroundEpoch, directoryResult) {
-        when (val result = directoryResult) {
-            is ProviderDirectoryResult.Found ->
-                NearbyDecision.formatStoredAge(result.readAt, System.currentTimeMillis())
-            is ProviderDirectoryResult.Empty ->
-                NearbyDecision.formatStoredAge(result.readAt, System.currentTimeMillis())
-            else -> null
-        }
-    }
     val fixAccuracyNote = (origin as? NearbyOriginState.Available)
-        ?.takeIf { it.source == OriginSource.CurrentLocation }
         ?.let { NearbyDecision.accuracyNote(it.accuracyMetres, unitSystem) }
-    val offerOriginChoice = when (nearbyPresentation) {
-        NearbyPresentation.AwaitingOrigin,
-        NearbyPresentation.Locating,
-        NearbyPresentation.PermissionRefused,
-        NearbyPresentation.LocationUnavailable,
-        NearbyPresentation.InvalidChosenLocation,
-        is NearbyPresentation.ProvidersFound,
-        -> true
-        // Keep a chosen/current origin editable after a result changes. If the phone-local list
-        // proves there is no possible candidate before an origin exists, do not invite a pointless
-        // permission request.
-        is NearbyPresentation.NoneWithinRange,
-        is NearbyPresentation.NoNameMatch,
-        -> origin is NearbyOriginState.Available
-        NearbyPresentation.LoadingDirectory,
-        is NearbyPresentation.DirectoryUnavailable,
-        is NearbyPresentation.DirectoryEmpty,
-        -> false
-    }
 
     Column(Modifier.fillMaxSize().background(c.background)) {
         Row(
@@ -332,33 +337,15 @@ fun NearbyScreen(onBack: () -> Unit) {
             ),
         )
 
-        if (scope == DirectoryScope.Nearby && offerOriginChoice) {
+        if (scope == DirectoryScope.Nearby) {
             OriginPicker(
                 origin = origin,
                 fixAccuracyNote = fixAccuracyNote,
-                showCoordinates = showCoordinates,
-                latitude = latitude,
-                longitude = longitude,
                 onUseCurrent = ::useCurrentLocation,
-                onToggleCoordinates = { showCoordinates = !showCoordinates },
-                onLatitude = { latitude = it },
-                onLongitude = { longitude = it },
-                onApplyCoordinates = {
-                    // A chosen origin deliberately supersedes any current-location request. The
-                    // callback's identity check keeps an already-queued result from winning the race.
-                    cancellation.value?.cancel()
-                    cancellation.value = null
-                    val point = NearbyDecision.parseChosenOrigin(latitude, longitude)
-                    origin = if (point == null) {
-                        NearbyOriginState.InvalidChosenLocation
-                    } else {
-                        NearbyOriginState.Available(point, OriginSource.ChosenCoordinates)
-                    }
-                },
             )
         }
 
-        handoffError?.let { error ->
+        actionError?.let { error ->
             Text(
                 error,
                 color = c.danger,
@@ -370,13 +357,14 @@ fun NearbyScreen(onBack: () -> Unit) {
         if (scope == DirectoryScope.Nearby) {
             NearbyResults(
                 presentation = nearbyPresentation,
-                unitSystem = unitSystem,
-                storedAge = storedAge,
-                onDirections = { provider ->
-                    handoffError = if (openDirections(context, provider)) {
+                hasMore = (directoryResult as? ProviderDirectoryResult.Found)?.hasMore == true,
+                loadingMore = loadingMore,
+                onLoadMore = ::loadMore,
+                onOpen = { uri, dial ->
+                    actionError = if (openExternal(context, uri, dial)) {
                         null
                     } else {
-                        "No maps app could open this destination."
+                        "No app could open this contact method."
                     }
                 },
                 modifier = Modifier.weight(1f),
@@ -384,9 +372,11 @@ fun NearbyScreen(onBack: () -> Unit) {
         } else {
             ContactResults(
                 presentation = contactPresentation,
-                storedAge = storedAge,
+                hasMore = (directoryResult as? ProviderDirectoryResult.Found)?.hasMore == true,
+                loadingMore = loadingMore,
+                onLoadMore = ::loadMore,
                 onOpen = { uri, dial ->
-                    handoffError = if (openExternal(context, uri, dial)) {
+                    actionError = if (openExternal(context, uri, dial)) {
                         null
                     } else {
                         "No app could open this contact method."
@@ -429,14 +419,7 @@ private fun ScopePicker(scope: DirectoryScope, onSelect: (DirectoryScope) -> Uni
 private fun OriginPicker(
     origin: NearbyOriginState,
     fixAccuracyNote: String?,
-    showCoordinates: Boolean,
-    latitude: String,
-    longitude: String,
     onUseCurrent: () -> Unit,
-    onToggleCoordinates: () -> Unit,
-    onLatitude: (String) -> Unit,
-    onLongitude: (String) -> Unit,
-    onApplyCoordinates: () -> Unit,
 ) {
     val c = DogTagTheme.colors
     Column(
@@ -444,85 +427,42 @@ private fun OriginPicker(
             .clip(RoundedCornerShape(16.dp)).background(c.surface).padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
-        Text("Distance from", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
         Text(
-            "DogTag uses your position only on this phone. It is never sent to DogTag, the provider " +
-                "directory, or a provider.",
-            fontSize = 12.sp,
-            color = c.muted,
+            "Find providers near you",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = c.onBackground,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = onUseCurrent,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = c.accent,
-                    contentColor = c.onAccent,
-                ),
-                modifier = Modifier.weight(1f),
-            ) {
-                Icon(Icons.Filled.MyLocation, null, modifier = Modifier.size(17.dp))
-                Spacer(Modifier.size(6.dp))
-                Text("Use my location", fontSize = 12.sp)
-            }
-            OutlinedButton(onClick = onToggleCoordinates, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.LocationOn, null, modifier = Modifier.size(17.dp))
-                Spacer(Modifier.size(6.dp))
-                Text("Coordinates", fontSize = 12.sp)
-            }
+        Text(
+            NearbyDecision.LOCATION_DISCLOSURE,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = c.onBackground,
+        )
+        Button(
+            onClick = onUseCurrent,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = c.accent,
+                contentColor = c.onAccent,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Filled.MyLocation, null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.size(6.dp))
+            Text("Use my approximate location", fontSize = 12.sp)
         }
         when (origin) {
             NearbyOriginState.Locating ->
                 Text("Getting your current position…", fontSize = 12.sp, color = c.muted)
             is NearbyOriginState.Available ->
                 Text(
-                    if (origin.source == OriginSource.CurrentLocation) {
-                        // State the fix's own uncertainty rather than implying a precise position.
-                        fixAccuracyNote?.let {
-                            "Using your current position on this phone, accurate to $it."
-                        } ?: "Using your current position on this phone."
-                    } else {
-                        "Using your chosen coordinates on this phone."
-                    },
+                    fixAccuracyNote?.let {
+                        "Using an approximate current location (device accuracy $it)."
+                    } ?: "Using an approximate current location.",
                     fontSize = 12.sp,
                     color = c.success,
                 )
             else -> Unit
-        }
-        if (showCoordinates) {
-            Text(
-                "Enter decimal coordinates. They are parsed here and never geocoded or sent anywhere.",
-                fontSize = 11.sp,
-                color = c.muted,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = latitude,
-                    onValueChange = onLatitude,
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    label = { Text("Latitude") },
-                    // Decimal keyboards commonly omit a minus key, making half the globe
-                    // impossible to enter. Parsing and validation still happen locally on submit.
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Text,
-                        autoCorrectEnabled = false,
-                    ),
-                )
-                OutlinedTextField(
-                    value = longitude,
-                    onValueChange = onLongitude,
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    label = { Text("Longitude") },
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Text,
-                        autoCorrectEnabled = false,
-                    ),
-                )
-            }
-            Button(onClick = onApplyCoordinates, modifier = Modifier.fillMaxWidth()) {
-                Text("Use chosen location")
-            }
         }
     }
 }
@@ -530,9 +470,10 @@ private fun OriginPicker(
 @Composable
 private fun NearbyResults(
     presentation: NearbyPresentation,
-    unitSystem: NearbyDecision.UnitSystem,
-    storedAge: String?,
-    onDirections: (DirectoryProvider) -> Unit,
+    hasMore: Boolean,
+    loadingMore: Boolean,
+    onLoadMore: () -> Unit,
+    onOpen: (Uri, Boolean) -> Unit,
     modifier: Modifier,
 ) {
     LazyColumn(
@@ -552,7 +493,7 @@ private fun NearbyResults(
                 )
             }
             is NearbyPresentation.DirectoryEmpty -> item {
-                ObservationBanner(presentation.observation, storedAge)
+                ObservationBanner(presentation.observation)
                 StateCard(
                     "The directory is empty",
                     "The provider directory was reached successfully, but currently contains no providers.",
@@ -560,54 +501,70 @@ private fun NearbyResults(
             }
             NearbyPresentation.AwaitingOrigin -> item {
                 StateCard(
-                    "Choose where to measure from",
-                    "Use your current position or enter coordinates above. Neither is sent to the directory.",
+                    "Use your approximate location",
+                    "DogTag sends an approximately 100-metre location to find the nearest listed vets and groomers.",
                 )
             }
             NearbyPresentation.Locating -> item { LoadingCard("Getting your current position…") }
             NearbyPresentation.PermissionRefused -> item {
                 StateCard(
                     "Location permission refused",
-                    "DogTag cannot use your current position. You can still enter coordinates above; " +
-                        "that path needs no permission.",
+                    "DogTag cannot find nearest providers without an approximate current location. " +
+                        "You can still search Provider contacts by name.",
                     danger = true,
                 )
             }
             NearbyPresentation.LocationUnavailable -> item {
                 StateCard(
                     "Current location unavailable",
-                    "Turn on location services and try again, or enter coordinates above.",
+                    "Turn on location services and try again, or search Provider contacts by name.",
                     danger = true,
                 )
             }
-            NearbyPresentation.InvalidChosenLocation -> item {
+            is NearbyPresentation.NoNearbyProviders -> item {
+                ObservationBanner(presentation.observation)
                 StateCard(
-                    "Those coordinates are not valid",
-                    "Latitude must be between -90 and 90, and longitude between -180 and 180.",
-                    danger = true,
-                )
-            }
-            is NearbyPresentation.NoneWithinRange -> item {
-                ObservationBanner(presentation.observation, storedAge)
-                val radius = NearbyDecision.formatDistanceKm(presentation.radiusKm, unitSystem)
-                    ?: "${presentation.radiusKm.toInt()} km"
-                StateCard(
-                    "No providers within range",
-                    "No listed vet or groomer is within $radius. " +
-                        "Provider contacts may still include businesses without a published location.",
+                    "No nearby providers found",
+                    "The directory returned no located vet or groomer for this search. Provider contacts " +
+                        "may still include businesses without a published location.",
                 )
             }
             is NearbyPresentation.NoNameMatch -> item {
-                ObservationBanner(presentation.observation, storedAge)
+                ObservationBanner(presentation.observation)
                 StateCard(
                     "No provider named “${presentation.query}”",
-                    "The directory was searched on this phone; your search text was not sent anywhere.",
+                    "The provider directory found no matching vet or groomer.",
                 )
             }
+            is NearbyPresentation.StoredProvidersOnly -> {
+                item {
+                    StateCard(
+                        "Showing providers saved on this phone",
+                        buildString {
+                            append("We could not reach the provider directory, so these are providers ")
+                            append("this phone saw before")
+                            presentation.storedAge?.let { append(" (last updated $it)") }
+                            append(". They are NOT sorted by distance and no distance is shown: ")
+                            append("that needs the service. Contact details may be out of date.")
+                        },
+                    )
+                }
+                // The contact row deliberately: it renders identity and contacts and makes no
+                // proximity claim, which is exactly what a remembered record can support.
+                items(presentation.providers, key = { it.providerId }) { provider ->
+                    ContactProviderRow(provider, onOpen)
+                }
+                item { Spacer(Modifier.height(16.dp)) }
+            }
             is NearbyPresentation.ProvidersFound -> {
-                item { ObservationBanner(presentation.observation, storedAge) }
+                item { ObservationBanner(presentation.observation) }
                 items(presentation.rows, key = { it.provider.providerId }) { row ->
-                    NearbyProviderRow(row, onDirections)
+                    NearbyProviderRow(row, onOpen)
+                }
+                if (hasMore) {
+                    item {
+                        PageButton(loading = loadingMore, onLoadMore = onLoadMore)
+                    }
                 }
                 item { Spacer(Modifier.height(16.dp)) }
             }
@@ -618,7 +575,9 @@ private fun NearbyResults(
 @Composable
 private fun ContactResults(
     presentation: ContactDirectoryPresentation,
-    storedAge: String?,
+    hasMore: Boolean,
+    loadingMore: Boolean,
+    onLoadMore: () -> Unit,
     onOpen: (Uri, Boolean) -> Unit,
     modifier: Modifier,
 ) {
@@ -639,25 +598,25 @@ private fun ContactResults(
                 )
             }
             is ContactDirectoryPresentation.DirectoryEmpty -> item {
-                ObservationBanner(presentation.observation, storedAge)
+                ObservationBanner(presentation.observation)
                 StateCard(
                     "No provider contacts",
                     "The provider directory was reached successfully, but has no eligible providers.",
                 )
             }
             is ContactDirectoryPresentation.NoNameMatch -> item {
-                ObservationBanner(presentation.observation, storedAge)
+                ObservationBanner(presentation.observation)
                 StateCard(
                     "No provider named “${presentation.query}”",
-                    "The directory was searched on this phone; your search text was not sent anywhere.",
+                    "The provider directory found no matching vet or groomer.",
                 )
             }
             is ContactDirectoryPresentation.ProvidersFound -> {
                 item {
-                    ObservationBanner(presentation.observation, storedAge)
+                    ObservationBanner(presentation.observation)
                     Text(
                         "This unranked directory includes providers that publish contact details but " +
-                            "no location. It never gives them a placeholder pin or Directions button.",
+                            "no location. DogTag never invents a placeholder location for them.",
                         fontSize = 12.sp,
                         color = DogTagTheme.colors.muted,
                         modifier = Modifier.padding(vertical = 4.dp),
@@ -665,6 +624,11 @@ private fun ContactResults(
                 }
                 items(presentation.providers, key = { it.providerId }) { provider ->
                     ContactProviderRow(provider, onOpen)
+                }
+                if (hasMore) {
+                    item {
+                        PageButton(loading = loadingMore, onLoadMore = onLoadMore)
+                    }
                 }
                 item { Spacer(Modifier.height(16.dp)) }
             }
@@ -675,10 +639,9 @@ private fun ContactResults(
 @Composable
 private fun NearbyProviderRow(
     row: NearbyRow,
-    onDirections: (DirectoryProvider) -> Unit,
+    onOpen: (Uri, Boolean) -> Unit,
 ) {
     val c = DogTagTheme.colors
-    val bearing = NearbyDecision.formatBearing(row.bearingDegrees)
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -686,32 +649,20 @@ private fun NearbyProviderRow(
         ProviderHeading(row.provider)
         when (val distance = row.distance) {
             is DistanceClaim.Measured -> Text(
-                listOfNotNull(distance.display, bearing).joinToString(" · "),
+                distance.display,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 color = c.onBackground,
             )
             // Never a confident number the origin cannot support, and never a silent blank either.
             is DistanceClaim.Uncertain -> Text(
-                listOfNotNull(distance.reason, bearing?.let { "Bearing $it" }).joinToString(" "),
+                distance.reason,
                 fontSize = 12.sp,
                 color = c.muted,
             )
         }
         ProviderBindingChip(row.provider)
-        Button(
-            onClick = { onDirections(row.provider) },
-            enabled = row.canOpenDirections,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = c.accent,
-                contentColor = c.onAccent,
-            ),
-        ) {
-            Icon(Icons.Filled.Directions, null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.size(7.dp))
-            Text("Directions")
-        }
+        ProviderContactActions(row.provider, onOpen)
     }
 }
 
@@ -734,71 +685,78 @@ private fun ContactProviderRow(
             )
         }
         ProviderBindingChip(provider)
-        val contact = provider.contact
-        contact.phone?.let {
-            val number = it.filter { character ->
-                character.isDigit() || character == '+' || character == '*' || character == '#'
-            }
-            if (number.any(Char::isDigit)) {
-                ContactAction(Icons.Filled.Phone, "Phone", it) {
-                    onOpen(Uri.parse("tel:${Uri.encode(number)}"), true)
-                }
-            } else {
-                PublishedContactValue("Phone", it)
-            }
+        ProviderContactActions(provider, onOpen)
+    }
+}
+
+@Composable
+private fun ProviderContactActions(
+    provider: DirectoryProvider,
+    onOpen: (Uri, Boolean) -> Unit,
+) {
+    val c = DogTagTheme.colors
+    val contact = provider.contact
+    contact.phone?.let {
+        val number = it.filter { character ->
+            character.isDigit() || character == '+' || character == '*' || character == '#'
         }
-        contact.whatsapp?.let {
-            val number = it.filter { character -> character in '0'..'9' }
-            if (number.isNotEmpty()) {
-                ContactAction(Icons.AutoMirrored.Filled.Chat, "WhatsApp", it) {
-                    onOpen(Uri.parse("https://wa.me/$number"), false)
-                }
-            } else {
-                PublishedContactValue("WhatsApp", it)
+        if (number.any(Char::isDigit)) {
+            ContactAction(Icons.Filled.Phone, "Phone", it) {
+                onOpen(Uri.parse("tel:${Uri.encode(number)}"), true)
             }
+        } else {
+            PublishedContactValue("Phone", it)
         }
-        contact.telegram?.let {
-            val handle = it.trim()
-                .replace(Regex("^https://t\\.me/", RegexOption.IGNORE_CASE), "")
-                .trim('@', '/', ' ')
-            if (handle.isNotEmpty() && handle.all { character ->
-                    character.isLetterOrDigit() || character == '_'
-                }
-            ) {
-                ContactAction(Icons.AutoMirrored.Filled.Chat, "Telegram", it) {
-                    onOpen(Uri.parse("https://t.me/${Uri.encode(handle)}"), false)
-                }
-            } else {
-                PublishedContactValue("Telegram", it)
+    }
+    contact.whatsapp?.let {
+        val number = it.filter { character -> character in '0'..'9' }
+        if (number.isNotEmpty()) {
+            ContactAction(Icons.AutoMirrored.Filled.Chat, "WhatsApp", it) {
+                onOpen(Uri.parse("https://wa.me/$number"), false)
             }
+        } else {
+            PublishedContactValue("WhatsApp", it)
         }
-        contact.email?.let {
-            if ('@' in it) {
-                ContactAction(Icons.Filled.Email, "Email", it) {
-                    onOpen(Uri.parse("mailto:${Uri.encode(it)}"), false)
-                }
-            } else {
-                PublishedContactValue("Email", it)
+    }
+    contact.telegram?.let {
+        val handle = it.trim()
+            .replace(Regex("^https://t\\.me/", RegexOption.IGNORE_CASE), "")
+            .trim('@', '/', ' ')
+        if (handle.isNotEmpty() && handle.all { character ->
+                character.isLetterOrDigit() || character == '_'
             }
-        }
-        contact.website?.let {
-            // The first channel whose SCHEME comes from the directory string rather than from us:
-            // tel:/wa.me/t.me/mailto: are all constructed here. So an explicit http(s) value is
-            // opened and anything else is shown inert, rather than handed to ACTION_VIEW as typed.
-            val url = it.trim()
-            if (url.startsWith("http://", ignoreCase = true) ||
-                url.startsWith("https://", ignoreCase = true)
-            ) {
-                ContactAction(Icons.Filled.Language, "Website", it) {
-                    onOpen(Uri.parse(url), false)
-                }
-            } else {
-                PublishedContactValue("Website", it)
+        ) {
+            ContactAction(Icons.AutoMirrored.Filled.Chat, "Telegram", it) {
+                onOpen(Uri.parse("https://t.me/${Uri.encode(handle)}"), false)
             }
+        } else {
+            PublishedContactValue("Telegram", it)
         }
-        if (!contact.hasAny) {
-            Text("No contact details published.", fontSize = 12.sp, color = c.muted)
+    }
+    contact.email?.let {
+        if ('@' in it) {
+            ContactAction(Icons.Filled.Email, "Email", it) {
+                onOpen(Uri.parse("mailto:${Uri.encode(it)}"), false)
+            }
+        } else {
+            PublishedContactValue("Email", it)
         }
+    }
+    contact.website?.let {
+        // These are the only caller-controlled URI schemes: explicit HTTP(S) or schemes built here.
+        val url = it.trim()
+        if (url.startsWith("http://", ignoreCase = true) ||
+            url.startsWith("https://", ignoreCase = true)
+        ) {
+            ContactAction(Icons.Filled.Language, "Website", it) {
+                onOpen(Uri.parse(url), false)
+            }
+        } else {
+            PublishedContactValue("Website", it)
+        }
+    }
+    if (!contact.hasAny) {
+        Text("No contact details published.", fontSize = 12.sp, color = c.muted)
     }
 }
 
@@ -877,7 +835,26 @@ private fun ContactAction(
 }
 
 @Composable
-private fun ObservationBanner(observation: DirectoryObservation, storedAge: String?) {
+private fun PageButton(loading: Boolean, onLoadMore: () -> Unit) {
+    Button(
+        onClick = onLoadMore,
+        enabled = !loading,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                color = DogTagTheme.colors.onAccent,
+                strokeWidth = 2.dp,
+            )
+            Spacer(Modifier.size(8.dp))
+        }
+        Text(if (loading) "Loading more…" else "Load more")
+    }
+}
+
+@Composable
+private fun ObservationBanner(observation: DirectoryObservation) {
     if (observation != DirectoryObservation.Stored) return
     val c = DogTagTheme.colors
     Row(
@@ -888,11 +865,7 @@ private fun ObservationBanner(observation: DirectoryObservation, storedAge: Stri
         Icon(Icons.Filled.Info, null, tint = c.muted, modifier = Modifier.size(17.dp))
         Spacer(Modifier.size(8.dp))
         Text(
-            "Using a saved, unexpired directory snapshot because the live refresh could not " +
-                // The offline window is days long, so how old the copy is is a materially different
-                // statement from the bare fact that it is stored. An age that could not be derived
-                // says nothing rather than inventing a number.
-                "complete." + storedAge?.let { " Remembered $it." }.orEmpty(),
+            "Using a saved, unexpired directory snapshot because the live refresh could not complete.",
             fontSize = 11.sp,
             color = c.muted,
             modifier = Modifier.weight(1f),
@@ -932,50 +905,32 @@ private fun StateCard(title: String, body: String, danger: Boolean = false) {
     }
 }
 
-private fun measure(origin: GeoPoint, provider: DirectoryProvider): ProviderMeasurement? {
-    val destination = provider.geo?.takeIf { it.isUsable } ?: return null
-    val results = FloatArray(2)
-    return runCatching {
-        // Platform primitive: no second haversine/bearing implementation lives in the app.
-        Location.distanceBetween(
-            origin.lat,
-            origin.lng,
-            destination.lat,
-            destination.lng,
-            results,
-        )
-        ProviderMeasurement(
-            providerId = provider.providerId,
-            distanceKm = results[0].toDouble() / 1_000.0,
-            // Android reports a plausible 0° for geometries where a heading is undefined. Preserve
-            // the canonical geo rule instead of rendering that non-answer as "N".
-            bearingDegrees = if (
-                (origin.lat == destination.lat && origin.lng == destination.lng) ||
-                kotlin.math.abs(origin.lat) == 90.0
-            ) {
-                null
+private suspend fun loadDirectoryPage(
+    directory: ProviderDirectory,
+    scope: DirectoryScope,
+    name: String,
+    position: ApproximateCallerPosition?,
+    offset: Int,
+): ProviderDirectoryResult {
+    val query = ProviderDirectoryQuery(
+        kinds = OWNER_PROVIDER_KINDS,
+        name = name,
+        limit = DEFAULT_PROVIDER_PAGE_SIZE,
+        offset = offset,
+    )
+    return when (scope) {
+        DirectoryScope.Nearby -> {
+            if (position == null) {
+                ProviderDirectoryResult.Unavailable(
+                    reason = io.liberalize.dogtag.nearby.DirectoryUnavailableReason.InvalidSnapshot,
+                    detail = "An approximate current location is required for Nearby",
+                    attemptedAt = System.currentTimeMillis(),
+                )
             } else {
-                results.getOrNull(1)?.toDouble()
-            },
-        )
-    }.getOrNull()
-}
-
-private fun openDirections(context: Context, provider: DirectoryProvider): Boolean {
-    val destination = provider.geo?.takeIf { it.isUsable } ?: return false
-    val coordinates = "${destination.lat},${destination.lng}"
-    val label = Uri.encode("$coordinates (${provider.name})")
-    // Both URI coordinate occurrences are the PUBLIC DESTINATION. The current/chosen origin is never
-    // placed in the intent; the external maps app decides what to do only after this deliberate tap.
-    val uri = Uri.parse("geo:$coordinates?q=$label")
-    val intent = Intent.createChooser(Intent(Intent.ACTION_VIEW, uri), "Open directions")
-    return try {
-        context.startActivity(intent)
-        true
-    } catch (_: ActivityNotFoundException) {
-        false
-    } catch (_: SecurityException) {
-        false
+                directory.nearest(position, query)
+            }
+        }
+        DirectoryScope.Contacts -> directory.contacts(query)
     }
 }
 

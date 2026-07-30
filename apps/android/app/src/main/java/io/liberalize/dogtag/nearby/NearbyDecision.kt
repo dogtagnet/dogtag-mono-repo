@@ -1,7 +1,6 @@
 package io.liberalize.dogtag.nearby
 
 import io.liberalize.dogtag.net.IssuerBindingState
-import java.text.Normalizer
 import java.util.Locale
 
 /**
@@ -65,20 +64,25 @@ enum class DirectoryUnavailableReason {
 sealed interface ProviderDirectoryResult {
     data class Found(
         val providers: List<DirectoryProvider>,
+        /** Server-computed distances keyed by provider id; insertion/order follows [providers]. */
+        val distancesKm: Map<String, Double> = emptyMap(),
         val observation: DirectoryObservation,
         val readAt: Long,
-        /**
-         * `null` means this result came from a directory with no cache wrapper around it. It does
-         * NOT mean the facts are permanent, and it is what lets [CachedProviderDirectory] tell a
-         * fresh source read apart from a replay handed up by an inner wrapper.
-         */
-        val expiresAt: Long?,
+        val expiresAt: Long,
+        val total: Int = providers.size,
+        val limit: Int = providers.size.coerceAtLeast(1),
+        val offset: Int = 0,
+        val hasMore: Boolean = false,
     ) : ProviderDirectoryResult
 
     data class Empty(
         val observation: DirectoryObservation,
         val readAt: Long,
-        val expiresAt: Long?,
+        val expiresAt: Long,
+        val total: Int = 0,
+        val limit: Int = DEFAULT_PROVIDER_PAGE_SIZE,
+        val offset: Int = 0,
+        val hasMore: Boolean = false,
     ) : ProviderDirectoryResult
 
     data class Unavailable(
@@ -88,24 +92,18 @@ sealed interface ProviderDirectoryResult {
     ) : ProviderDirectoryResult
 }
 
-enum class OriginSource { CurrentLocation, ChosenCoordinates }
-
 sealed interface NearbyOriginState {
     data object AwaitingChoice : NearbyOriginState
     data object Locating : NearbyOriginState
     data object PermissionRefused : NearbyOriginState
     data object LocationUnavailable : NearbyOriginState
-    data object InvalidChosenLocation : NearbyOriginState
 
     /**
-     * [accuracyMetres] is the horizontal uncertainty the DEVICE reported for a
-     * [OriginSource.CurrentLocation] fix, and is what stops a coarse fix from being rendered as a
-     * precise distance. It is meaningless for [OriginSource.ChosenCoordinates], which the owner typed
-     * exactly, so that source keeps ordinary coordinate-based precision.
+     * [accuracyMetres] is the horizontal uncertainty the device reported for its current fix. The
+     * network request separately enforces a roughly 100-metre floor by rounding to three decimals.
      */
     data class Available(
         val point: GeoPoint,
-        val source: OriginSource,
         val accuracyMetres: Double? = null,
     ) : NearbyOriginState
 }
@@ -118,7 +116,7 @@ sealed interface NearbyOriginState {
  * arbitrary confident figure.
  */
 sealed interface DistanceClaim {
-    /** [approximate] is true for every device fix, so the row can mark the number as such. */
+    /** [approximate] is true for every coarsened device fix, so the row marks the number as such. */
     data class Measured(val label: String, val approximate: Boolean) : DistanceClaim {
         /**
          * What the row actually prints. Composed here, not at each call site, so the two apps cannot
@@ -132,23 +130,12 @@ sealed interface DistanceClaim {
     data class Uncertain(val reason: String) : DistanceClaim
 }
 
-/** Distance/bearing supplied by the platform geo primitive, not recomputed by this rule layer. */
-data class ProviderMeasurement(
-    val providerId: String,
-    val distanceKm: Double,
-    val bearingDegrees: Double?,
-)
-
 data class NearbyRow(
     val provider: DirectoryProvider,
-    /** The RAW platform measurement. Ordering uses it; only [distance] is coarsened for display. */
+    /** Server-computed distance. The device preserves server order and only coarsens display text. */
     val distanceKm: Double,
-    val bearingDegrees: Double?,
     val distance: DistanceClaim,
-) {
-    /** A row reaches this type only after its real destination was validated. */
-    val canOpenDirections: Boolean get() = provider.geo?.isUsable == true
-}
+)
 
 sealed interface NearbyPresentation {
     data object LoadingDirectory : NearbyPresentation
@@ -158,11 +145,7 @@ sealed interface NearbyPresentation {
     data object Locating : NearbyPresentation
     data object PermissionRefused : NearbyPresentation
     data object LocationUnavailable : NearbyPresentation
-    data object InvalidChosenLocation : NearbyPresentation
-    data class NoneWithinRange(
-        val radiusKm: Double,
-        val observation: DirectoryObservation,
-    ) : NearbyPresentation
+    data class NoNearbyProviders(val observation: DirectoryObservation) : NearbyPresentation
 
     data class NoNameMatch(
         val query: String,
@@ -172,6 +155,22 @@ sealed interface NearbyPresentation {
     data class ProvidersFound(
         val rows: List<NearbyRow>,
         val observation: DirectoryObservation,
+    ) : NearbyPresentation
+
+    /**
+     * The offline fallback: providers the owner has seen before, with NO distance and NO ranking.
+     *
+     * Deliberately its own case rather than a [ProvidersFound] carrying empty distances. [nearby]
+     * drops any provider it has no server distance for and then reports [NoNearbyProviders], so
+     * routing remembered records through it would render "no vets near you" about providers the phone
+     * is holding in its hand - the false absence this layer exists to prevent.
+     *
+     * [storedAge] may be `null`: an age that could not be derived says nothing rather than inventing
+     * a number. The rows are unranked, so the caller must not present them as nearest-first.
+     */
+    data class StoredProvidersOnly(
+        val providers: List<DirectoryProvider>,
+        val storedAge: String?,
     ) : NearbyPresentation
 }
 
@@ -191,13 +190,105 @@ sealed interface ContactDirectoryPresentation {
 }
 
 /**
+ * Appends one validated response page without changing server order.
+ *
+ * Metadata must continue exactly. Nearest pages are identified by a complete distance map; their
+ * boundary must also be nondecreasing so pagination cannot turn a malformed response into a list
+ * that only appears nearest-first. Contact pages carry no distances and preserve source order.
+ */
+internal fun appendDirectoryPage(
+    current: ProviderDirectoryResult.Found,
+    next: ProviderDirectoryResult,
+): ProviderDirectoryResult = when (next) {
+    is ProviderDirectoryResult.Unavailable -> next
+    is ProviderDirectoryResult.Empty -> {
+        if (!pageContinues(current, next.offset, next.limit, next.total)) {
+            invalidContinuation(next.readAt)
+        } else {
+            current.copy(hasMore = false, expiresAt = next.expiresAt)
+        }
+    }
+    is ProviderDirectoryResult.Found -> {
+        if (!pageContinues(current, next.offset, next.limit, next.total)) {
+            invalidContinuation(next.readAt)
+        } else {
+            val existingIds = current.providers.mapTo(HashSet()) { it.providerId }
+            when {
+                next.providers.any { !existingIds.add(it.providerId) } ->
+                    ProviderDirectoryResult.Unavailable(
+                        reason = DirectoryUnavailableReason.InvalidSnapshot,
+                        detail = "The provider directory repeated a provider across pages; refresh to retry",
+                        attemptedAt = next.readAt,
+                    )
+                !distanceBoundaryContinues(current, next) ->
+                    ProviderDirectoryResult.Unavailable(
+                        reason = DirectoryUnavailableReason.InvalidSnapshot,
+                        detail = "The provider directory returned an out-of-order distance page; refresh to retry",
+                        attemptedAt = next.readAt,
+                    )
+                else -> {
+                    val distances = LinkedHashMap(current.distancesKm)
+                    distances.putAll(next.distancesKm)
+                    current.copy(
+                        providers = current.providers + next.providers,
+                        distancesKm = distances,
+                        hasMore = next.hasMore,
+                        expiresAt = next.expiresAt,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun pageContinues(
+    current: ProviderDirectoryResult.Found,
+    nextOffset: Int,
+    nextLimit: Int,
+    nextTotal: Int,
+): Boolean {
+    val expectedOffset = current.offset + current.providers.size
+    return nextOffset == expectedOffset &&
+        nextLimit == current.limit &&
+        nextTotal == current.total
+}
+
+private fun distanceBoundaryContinues(
+    current: ProviderDirectoryResult.Found,
+    next: ProviderDirectoryResult.Found,
+): Boolean {
+    val currentIsNearest = current.distancesKm.isNotEmpty()
+    val nextIsNearest = next.distancesKm.isNotEmpty()
+    if (!currentIsNearest && !nextIsNearest) return true
+    if (
+        current.distancesKm.size != current.providers.size ||
+        next.distancesKm.size != next.providers.size
+    ) return false
+    val previous = current.providers.lastOrNull()
+        ?.let { current.distancesKm[it.providerId] }
+        ?: return false
+    val following = next.providers.firstOrNull()
+        ?.let { next.distancesKm[it.providerId] }
+        ?: return false
+    return previous <= following
+}
+
+private fun invalidContinuation(attemptedAt: Long) = ProviderDirectoryResult.Unavailable(
+    reason = DirectoryUnavailableReason.InvalidSnapshot,
+    detail = "The provider directory changed while loading the next page; refresh to retry",
+    attemptedAt = attemptedAt,
+)
+
+/**
  * What the Nearby and Provider contacts scopes are allowed to claim.
  *
- * Pure Kotlin: no Android, networking, clock, JSON, or location APIs. Android supplies measurements
- * with `Location.distanceBetween`; iOS supplies its platform measurements to the mirrored rule.
+ * Pure Kotlin: no Android, networking, clock, JSON, or location APIs. The server supplies ordered
+ * distances; this layer controls only eligibility, states, and honest display precision.
  */
 object NearbyDecision {
-    const val DEFAULT_RADIUS_KM = 50.0
+    const val LOCATION_DISCLOSURE =
+        "Your approximate location is sent to DogTag to find nearby vets and groomers. It is not stored."
+    const val NETWORK_POSITION_GRANULARITY_METRES = 100.0
     private const val KM_PER_MILE = 1.609344
     private const val FEET_PER_KM = 1000 / 0.3048
     private const val DISTANCE_UNAVAILABLE = "This provider's distance could not be measured."
@@ -209,9 +300,6 @@ object NearbyDecision {
     private const val FOOT_STEP_M = 25_000.0 / FEET_PER_KM
     private const val TENTH_MILE_M = KM_PER_MILE * 100
     private const val MILE_M = KM_PER_MILE * 1_000
-    private const val MINUTE_MS = 60L * 1_000
-    private const val HOUR_MS = 60L * MINUTE_MS
-    private const val DAY_MS = 24L * HOUR_MS
     private const val TEN_METRE_STEP_M = 10.0
     private const val TENTH_KM_M = 100.0
     private const val KM_STEP_M = 1_000.0
@@ -225,110 +313,71 @@ object NearbyDecision {
     private val IMPERIAL_LADDER_M =
         listOf(FOOT_STEP_M, TENTH_MILE_M, MILE_M, COARSEST_IMPERIAL_M)
     private val imperialRegions = setOf("US", "GB", "LR", "MM")
-    private val compassPoints = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
     enum class UnitSystem { Metric, Imperial }
-
-    fun parseChosenOrigin(latitude: String, longitude: String): GeoPoint? {
-        val lat = latitude.trim().toDoubleOrNull() ?: return null
-        val lng = longitude.trim().toDoubleOrNull() ?: return null
-        return GeoPoint(lat, lng).takeIf { it.isUsable }
-    }
 
     fun nearby(
         directory: ProviderDirectoryResult?,
         origin: NearbyOriginState,
-        measurements: List<ProviderMeasurement>,
         query: String,
-        radiusKm: Double = DEFAULT_RADIUS_KM,
         unit: UnitSystem = UnitSystem.Metric,
     ): NearbyPresentation {
-        when (directory) {
-            null -> return NearbyPresentation.LoadingDirectory
-            is ProviderDirectoryResult.Unavailable ->
-                return NearbyPresentation.DirectoryUnavailable(directory.detail)
-            is ProviderDirectoryResult.Empty ->
-                return NearbyPresentation.DirectoryEmpty(directory.observation)
-            is ProviderDirectoryResult.Found -> Unit
-        }
-
-        val found = directory
-        val needle = query.trim()
-        val locatedCandidates = found.providers.filter { provider ->
-            eligible(provider) && provider.geo?.isUsable == true
-        }.let { located ->
-            if (needle.isEmpty()) {
-                located
-            } else {
-                val foldedNeedle = searchFold(needle)
-                located.filter { searchFold(it.name).contains(foldedNeedle) }
-            }
-        }
-
-        // Do not ask for an origin when the phone-local provider set proves that no row could be
-        // shown. This keeps a refused/unavailable origin from obscuring an honest empty result and,
-        // importantly, avoids inviting an unnecessary location permission prompt.
-        if (locatedCandidates.isEmpty()) {
-            return if (needle.isNotEmpty()) {
-                NearbyPresentation.NoNameMatch(needle, found.observation)
-            } else {
-                val usableRadius = radiusKm.takeIf { it.isFinite() && it >= 0 } ?: DEFAULT_RADIUS_KM
-                NearbyPresentation.NoneWithinRange(usableRadius, found.observation)
-            }
-        }
-
         val available = when (origin) {
             NearbyOriginState.AwaitingChoice -> return NearbyPresentation.AwaitingOrigin
             NearbyOriginState.Locating -> return NearbyPresentation.Locating
             NearbyOriginState.PermissionRefused -> return NearbyPresentation.PermissionRefused
             NearbyOriginState.LocationUnavailable -> return NearbyPresentation.LocationUnavailable
-            NearbyOriginState.InvalidChosenLocation ->
-                return NearbyPresentation.InvalidChosenLocation
             is NearbyOriginState.Available -> {
                 if (!origin.point.isUsable) return NearbyPresentation.LocationUnavailable
                 origin
             }
         }
 
-        val fromDeviceFix = available.source == OriginSource.CurrentLocation
-        val measuredById = measurements.associateBy { it.providerId }
-        val located = locatedCandidates.mapNotNull { provider ->
-            val measured = measuredById[provider.providerId] ?: return@mapNotNull null
-            if (!measured.distanceKm.isFinite() || measured.distanceKm < 0) return@mapNotNull null
+        when (directory) {
+            null -> return NearbyPresentation.LoadingDirectory
+            is ProviderDirectoryResult.Unavailable ->
+                return NearbyPresentation.DirectoryUnavailable(directory.detail)
+            is ProviderDirectoryResult.Empty -> {
+                val needle = query.trim()
+                return if (needle.isNotEmpty()) {
+                    NearbyPresentation.NoNameMatch(needle, directory.observation)
+                } else {
+                    NearbyPresentation.NoNearbyProviders(directory.observation)
+                }
+            }
+            is ProviderDirectoryResult.Found -> Unit
+        }
+
+        val found = directory
+        val needle = query.trim()
+        val effectiveAccuracy = available.accuracyMetres
+            ?.takeIf { it.isFinite() && it >= 0 }
+            ?.coerceAtLeast(NETWORK_POSITION_GRANULARITY_METRES)
+        val visible = found.providers.mapNotNull { provider ->
+            if (!eligible(provider)) return@mapNotNull null
+            val serverDistance = found.distancesKm[provider.providerId] ?: return@mapNotNull null
+            if (!serverDistance.isFinite() || serverDistance < 0) return@mapNotNull null
             NearbyRow(
                 provider = provider,
-                distanceKm = measured.distanceKm,
-                bearingDegrees = measured.bearingDegrees
-                    ?.takeIf { it.isFinite() }
-                    ?.let { ((it % 360.0) + 360.0) % 360.0 },
+                distanceKm = serverDistance,
                 distance = distanceClaim(
-                    km = measured.distanceKm,
-                    accuracyMetres = available.accuracyMetres,
-                    fromDeviceFix = fromDeviceFix,
+                    km = serverDistance,
+                    accuracyMetres = effectiveAccuracy,
+                    fromDeviceFix = true,
                     unit = unit,
                 ),
             )
         }
 
-        val visible = if (needle.isNotEmpty()) {
-            // Name candidates were selected before asking for an origin. Search is deliberately not
-            // a locality search, so every valid measurement is visible even beyond the default range.
-            located
-        } else {
-            val usableRadius = radiusKm.takeIf { it.isFinite() && it >= 0 } ?: DEFAULT_RADIUS_KM
-            located.filter { it.distanceKm <= usableRadius }
-        // Kotlin's object-array sort is stable: equal-distance providers keep source-directory order.
-        // Adding a name tiebreak would silently change the source's ordering policy.
-        }.sortedBy { it.distanceKm }
-
         if (visible.isEmpty()) {
             return if (needle.isNotEmpty()) {
                 NearbyPresentation.NoNameMatch(needle, found.observation)
             } else {
-                val usableRadius = radiusKm.takeIf { it.isFinite() && it >= 0 } ?: DEFAULT_RADIUS_KM
-                NearbyPresentation.NoneWithinRange(usableRadius, found.observation)
+                NearbyPresentation.NoNearbyProviders(found.observation)
             }
         }
+        // Preserve the server's distance order byte-for-byte. Sorting here would both waste work and
+        // blur which tier is responsible for the nearest-first contract.
         return NearbyPresentation.ProvidersFound(visible, found.observation)
     }
 
@@ -344,20 +393,22 @@ object NearbyDecision {
             null -> return ContactDirectoryPresentation.LoadingDirectory
             is ProviderDirectoryResult.Unavailable ->
                 return ContactDirectoryPresentation.DirectoryUnavailable(directory.detail)
-            is ProviderDirectoryResult.Empty ->
-                return ContactDirectoryPresentation.DirectoryEmpty(directory.observation)
+            is ProviderDirectoryResult.Empty -> {
+                val needle = query.trim()
+                return if (needle.isNotEmpty()) {
+                    ContactDirectoryPresentation.NoNameMatch(needle, directory.observation)
+                } else {
+                    ContactDirectoryPresentation.DirectoryEmpty(directory.observation)
+                }
+            }
             is ProviderDirectoryResult.Found -> Unit
         }
         val found = directory
-        val needle = query.trim()
         val providers = found.providers
             .filter(::eligible)
-            .filter {
-                needle.isEmpty() || searchFold(it.name).contains(searchFold(needle))
-            }
-            .sortedWith(compareBy<DirectoryProvider>({ sortKey(it.name) }, { it.providerId }))
 
         if (providers.isEmpty()) {
+            val needle = query.trim()
             return if (needle.isNotEmpty()) {
                 ContactDirectoryPresentation.NoNameMatch(needle, found.observation)
             } else {
@@ -367,25 +418,61 @@ object NearbyDecision {
         return ContactDirectoryPresentation.ProvidersFound(providers, found.observation)
     }
 
+    /**
+     * What may be shown when a live read could not answer at all and records were remembered.
+     *
+     * Returns `null` when there is nothing honest to show - nothing remembered, or nothing remembered
+     * that matches this search - so the caller keeps the live "could not check" rather than replacing
+     * it with a reassuring list. That direction matters: a fallback that quietly answered an empty
+     * result would turn could-not-check into an established absence.
+     *
+     * No distance is computed or carried here, and the order is whatever position-free order the
+     * cache stored. Mirrors iOS `NearbyDecision.storedFallback`.
+     */
+    fun storedFallback(
+        records: StoredProviderRecords?,
+        query: String,
+        nowMillis: Long,
+    ): NearbyPresentation.StoredProvidersOnly? {
+        if (records == null) return null
+        val needle = query.trim().lowercase(Locale.ROOT)
+        val providers = records.providers
+            .filter(::eligible)
+            .filter { needle.isEmpty() || it.name.lowercase(Locale.ROOT).contains(needle) }
+        if (providers.isEmpty()) return null
+        return NearbyPresentation.StoredProvidersOnly(
+            providers = providers,
+            storedAge = formatStoredAge(records.storedAt, nowMillis),
+        )
+    }
+
+    /**
+     * How old a remembered record set is, in words.
+     *
+     * Rounds OUTWARD so a replay never reads fresher than it is, and promotes at the ceiling rather
+     * than printing "60 minutes ago". A stored time in the future is a backwards clock jump, not a
+     * fresh copy, so it says nothing. Mirrors iOS; keep the two in step by hand.
+     */
+    fun formatStoredAge(storedAtMillis: Long, nowMillis: Long): String? {
+        val elapsed = nowMillis - storedAtMillis
+        if (elapsed < 0) return null
+        if (elapsed < 60_000) return "less than a minute ago"
+        val minutes = ceilDiv(elapsed, 60_000)
+        if (minutes < 60) return agePhrase(minutes, "minute")
+        val hours = ceilDiv(elapsed, 3_600_000)
+        if (hours < 24) return agePhrase(hours, "hour")
+        return agePhrase(ceilDiv(elapsed, 86_400_000), "day")
+    }
+
+    private fun ceilDiv(value: Long, divisor: Long): Long = (value + divisor - 1) / divisor
+
+    private fun agePhrase(count: Long, unit: String): String =
+        if (count == 1L) "1 $unit ago" else "$count ${unit}s ago"
+
     private fun eligible(provider: DirectoryProvider): Boolean {
         if (provider.active == false) return false
         return provider.kind.trim().lowercase(Locale.ROOT) in setOf("vet", "groomer")
     }
-
-    /** Case- and diacritic-insensitive matching, over the already-held provider names only. */
-    private fun searchFold(value: String): String =
-        Normalizer.normalize(value, Normalizer.Form.NFD)
-            .replace(Regex("\\p{M}+"), "")
-            .lowercase(Locale.ROOT)
-
-    /**
-     * The contact list's ordering key, mirrored by iOS.
-     *
-     * It is the SAME locale-independent fold the on-device name search uses. A collating comparator
-     * would order the two apps differently for the same directory, because each platform's collation
-     * is its own; folding first leaves one order that both can reproduce.
-     */
-    private fun sortKey(value: String): String = searchFold(value.trim())
 
     fun unitSystemForRegion(regionOrLocale: String?): UnitSystem {
         if (regionOrLocale.isNullOrBlank()) return UnitSystem.Metric
@@ -450,53 +537,11 @@ object NearbyDecision {
     }
 
     /**
-     * How old a stored directory replay is, coarsely.
-     *
-     * The offline window is measured in days, so "stored" and "recent" are no longer the same
-     * statement and the surface has to say which. The ladder is deliberately blunt - under a minute,
-     * then minutes, hours, days - because a remembered public directory supports no finer claim.
-     *
-     * Rounds the age OUTWARD, so for the [nowMillis] it is GIVEN the stated age is never smaller than
-     * the true one. That is the same direction [uncertaintyLabel] rounds a distance bound, and the
-     * safe one here: understating staleness under-warns.
-     *
-     * Never describing a remembered copy as fresher than it is, though, is a JOINT property of that
-     * rounding and the CALLER re-sampling the clock - it is not something this function can carry
-     * alone. A label derived once and left on screen goes on asserting an age that has stopped being
-     * true, which under-warns in precisely the direction the rounding exists to prevent. So a surface
-     * must re-derive this when the owner returns to it: `NearbyScreen` keys its `remember` on an
-     * `ON_RESUME` epoch here, and reads `scenePhase` in `storedAgeClause` on iOS. Neither is a ticker,
-     * and neither suite can reach a lifecycle callback, so this half is a caller obligation stated
-     * here rather than a pinned one.
-     *
-     * Derived from the snapshot's own `readAt`, never from `expiresAt` minus the TTL - the deadline
-     * is the MINIMUM of the local window and any the source declared, so that subtraction is wrong
-     * whenever the source declared a shorter one. A `readAt` in the future is not derivable and
-     * answers null, which the surface renders as saying nothing rather than as "0 minutes ago".
-     */
-    fun formatStoredAge(readAtMillis: Long, nowMillis: Long): String? {
-        val elapsedMs = nowMillis - readAtMillis
-        if (elapsedMs < 0) return null
-        if (elapsedMs < MINUTE_MS) return "less than a minute ago"
-        val minutes = ceilDiv(elapsedMs, MINUTE_MS)
-        if (minutes < 60) return agePhrase(minutes, "minute")
-        val hours = ceilDiv(elapsedMs, HOUR_MS)
-        if (hours < 24) return agePhrase(hours, "hour")
-        return agePhrase(ceilDiv(elapsedMs, DAY_MS), "day")
-    }
-
-    private fun ceilDiv(value: Long, unit: Long): Long = (value + unit - 1) / unit
-
-    private fun agePhrase(count: Long, unit: String): String =
-        if (count == 1L) "1 $unit ago" else "$count ${unit}s ago"
-
-    /**
      * What this origin's precision permits the row to say about one measured distance.
      *
-     * Chosen coordinates are exact arithmetic on numbers the owner typed, so they keep the ordinary
-     * bands. A device fix does not: its label is rounded to a step no finer than the reported
-     * horizontal accuracy, and a fix whose accuracy is missing, nonsensical, or coarser than any
-     * usable step yields no number at all.
+     * A current-position result is rounded to a step no finer than the larger of the device-reported
+     * horizontal accuracy and the network coordinate's roughly 100-metre granularity. A fix whose
+     * accuracy is missing, nonsensical, or coarser than any usable step yields no number at all.
      *
      * Anything nearer than the coarser of the accuracy and half that rounding step is stated as a
      * BOUND. Half the step is the load-bearing half of that pair: below it the rounding collapses to
@@ -580,14 +625,6 @@ object NearbyDecision {
                 String.format(Locale.US, "%.1f km", ceilTo(metres, TENTH_KM_M) / 1_000.0)
             }
         }
-
-    /** Eight-point compass label for the platform-provided initial bearing. */
-    fun formatBearing(bearingDegrees: Double?): String? {
-        if (bearingDegrees == null || !bearingDegrees.isFinite()) return null
-        val normalized = ((bearingDegrees % 360.0) + 360.0) % 360.0
-        val index = Math.round(normalized / 45.0).toInt() % compassPoints.size
-        return compassPoints[index]
-    }
 
     private fun roundTo(value: Double, step: Double): Double = Math.round(value / step) * step
 

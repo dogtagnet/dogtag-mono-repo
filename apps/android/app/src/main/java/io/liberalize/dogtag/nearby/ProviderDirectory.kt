@@ -1,45 +1,97 @@
 package io.liberalize.dogtag.nearby
 
-import android.content.Context
 import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.net.Http
 import io.liberalize.dogtag.net.IssuerBindingState
-import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.URI
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
-/** Native adapter for the canonical full-set provider-directory contract. */
+/**
+ * A current-position value safe for the provider-directory request.
+ *
+ * The private constructor is the boundary: networking cannot accept a raw [GeoPoint]. The device
+ * rounds both axes to three decimal places (roughly 100 metres) before this value, and therefore the
+ * request body, can exist. Server-side rounding would be too late because the precise fix would
+ * already have crossed the privacy boundary.
+ */
+class ApproximateCallerPosition private constructor(
+    val lat: Double,
+    val lng: Double,
+) {
+    companion object {
+        fun from(point: GeoPoint): ApproximateCallerPosition? {
+            if (!point.isUsable) return null
+            fun coarsen(value: Double): Double {
+                val rounded = Math.round(value * 1_000.0) / 1_000.0
+                return if (rounded == 0.0) 0.0 else rounded
+            }
+            return ApproximateCallerPosition(coarsen(point.lat), coarsen(point.lng))
+        }
+    }
+}
+
+/** Caller-owned filtering and paging. The service supplies no implicit owner-app kind policy. */
+data class ProviderDirectoryQuery(
+    val kinds: List<String>,
+    val name: String? = null,
+    val limit: Int = DEFAULT_PROVIDER_PAGE_SIZE,
+    val offset: Int = 0,
+) {
+    init {
+        require(kinds.isNotEmpty()) { "provider kinds must not be empty" }
+        require(kinds.all { it.isNotBlank() }) { "provider kinds must not contain blanks" }
+        require(limit > 0) { "provider page limit must be positive" }
+        require(offset >= 0) { "provider page offset must not be negative" }
+    }
+
+    internal fun encodedQuery(): String {
+        val fields = ArrayList<Pair<String, String>>()
+        kinds.forEach { fields += "kind" to it.trim() }
+        fields += "limit" to limit.toString()
+        fields += "offset" to offset.toString()
+        name?.trim()?.takeIf { it.isNotEmpty() }?.let { fields += "name" to it }
+        return fields.joinToString("&") { (key, value) ->
+            "${percentEncode(key)}=${percentEncode(value)}"
+        }
+    }
+}
+
+const val DEFAULT_PROVIDER_PAGE_SIZE = 25
+
+/** Native adapter for the central provider-directory search contract. */
 interface ProviderDirectory {
     /**
-     * Stable identity of the configured source, used ONLY to scope a stored copy.
-     *
-     * It must distinguish two distinct configured endpoints and two future chain/registry
-     * configurations. It must never contain a user position or anything derived from one.
+     * Sends only an already-coarsened current position. The result is server-ranked and carries
+     * server distances; callers must preserve that order and must not recompute distance.
      */
-    val cacheNamespace: String
+    suspend fun nearest(
+        position: ApproximateCallerPosition,
+        query: ProviderDirectoryQuery,
+    ): ProviderDirectoryResult
 
-    /**
-     * Reads the same provider set for every caller. There is deliberately no query argument and no
-     * request-shaped place for a current/chosen position or name search.
-     */
-    suspend fun read(): ProviderDirectoryResult
+    /** Name/contact search. No position is accepted or sent on this path. */
+    suspend fun contacts(query: ProviderDirectoryQuery): ProviderDirectoryResult
 }
 
 /**
- * Central `GET /v1/businesses` adapter. It is a SOURCE only: it holds no cache and keeps no snapshot.
+ * Central directory adapter.
  *
- * The local copy lives in [CachedProviderDirectory], one decorator wrapping this seam, so the future
- * on-chain directory inherits the same offline behaviour without reimplementing it. Two fused caches
- * would also have to reason about each other - the inner one hands the outer a snapshot already
- * labelled [DirectoryObservation.Stored], and treating that as a successful refresh renews a deadline
- * that is supposed to be hard.
+ * Personalized nearest responses are deliberately not cached here or persisted anywhere. Each
+ * explicit request is sent live, and only the calling screen retains the response while rendering
+ * it. The body is used for position so ordinary URL/access logs do not receive a coordinate.
  */
 class CentralProviderDirectory(
     baseUrl: String,
+    private val ttlMs: Long = 15 * 60 * 1_000L,
     private val now: () -> Long = System::currentTimeMillis,
-    private val fetch: suspend (String) -> Http.Response = { Http.getJson(it) },
+    private val get: suspend (String) -> Http.Response = { Http.getJson(it) },
+    private val post: suspend (String, String) -> Http.Response = { url, body ->
+        Http.postJson(url, body)
+    },
 ) : ProviderDirectory {
     private val configuredBase = baseUrl.trim().also { configured ->
         require(configured.isNotEmpty()) { "provider directory base URL must not be blank" }
@@ -47,53 +99,93 @@ class CentralProviderDirectory(
         require(parsed.query == null && parsed.fragment == null) {
             "provider directory base URL must not contain a query or fragment"
         }
+    }.trimEnd('/')
+
+    init {
+        require(ttlMs > 0) { "provider directory ttlMs must be greater than zero" }
     }
-    internal val requestUrl: String = "${configuredBase.trimEnd('/')}/v1/businesses"
 
-    /**
-     * Scopes a stored copy to this exact configured endpoint.
-     *
-     * Repointing `CENTRAL_API` changes it, so one deployment's persisted snapshot can never be
-     * replayed as another's. A future on-chain directory must carry its own chain/registry identity
-     * here for the same reason.
-     */
-    override val cacheNamespace: String get() = "central:$requestUrl"
+    override suspend fun nearest(
+        position: ApproximateCallerPosition,
+        query: ProviderDirectoryQuery,
+    ): ProviderDirectoryResult {
+        val url = "$configuredBase/v1/businesses/nearest?${query.encodedQuery()}"
+        val body = buildString {
+            append("{\"approximateLat\":")
+            append(position.lat)
+            append(",\"approximateLng\":")
+            append(position.lng)
+            append('}')
+        }
+        return request(requireDistance = true) { post(url, body) }
+    }
 
-    override suspend fun read(): ProviderDirectoryResult = try {
-        val response = fetch(requestUrl)
-        if (!response.ok) {
+    override suspend fun contacts(query: ProviderDirectoryQuery): ProviderDirectoryResult {
+        val url = "$configuredBase/v1/businesses?${query.encodedQuery()}"
+        return request(requireDistance = false) { get(url) }
+    }
+
+    private suspend fun request(
+        requireDistance: Boolean,
+        fetch: suspend () -> Http.Response,
+    ): ProviderDirectoryResult {
+        val attemptedAt = now()
+        return try {
+            val response = fetch()
+            if (!response.ok) {
+                ProviderDirectoryResult.Unavailable(
+                    reason = DirectoryUnavailableReason.SourceUnavailable,
+                    detail = "The provider directory returned HTTP ${response.code}",
+                    attemptedAt = attemptedAt,
+                )
+            } else {
+                decode(response.body, attemptedAt, requireDistance)
+            }
+        } catch (error: Exception) {
             ProviderDirectoryResult.Unavailable(
                 reason = DirectoryUnavailableReason.SourceUnavailable,
-                detail = "The provider directory returned HTTP ${response.code}",
-                attemptedAt = now(),
+                detail = error.message?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: "The provider directory could not be reached",
+                attemptedAt = attemptedAt,
             )
-        } else {
-            decode(response.body, now())
         }
-    } catch (cancelled: CancellationException) {
-        // A cancelled read is the caller leaving the screen, not the directory failing. Mapping it
-        // to `unavailable` would fabricate a source failure and make the wrapper replay a stored
-        // copy for a request nobody is waiting on.
-        throw cancelled
-    } catch (error: Exception) {
-        ProviderDirectoryResult.Unavailable(
-            reason = DirectoryUnavailableReason.SourceUnavailable,
-            detail = error.message?.trim()?.takeIf { it.isNotEmpty() }
-                ?: "The provider directory could not be reached",
-            attemptedAt = now(),
-        )
     }
 
     /**
-     * All-or-nothing decode. One malformed provider makes the read unavailable; it never degrades a
-     * bad response into the materially different claim that the source was successfully empty.
+     * All-or-nothing decode. One malformed provider, page field, or required server distance makes
+     * the read unavailable; it never degrades a bad response into a successful empty result.
      */
-    internal fun decode(json: String, readAt: Long): ProviderDirectoryResult = try {
+    internal fun decode(
+        json: String,
+        readAt: Long,
+        requireDistance: Boolean,
+    ): ProviderDirectoryResult = try {
         val root = JSONObject(json)
         val rows = root.opt("businesses") as? JSONArray
             ?: throw MalformedDirectory("response has no businesses array")
+        val total = root.requiredNonnegativeInt("total")
+        val limit = root.requiredNonnegativeInt("limit").also {
+            if (it == 0) throw MalformedDirectory("page limit must be positive")
+        }
+        val offset = root.requiredNonnegativeInt("offset")
+        val hasMore = root.requiredBoolean("hasMore")
+        if (rows.length() > limit) throw MalformedDirectory("page contains more rows than its limit")
+        val pageEnd = offset.toLong() + rows.length().toLong()
+        if (rows.length() > 0 && pageEnd > total.toLong()) {
+            throw MalformedDirectory("page rows exceed total")
+        }
+        if (rows.length() == 0 && hasMore) {
+            throw MalformedDirectory("empty page cannot advance pagination")
+        }
+        val expectedHasMore = pageEnd < total.toLong()
+        if (hasMore != expectedHasMore) {
+            throw MalformedDirectory("page hasMore is inconsistent with total and offset")
+        }
+
         val providers = ArrayList<DirectoryProvider>(rows.length())
+        val distances = LinkedHashMap<String, Double>(rows.length())
         val ids = HashSet<String>()
+        var previousDistance: Double? = null
         for (index in 0 until rows.length()) {
             val row = rows.opt(index) as? JSONObject
                 ?: throw MalformedDirectory("businesses[$index] is not an object")
@@ -101,39 +193,65 @@ class CentralProviderDirectory(
             if (!ids.add(provider.providerId)) {
                 throw MalformedDirectory("businesses contains a duplicate provider id")
             }
+            val distance = row.optionalDistance()
+            if (requireDistance && distance == null) {
+                throw MalformedDirectory("nearest provider has no distanceKm")
+            }
+            if (requireDistance && provider.geo == null) {
+                throw MalformedDirectory("nearest provider has no published location")
+            }
+            if (distance != null) {
+                if (
+                    requireDistance &&
+                    previousDistance != null &&
+                    distance < previousDistance
+                ) {
+                    throw MalformedDirectory("nearest distances are not nondecreasing")
+                }
+                distances[provider.providerId] = distance
+                previousDistance = distance
+            }
             providers += provider
         }
 
-        if (readAt < 0) throw MalformedDirectory("directory timestamp is unusable")
-        // `expiresAt` is null because this source has no TTL of its own. The wrapper sets the hard
-        // deadline from THIS observation time, so a slow read can never lengthen the maximum age.
+        if (readAt < 0 || readAt > Long.MAX_VALUE - ttlMs) {
+            throw MalformedDirectory("directory timestamp is unusable")
+        }
+        val expiresAt = readAt + ttlMs
         if (providers.isEmpty()) {
             ProviderDirectoryResult.Empty(
                 observation = DirectoryObservation.Live,
                 readAt = readAt,
-                expiresAt = null,
+                expiresAt = expiresAt,
+                total = total,
+                limit = limit,
+                offset = offset,
+                hasMore = hasMore,
             )
         } else {
             ProviderDirectoryResult.Found(
                 providers = providers,
+                distancesKm = distances,
                 observation = DirectoryObservation.Live,
                 readAt = readAt,
-                expiresAt = null,
+                expiresAt = expiresAt,
+                total = total,
+                limit = limit,
+                offset = offset,
+                hasMore = hasMore,
             )
         }
-    } catch (error: MalformedDirectory) {
-        ProviderDirectoryResult.Unavailable(
-            reason = DirectoryUnavailableReason.MalformedResponse,
-            detail = "The provider directory returned an invalid response; it was not treated as empty",
-            attemptedAt = readAt,
-        )
+    } catch (_: MalformedDirectory) {
+        malformed(readAt)
     } catch (_: Exception) {
-        ProviderDirectoryResult.Unavailable(
-            reason = DirectoryUnavailableReason.MalformedResponse,
-            detail = "The provider directory returned an invalid response; it was not treated as empty",
-            attemptedAt = readAt,
-        )
+        malformed(readAt)
     }
+
+    private fun malformed(attemptedAt: Long) = ProviderDirectoryResult.Unavailable(
+        reason = DirectoryUnavailableReason.MalformedResponse,
+        detail = "The provider directory returned an invalid response; it was not treated as empty",
+        attemptedAt = attemptedAt,
+    )
 
     private fun decodeProvider(row: JSONObject): DirectoryProvider {
         val providerId = row.requiredString("businessId")
@@ -186,14 +304,8 @@ class CentralProviderDirectory(
             geo = geo,
             services = services,
             domain = domain,
-            // The central response carries no listing-state assertion. Even if a future response
-            // contains an extra field named "active", this adapter must not silently promote it into
-            // the source-neutral maintained/delisted fact.
             active = null,
             contact = contact,
-            // Central supplies no clone/root/observed binding and reads no chain state at all. These
-            // are the only honest states it may derive locally; it can never synthesize Verified from
-            // the domain string, and a blank column is a fact about THIS LISTING, not an on-chain one.
             bindingState = if (domain == null) {
                 IssuerBindingState.NoDomainListed
             } else {
@@ -215,23 +327,52 @@ class CentralProviderDirectory(
         return value.trim().ifBlank { null }
     }
 
+    private fun JSONObject.optionalDistance(): Double? {
+        if (!has("distanceKm") || isNull("distanceKm")) return null
+        val distance = (opt("distanceKm") as? Number)?.toDouble()
+            ?: throw MalformedDirectory("provider distanceKm is not numeric")
+        if (!distance.isFinite() || distance < 0) {
+            throw MalformedDirectory("provider distanceKm is unusable")
+        }
+        return distance
+    }
+
+    private fun JSONObject.requiredNonnegativeInt(key: String): Int {
+        val number = opt(key) as? Number ?: throw MalformedDirectory("$key is not numeric")
+        val value = number.toDouble()
+        if (!value.isFinite() || value < 0 || value % 1.0 != 0.0 || value > Int.MAX_VALUE) {
+            throw MalformedDirectory("$key is not a nonnegative integer")
+        }
+        return value.toInt()
+    }
+
+    private fun JSONObject.requiredBoolean(key: String): Boolean =
+        opt(key) as? Boolean ?: throw MalformedDirectory("$key is not boolean")
+
     private class MalformedDirectory(message: String) : IllegalArgumentException(message)
 }
 
-/**
- * The configured directory, wrapped in the on-device local copy.
- *
- * Built per call rather than held in a `by lazy`: the stored copy now lives on disk, so there is no
- * process-lifetime state left to share, and a device-scoped singleton would only pin a `Context`.
- */
+private fun percentEncode(value: String): String =
+    URLEncoder.encode(value, StandardCharsets.UTF_8.toString()).replace("+", "%20")
+
+/** One process-wide stateless adapter shared across screen visits. */
 object ProviderDirectories {
-    fun central(context: Context): ProviderDirectory = CachedProviderDirectory(
-        delegate = CentralProviderDirectory(AppConfig.CENTRAL_API),
+    val central: ProviderDirectory by lazy {
+        CentralProviderDirectory(AppConfig.CENTRAL_API)
+    }
+
+    /**
+     * Scopes remembered records to this exact configured endpoint, so one deployment's stored copy can
+     * never be replayed as another's. Built from the base URL alone: a namespace keyed by a nearest
+     * query would put the owner's position into the cache key, which the ruling forbids.
+     *
+     * The cache is deliberately NOT a decorator around [central] (see [ProviderRecordCache]) - the
+     * caller holds both and drives them explicitly.
+     */
+    fun recordCache(cacheDir: File): ProviderRecordCache = ProviderRecordCache(
         store = FileProviderDirectoryCacheStore(
-            // Cache dir, not files dir: this is a re-fetchable copy of a PUBLIC endpoint, so the OS
-            // is welcome to evict it. Eviction then reads as a missing entry - `unavailable` - which
-            // is the honest degradation, never a successful `empty`.
-            File(context.cacheDir, FileProviderDirectoryCacheStore.FILE_NAME),
+            File(cacheDir, FileProviderDirectoryCacheStore.FILE_NAME),
         ),
+        namespace = "central:${AppConfig.CENTRAL_API}",
     )
 }

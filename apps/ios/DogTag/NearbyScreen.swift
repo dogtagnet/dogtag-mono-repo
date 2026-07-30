@@ -1,11 +1,10 @@
 import SwiftUI
 import CoreLocation
-import MapKit
 
 /// One-shot, user-driven location acquisition for Nearby.
 ///
 /// Creating this object does not request permission or read a position. The manager is touched only
-/// after the owner presses "Use my current location"; the chosen-coordinate path never touches it.
+/// after the owner presses "Use my current location".
 @MainActor
 final class NearbyLocationController: NSObject, ObservableObject, @preconcurrency CLLocationManagerDelegate {
     @Published private(set) var state: NearbyLocationState = .notRequested
@@ -67,20 +66,22 @@ final class NearbyLocationController: NSObject, ObservableObject, @preconcurrenc
             state = .unavailable
             return
         }
-        let point = NearbyPoint(
+        let rawPoint = NearbyPoint(
             lat: location.coordinate.latitude,
             lng: location.coordinate.longitude
         )
         // A negative `horizontalAccuracy` means Core Location considers the coordinate invalid, so
         // it is not a ready origin at all. Otherwise the reported uncertainty is carried into the
         // pure policy, which is what stops a hundred-metre-class fix rendering a metre-level number.
-        guard point.isValid, location.horizontalAccuracy >= 0 else {
+        guard let approximate = rawPoint.coarsenedForProviderSearch(),
+              location.horizontalAccuracy >= 0 else {
             state = .unavailable
             return
         }
         state = .ready(NearbyOrigin(
-            point: point,
-            source: .currentLocation,
+            // The precise fix never enters observable app state. Every later request sees only this
+            // roughly hundred-metre coordinate.
+            point: approximate,
             accuracyMetres: location.horizontalAccuracy
         ))
     }
@@ -95,11 +96,8 @@ final class NearbyLocationController: NSObject, ObservableObject, @preconcurrenc
     }
 }
 
-/// Distance-ranked providers without an in-app map.
-///
-/// The screen reads one position-free provider snapshot, then applies name search, the 50 km browse
-/// range and Core Location distance entirely in process. Directions is a destination-only handoff to
-/// Apple Maps after an explicit tap.
+/// Paged, server-ranked providers in a list. There is no map, chosen-location search, autocomplete,
+/// geocoder, local distance computation, or Directions handoff.
 struct NearbyScreen: View {
     private enum Scope: String, CaseIterable, Identifiable {
         case nearby = "Nearby"
@@ -108,20 +106,13 @@ struct NearbyScreen: View {
         var id: String { rawValue }
     }
 
-    private enum OriginMode: String, CaseIterable, Identifiable {
-        case current = "Current location"
-        case chosen = "Chosen location"
-
-        var id: String { rawValue }
-    }
-
     /// A list entry, identified within the ONE scope entitled to render it.
     ///
-    /// The two scopes present the same `providerId` under incompatible promises: Nearby states
-    /// distance, bearing and Directions, while Provider contacts must claim none of them. They
+    /// The two scopes present the same `providerId` under incompatible promises: Nearby states a
+    /// server-computed distance, while Provider contacts must claim none. They
     /// previously keyed both lists on the bare `providerId` inside one shared lazy container, and an
     /// explicit `id` overrides structural identity there, so switching scope re-presented an
-    /// already-realised Nearby row under the contacts list - distance and Directions included,
+    /// already-realised Nearby row under the contacts list - distance included,
     /// directly beneath the copy promising neither. `DirectoryProvider` is itself `Identifiable` on
     /// `providerId`, so passing it to `ForEach` straight is the collision; these wrappers exist to
     /// make it unrepresentable rather than merely documented, in both directions.
@@ -143,29 +134,33 @@ struct NearbyScreen: View {
     @StateObject private var location = NearbyLocationController()
 
     let onDone: () -> Void
-    /// The seam, not the concrete adapter: what the screen gets is the source wrapped in the stored
-    /// local copy, so an offline refresh replays instead of blanking the list.
+    /// The seam, not the concrete adapter. The offline copy is deliberately NOT wrapped around it: a
+    /// nearest page is personalized, so there is no whole-directory response to substitute for, and
+    /// the screen drives remember/recall explicitly instead.
     private let directory: ProviderDirectoryReading
+    /// Records only: identity and contacts, never a distance or the ranking.
+    private let recordCache: ProviderRecordCache
 
-    @State private var directoryResult: ProviderDirectoryResult?
-    @State private var isRefreshing = false
+    @State private var storedRecords: StoredProviderRecords?
+    @State private var nearbyResult: ProviderDirectoryResult?
+    @State private var contactResult: ProviderDirectoryResult?
+    @State private var isLoadingNearby = false
+    @State private var isLoadingContacts = false
     @State private var scope: Scope = .nearby
-    @State private var originMode: OriginMode = .current
     @State private var query = ""
-    @State private var latitude = ""
-    @State private var longitude = ""
-    @State private var chosenLocation: NearbyLocationState = .notRequested
+    @State private var nearbyName: String?
+    @State private var contactName: String?
+    @State private var nearbyRequestID: UUID?
+    @State private var contactRequestID: UUID?
 
     init(
         onDone: @escaping () -> Void,
-        directory: ProviderDirectoryReading = ProviderDirectories.central()
+        directory: ProviderDirectoryReading = ProviderDirectories.central(),
+        recordCache: ProviderRecordCache? = nil
     ) {
         self.onDone = onDone
         self.directory = directory
-    }
-
-    private var activeLocation: NearbyLocationState {
-        originMode == .current ? location.state : chosenLocation
+        self.recordCache = recordCache ?? ProviderDirectories.recordCache(for: directory)
     }
 
     private var unitSystem: NearbyUnitSystem {
@@ -173,33 +168,27 @@ struct NearbyScreen: View {
     }
 
     private var nearbyPresentation: NearbyDecision.Presentation {
-        NearbyDecision.presentation(
-            directory: directoryResult,
-            location: activeLocation,
-            query: query,
-            unitSystem: unitSystem,
-            distanceKm: localDistance
+        let live = NearbyDecision.presentation(
+            directory: nearbyResult,
+            location: location.state,
+            query: nearbyName ?? "",
+            unitSystem: unitSystem
         )
-    }
-
-    private var hasReadyOrigin: Bool {
-        if case .ready = activeLocation { return true }
-        return false
-    }
-
-    /// Do not invite a location permission prompt when the pure policy already proves no row can
-    /// render. For a phone-local no-match/range result, keep an existing origin editable; a directory
-    /// that has not answered still hides the controls because no distance claim can be made at all.
-    private var shouldShowOriginCard: Bool {
-        switch nearbyPresentation {
-        case .loadingDirectory, .directoryUnavailable, .directoryEmpty:
-            return false
-        case .noneWithinRange, .noNameMatch:
-            return hasReadyOrigin
-        case .awaitingOrigin, .locating, .permissionRefused, .locationUnavailable,
-             .invalidChosenLocation, .providersFound:
-            return true
+        // The remembered set may only stand in when the live read could not answer. It never overrides
+        // a real answer, and when nothing relevant is remembered the live "could not check" stands - a
+        // fallback that answered an empty list would turn could-not-check into an established absence.
+        if case .directoryUnavailable = live {
+            return NearbyDecision.storedFallback(
+                records: storedRecords,
+                query: nearbyName ?? "",
+                now: Date()
+            ) ?? live
         }
+        return live
+    }
+
+    private var activeResult: ProviderDirectoryResult? {
+        scope == .nearby ? nearbyResult : contactResult
     }
 
     var body: some View {
@@ -225,9 +214,7 @@ struct NearbyScreen: View {
                         // realised Nearby row reappear under Provider contacts.
                         if scope == .nearby {
                             LazyVStack(alignment: .leading, spacing: 16) {
-                                if shouldShowOriginCard {
-                                    originCard
-                                }
+                                originCard
                                 nearbyContent
                             }
                         } else {
@@ -251,23 +238,31 @@ struct NearbyScreen: View {
                 }
             }
         }
+        .onChange(of: scope) { selected in
+            guard selected == .contacts, contactResult == nil else { return }
+            Task { await loadContacts(reset: true) }
+        }
+        .onChange(of: location.state) { state in
+            guard case .ready = state else { return }
+            Task { await loadNearest(reset: true) }
+        }
         .task {
-            if directoryResult == nil {
-                await refreshDirectory()
+            if scope == .contacts, contactResult == nil {
+                await loadContacts(reset: true)
             }
         }
     }
 
     private var privacyCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Private by design", systemImage: "hand.raised.fill")
+            Label("Approximate location only", systemImage: "hand.raised.fill")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(c.onBackground)
-            Text("Your position and name search stay on this phone. DogTag downloads the same full provider list for everyone.")
+            Text("DogTag rounds your current location on this phone before sending it to rank nearby providers. The provider service does not store it.")
                 .font(.system(size: 13))
                 .foregroundColor(c.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Directions opens Maps only after you tap and hands off the provider's public destination.")
+            Text("Provider-name searches are sent to the same service. There is no map, place search, autocomplete, or geocoder.")
                 .font(.system(size: 12))
                 .foregroundColor(c.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -284,6 +279,10 @@ struct NearbyScreen: View {
             TextField("Search by provider name", text: $query)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .submitLabel(.search)
+                .onSubmit {
+                    Task { await submitSearch() }
+                }
                 .foregroundColor(c.onBackground)
             if !query.isEmpty {
                 Button {
@@ -294,6 +293,14 @@ struct NearbyScreen: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear provider search")
             }
+            Button {
+                Task { await submitSearch() }
+            } label: {
+                Image(systemName: "arrow.right.circle.fill")
+                    .foregroundColor(c.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Search providers")
         }
         .padding(.horizontal, 14)
         .frame(height: 46)
@@ -321,7 +328,7 @@ struct NearbyScreen: View {
     }
 
     private var successfulObservation: ProviderDirectoryObservation? {
-        switch directoryResult {
+        switch activeResult {
         case .found(let snapshot), .empty(let snapshot):
             return snapshot.observation
         case .unavailable, .none:
@@ -360,60 +367,32 @@ struct NearbyScreen: View {
 
     private var originCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Distance from")
+            Text("Find providers nearest to you")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(c.onBackground)
 
-            Picker("Starting location", selection: $originMode) {
-                ForEach(OriginMode.allCases) { item in
-                    Text(item.rawValue).tag(item)
-                }
+            Text("Your approximate location is sent to DogTag to find nearby vets and groomers. It is not stored.")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(c.onBackground)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                location.requestCurrentLocation()
+            } label: {
+                Label(
+                    locationButtonLabel,
+                    systemImage: "location.fill"
+                )
+                .font(.system(size: 14, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .foregroundColor(c.onAccent)
+                .background(RoundedRectangle(cornerRadius: 12).fill(c.accent))
             }
-            .pickerStyle(.segmented)
+            .buttonStyle(.plain)
+            .disabled(location.state == .locating)
 
-            if originMode == .current {
-                Button {
-                    location.requestCurrentLocation()
-                } label: {
-                    Label(
-                        locationButtonLabel,
-                        systemImage: "location.fill"
-                    )
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .foregroundColor(c.onAccent)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(c.accent))
-                }
-                .buttonStyle(.plain)
-                .disabled(location.state == .locating)
-
-                currentLocationCaption
-            } else {
-                Text("Enter coordinates from a place you choose. They are parsed on this phone; DogTag does not geocode or send them anywhere.")
-                    .font(.system(size: 12))
-                    .foregroundColor(c.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 10) {
-                    coordinateField("Latitude", text: $latitude)
-                    coordinateField("Longitude", text: $longitude)
-                }
-
-                Button {
-                    applyChosenLocation()
-                } label: {
-                    Text("Use these coordinates")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .foregroundColor(c.onAccent)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(c.accent))
-                }
-                .buttonStyle(.plain)
-
-                chosenLocationCaption
-            }
+            currentLocationCaption
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
@@ -431,64 +410,30 @@ struct NearbyScreen: View {
     private var currentLocationCaption: some View {
         switch location.state {
         case .notRequested:
-            Text("When-in-use permission is requested only when you tap. Your position stays on this phone.")
+            Text("When-in-use permission is requested only when you tap. The fix is rounded to three decimal places on this phone before it is sent.")
                 .foregroundColor(c.muted)
         case .locating:
             HStack(spacing: 8) {
                 ProgressView()
-                Text("Finding your location on this device…")
+                Text("Finding and rounding your current location…")
             }
             .foregroundColor(c.muted)
         case .ready(let fix):
             // State the fix's own uncertainty rather than implying a precise position was obtained.
             Label(
                 NearbyDecision.accuracyNote(fix.accuracyMetres, unitSystem: unitSystem)
-                    .map { "Using the current location held on this phone, accurate to \($0)" }
-                    ?? "Using the current location held on this phone",
+                    .map { "Using an approximate location; the phone reported accuracy of \($0)" }
+                    ?? "Using an approximate location",
                 systemImage: "checkmark.circle.fill"
             )
             .foregroundColor(c.success)
         case .refused:
-            Text("Location permission was refused. Choose a location above or allow access in Settings.")
+            Text("Location permission was refused. Allow when-in-use access in Settings to find nearby providers.")
                 .foregroundColor(c.danger)
         case .unavailable:
-            Text("The phone could not provide a location. Try again or use a chosen location.")
+            Text("The phone could not provide a location. Try again.")
                 .foregroundColor(c.warning)
-        case .invalidChosenLocation:
-            EmptyView()
         }
-    }
-
-    @ViewBuilder
-    private var chosenLocationCaption: some View {
-        switch chosenLocation {
-        case .ready(let chosen):
-            Label(
-                String(
-                    format: "Using %.5f, %.5f on this phone",
-                    chosen.point.lat,
-                    chosen.point.lng
-                ),
-                systemImage: "checkmark.circle.fill"
-            )
-            .foregroundColor(c.success)
-        case .invalidChosenLocation:
-            Text("Enter latitude from −90 to 90 and longitude from −180 to 180.")
-                .foregroundColor(c.danger)
-        default:
-            EmptyView()
-        }
-    }
-
-    private func coordinateField(_ title: String, text: Binding<String>) -> some View {
-        TextField(title, text: text)
-            .keyboardType(.numbersAndPunctuation)
-            .textContentType(.none)
-            .padding(.horizontal, 12)
-            .frame(height: 42)
-            .foregroundColor(c.onBackground)
-            .background(RoundedRectangle(cornerRadius: 10).fill(c.surfaceVariant))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(c.outline))
     }
 
     @ViewBuilder
@@ -497,20 +442,38 @@ struct NearbyScreen: View {
         case .loadingDirectory:
             NearbyMessageCard(
                 icon: "arrow.down.circle",
-                title: "Loading provider directory…",
-                message: "Fetching the same position-free provider list used for every owner.",
+                title: "Finding nearby providers…",
+                message: "The service is ranking a page from the approximate location sent by this phone.",
                 tone: c.muted,
                 showsProgress: true
             )
         case .providersFound(let rows, _):
             SectionTitle(
-                text: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "Within \(rangeLabel(NearbyDecision.defaultRadiusKm))"
-                    : "Name matches",
-                trailing: "\(rows.count)"
+                text: nearbyName == nil ? "Nearest providers" : "Nearest name matches",
+                trailing: resultCountLabel(nearbyResult, loaded: rows.count)
             )
             ForEach(rows.map { NearbyRowEntry(row: $0) }) { entry in
                 nearbyProviderRow(entry.row)
+            }
+            loadMoreButton(for: .nearby)
+        case .storedProvidersOnly(let providers, let storedAge):
+            NearbyMessageCard(
+                icon: "internaldrive",
+                title: "Showing providers saved on this phone",
+                message: {
+                    var text = "We could not reach the provider directory, so these are providers this "
+                    text += "phone saw before"
+                    if let storedAge { text += " (last updated \(storedAge))" }
+                    text += ". They are NOT sorted by distance and no distance is shown: that needs "
+                    text += "the service. Contact details may be out of date."
+                    return text
+                }(),
+                tone: c.warning
+            )
+            // The contact row deliberately: it renders identity and contacts and makes no proximity
+            // claim, which is exactly what a remembered record can support.
+            ForEach(providers.map { ContactRowEntry(provider: $0) }) { entry in
+                providerContactRow(entry.provider)
             }
         case .directoryEmpty:
             NearbyMessageCard(
@@ -519,18 +482,18 @@ struct NearbyScreen: View {
                 message: "The directory answered successfully, but no providers were published.",
                 tone: c.muted
             )
-        case .noneWithinRange(let radiusKm, _):
+        case .noNearbyProviders:
             NearbyMessageCard(
                 icon: "location.slash",
-                title: "No providers within \(rangeLabel(radiusKm))",
-                message: "The directory answered, but no location-published vets or groomers are within range. Providers without a location remain reachable under Provider contacts.",
+                title: "No nearby providers found",
+                message: "The service found no location-published vets or groomers for this page. Providers without a location remain searchable under Provider contacts.",
                 tone: c.muted
             )
         case .noNameMatch:
             NearbyMessageCard(
                 icon: "magnifyingglass",
                 title: "No located provider has that name",
-                message: "Name search ran on this phone across every located provider. Contact-only providers are searchable under Provider contacts.",
+                message: "The provider service found no located vet or groomer matching that name. Contact-only providers are searchable under Provider contacts.",
                 tone: c.muted
             )
         case .directoryUnavailable(let detail):
@@ -546,7 +509,7 @@ struct NearbyScreen: View {
             NearbyMessageCard(
                 icon: "location.slash.fill",
                 title: "Location permission refused",
-                message: "DogTag cannot calculate distance from your current location. Use Chosen location above, or allow when-in-use access in Settings.",
+                message: "DogTag cannot request server-ranked nearby providers without an approximate current location. Allow when-in-use access in Settings, or search Provider contacts by name.",
                 tone: c.danger,
                 actionTitle: "Open Settings",
                 action: openSettings
@@ -555,30 +518,23 @@ struct NearbyScreen: View {
             NearbyMessageCard(
                 icon: "location.slash",
                 title: "Current location unavailable",
-                message: "The phone could not provide a position. Try once more, or use Chosen location above.",
+                message: "The phone could not provide a position. Try once more, or search Provider contacts by name.",
                 tone: c.warning,
                 actionTitle: "Try location again",
                 action: { location.requestCurrentLocation() }
             )
-        case .invalidChosenLocation:
-            NearbyMessageCard(
-                icon: "exclamationmark.circle",
-                title: "Chosen location is invalid",
-                message: "Correct the latitude and longitude above. Nothing is sent while you edit or apply them.",
-                tone: c.danger
-            )
         case .awaitingOrigin:
             NearbyMessageCard(
                 icon: "location.circle",
-                title: "Choose a starting location",
-                message: "Use your current location or enter coordinates above to calculate distance on this phone.",
+                title: "Use your approximate location",
+                message: "Tap above to let the provider service return the nearest vets and groomers, or search by provider name under Provider contacts.",
                 tone: c.muted
             )
         case .locating:
             NearbyMessageCard(
                 icon: "location.circle",
                 title: "Finding your location…",
-                message: "Distance and ordering will appear once this phone supplies a position.",
+                message: "This phone will round the fix before the service receives it.",
                 tone: c.muted,
                 showsProgress: true
             )
@@ -588,8 +544,8 @@ struct NearbyScreen: View {
     @ViewBuilder
     private var contactContent: some View {
         let presentation = NearbyDecision.contactPresentation(
-            directory: directoryResult,
-            query: query
+            directory: contactResult,
+            query: contactName ?? ""
         )
 
         switch presentation {
@@ -597,7 +553,7 @@ struct NearbyScreen: View {
             NearbyMessageCard(
                 icon: "arrow.down.circle",
                 title: "Loading provider directory…",
-                message: "Fetching the same position-free provider list used for every owner.",
+                message: "Fetching a page of vets and groomers from the provider service.",
                 tone: c.muted,
                 showsProgress: true
             )
@@ -621,18 +577,22 @@ struct NearbyScreen: View {
             NearbyMessageCard(
                 icon: "magnifyingglass",
                 title: "No provider has that name",
-                message: "This unranked contact list includes located and contact-only providers. Name search happens on this phone.",
+                message: "The provider service found no vet or groomer matching that name.",
                 tone: c.muted
             )
         case .providersFound(let contacts, _):
-            SectionTitle(text: "Provider contacts", trailing: "\(contacts.count)")
-            Text("Includes providers that publish contact details without publishing a location. This list never calculates distance or offers Directions.")
+            SectionTitle(
+                text: contactName == nil ? "Provider contacts" : "Name matches",
+                trailing: resultCountLabel(contactResult, loaded: contacts.count)
+            )
+            Text("Includes located and contact-only vets and groomers. This list sends no position and shows no map.")
                 .font(.system(size: 12))
                 .foregroundColor(c.muted)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(contacts.map { ContactRowEntry(provider: $0) }) { entry in
                 providerContactRow(entry.provider)
             }
+            loadMoreButton(for: .contacts)
         }
     }
 
@@ -644,9 +604,6 @@ struct NearbyScreen: View {
                 Image(systemName: "location.fill")
                 Text(row.distance.display ?? "")
                     .fontWeight(.bold)
-                if let bearing = row.bearingLabel {
-                    Text("· \(bearing)")
-                }
             }
             .font(.system(size: 13))
             .foregroundColor(c.onBackground)
@@ -654,7 +611,7 @@ struct NearbyScreen: View {
             // Never a confident number the origin cannot support, and never a silent blank either.
             HStack(spacing: 7) {
                 Image(systemName: "location.slash")
-                Text(row.bearingLabel.map { "\(reason) Bearing \($0)." } ?? reason)
+                Text(reason)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .font(.system(size: 12))
@@ -672,19 +629,7 @@ struct NearbyScreen: View {
                 state: row.provider.bindingState,
                 domain: row.provider.domain ?? ""
             ))
-
-            Button {
-                openDirections(to: row.provider)
-            } label: {
-                Label("Directions", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .foregroundColor(c.onAccent)
-                    .background(RoundedRectangle(cornerRadius: 11).fill(c.accent))
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens the provider destination in Maps")
+            providerContactActions(row.provider)
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
@@ -699,23 +644,7 @@ struct NearbyScreen: View {
                 domain: provider.domain ?? ""
             ))
 
-            if provider.contact.hasAny {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 105), spacing: 8)],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    contactAction("Phone", value: provider.contact.phone, icon: "phone.fill", kind: .phone)
-                    contactAction("WhatsApp", value: provider.contact.whatsapp, icon: "message.fill", kind: .whatsapp)
-                    contactAction("Telegram", value: provider.contact.telegram, icon: "paperplane.fill", kind: .telegram)
-                    contactAction("Email", value: provider.contact.email, icon: "envelope.fill", kind: .email)
-                    contactAction("Website", value: provider.contact.website, icon: "globe", kind: .website)
-                }
-            } else {
-                Text("No contact details published.")
-                    .font(.system(size: 12))
-                    .foregroundColor(c.muted)
-            }
+            providerContactActions(provider)
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
@@ -758,6 +687,27 @@ struct NearbyScreen: View {
         case telegram
         case email
         case website
+    }
+
+    @ViewBuilder
+    private func providerContactActions(_ provider: DirectoryProvider) -> some View {
+        if provider.contact.hasAny {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 105), spacing: 8)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                contactAction("Phone", value: provider.contact.phone, icon: "phone.fill", kind: .phone)
+                contactAction("WhatsApp", value: provider.contact.whatsapp, icon: "message.fill", kind: .whatsapp)
+                contactAction("Telegram", value: provider.contact.telegram, icon: "paperplane.fill", kind: .telegram)
+                contactAction("Email", value: provider.contact.email, icon: "envelope.fill", kind: .email)
+                contactAction("Website", value: provider.contact.website, icon: "globe", kind: .website)
+            }
+        } else {
+            Text("No contact details published.")
+                .font(.system(size: 12))
+                .foregroundColor(c.muted)
+        }
     }
 
     @ViewBuilder
@@ -826,39 +776,175 @@ struct NearbyScreen: View {
         }
     }
 
-    private func localDistance(_ origin: NearbyPoint, _ destination: NearbyPoint) -> Double? {
-        guard origin.isValid, destination.isValid else { return nil }
-        let from = CLLocation(latitude: origin.lat, longitude: origin.lng)
-        let to = CLLocation(latitude: destination.lat, longitude: destination.lng)
-        let kilometres = from.distance(from: to) / 1_000
-        return kilometres.isFinite && kilometres >= 0 ? kilometres : nil
-    }
-
-    private func rangeLabel(_ radiusKm: Double) -> String {
-        NearbyDecision.formatDistanceKm(radiusKm, unitSystem: unitSystem)
-            ?? String(format: "%.0f km", radiusKm)
-    }
-
-    private func applyChosenLocation() {
-        if let point = NearbyDecision.parseChosenOrigin(lat: latitude, lng: longitude) {
-            // Typed coordinates carry no measurement uncertainty, so they keep ordinary precision.
-            chosenLocation = .ready(.chosen(point))
-        } else {
-            chosenLocation = .invalidChosenLocation
+    @ViewBuilder
+    private func loadMoreButton(for requestedScope: Scope) -> some View {
+        let result = requestedScope == .nearby ? nearbyResult : contactResult
+        let loading = requestedScope == .nearby ? isLoadingNearby : isLoadingContacts
+        if hasMore(result) {
+            Button {
+                Task {
+                    if requestedScope == .nearby {
+                        await loadNearest(reset: false)
+                    } else {
+                        await loadContacts(reset: false)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    if loading {
+                        ProgressView()
+                    }
+                    Text("Load more")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .foregroundColor(c.accent)
+                .background(RoundedRectangle(cornerRadius: 12).fill(c.surface))
+            }
+            .buttonStyle(.plain)
+            .disabled(loading)
         }
     }
 
-    private func openDirections(to provider: DirectoryProvider) {
-        guard let point = provider.geo, point.isValid else { return }
-        let destination = MKMapItem(placemark: MKPlacemark(
-            coordinate: CLLocationCoordinate2D(latitude: point.lat, longitude: point.lng)
+    private func resultCountLabel(_ result: ProviderDirectoryResult?, loaded: Int) -> String {
+        guard let total = snapshot(result)?.page?.total else { return "\(loaded)" }
+        return loaded < total ? "\(loaded) of \(total)" : "\(total)"
+    }
+
+    private func hasMore(_ result: ProviderDirectoryResult?) -> Bool {
+        snapshot(result)?.page?.hasMore == true
+    }
+
+    private func snapshot(_ result: ProviderDirectoryResult?) -> ProviderDirectorySnapshot? {
+        switch result {
+        case .found(let snapshot), .empty(let snapshot):
+            return snapshot
+        case .unavailable, .none:
+            return nil
+        }
+    }
+
+    @MainActor
+    private func submitSearch() async {
+        let searched = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = searched.isEmpty ? nil : searched
+        if scope == .nearby {
+            if case .ready = location.state {
+                nearbyName = name
+                await loadNearest(reset: true)
+            } else {
+                // Name search is a distinct position-free request. Move to the contact/name list
+                // instead of acquiring or attaching a location the user did not ask this action for.
+                scope = .contacts
+                contactName = name
+                await loadContacts(reset: true)
+            }
+        } else {
+            contactName = name
+            await loadContacts(reset: true)
+        }
+    }
+
+    @MainActor
+    private func loadNearest(reset: Bool) async {
+        guard !isLoadingNearby,
+              case .ready(let origin) = location.state else {
+            return
+        }
+        if reset, nearbyName == nil {
+            let searched = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            nearbyName = searched.isEmpty ? nil : searched
+        }
+        let offset = reset ? 0 : (snapshot(nearbyResult)?.providers.count ?? 0)
+        guard let request = OwnerProviderDirectoryRequest.nearest(
+            location: origin.point,
+            accuracyMetres: origin.accuracyMetres,
+            name: nearbyName,
+            offset: offset
+        ) else {
+            nearbyResult = malformedPagingResult("The approximate location request was invalid")
+            return
+        }
+
+        let requestID = UUID()
+        nearbyRequestID = requestID
+        isLoadingNearby = true
+        if reset { nearbyResult = nil }
+        let incoming = await directory.read(request)
+        guard nearbyRequestID == requestID else { return }
+        nearbyResult = merge(
+            current: nearbyResult,
+            incoming: incoming,
+            reset: reset,
+            requiresDistance: true
+        )
+        // Remember what the owner just saw, and reach for the remembered set ONLY when the live read
+        // could not answer at all. An `empty` IS an answer, so it is not a fallback case.
+        switch incoming {
+        case .found(let snapshot):
+            recordCache.remember(snapshot.providers, now: Date())
+        case .unavailable:
+            storedRecords = recordCache.recall(now: Date())
+        case .empty:
+            break
+        }
+        isLoadingNearby = false
+    }
+
+    @MainActor
+    private func loadContacts(reset: Bool) async {
+        guard !isLoadingContacts else { return }
+        if reset, contactName == nil {
+            let searched = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            contactName = searched.isEmpty ? nil : searched
+        }
+        let offset = reset ? 0 : (snapshot(contactResult)?.providers.count ?? 0)
+        guard let request = OwnerProviderDirectoryRequest.contacts(
+            name: contactName,
+            offset: offset
+        ) else {
+            contactResult = malformedPagingResult("The provider-name request was invalid")
+            return
+        }
+
+        let requestID = UUID()
+        contactRequestID = requestID
+        isLoadingContacts = true
+        if reset { contactResult = nil }
+        let incoming = await directory.read(request)
+        guard contactRequestID == requestID else { return }
+        contactResult = merge(
+            current: contactResult,
+            incoming: incoming,
+            reset: reset,
+            requiresDistance: false
+        )
+        isLoadingContacts = false
+    }
+
+    private func merge(
+        current: ProviderDirectoryResult?,
+        incoming: ProviderDirectoryResult,
+        reset: Bool,
+        requiresDistance: Bool
+    ) -> ProviderDirectoryResult {
+        ProviderDirectoryPaging.merge(
+            current: current,
+            incoming: incoming,
+            reset: reset,
+            requiresDistance: requiresDistance,
+            attemptedAt: Date()
+        )
+    }
+
+    private func malformedPagingResult(_ detail: String) -> ProviderDirectoryResult {
+        .unavailable(ProviderDirectoryUnavailable(
+            source: .central,
+            reason: .inconsistentSource,
+            detail: detail,
+            attemptedAt: Date()
         ))
-        destination.name = provider.name
-        // Destination only. The owner deliberately crosses into Maps here; DogTag supplies neither
-        // the current/chosen origin nor any viewport, route, tile request or background update.
-        destination.openInMaps(launchOptions: [
-            MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving,
-        ])
     }
 
     private func openSettings() {
@@ -867,11 +953,11 @@ struct NearbyScreen: View {
     }
 
     private func refreshDirectory() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        let result = await directory.read()
-        directoryResult = result
-        isRefreshing = false
+        if scope == .nearby {
+            await loadNearest(reset: true)
+        } else {
+            await loadContacts(reset: true)
+        }
     }
 }
 

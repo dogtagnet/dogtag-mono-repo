@@ -10,6 +10,22 @@ struct NearbyPoint: Equatable {
             (-90.0...90.0).contains(lat) &&
             (-180.0...180.0).contains(lng)
     }
+
+    /// The only coordinate shape the owner app may send to provider discovery.
+    ///
+    /// This runs on the device, before an HTTP body exists. Three decimal places are roughly
+    /// hundred-metre resolution; the centralized service must never receive the raw Core Location fix.
+    func coarsenedForProviderSearch() -> NearbyPoint? {
+        guard isValid else { return nil }
+        let scale = 1_000.0
+        let roundedLat = (lat * scale).rounded() / scale
+        let roundedLng = (lng * scale).rounded() / scale
+        let point = NearbyPoint(
+            lat: roundedLat == 0 ? 0 : roundedLat,
+            lng: roundedLng == 0 ? 0 : roundedLng
+        )
+        return point.isValid ? point : nil
+    }
 }
 
 /// Public contact channels a provider chose to publish.
@@ -47,8 +63,34 @@ struct DirectoryProvider: Equatable, Identifiable {
     let contact: ProviderContact
     /// Reuses the credential provenance state machine; never a listing-specific verification enum.
     let bindingState: IssuerBindingState
+    /// Server-computed distance for a nearest request. Name/contact pages legitimately carry `nil`.
+    let distanceKm: Double?
 
     var id: String { providerId }
+
+    init(
+        providerId: String,
+        kind: String,
+        name: String,
+        geo: NearbyPoint?,
+        services: [String],
+        domain: String?,
+        active: Bool?,
+        contact: ProviderContact,
+        bindingState: IssuerBindingState,
+        distanceKm: Double? = nil
+    ) {
+        self.providerId = providerId
+        self.kind = kind
+        self.name = name
+        self.geo = geo
+        self.services = services
+        self.domain = domain
+        self.active = active
+        self.contact = contact
+        self.bindingState = bindingState
+        self.distanceKm = distanceKm
+    }
 }
 
 enum ProviderDirectorySource: Equatable {
@@ -67,8 +109,33 @@ struct ProviderDirectorySnapshot: Equatable {
     var observation: ProviderDirectoryObservation
     let blockNumber: UInt64?
     let readAt: Date
-    /// `nil` means no cache wrapper set a deadline. It does NOT mean the facts are permanent.
-    var expiresAt: Date?
+    let expiresAt: Date?
+    let page: ProviderDirectoryPage?
+
+    init(
+        source: ProviderDirectorySource,
+        providers: [DirectoryProvider],
+        observation: ProviderDirectoryObservation,
+        blockNumber: UInt64?,
+        readAt: Date,
+        expiresAt: Date?,
+        page: ProviderDirectoryPage? = nil
+    ) {
+        self.source = source
+        self.providers = providers
+        self.observation = observation
+        self.blockNumber = blockNumber
+        self.readAt = readAt
+        self.expiresAt = expiresAt
+        self.page = page
+    }
+}
+
+struct ProviderDirectoryPage: Equatable {
+    let total: Int
+    let limit: Int
+    let offset: Int
+    let hasMore: Bool
 }
 
 enum ProviderDirectoryUnavailableReason: Equatable {
@@ -94,21 +161,202 @@ enum ProviderDirectoryResult: Equatable {
     case unavailable(ProviderDirectoryUnavailable)
 }
 
-/// The read seam consumed by Nearby. It accepts no query, leaving nowhere for a user position.
-protocol ProviderDirectoryReading {
-    var source: ProviderDirectorySource { get }
-    /// Stable identity of the configured source, used ONLY to scope a stored copy.
-    ///
-    /// It must distinguish two distinct configured endpoints and two future chain/registry
-    /// configurations. It must never contain a user position or anything derived from one.
-    var cacheNamespace: String { get }
-    func read() async -> ProviderDirectoryResult
+/// Pure append policy for independently fetched directory pages.
+///
+/// The next page must describe the same result set and begin exactly after the rows already loaded.
+/// Without all three checks, a changing or malformed server response could silently skip, repeat, or
+/// splice providers while the UI still labels the result as one coherent list.
+enum ProviderDirectoryPaging {
+    static func merge(
+        current: ProviderDirectoryResult?,
+        incoming: ProviderDirectoryResult,
+        reset: Bool,
+        requiresDistance: Bool,
+        attemptedAt: Date
+    ) -> ProviderDirectoryResult {
+        guard !reset, let existing = successfulSnapshot(current) else { return incoming }
+        guard let next = successfulSnapshot(incoming) else { return incoming }
+        guard let existingPage = existing.page, let nextPage = next.page else {
+            return malformed(
+                source: next.source,
+                detail: "The provider directory omitted paging metadata",
+                attemptedAt: attemptedAt
+            )
+        }
+        guard nextPage.offset == existing.providers.count else {
+            return malformed(
+                source: next.source,
+                detail: "The provider directory returned a non-contiguous page offset",
+                attemptedAt: attemptedAt
+            )
+        }
+        guard nextPage.limit == existingPage.limit else {
+            return malformed(
+                source: next.source,
+                detail: "The provider directory changed the page limit mid-list",
+                attemptedAt: attemptedAt
+            )
+        }
+        guard nextPage.total == existingPage.total else {
+            return malformed(
+                source: next.source,
+                detail: "The provider directory changed the result total mid-list",
+                attemptedAt: attemptedAt
+            )
+        }
+
+        let oldIDs = Set(existing.providers.map(\.providerId))
+        guard next.providers.allSatisfy({ !oldIDs.contains($0.providerId) }) else {
+            return malformed(
+                source: next.source,
+                detail: "The provider directory repeated a row across pages",
+                attemptedAt: attemptedAt
+            )
+        }
+        if requiresDistance {
+            let distanceIsValid = { (provider: DirectoryProvider) in
+                provider.distanceKm.map { $0.isFinite && $0 >= 0 } == true
+            }
+            guard existing.providers.allSatisfy(distanceIsValid),
+                  next.providers.allSatisfy(distanceIsValid) else {
+                return malformed(
+                    source: next.source,
+                    detail: "A nearest directory page omitted a usable server distance",
+                    attemptedAt: attemptedAt
+                )
+            }
+            if let previous = existing.providers.last?.distanceKm,
+               let first = next.providers.first?.distanceKm,
+               first < previous {
+                return malformed(
+                    source: next.source,
+                    detail: "The provider directory returned pages out of distance order",
+                    attemptedAt: attemptedAt
+                )
+            }
+        }
+
+        let providers = existing.providers + next.providers
+        let merged = ProviderDirectorySnapshot(
+            source: next.source,
+            providers: providers,
+            observation: next.observation,
+            blockNumber: next.blockNumber,
+            readAt: next.readAt,
+            expiresAt: nil,
+            page: ProviderDirectoryPage(
+                total: nextPage.total,
+                limit: nextPage.limit,
+                offset: 0,
+                hasMore: nextPage.hasMore
+            )
+        )
+        return providers.isEmpty ? .empty(merged) : .found(merged)
+    }
+
+    private static func successfulSnapshot(
+        _ result: ProviderDirectoryResult?
+    ) -> ProviderDirectorySnapshot? {
+        switch result {
+        case .found(let snapshot), .empty(let snapshot):
+            return snapshot
+        case .unavailable, .none:
+            return nil
+        }
+    }
+
+    private static func malformed(
+        source: ProviderDirectorySource,
+        detail: String,
+        attemptedAt: Date
+    ) -> ProviderDirectoryResult {
+        .unavailable(ProviderDirectoryUnavailable(
+            source: source,
+            reason: .inconsistentSource,
+            detail: detail,
+            attemptedAt: attemptedAt
+        ))
+    }
 }
 
-// MARK: - The on-device local copy
+/// The owner app's complete request surface. It deliberately has no chosen-place, radius, map,
+/// geocoder, viewport, or autocomplete member.
+struct OwnerProviderDirectoryRequest: Equatable {
+    enum Mode: Equatable {
+        case nearest(approximateLocation: NearbyPoint, accuracyMetres: Double?)
+        case contacts
+    }
 
-/// Persistence seam. All policy lives above it, so the whole decision is covered by the host-less
-/// `DogTagTests` target while the file I/O stays a thin uncovered edge.
+    static let pageSize = 25
+    static let kinds = ["vet", "groomer"]
+
+    let mode: Mode
+    let name: String?
+    let offset: Int
+
+    var isNearest: Bool {
+        if case .nearest = mode { return true }
+        return false
+    }
+
+    static func nearest(
+        location: NearbyPoint,
+        accuracyMetres: Double?,
+        name: String?,
+        offset: Int
+    ) -> OwnerProviderDirectoryRequest? {
+        guard let approximate = location.coarsenedForProviderSearch(), offset >= 0 else { return nil }
+        return OwnerProviderDirectoryRequest(
+            mode: .nearest(
+                approximateLocation: approximate,
+                accuracyMetres: accuracyMetres
+            ),
+            name: normalizedName(name),
+            offset: offset
+        )
+    }
+
+    static func contacts(name: String?, offset: Int) -> OwnerProviderDirectoryRequest? {
+        guard offset >= 0 else { return nil }
+        return OwnerProviderDirectoryRequest(
+            mode: .contacts,
+            name: normalizedName(name),
+            offset: offset
+        )
+    }
+
+    private static func normalizedName(_ name: String?) -> String? {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+/// The read seam consumed by Nearby. Every call is explicitly nearest or name/contact paging.
+protocol ProviderDirectoryReading {
+    var source: ProviderDirectorySource { get }
+    /// Stable identity of the configured source, used ONLY to scope remembered records.
+    ///
+    /// It must distinguish two distinct configured endpoints, so one deployment's stored records can
+    /// never be replayed as another's. It must never contain a position or anything derived from one.
+    var cacheNamespace: String { get }
+    func read(_ request: OwnerProviderDirectoryRequest) async -> ProviderDirectoryResult
+}
+
+// MARK: - The offline provider-record fallback
+
+/// The on-device local copy of provider RECORDS - never of a ranking.
+///
+/// Captain's ruling, 2026-07-30: "its purpose is only for UX, so that some cache results can be shown
+/// when the device is offline, keep the cache data to minimal, and minimal usage." So this is a
+/// fallback that stops the screen being blank, not a feature, and it is deliberately narrower than the
+/// full-set snapshot cache it replaces (slice S-3, PR #112).
+///
+/// What it stores: provider identity and published contacts for the providers the owner most recently
+/// saw. What it must NEVER store: the nearest ordering, a distance, or anything else derived from the
+/// owner's position - because that would both put the owner's whereabouts on disk and let a stale
+/// ranking be replayed as though it were current, which a sorted list makes invisible.
+///
+/// Mirrors Android `DirectoryCache.kt` case for case; keep the two in step by hand.
 protocol ProviderDirectoryCacheStore {
     /// The stored document, or `nil` when nothing is stored or it could not be read.
     func read() -> Data?
@@ -125,379 +373,247 @@ final class MemoryProviderDirectoryCacheStore: ProviderDirectoryCacheStore {
     func clear() { document = nil }
 }
 
-/// A stored snapshot plus the identity needed to decide whether it may be replayed at all.
-struct ProviderDirectoryCacheEntry: Equatable {
+/// Remembered records plus when they were remembered. There is deliberately no distance and no page
+/// here: a caller cannot render a stored distance because it has none to render.
+struct StoredProviderRecords: Equatable {
+    let providers: [DirectoryProvider]
+    let storedAt: Date
+}
+
+/// A stored record set with the identity needed to decide whether it may be replayed at all.
+struct ProviderRecordCacheEntry: Equatable {
     let namespace: String
-    let snapshot: ProviderDirectorySnapshot
-    let readAt: Date
+    let providers: [DirectoryProvider]
+    let storedAt: Date
     let expiresAt: Date
 }
 
-/// The integrity a snapshot must have to be written OR replayed.
+/// The integrity a remembered record must have to be written OR replayed.
 ///
-/// Running it on the replay path is the load-bearing half. TypeScript makes a non-empty `found`
-/// unrepresentable (`readonly [P, ...P[]]`); a Swift `[DirectoryProvider]` cannot, so a `found`
-/// carrying zero providers becomes possible the moment a snapshot arrives from disk rather than from
-/// the live path - and it renders as "no vets near you", the exact false absence this exists to
-/// prevent. The guard is the only thing standing there.
-func providerDirectorySnapshotIsWellFormed(_ result: ProviderDirectoryResult) -> Bool {
-    switch result {
-    case .found(let snapshot):
-        return snapshot.readAt.timeIntervalSince1970.isFinite && !snapshot.providers.isEmpty
-    case .empty(let snapshot):
-        return snapshot.readAt.timeIntervalSince1970.isFinite && snapshot.providers.isEmpty
-    // `unavailable` is not a snapshot. It is never stored and never replayed.
-    case .unavailable:
-        return false
+/// The replay half is load-bearing: a record arriving from disk was not produced by the live parser,
+/// so a blank id or name is possible there in a way it is not on the live path - and a nameless row
+/// renders as a list entry the owner cannot act on.
+func providerRecordIsWellFormed(_ provider: DirectoryProvider) -> Bool {
+    !provider.providerId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !provider.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+/// The position-free order. Applied on write AND on read, so the array order can never carry a
+/// ranking. Ties break on `providerId` so the order is total.
+func providerRecordsInStoredOrder(_ providers: [DirectoryProvider]) -> [DirectoryProvider] {
+    providers.sorted { left, right in
+        let l = left.name.lowercased(), r = right.name.lowercased()
+        return l == r ? left.providerId < right.providerId : l < r
     }
 }
 
-/// Re-check the directory, replaying the last successful snapshot only when the live read could not
-/// answer and the hard TTL has not elapsed.
+/// Remember the records the owner just saw; replay them when a live read cannot answer at all.
 ///
-/// This is the Swift port of `packages/ui/src/directory/cache.ts`, and its semantics are that file's,
-/// not new ones. A successful LIVE read replaces the stored copy. A stored replay never renews its
-/// hard deadline. An entry AT its exact expiry is expired. Missing, wrong-namespace, and expired
-/// entries all leave the live `unavailable` exactly as it was; none may turn it into `empty`.
-///
-/// What it buys over the in-process snapshot it replaces: it survives the process. A cache held in a
-/// static is empty on every cold launch, which is exactly the state a phone is in when the owner
-/// opens the app somewhere with no signal.
-///
-/// There is deliberately no `catch` around the delegate read, unlike the Kotlin twin. `read()` is a
-/// non-throwing `async` function, so an unexpected error cannot escape it: the compiler enforces
-/// here what Android has to enforce at runtime. A catch would be unreachable code masquerading as a
-/// safeguard.
-struct CachedProviderDirectory: ProviderDirectoryReading {
-    /// Seven days, and the reasoning is written down because the next person will otherwise inherit
-    /// this number the way this type first inherited fifteen minutes from the in-process snapshot it
-    /// replaced.
-    ///
-    /// This value governs ONLY the offline window, which is the fact the old fifteen minutes
-    /// obscured. The wrapper is re-check-first: a live read is attempted on every single read and
-    /// always replaces the stored copy, so for an owner with signal the staleness is ~0 whatever this
-    /// number is. Fifteen minutes never bought anyone fresher data - it only decided how early an
-    /// offline owner was cut off.
-    ///
-    /// So the trade is not fresh-versus-stale. It is: show a labelled remembered list, or show
-    /// nothing. This is the list a pet owner uses to find a vet, and showing nothing is the worse
-    /// failure - a wasted call to a clinic that moved costs far less than having no vet contacts at
-    /// all while standing somewhere with no signal.
-    ///
-    /// Seven days specifically, because this product's flagship credential is TRAVEL_CLEARANCE: the
-    /// owner abroad with data roaming off is the exact offline case, and a 24-hour window fails them
-    /// on day two of a trip. A clinic directory changes on a scale of weeks to months, not minutes.
-    ///
-    /// On delisting: a shorter window would not have helped. Delisting propagates on the next live
-    /// read, which happens on every read, so an online owner sees a removed provider disappear
-    /// regardless of this value; the residual is only an owner offline for days. And the source
-    /// publishes no standing fact anyway - central sets `DirectoryProvider.active` to nil - so not
-    /// even a fresh live read can assert a provider is currently active. This copy must not imply a
-    /// currency the source never claimed, which is why the surface labels a replay with its age
-    /// rather than presenting it as current.
+/// Deliberately NOT a decorator around the directory seam, unlike the `CachedProviderDirectory` it
+/// replaces. That shape wrapped a no-argument `read()` of the whole set, which no longer exists: a
+/// nearest read is personalized and paged, so there is no single response that is "the directory" to
+/// substitute for. The caller drives this explicitly instead, which also keeps recall off the success
+/// path.
+struct ProviderRecordCache {
+    /// Bounds only the fallback - every read re-checks live first - so shortening it buys no freshness
+    /// and only cuts an offline owner off sooner.
     static let defaultTtl: TimeInterval = 7 * 24 * 60 * 60
 
-    private let delegate: ProviderDirectoryReading
-    private let store: ProviderDirectoryCacheStore
-    private let ttl: TimeInterval
-    private let now: () -> Date
+    /// The cap that makes "minimal" concrete: one page's worth. A cache that grew with the directory
+    /// would reintroduce on disk exactly the bulk the server-side pivot removed from the wire.
+    static let maxRecords = OwnerProviderDirectoryRequest.pageSize
 
-    var source: ProviderDirectorySource { delegate.source }
-    var cacheNamespace: String { delegate.cacheNamespace }
+    private let store: ProviderDirectoryCacheStore
+    private let namespace: String
+    private let ttl: TimeInterval
 
     init(
-        delegate: ProviderDirectoryReading,
         store: ProviderDirectoryCacheStore,
-        ttl: TimeInterval = CachedProviderDirectory.defaultTtl,
-        now: @escaping () -> Date = Date.init
+        namespace: String,
+        ttl: TimeInterval = ProviderRecordCache.defaultTtl
     ) {
-        self.delegate = delegate
         self.store = store
+        self.namespace = namespace
         self.ttl = ttl
-        self.now = now
     }
 
-    func read() async -> ProviderDirectoryResult {
-        let live = await delegate.read()
-        let currentTime = now()
-
-        guard ttl.isFinite, ttl > 0 else {
-            // A misconfigured lifetime disables the copy rather than storing an entry whose deadline
-            // no later read could evaluate.
-            store.clear()
-            return live
-        }
-
-        if case .unavailable = live { return replay(live: live, currentTime: currentTime) }
-
-        // A source that identifies itself differently from the one configured is a trust-boundary
-        // change, not a cache hit.
-        if snapshotSource(live) != delegate.source {
-            store.clear()
-            return .unavailable(ProviderDirectoryUnavailable(
-                source: delegate.source,
-                reason: .inconsistentSource,
-                detail: "The directory identified itself as a different source than the one configured",
-                attemptedAt: currentTime
-            ))
-        }
-
-        guard providerDirectorySnapshotIsWellFormed(live), let snapshot = successfulSnapshot(live) else {
-            store.clear()
-            return .unavailable(ProviderDirectoryUnavailable(
-                source: delegate.source,
-                reason: .invalidSnapshot,
-                detail: "The directory returned an invalid provider list or timestamp",
-                attemptedAt: currentTime
-            ))
-        }
-
-        if snapshot.observation == .stored {
-            // A replay handed up by an inner wrapper is not a successful refresh. Passing it through
-            // preserves the original hard deadline; storing it here would let stacked wrappers renew
-            // stale data forever.
-            guard let inherited = snapshot.expiresAt, currentTime < inherited else {
-                return .unavailable(ProviderDirectoryUnavailable(
-                    source: delegate.source,
-                    reason: .invalidSnapshot,
-                    detail: "The directory returned a stored snapshot without an unexpired hard TTL",
-                    attemptedAt: currentTime
-                ))
-            }
-            return live
-        }
-
-        // The TTL runs from the SOURCE's observation, not from insertion, so a slow read or an outer
-        // wrapper can never silently lengthen the hard maximum age.
-        let localExpiry = snapshot.readAt.addingTimeInterval(ttl)
-        let expiresAt = min(localExpiry, snapshot.expiresAt ?? localExpiry)
-        guard currentTime < expiresAt else {
-            store.clear()
-            return .unavailable(ProviderDirectoryUnavailable(
-                source: delegate.source,
-                reason: .invalidSnapshot,
-                detail: "The live directory snapshot was already outside its hard TTL",
-                attemptedAt: currentTime
-            ))
-        }
-
-        var stamped = snapshot
-        stamped.expiresAt = expiresAt
-        let entry = ProviderDirectoryCacheEntry(
-            namespace: delegate.cacheNamespace,
-            snapshot: stamped,
-            readAt: snapshot.readAt,
-            expiresAt: expiresAt
+    /// Replace the remembered set with what the owner is looking at now.
+    ///
+    /// Replace rather than accumulate, because "minimal" was the instruction twice over. The
+    /// consequence is honest and worth stating: offline shows the last providers seen, not a history.
+    ///
+    /// An empty live page writes nothing and clears nothing - it means this query matched nothing,
+    /// which is not evidence that the previously remembered providers ceased to exist.
+    func remember(_ providers: [DirectoryProvider], now: Date) {
+        var seen = Set<String>()
+        let deduped = providers.filter { providerRecordIsWellFormed($0) && seen.insert($0.providerId).inserted }
+        let records = Array(providerRecordsInStoredOrder(deduped).prefix(Self.maxRecords))
+        guard !records.isEmpty else { return }
+        let entry = ProviderRecordCacheEntry(
+            namespace: namespace,
+            providers: records,
+            storedAt: now,
+            expiresAt: now.addingTimeInterval(ttl)
         )
-        if let document = ProviderDirectoryCacheCodec.encode(entry) { store.write(document) }
-        return stamped.providers.isEmpty ? .empty(stamped) : .found(stamped)
+        guard let document = ProviderDirectoryCacheCodec.encode(entry) else { return }
+        store.write(document)
     }
 
-    private func replay(live: ProviderDirectoryResult, currentTime: Date) -> ProviderDirectoryResult {
-        guard let document = store.read() else { return live }
-        guard let entry = ProviderDirectoryCacheCodec.decode(document),
-              entry.namespace == delegate.cacheNamespace,
-              entry.snapshot.source == delegate.source else {
-            store.clear()
-            return live
+    /// The remembered records, or `nil` when there is nothing replayable.
+    ///
+    /// `nil` covers every could-not-answer: nothing stored, an undecodable document, a different
+    /// configured source, an elapsed deadline, and a stored time in the future (a backwards clock
+    /// jump, not a fresh copy). None of them may become an empty success.
+    func recall(now: Date) -> StoredProviderRecords? {
+        guard let document = store.read(),
+              let entry = ProviderDirectoryCacheCodec.decode(document),
+              entry.namespace == namespace,
+              // At the exact deadline it is expired, matching Android and the web.
+              now < entry.expiresAt,
+              now >= entry.storedAt
+        else { return nil }
+        var seen = Set<String>()
+        let deduped = entry.providers.filter {
+            providerRecordIsWellFormed($0) && seen.insert($0.providerId).inserted
         }
-        let replayed: ProviderDirectoryResult =
-            entry.snapshot.providers.isEmpty ? .empty(entry.snapshot) : .found(entry.snapshot)
-        guard providerDirectorySnapshotIsWellFormed(replayed),
-              entry.snapshot.readAt == entry.readAt,
-              entry.snapshot.expiresAt == entry.expiresAt,
-              // A snapshot read in the future means the clock moved backwards. Trusting the stored
-              // absolute deadline there would extend the hard window by however far it jumped.
-              entry.readAt <= currentTime,
-              entry.expiresAt <= entry.readAt.addingTimeInterval(ttl),
-              currentTime < entry.expiresAt else {
-            store.clear()
-            return live
-        }
-        var stored = entry.snapshot
-        stored.observation = .stored
-        return stored.providers.isEmpty ? .empty(stored) : .found(stored)
+        let records = Array(providerRecordsInStoredOrder(deduped).prefix(Self.maxRecords))
+        guard !records.isEmpty else { return nil }
+        return StoredProviderRecords(providers: records, storedAt: entry.storedAt)
     }
 
-    private func snapshotSource(_ result: ProviderDirectoryResult) -> ProviderDirectorySource {
-        switch result {
-        case .found(let snapshot), .empty(let snapshot): return snapshot.source
-        case .unavailable(let unavailable): return unavailable.source
-        }
-    }
-
-    private func successfulSnapshot(_ result: ProviderDirectoryResult) -> ProviderDirectorySnapshot? {
-        switch result {
-        case .found(let snapshot), .empty(let snapshot): return snapshot
-        case .unavailable: return nil
-        }
-    }
+    func clear() { store.clear() }
 }
 
-/// The stored document's wire form.
-///
-/// Everything decodes strictly and any failure is `nil`, which the caller reads as "nothing stored".
-/// A cache that guessed at a half-understood document would be inventing directory content.
 enum ProviderDirectoryCacheCodec {
     /// Bump on ANY change to the stored shape, including a change to what a field means.
     ///
-    /// A stale-version document is dropped rather than migrated. The concrete reason this exists from
-    /// day one: S-1 made `geo` optional, and before it a location-less provider was persisted as the
-    /// real coordinate `0,0`. AGENTS.md is explicit that such a row cannot be safely reinterpreted by
-    /// code, so a stored copy from an older shape must never be replayed as if it were this one.
-    static let version = 1
+    /// Version 1 was slice S-3's full-set snapshot, whose `providers` array was in server order -
+    /// which for a nearest response IS the ranking. Reading one under this shape would replay that
+    /// ranking as a remembered record set, so the bump is what stops the previous build's document
+    /// being reinterpreted as something it is not. A stale version is dropped, never migrated.
+    static let version = 2
 
-    private struct StoredPoint: Codable, Equatable {
-        let lat: Double
-        let lng: Double
+    static func encode(_ entry: ProviderRecordCacheEntry) -> Data? {
+        let root: [String: Any] = [
+            "version": version,
+            "namespace": entry.namespace,
+            "storedAt": entry.storedAt.timeIntervalSince1970,
+            "expiresAt": entry.expiresAt.timeIntervalSince1970,
+            "providers": entry.providers.map(encodeProvider),
+        ]
+        return try? JSONSerialization.data(withJSONObject: root)
     }
 
-    private struct StoredContact: Codable, Equatable {
-        var phone: String?
-        var whatsapp: String?
-        var telegram: String?
-        var email: String?
-        var website: String?
-    }
-
-    private struct StoredProvider: Codable, Equatable {
-        let providerId: String
-        let kind: String
-        let name: String
-        /// Absence is stored as absence. It is never written as `0,0`, a real coordinate off the
-        /// coast of Ghana that would place a contact-only provider on the map.
-        let geo: StoredPoint?
-        let services: [String]
-        let domain: String?
-        let active: Bool?
-        let contact: StoredContact
-        /// Only the two states a directory source may honestly produce. A stored `verified` would be
-        /// a claim about a DNS/chain check nobody performed, so it can be neither written nor read.
-        let bindingState: String
-    }
-
-    private struct StoredEntry: Codable, Equatable {
-        let version: Int
-        let namespace: String
-        /// Seconds since the epoch. Absolute, so a replay cannot slide its own deadline forward.
-        let readAt: Double
-        let expiresAt: Double
-        /// `"found"` or `"empty"`. `observation` is deliberately NOT stored: a document read back
-        /// from disk is a replay by definition, and a persisted `"live"` could present a remembered
-        /// answer as a fresh one.
-        let state: String
-        let providers: [StoredProvider]
-    }
-
-    static func encode(_ entry: ProviderDirectoryCacheEntry) -> Data? {
-        // Only the central source has a stored shape today. A future on-chain directory must extend
-        // this explicitly rather than being silently written under central's identity.
-        guard entry.snapshot.source == .central else { return nil }
-        let stored = StoredEntry(
-            version: version,
-            namespace: entry.namespace,
-            readAt: entry.readAt.timeIntervalSince1970,
-            expiresAt: entry.expiresAt.timeIntervalSince1970,
-            state: entry.snapshot.providers.isEmpty ? "empty" : "found",
-            providers: entry.snapshot.providers.map { provider in
-                StoredProvider(
-                    providerId: provider.providerId,
-                    kind: provider.kind,
-                    name: provider.name,
-                    geo: provider.geo.map { StoredPoint(lat: $0.lat, lng: $0.lng) },
-                    services: provider.services,
-                    domain: provider.domain,
-                    active: provider.active,
-                    contact: StoredContact(
-                        phone: provider.contact.phone,
-                        whatsapp: provider.contact.whatsapp,
-                        telegram: provider.contact.telegram,
-                        email: provider.contact.email,
-                        website: provider.contact.website
-                    ),
-                    bindingState: provider.bindingState == .noDomainListed
-                        ? "noDomainListed"
-                        : "unavailable"
-                )
-            }
-        )
-        return try? JSONEncoder().encode(stored)
-    }
-
-    static func decode(_ document: Data) -> ProviderDirectoryCacheEntry? {
-        guard let stored = try? JSONDecoder().decode(StoredEntry.self, from: document),
-              stored.version == version,
-              !stored.namespace.isEmpty,
-              stored.readAt.isFinite, stored.expiresAt.isFinite,
-              stored.state == "found" || stored.state == "empty" else { return nil }
-        if stored.state == "empty" && !stored.providers.isEmpty { return nil }
-        if stored.state == "found" && stored.providers.isEmpty { return nil }
-
+    static func decode(_ document: Data) -> ProviderRecordCacheEntry? {
+        guard let root = (try? JSONSerialization.jsonObject(with: document)) as? [String: Any],
+              (root["version"] as? Int) == version,
+              let namespace = root["namespace"] as? String, !namespace.isEmpty,
+              let storedAt = root["storedAt"] as? Double, storedAt.isFinite,
+              let expiresAt = root["expiresAt"] as? Double, expiresAt.isFinite,
+              let rows = root["providers"] as? [[String: Any]], !rows.isEmpty
+        else { return nil }
         var providers: [DirectoryProvider] = []
-        providers.reserveCapacity(stored.providers.count)
-        for row in stored.providers {
-            var geo: NearbyPoint?
-            if let point = row.geo {
-                let candidate = NearbyPoint(lat: point.lat, lng: point.lng)
-                guard candidate.isValid else { return nil }
-                geo = candidate
-            }
-            providers.append(DirectoryProvider(
-                providerId: row.providerId,
-                kind: row.kind,
-                name: row.name,
-                geo: geo,
-                services: row.services,
-                domain: row.domain,
-                active: row.active,
-                contact: ProviderContact(
-                    phone: row.contact.phone,
-                    whatsapp: row.contact.whatsapp,
-                    telegram: row.contact.telegram,
-                    email: row.contact.email,
-                    website: row.contact.website
-                ),
-                bindingState: row.bindingState == "noDomainListed" ? .noDomainListed : .unavailable
-            ))
+        for row in rows {
+            guard let provider = decodeProvider(row) else { return nil }
+            providers.append(provider)
         }
-
-        let readAt = Date(timeIntervalSince1970: stored.readAt)
-        let expiresAt = Date(timeIntervalSince1970: stored.expiresAt)
-        return ProviderDirectoryCacheEntry(
-            namespace: stored.namespace,
-            snapshot: ProviderDirectorySnapshot(
-                source: .central,
-                providers: providers,
-                // Relabelled by the wrapper; a document off disk is a replay whatever it claims.
-                observation: .stored,
-                blockNumber: nil,
-                readAt: readAt,
-                expiresAt: expiresAt
-            ),
-            readAt: readAt,
-            expiresAt: expiresAt
+        return ProviderRecordCacheEntry(
+            namespace: namespace,
+            providers: providers,
+            storedAt: Date(timeIntervalSince1970: storedAt),
+            expiresAt: Date(timeIntervalSince1970: expiresAt)
         )
     }
-}
 
-enum NearbyOriginSource: Equatable {
-    case currentLocation
-    case chosenCoordinates
+    /// Identity and published contacts only.
+    ///
+    /// There is deliberately no `distanceKm` key, and its absence is a requirement rather than an
+    /// omission: `DirectoryProvider` DOES carry `distanceKm` on this platform, so dropping it here is
+    /// an active decision on every write, not something the type happens to prevent.
+    private static func encodeProvider(_ provider: DirectoryProvider) -> [String: Any] {
+        var row: [String: Any] = [
+            "providerId": provider.providerId,
+            "kind": provider.kind,
+            "name": provider.name,
+            "services": provider.services,
+            "bindingState": encodeBindingState(provider.bindingState),
+        ]
+        // Absence is stored as absence, never as the real coordinate `0,0`.
+        if let geo = provider.geo { row["geo"] = ["lat": geo.lat, "lng": geo.lng] }
+        if let domain = provider.domain { row["domain"] = domain }
+        if let active = provider.active { row["active"] = active }
+        var contact: [String: Any] = [:]
+        if let value = provider.contact.phone { contact["phone"] = value }
+        if let value = provider.contact.whatsapp { contact["whatsapp"] = value }
+        if let value = provider.contact.telegram { contact["telegram"] = value }
+        if let value = provider.contact.email { contact["email"] = value }
+        if let value = provider.contact.website { contact["website"] = value }
+        row["contact"] = contact
+        return row
+    }
+
+    private static func decodeProvider(_ row: [String: Any]) -> DirectoryProvider? {
+        guard let providerId = row["providerId"] as? String,
+              let kind = row["kind"] as? String,
+              let name = row["name"] as? String,
+              let services = row["services"] as? [String]
+        else { return nil }
+        var geo: NearbyPoint?
+        if let stored = row["geo"] {
+            guard let object = stored as? [String: Any],
+                  let lat = object["lat"] as? Double,
+                  let lng = object["lng"] as? Double
+            else { return nil }
+            let point = NearbyPoint(lat: lat, lng: lng)
+            guard point.isValid else { return nil }
+            geo = point
+        }
+        let contact = row["contact"] as? [String: Any] ?? [:]
+        func text(_ key: String) -> String? {
+            guard let value = contact[key] as? String else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return DirectoryProvider(
+            providerId: providerId,
+            kind: kind,
+            name: name,
+            geo: geo,
+            services: services,
+            domain: row["domain"] as? String,
+            active: row["active"] as? Bool,
+            contact: ProviderContact(
+                phone: text("phone"),
+                whatsapp: text("whatsapp"),
+                telegram: text("telegram"),
+                email: text("email"),
+                website: text("website")
+            ),
+            bindingState: decodeBindingState(row["bindingState"] as? String ?? "")
+            // distanceKm is deliberately left at its `nil` default: a remembered record asserts no
+            // distance, so there is nothing here for a stale ranking to be rebuilt from.
+        )
+    }
+
+    /// A stored `verified` would claim a DNS check nobody performed, so it cannot be written or read;
+    /// anything unrecognised degrades to `unavailable`, which asserts nothing.
+    private static func encodeBindingState(_ state: IssuerBindingState) -> String {
+        if case .noDomainListed = state { return "noDomainListed" }
+        return "unavailable"
+    }
+
+    private static func decodeBindingState(_ raw: String) -> IssuerBindingState {
+        raw == "noDomainListed" ? .noDomainListed : .unavailable
+    }
 }
 
 /// Where distance is measured from, and how precise that origin actually is.
 ///
 /// `accuracyMetres` is the horizontal uncertainty the DEVICE reported for a `currentLocation` fix,
-/// carried so no row can render a distance finer than the fix supports. It is meaningless for
-/// `chosenCoordinates`, which the owner typed exactly, so that source keeps ordinary precision.
+/// carried so no row can render a distance finer than the fix supports.
 struct NearbyOrigin: Equatable {
     let point: NearbyPoint
-    let source: NearbyOriginSource
     var accuracyMetres: Double?
-
-    static func chosen(_ point: NearbyPoint) -> NearbyOrigin {
-        NearbyOrigin(point: point, source: .chosenCoordinates, accuracyMetres: nil)
-    }
 }
 
 enum NearbyLocationState: Equatable {
@@ -506,7 +622,6 @@ enum NearbyLocationState: Equatable {
     case ready(NearbyOrigin)
     case refused
     case unavailable
-    case invalidChosenLocation
 }
 
 /// What may be SAID about one measured distance, given how precise the origin actually is.
@@ -555,35 +670,21 @@ enum NearbyUnitSystem: Equatable {
 
 /// The shared, pure policy for what Nearby may show and claim.
 ///
-/// Distance measurement is injected so the app can use Core Location while this file remains
-/// Foundation-only and runnable in the host-less DogTagTests target.
+/// The indexer owns distance calculation and ordering. This policy only validates and formats the
+/// returned distance; it never recomputes or re-sorts it on the device.
 enum NearbyDecision {
-    static let defaultRadiusKm = 50.0
-
-    /// Offline chosen-origin parser shared by the UI and tests. There is deliberately no geocoder:
-    /// turning an address into coordinates would transmit the chosen location to a search service.
-    static func parseChosenOrigin(lat: String, lng: String) -> NearbyPoint? {
-        guard let latitude = Double(lat.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let longitude = Double(lng.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            return nil
-        }
-        let point = NearbyPoint(lat: latitude, lng: longitude)
-        return point.isValid ? point : nil
-    }
+    /// Three-decimal coordinates are only about hundred-metre resolution, even when Core Location's
+    /// raw fix was more precise. Server distances must never be displayed more finely than the
+    /// coordinate the server actually received supports.
+    private static let networkPositionGranularityMetres = 100.0
 
     struct Row: Equatable {
         let provider: DirectoryProvider
-        /// The RAW platform measurement. Ordering uses it; only `distance` is coarsened for display.
+        /// The server measurement. The device preserves its order and only formats this value.
         let distanceKm: Double
         let distance: DistanceClaim
-        let bearingLabel: String?
-
-        /// A row reaches this type only after a real, valid coordinate and distance were established.
-        var allowsDirections: Bool { true }
     }
 
-    /// Complete Nearby presentation. Keeping rows inside only the `providersFound` case makes an
-    /// unavailable directory impossible to accidentally render as an empty provider list.
     enum Presentation: Equatable {
         case loadingDirectory
         case directoryUnavailable(String)
@@ -592,14 +693,23 @@ enum NearbyDecision {
         case locating
         case permissionRefused
         case locationUnavailable
-        case invalidChosenLocation
-        case noneWithinRange(radiusKm: Double, observation: ProviderDirectoryObservation)
+        case noNearbyProviders(ProviderDirectoryObservation)
         case noNameMatch(query: String, observation: ProviderDirectoryObservation)
         case providersFound(rows: [Row], observation: ProviderDirectoryObservation)
+
+        /// The offline fallback: providers the owner has seen before, with NO distance and NO ranking.
+        ///
+        /// Deliberately its own case rather than a `providersFound` carrying no distances.
+        /// `presentation` drops any provider it has no server distance for and then reports
+        /// `noNearbyProviders`, so routing remembered records through it would render "no vets near
+        /// you" about providers the phone is holding in its hand - the false absence this layer exists
+        /// to prevent. `storedAge` may be `nil`: an age that could not be derived says nothing rather
+        /// than inventing a number.
+        case storedProvidersOnly(providers: [DirectoryProvider], storedAge: String?)
     }
 
     /// Complete unranked contact presentation. Located and contact-only providers share the found
-    /// case; this state intentionally carries no distance, bearing or Directions claim.
+    /// case; this state intentionally carries no distance claim.
     enum ContactDirectoryPresentation: Equatable {
         case loadingDirectory
         case directoryUnavailable(String)
@@ -608,104 +718,70 @@ enum NearbyDecision {
         case providersFound(providers: [DirectoryProvider], observation: ProviderDirectoryObservation)
     }
 
-    typealias DistanceKm = (_ origin: NearbyPoint, _ destination: NearbyPoint) -> Double?
-
     static func presentation(
         directory: ProviderDirectoryResult?,
         location: NearbyLocationState,
         query: String,
-        unitSystem: NearbyUnitSystem,
-        radiusKm: Double = defaultRadiusKm,
-        distanceKm: DistanceKm
+        unitSystem: NearbyUnitSystem
     ) -> Presentation {
-        guard let directory else { return .loadingDirectory }
+        let origin: NearbyOrigin
+        switch location {
+        case .notRequested:
+            return .awaitingOrigin
+        case .locating:
+            return .locating
+        case .refused:
+            return .permissionRefused
+        case .unavailable:
+            return .locationUnavailable
+        case .ready(let candidate):
+            guard candidate.point.isValid else { return .locationUnavailable }
+            origin = candidate
+        }
 
+        guard let directory else { return .loadingDirectory }
         switch directory {
         case .unavailable(let failure):
             return .directoryUnavailable(failure.detail)
         case .empty(let snapshot):
-            return .directoryEmpty(snapshot.observation)
-        case .found(let snapshot):
-            let usableRadius = radiusKm.isFinite && radiusKm >= 0
-                ? radiusKm
-                : defaultRadiusKm
-            let eligible = nearbyEligible(snapshot.providers)
-            let term = normalized(query)
             let searchedName = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            let candidates = term.isEmpty
-                ? eligible
-                : eligible.filter { normalized($0.name).contains(term) }
-
-            if !term.isEmpty && candidates.isEmpty {
-                return .noNameMatch(query: searchedName, observation: snapshot.observation)
+            return searchedName.isEmpty
+                ? .noNearbyProviders(snapshot.observation)
+                : .noNameMatch(query: searchedName, observation: snapshot.observation)
+        case .found(let snapshot):
+            let effectiveAccuracy: Double?
+            if let reported = origin.accuracyMetres, reported.isFinite, reported >= 0 {
+                effectiveAccuracy = max(reported, networkPositionGranularityMetres)
+            } else {
+                effectiveAccuracy = nil
             }
-            if candidates.isEmpty {
-                return .noneWithinRange(
-                    radiusKm: usableRadius,
-                    observation: snapshot.observation
-                )
-            }
-
-            let resolved: NearbyOrigin
-            switch location {
-            case .notRequested:
-                return .awaitingOrigin
-            case .locating:
-                return .locating
-            case .refused:
-                return .permissionRefused
-            case .unavailable:
-                return .locationUnavailable
-            case .invalidChosenLocation:
-                return .invalidChosenLocation
-            case .ready(let candidate):
-                guard candidate.point.isValid else {
-                    return .locationUnavailable
-                }
-                resolved = candidate
-            }
-
-            let origin = resolved.point
-            let fromDeviceFix = resolved.source == .currentLocation
-            let ranked = candidates.enumerated().compactMap { index, provider -> (Int, Row)? in
-                guard let destination = provider.geo, destination.isValid,
-                      let km = distanceKm(origin, destination),
-                      km.isFinite, km >= 0 else {
-                    return nil
-                }
-                return (
-                    index,
-                    Row(
+            let rows = snapshot.providers
+                .filter(isEligibleProvider)
+                .compactMap { provider -> Row? in
+                    guard let km = provider.distanceKm, km.isFinite, km >= 0 else { return nil }
+                    return Row(
                         provider: provider,
                         distanceKm: km,
                         distance: distanceClaim(
                             km,
-                            accuracyMetres: resolved.accuracyMetres,
-                            fromDeviceFix: fromDeviceFix,
+                            accuracyMetres: effectiveAccuracy,
+                            fromDeviceFix: true,
                             unitSystem: unitSystem
-                        ),
-                        bearingLabel: initialBearing(origin, destination).flatMap(compassPoint8)
+                        )
                     )
-                )
+                }
+            if !rows.isEmpty {
+                return .providersFound(rows: rows, observation: snapshot.observation)
             }
-            .filter { !term.isEmpty || $0.1.distanceKm <= usableRadius }
-            .sorted {
-                if $0.1.distanceKm == $1.1.distanceKm { return $0.0 < $1.0 }
-                return $0.1.distanceKm < $1.1.distanceKm
-            }
-            .map(\.1)
-
-            if !ranked.isEmpty {
-                return .providersFound(rows: ranked, observation: snapshot.observation)
-            }
-            return term.isEmpty
-                ? .noneWithinRange(radiusKm: usableRadius, observation: snapshot.observation)
+            let searchedName = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            return searchedName.isEmpty
+                ? .noNearbyProviders(snapshot.observation)
                 : .noNameMatch(query: searchedName, observation: snapshot.observation)
         }
     }
 
-    /// The separate, unranked provider-contact directory. Located and contact-only providers both
-    /// remain reachable here; this scope never acquires an origin and never offers Directions.
+    /// The separate name/contact directory. The service already applied name and paging; the app
+    /// preserves response order and only repeats its vet/groomer safety gate.
     static func contactPresentation(
         directory: ProviderDirectoryResult?,
         query: String
@@ -716,34 +792,23 @@ enum NearbyDecision {
         case .unavailable(let failure):
             return .directoryUnavailable(failure.detail)
         case .empty(let snapshot):
-            return .directoryEmpty(snapshot.observation)
-        case .found(let snapshot):
-            let term = normalized(query)
             let searchedName = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            let providers = snapshot.providers
-                .filter(isEligibleProvider)
-                .filter { term.isEmpty || normalized($0.name).contains(term) }
-                .sorted {
-                    let first = sortKey($0.name)
-                    let second = sortKey($1.name)
-                    return first == second
-                        ? $0.providerId < $1.providerId
-                        : first < second
-                }
+            return searchedName.isEmpty
+                ? .directoryEmpty(snapshot.observation)
+                : .noNameMatch(query: searchedName, observation: snapshot.observation)
+        case .found(let snapshot):
+            let providers = snapshot.providers.filter(isEligibleProvider)
             if !providers.isEmpty {
                 return .providersFound(
                     providers: providers,
                     observation: snapshot.observation
                 )
             }
-            return term.isEmpty
+            let searchedName = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            return searchedName.isEmpty
                 ? .directoryEmpty(snapshot.observation)
                 : .noNameMatch(query: searchedName, observation: snapshot.observation)
         }
-    }
-
-    private static func nearbyEligible(_ providers: [DirectoryProvider]) -> [DirectoryProvider] {
-        providers.filter(isEligibleProvider).filter { $0.geo?.isValid == true }
     }
 
     private static func isEligibleProvider(_ provider: DirectoryProvider) -> Bool {
@@ -751,39 +816,30 @@ enum NearbyDecision {
         return (kind == "vet" || kind == "groomer") && provider.active != false
     }
 
-    private static func normalized(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-            .lowercased()
-    }
-
-    /// The contact list's ordering key, mirrored by Android.
+    /// What may be shown when a live read could not answer at all and records were remembered.
     ///
-    /// It is the SAME locale-independent fold the on-device name search uses. A collating comparator
-    /// would order the two apps differently for the same directory, because each platform's collation
-    /// is its own; folding first leaves one order that both can reproduce.
-    private static func sortKey(_ value: String) -> String { normalized(value) }
-
-    private static func initialBearing(_ origin: NearbyPoint, _ destination: NearbyPoint) -> Double? {
-        guard origin.isValid, destination.isValid else { return nil }
-        if origin == destination || abs(origin.lat) == 90 { return nil }
-
-        let phi1 = origin.lat * .pi / 180
-        let phi2 = destination.lat * .pi / 180
-        let deltaLambda = (destination.lng - origin.lng) * .pi / 180
-        let y = sin(deltaLambda) * cos(phi2)
-        let x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(deltaLambda)
-        if y == 0 && x == 0 { return nil }
-        let degrees = atan2(y, x) * 180 / .pi
-        return (degrees + 360).truncatingRemainder(dividingBy: 360)
-    }
-
-    private static func compassPoint8(_ degrees: Double) -> String? {
-        guard degrees.isFinite else { return nil }
-        let points = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-        let normalized = (degrees.truncatingRemainder(dividingBy: 360) + 360)
-            .truncatingRemainder(dividingBy: 360)
-        return points[Int((normalized / 45).rounded()) % points.count]
+    /// Returns `nil` when there is nothing honest to show - nothing remembered, or nothing remembered
+    /// matching this search - so the caller keeps the live "could not check" rather than replacing it
+    /// with a reassuring list. A fallback that quietly answered an empty result would turn
+    /// could-not-check into an established absence.
+    ///
+    /// No distance is computed or carried, and the order is whatever position-free order the cache
+    /// stored. Mirrors Android `NearbyDecision.storedFallback`.
+    static func storedFallback(
+        records: StoredProviderRecords?,
+        query: String,
+        now: Date
+    ) -> Presentation? {
+        guard let records else { return nil }
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let providers = records.providers
+            .filter(isEligibleProvider)
+            .filter { needle.isEmpty || $0.name.lowercased().contains(needle) }
+        guard !providers.isEmpty else { return nil }
+        return .storedProvidersOnly(
+            providers: providers,
+            storedAge: formatStoredAge(storedAt: records.storedAt, now: now)
+        )
     }
 
     private static let kmPerMile = 1.609344
@@ -812,6 +868,27 @@ enum NearbyDecision {
     private static let imperialLadderMetres = [
         footStepMetres, tenthMileMetres, mileMetres, coarsestImperialMetres,
     ]
+
+    /// How old a remembered record set is, in words, for the offline label.
+    ///
+    /// Rounds OUTWARD so a replay never reads fresher than it is, and promotes at the ceiling rather
+    /// than printing "60 minutes ago". An age that cannot be derived - a stored time in the future,
+    /// i.e. a backwards clock jump - says nothing rather than inventing a number.
+    /// Mirrors Android; keep the two in step by hand.
+    static func formatStoredAge(storedAt: Date, now: Date) -> String? {
+        let elapsed = now.timeIntervalSince(storedAt)
+        guard elapsed.isFinite, elapsed >= 0 else { return nil }
+        if elapsed < 60 { return "less than a minute ago" }
+        let minutes = (elapsed / 60).rounded(.up)
+        if minutes < 60 { return agePhrase(minutes, "minute") }
+        let hours = (elapsed / 3_600).rounded(.up)
+        if hours < 24 { return agePhrase(hours, "hour") }
+        return agePhrase((elapsed / 86_400).rounded(.up), "day")
+    }
+
+    private static func agePhrase(_ count: Double, _ unit: String) -> String {
+        count == 1 ? "1 \(unit) ago" : String(format: "%.0f", count) + " \(unit)s ago"
+    }
 
     /// [minGranularityMetres] raises the display floor so a band finer than the origin's own
     /// uncertainty is never reached. It can only make a label COARSER; coarser is always honest,
@@ -853,54 +930,13 @@ enum NearbyDecision {
         return nil
     }
 
-    /// How old a stored directory replay is, coarsely. Mirrors the Kotlin `formatStoredAge`.
-    ///
-    /// The offline window is measured in days, so "stored" and "recent" are no longer the same
-    /// statement and the surface has to say which. The ladder is deliberately blunt - under a minute,
-    /// then minutes, hours, days - because a remembered public directory supports no finer claim.
-    ///
-    /// Rounds the age OUTWARD, so for the `now` it is GIVEN the stated age is never smaller than the
-    /// true one. That is the same direction `uncertaintyLabel` rounds a distance bound, and the safe
-    /// one here: understating staleness under-warns.
-    ///
-    /// Never describing a remembered copy as fresher than it is, though, is a JOINT property of that
-    /// rounding and the CALLER re-sampling the clock - it is not something this function can carry
-    /// alone. A label derived once and left on screen goes on asserting an age that has stopped being
-    /// true, which under-warns in precisely the direction the rounding exists to prevent. So a surface
-    /// must re-derive this when the owner returns to it: `NearbyScreen.storedAgeClause` reads
-    /// `scenePhase` here, and the Kotlin twin keys its `remember` on an `ON_RESUME` epoch. Neither is
-    /// a ticker, and neither suite can reach a lifecycle callback, so this half is a caller obligation
-    /// stated here rather than a pinned one.
-    ///
-    /// Derived from the snapshot's own `readAt`, never from `expiresAt` minus the TTL - the deadline
-    /// is the MINIMUM of the local window and any the source declared, so that subtraction is wrong
-    /// whenever the source declared a shorter one. A `readAt` in the future is not derivable and
-    /// answers nil, which the surface renders as saying nothing rather than as "0 minutes ago".
-    static func formatStoredAge(readAt: Date, now: Date) -> String? {
-        let elapsed = now.timeIntervalSince(readAt)
-        guard elapsed.isFinite, elapsed >= 0 else { return nil }
-        if elapsed < 60 { return "less than a minute ago" }
-        let minutes = (elapsed / 60).rounded(.up)
-        if minutes < 60 { return agePhrase(minutes, "minute") }
-        let hours = (elapsed / 3_600).rounded(.up)
-        if hours < 24 { return agePhrase(hours, "hour") }
-        return agePhrase((elapsed / 86_400).rounded(.up), "day")
-    }
-
-    /// Formatted straight from the `Double` rather than through `Int(count)`, which TRAPS above
-    /// `Int.max`. The wrapper's own guards bound a rendered snapshot's age to the TTL, so no product
-    /// path can reach that - but this is a plain pure function with no such bound of its own, and a
-    /// formatter that can crash its caller is not worth the one conversion it saves.
-    private static func agePhrase(_ count: Double, _ unit: String) -> String {
-        count == 1 ? "1 \(unit) ago" : String(format: "%.0f", count) + " \(unit)s ago"
-    }
-
     /// What this origin's precision permits the row to say about one measured distance.
     ///
-    /// Chosen coordinates are exact arithmetic on numbers the owner typed, so they keep the ordinary
-    /// bands. A device fix does not: its label is rounded to a step no finer than the reported
-    /// horizontal accuracy, and a fix whose accuracy is missing, nonsensical, or coarser than any
-    /// usable step yields no number at all.
+    /// A device fix is rounded to a step no finer than its effective horizontal accuracy. Nearby
+    /// supplies the coarser of the device-reported accuracy and the network coordinate's roughly
+    /// hundred-metre granularity. A fix whose accuracy is missing, nonsensical, or coarser than any
+    /// usable step yields no number at all. The non-device branch remains for generic formatting
+    /// tests and non-location callers; Nearby always uses the device branch.
     ///
     /// Anything nearer than the coarser of the accuracy and half that rounding step is stated as a
     /// BOUND. Half the step is the load-bearing half of that pair: below it the rounding collapses to

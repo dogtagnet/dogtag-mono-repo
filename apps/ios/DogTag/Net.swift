@@ -1071,15 +1071,12 @@ enum DnsVerify {
 
 // MARK: - Provider directory
 
-/// Native adapter for the shared ProviderDirectory contract. It is a SOURCE only: it holds no cache.
+/// Native adapter for the shared ProviderDirectory contract.
 ///
-/// The screen receives this seam and never performs HTTP itself. `read()` accepts no query, and the
-/// endpoint builder rejects a configured base that already contains one, so neither a current nor a
-/// chosen position has a request-shaped place to go.
-///
-/// The local copy lives in `CachedProviderDirectory`, one decorator around this seam, so the future
-/// on-chain directory inherits the same offline behaviour without reimplementing it - and so there is
-/// only one place that can get "a replay never renews its deadline" wrong.
+/// Nearest is an explicit POST whose JSON body contains only the three-decimal current-location
+/// approximation created on the device. Name/contact search is a GET with no position. Neither path
+/// has a chosen-place, radius, map, autocomplete, or geocoder parameter, and position-keyed results are
+/// never cached or persisted by this adapter.
 struct CentralProviderDirectory: ProviderDirectoryReading {
     let source: ProviderDirectorySource = .central
 
@@ -1094,54 +1091,69 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
         self.now = now
     }
 
-    func read() async -> ProviderDirectoryResult {
+    struct WireRequest: Equatable {
+        let url: String
+        let body: String?
+    }
+
+    func read(_ request: OwnerProviderDirectoryRequest) async -> ProviderDirectoryResult {
         let attemptedAt = now()
-        guard let endpoint = Self.endpoint(baseURL: baseURL) else {
-            return .unavailable(ProviderDirectoryUnavailable(
-                source: .central,
+        guard let wire = Self.wireRequest(baseURL: baseURL, request: request) else {
+            return unavailable(
                 reason: .sourceUnavailable,
-                detail: "The provider directory is not configured with a valid query-free URL",
+                detail: "The provider directory request could not be encoded",
                 attemptedAt: attemptedAt
-            ))
+            )
         }
 
-        let response = await Http.getJSON(endpoint)
+        let response: Http.Response
+        if let body = wire.body {
+            response = await Http.postJSON(wire.url, body: body)
+        } else {
+            response = await Http.getJSON(wire.url)
+        }
         guard response.ok else {
-            return .unavailable(ProviderDirectoryUnavailable(
-                source: .central,
+            return unavailable(
                 reason: .sourceUnavailable,
                 detail: response.code < 0
                     ? "The provider directory could not be reached"
                     : "The provider directory returned HTTP \(response.code)",
                 attemptedAt: attemptedAt
-            ))
+            )
         }
         guard let data = response.body.data(using: .utf8),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let providers = Self.parseProviders(object) else {
-            return .unavailable(ProviderDirectoryUnavailable(
-                source: .central,
+              let parsed = Self.parsePage(
+                object,
+                requiresDistance: request.isNearest,
+                expectedOffset: request.offset
+              ) else {
+            return unavailable(
                 reason: .malformedResponse,
                 detail: "The provider directory returned an invalid response; it was not treated as empty",
                 attemptedAt: attemptedAt
-            ))
+            )
         }
 
+        let readAt = now()
         let snapshot = ProviderDirectorySnapshot(
             source: .central,
-            providers: providers,
+            providers: parsed.providers,
             observation: .live,
             blockNumber: nil,
-            readAt: now(),
-            // No TTL of this source's own. The wrapper sets the hard deadline from THIS observation
-            // time, so a slow read can never lengthen the maximum age.
-            expiresAt: nil
+            readAt: readAt,
+            expiresAt: nil,
+            page: parsed.page
         )
-        return providers.isEmpty ? .empty(snapshot) : .found(snapshot)
+        return parsed.providers.isEmpty ? .empty(snapshot) : .found(snapshot)
     }
 
-    /// The exact request target. It is always the full-set endpoint and never has a query string.
-    static func endpoint(baseURL: String) -> String? {
+    /// Builds the exact owner-app request. The repeated kind pair is load-bearing: the service
+    /// supports every provider kind, while this caller may surface only vets and groomers.
+    static func wireRequest(
+        baseURL: String,
+        request: OwnerProviderDirectoryRequest
+    ) -> WireRequest? {
         let raw = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty, var components = URLComponents(string: raw),
               components.query == nil, components.fragment == nil,
@@ -1150,21 +1162,110 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
               components.host?.isEmpty == false else { return nil }
         components.path = components.path
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        components.path = "/" + [components.path, "v1/businesses"]
+        let suffix = request.isNearest ? "v1/businesses/nearest" : "v1/businesses"
+        components.path = "/" + [components.path, suffix]
             .filter { !$0.isEmpty && $0 != "/" }
             .joined(separator: "/")
-        components.query = nil
+        var items = OwnerProviderDirectoryRequest.kinds.map {
+            URLQueryItem(name: "kind", value: $0)
+        }
+        items.append(URLQueryItem(
+            name: "limit",
+            value: String(OwnerProviderDirectoryRequest.pageSize)
+        ))
+        items.append(URLQueryItem(name: "offset", value: String(request.offset)))
+        if let name = request.name {
+            items.append(URLQueryItem(name: "name", value: name))
+        }
+        components.queryItems = items
         components.fragment = nil
-        return components.url?.absoluteString
+        guard let url = components.url?.absoluteString else { return nil }
+
+        switch request.mode {
+        case .contacts:
+            return WireRequest(url: url, body: nil)
+        case .nearest(let point, _):
+            // Re-coarsen at the serialization boundary so a future caller cannot construct a request
+            // around the factory and quietly put a raw Core Location fix on the wire.
+            guard let approximate = point.coarsenedForProviderSearch(),
+                  let data = try? JSONSerialization.data(withJSONObject: [
+                      "approximateLat": approximate.lat,
+                      "approximateLng": approximate.lng,
+                  ]),
+                  let body = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return WireRequest(url: url, body: body)
+        }
     }
 
-    /// Scopes a stored copy to this exact configured endpoint.
+    /// Scopes remembered records to this exact configured endpoint.
     ///
-    /// Repointing `centralApi` changes it, so one deployment's persisted snapshot can never be
-    /// replayed as another's. A future on-chain directory must carry its own chain/registry identity
-    /// here for the same reason.
+    /// Repointing `centralApi` changes it, so one deployment's stored records can never be replayed as
+    /// another's. It is built from the base URL alone and never from a request, so no position or
+    /// position-derived value can reach it - a namespace keyed by a nearest query would put the
+    /// owner's whereabouts into the cache key, which is one of the places the ruling forbids it.
     var cacheNamespace: String {
-        "central:\(Self.endpoint(baseURL: baseURL) ?? "unresolved-base")"
+        "central:\(baseURL.trimmingCharacters(in: .whitespacesAndNewlines))"
+    }
+
+    private func unavailable(
+        reason: ProviderDirectoryUnavailableReason,
+        detail: String,
+        attemptedAt: Date
+    ) -> ProviderDirectoryResult {
+        .unavailable(ProviderDirectoryUnavailable(
+            source: .central,
+            reason: reason,
+            detail: detail,
+            attemptedAt: attemptedAt
+        ))
+    }
+
+    struct ParsedPage: Equatable {
+        let providers: [DirectoryProvider]
+        let page: ProviderDirectoryPage
+    }
+
+    static func parsePage(
+        _ object: [String: Any],
+        requiresDistance: Bool,
+        expectedOffset: Int? = nil
+    ) -> ParsedPage? {
+        guard let providers = parseProviders(object, requiresDistance: requiresDistance),
+              let total = integer(object["total"]), total >= 0,
+              let limit = integer(object["limit"]), limit > 0,
+              let offset = integer(object["offset"]), offset >= 0,
+              expectedOffset.map({ $0 == offset }) ?? true,
+              let hasMore = object["hasMore"] as? Bool,
+              providers.count <= limit else {
+            return nil
+        }
+        let pageEnd = offset.addingReportingOverflow(providers.count)
+        guard !pageEnd.overflow,
+              // An offset beyond the current total is a valid empty page. It can happen when the
+              // directory shrinks between requests. A non-empty page may never claim rows beyond
+              // that same total.
+              providers.isEmpty || pageEnd.partialValue <= total,
+              hasMore == (pageEnd.partialValue < total) else {
+            return nil
+        }
+        if requiresDistance {
+            let distances = providers.compactMap(\.distanceKm)
+            guard distances.count == providers.count,
+                  zip(distances, distances.dropFirst()).allSatisfy({ $0 <= $1 }) else {
+                return nil
+            }
+        }
+        return ParsedPage(
+            providers: providers,
+            page: ProviderDirectoryPage(
+                total: total,
+                limit: limit,
+                offset: offset,
+                hasMore: hasMore
+            )
+        )
     }
 
     /// All-or-nothing validation, except that a genuinely absent/null `geo` is the valid contact-only
@@ -1172,7 +1273,10 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
     ///
     /// A repeated `businessId` is malformed for the same reason: the id is this screen's list
     /// identity, so keeping both rows would corrupt rendering instead of reporting a bad response.
-    static func parseProviders(_ object: [String: Any]) -> [DirectoryProvider]? {
+    static func parseProviders(
+        _ object: [String: Any],
+        requiresDistance: Bool = false
+    ) -> [DirectoryProvider]? {
         guard let rows = object["businesses"] as? [Any] else { return nil }
         var providers: [DirectoryProvider] = []
         var seenIds = Set<String>()
@@ -1187,7 +1291,9 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
                   let services = row["services"] as? [String],
                   let geo = parseGeo(row["geo"]),
                   let domain = row["domain"] as? String,
-                  let contact = parseContact(row["contact"]) else {
+                  let contact = parseContact(row["contact"]),
+                  let distance = parseDistance(row["distanceKm"], required: requiresDistance),
+                  !requiresDistance || geo != nil else {
                 return nil
             }
 
@@ -1207,7 +1313,8 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
                 // at all. A blank domain is a fact about THIS LISTING, never the on-chain
                 // `noDomainClaimed`; a nonblank claim stays neutral/unavailable rather than being
                 // promoted to verified merely because the directory echoed it.
-                bindingState: claimedDomain.isEmpty ? .noDomainListed : .unavailable
+                bindingState: claimedDomain.isEmpty ? .noDomainListed : .unavailable,
+                distanceKm: distance
             ))
         }
         return providers
@@ -1236,6 +1343,24 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
         return value.isFinite ? value : nil
     }
 
+    private static func parseDistance(_ raw: Any?, required: Bool) -> Double?? {
+        if raw == nil || raw is NSNull {
+            return required ? nil : .some(nil)
+        }
+        guard let value = number(raw), value >= 0 else { return nil }
+        return .some(value)
+    }
+
+    private static func integer(_ raw: Any?) -> Int? {
+        guard let value = number(raw),
+              value.rounded() == value,
+              value >= 0,
+              value <= Double(Int.max) else {
+            return nil
+        }
+        return Int(value)
+    }
+
     private static func parseContact(_ raw: Any?) -> ProviderContact? {
         if raw == nil || raw is NSNull { return ProviderContact() }
         guard let object = raw as? [String: Any],
@@ -1256,15 +1381,23 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
     }
 }
 
-/// One JSON file holding the stored directory copy. Every failure is swallowed into "nothing
+/// One JSON file holding the remembered provider records. Every failure is swallowed into "nothing
 /// stored", which can only ever cost a replay.
 ///
-/// Writes stage to a sibling and are replaced in, so a kill mid-write leaves the previous copy rather
-/// than a truncated document. There is deliberately no `.completeFileProtection` and no
-/// backup-exclusion here, unlike the owner-secret store: this holds one public endpoint's response,
-/// carries no owner position and nothing the phone could not fetch again, so borrowing those flags
-/// would misstate its sensitivity. It lives in Caches, so the OS may evict it at any time - and an
-/// evicted file simply reads as nothing stored, which degrades to `unavailable`, never to `empty`.
+/// `.atomic` already writes an auxiliary file beside the destination and renames it in, so a kill
+/// mid-write leaves the previous copy rather than a truncated document. Deliberately NOT a hand-rolled
+/// staging file plus `replaceItemAt`: that is what `.atomic` does, and `replaceItemAt` is modelled on
+/// replacing an item that already exists, so on a fresh install it would be the one call standing
+/// between the owner and a local copy, on a path no test exercises.
+///
+/// There is deliberately no `.completeFileProtection` and no backup exclusion here, unlike the
+/// owner-secret store: this holds public provider listings, carries no owner position and nothing the
+/// phone could not fetch again, so borrowing those flags would misstate its sensitivity. It lives in
+/// Caches, so the OS may evict it at any time - and an evicted file simply reads as nothing stored.
+///
+/// The file name is UNCHANGED from the full-set cache this replaces: renaming it would strand the old
+/// document on disk holding an entire provider set nobody reads or expires, whereas reusing the path
+/// means the first write overwrites it, and until then the codec's version bump makes it undecodable.
 struct FileProviderDirectoryCacheStore: ProviderDirectoryCacheStore {
     static let fileName = "dogtag-provider-directory.json"
 
@@ -1285,14 +1418,6 @@ struct FileProviderDirectoryCacheStore: ProviderDirectoryCacheStore {
         return data
     }
 
-    /// `.atomic` already writes an auxiliary file beside the destination and renames it in, so a kill
-    /// mid-write leaves the previous copy rather than a truncated document.
-    ///
-    /// Deliberately NOT a hand-rolled staging file plus `replaceItemAt`: that is what `.atomic` does,
-    /// and `replaceItemAt` is modelled on replacing an item that already exists, so on a fresh install
-    /// - where the destination has never been created - it would be the one call standing between the
-    /// owner and a local copy, on a path no test here exercises. A failure that only ever happens on
-    /// first run is a permanently inert cache in exactly the offline case it exists for.
     func write(_ document: Data) {
         // A copy that could not be stored simply is not stored. The live result still stands.
         try? document.write(to: url, options: .atomic)
@@ -1303,12 +1428,18 @@ struct FileProviderDirectoryCacheStore: ProviderDirectoryCacheStore {
     }
 }
 
-/// The configured directory, wrapped in the on-device local copy.
+/// The one place the source and its offline record cache are built together.
+///
+/// The cache is deliberately NOT a decorator around the source (see `ProviderRecordCache`), so the
+/// screen holds both and drives them explicitly: remember after a live read, recall only when a live
+/// read could not answer. Mirrors Android `ProviderDirectories`.
 enum ProviderDirectories {
-    static func central() -> ProviderDirectoryReading {
-        CachedProviderDirectory(
-            delegate: CentralProviderDirectory(),
-            store: FileProviderDirectoryCacheStore()
+    static func central() -> CentralProviderDirectory { CentralProviderDirectory() }
+
+    static func recordCache(for directory: ProviderDirectoryReading) -> ProviderRecordCache {
+        ProviderRecordCache(
+            store: FileProviderDirectoryCacheStore(),
+            namespace: directory.cacheNamespace
         )
     }
 }

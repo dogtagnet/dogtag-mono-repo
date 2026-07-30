@@ -498,7 +498,7 @@ struct RoaxConfig {
 /// custom choice. The provider directory remains a fixed centralized service by product design.
 enum AppConfig {
     static let roaxRpc = "https://devrpc.roax.net"
-    /// Public, full-set provider directory. Nearby never adds a query string: name, range and
-    /// distance all stay on the phone.
+    /// Central provider search. The owner app sends only vet/groomer filters, an optional provider
+    /// name, paging, and — after explicit disclosure — a three-decimal current-location approximation.
     static let centralApi = "https://api.dogtag.io"
 }

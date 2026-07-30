@@ -438,7 +438,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "DogTag scans verifier QR codes to sign verification consents.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "DogTag uses Face ID to protect your embedded wallet and authorize consent signing.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "DogTag uses your location only after you tap Use my current location in Nearby, to calculate provider distances on this phone. Your position is never sent to DogTag.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Your approximate location is sent to DogTag to find nearby vets and groomers. It is rounded on this phone first and is not stored.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -483,7 +483,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "DogTag scans verifier QR codes to sign verification consents.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "DogTag uses Face ID to protect your embedded wallet and authorize consent signing.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "DogTag uses your location only after you tap Use my current location in Nearby, to calculate provider distances on this phone. Your position is never sent to DogTag.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Your approximate location is sent to DogTag to find nearby vets and groomers. It is rounded on this phone first and is not stored.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
