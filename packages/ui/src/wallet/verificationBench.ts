@@ -190,6 +190,62 @@ export interface ChainRead {
   value?: string;
   /** The failure, when `outcome === "failed"`. */
   error?: string;
+  /**
+   * What a LOG read observed, for the two log reads only. Absent on every `eth_call` read, whose
+   * `value` IS the raw datum and can be inspected directly.
+   *
+   * Kept apart from `value`, which is formatted for a human: a caller deciding anything from the
+   * SHAPE of that string is asserting a fact about the chain from a rendering, so the wording and the
+   * decision drift apart the moment either moves. Both are produced together by one describer per
+   * read, so a reworded value cannot leave the discriminator behind.
+   */
+  observed?: LogObservation;
+}
+
+/**
+ * What a log read saw, as a fact rather than a rendering.
+ *
+ * `"none"` means the read SUCCEEDED and returned no usable log, and its weight is OPPOSITE on the two
+ * reads: for the anchoring log there is then no moment to sequence against, so the question cannot be
+ * put; for the grant history the registry ANSWERED and recorded no grant, which is a definite refusal
+ * and evidence about the credential. Same word, opposite verdict weight - do not fold them.
+ *
+ * `"unpositioned"` is neither neighbour: a log came back but carried no `(blockNumber, logIndex)`, so
+ * it can be neither ordered nor discarded. See {@link UNPOSITIONED_LOG}.
+ */
+export type LogObservation = "positioned" | "none" | "unpositioned";
+
+/** A recorded read's human-facing rendering and the fact it rests on, produced in one place. */
+interface ObservedValue {
+  value: string;
+  observed?: LogObservation;
+}
+
+/** The anchoring log's three outcomes, rendered and discriminated together. */
+function describeAnchoringLog(at: LogPoint | null | UnpositionedLog): ObservedValue {
+  if (at === UNPOSITIONED_LOG) {
+    return {
+      value: "(a RootIssued log was returned with no block/logIndex - position unknown)",
+      observed: "unpositioned",
+    };
+  }
+  if (!at) return { value: "(no RootIssued log for this root)", observed: "none" };
+  return { value: formatLogPoint(at), observed: "positioned" };
+}
+
+/** The grant history's three outcomes, rendered and discriminated together. */
+function describeGrantHistory(h: WhitelistGrantEvent[] | UnpositionedLog): ObservedValue {
+  if (h === UNPOSITIONED_LOG) {
+    return {
+      value: "(a grant log was returned with no block/logIndex - position unknown)",
+      observed: "unpositioned",
+    };
+  }
+  if (!h.length) return { value: "(no grant was ever recorded for this pair)", observed: "none" };
+  return {
+    value: h.map((e) => `${e.kind}@${formatLogPoint(e)}`).join(", "),
+    observed: "positioned",
+  };
 }
 
 export interface BenchReport {
@@ -230,14 +286,15 @@ export function recordingReader(inner: IssuerChainReader): {
     contract: string,
     args: string[],
     run: () => Promise<T>,
-    // How to render the answer for the evidence log. The default `String(v)` is right for an address,
-    // a hash or a boolean and WRONG for the two log reads - an object stringifies to
-    // `[object Object]` and an array of them to a comma salad, so those pass their own formatter.
-    format: (v: T) => string = (v) => String(v),
+    // How to describe the answer for the evidence log. The default `String(v)` is right for an
+    // address, a hash or a boolean and WRONG for the two log reads - an object stringifies to
+    // `[object Object]` and an array of them to a comma salad, so those pass their own describer,
+    // which also carries the `observed` fact so no consumer has to re-derive it from the wording.
+    describe: (v: T) => ObservedValue = (v) => ({ value: String(v) }),
   ): Promise<T> {
     try {
       const value = await run();
-      reads.push({ method, contract, args, outcome: "ok", value: format(value) });
+      reads.push({ method, contract, args, outcome: "ok", ...describe(value) });
       return value;
     } catch (e) {
       reads.push({
@@ -263,35 +320,19 @@ export function recordingReader(inner: IssuerChainReader): {
     // The two LOG reads the pillar now rests on. Recorded like every other read so the page can show
     // which authority's log was consulted and where the anchoring sat - the pillar's answer is a fold
     // over these two, and without them in the log its verdict would be unexplainable.
-    // Each formatter names the unpositioned case in its OWN words rather than letting it fall through
+    // Each describer names the unpositioned case in its OWN words rather than letting it fall through
     // to a count or a default: this log IS the bench's evidence, so rendering "no RootIssued log" or
     // "no grant was ever recorded" for a log we simply could not place would be a false evidence line
     // about what was read - the one thing this surface must never print.
     rootIssuedAt: (addr, root) =>
-      record(
-        "rootIssuedLog",
-        addr,
-        [root],
-        () => inner.rootIssuedAt(addr, root),
-        (p) =>
-          p === UNPOSITIONED_LOG
-            ? "(a RootIssued log was returned with no block/logIndex - position unknown)"
-            : p
-              ? formatLogPoint(p)
-              : "(no RootIssued log for this root)",
-      ),
+      record("rootIssuedLog", addr, [root], () => inner.rootIssuedAt(addr, root), describeAnchoringLog),
     grantHistory: (registry, key, signer) =>
       record(
         "whitelistHistory",
         registry,
         [key, signer],
         () => inner.grantHistory(registry, key, signer),
-        (h) =>
-          h === UNPOSITIONED_LOG
-            ? "(a grant log was returned with no block/logIndex - position unknown)"
-            : h.length
-              ? h.map((e) => `${e.kind}@${formatLogPoint(e)}`).join(", ")
-              : "(no grant was ever recorded for this pair)",
+        describeGrantHistory,
       ),
   };
   return { reader, reads };
@@ -1231,12 +1272,7 @@ async function whitelistedAtIssuanceCheck(
       contract: clone,
       args: [claimedRoot],
       outcome: "ok",
-      value:
-        issuedPoint === UNPOSITIONED_LOG
-          ? "(a RootIssued log was returned with no block/logIndex - position unknown)"
-          : issuedPoint
-            ? formatLogPoint(issuedPoint)
-            : "(no RootIssued log for this root)",
+      ...describeAnchoringLog(issuedPoint),
     });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
@@ -1278,12 +1314,7 @@ async function whitelistedAtIssuanceCheck(
       contract: governing,
       args: [recordTypeKeyOnChain, signer],
       outcome: "ok",
-      value:
-        history === UNPOSITIONED_LOG
-          ? "(a grant log was returned with no block/logIndex - position unknown)"
-          : history.length
-            ? history.map((h) => `${h.kind}@${formatLogPoint(h)}`).join(", ")
-            : "(no grant was ever recorded for this pair)",
+      ...describeGrantHistory(history),
     });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
@@ -1418,11 +1449,23 @@ function whitelistUnresolvedReason(reads: ChainRead[]): string {
   if (governing?.outcome === "ok" && isZeroAddr(governing.value)) {
     return "The issuing contract names no governing registry, which an initialized clone never does, so there is no authority whose grant log could be asked.";
   }
+  // Keyed on what the read OBSERVED, never on the shape of the string it was rendered as. The
+  // unpositioned arm is tested FIRST and separately, mirroring `whitelistedAtIssuanceCheck`: a
+  // contract that emitted an unplaceable log did emit one, so reporting that it emitted none would be
+  // a definite statement about the chain drawn from a reading we do not have - printed, in that case,
+  // directly beside this row's own evidence line showing the log that came back.
   const anchoring = lastRead(reads, "rootIssuedLog");
-  if (anchoring?.outcome === "ok" && !anchoring.value?.startsWith("block ")) {
+  if (anchoring?.outcome === "ok" && anchoring.observed === "unpositioned") {
+    return "The anchoring event came back carrying no block or log position, so the moment this contract acted cannot be sequenced against the grant history. Distinct from a contract that emitted none at all, and from a read that failed.";
+  }
+  if (anchoring?.outcome === "ok" && anchoring.observed === "none") {
     return "The issuing contract emitted no anchoring event for this root, so there is no moment to ask the grant history about.";
   }
-  return "The issuing signer could not be resolved from the chain.";
+  const grants = lastRead(reads, "whitelistHistory");
+  if (grants?.outcome === "ok" && grants.observed === "unpositioned") {
+    return "The governing registry's grant log came back carrying an entry with no block or log position, so the history cannot be ordered against the anchoring point. A different fact from the registry recording no grant at all, which would be a definite answer about the credential.";
+  }
+  return "The reads made do not establish both the authorising signer and the moment it acted, so the historical question could not be put. Which link is missing was not determined - this states an inability to check, never a fact about the credential.";
 }
 
 /** The first failed read, phrased as a reason. `null` when every attempted read succeeded. */

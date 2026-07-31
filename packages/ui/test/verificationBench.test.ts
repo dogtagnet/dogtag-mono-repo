@@ -666,6 +666,63 @@ describe("the grant history is read from the GOVERNING registry", () => {
     );
   });
 
+  /**
+   * The GATING `issuer-whitelisted` row, whose reason is derived from the recorded reads rather than
+   * from the verifier's response.
+   *
+   * Its two siblings above assert the ADVISORY `whitelisted-at-issuance` row, which reaches its own
+   * `unavailable` branches directly - so neither of them covers this path, and the reason here was
+   * being re-derived by sniffing the FORMATTED evidence string. Both cases print a definite claim
+   * about the chain that the reads contradict, which is the defect class this whole surface exists to
+   * remove: the anchoring one says the contract emitted no anchoring event, one line from its own
+   * evidence showing the log that came back.
+   */
+  it("the GATING row names the unpositioned ANCHORING log, not a false 'emitted no anchoring event'", async () => {
+    const doc = validDoc();
+    const r = await bench(doc, {
+      ...genuineChain(doc),
+      rootIssuedLogs: { [k(CLONE, doc.signature.merkleRoot)]: UNPOSITIONED_LOG },
+    });
+    const row = check(r, "issuer-whitelisted");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.couldNotRunReason).toContain("no block or log position");
+    // The exact false statement the string-sniff produced, beside evidence showing a log WAS returned.
+    expect(row.couldNotRunReason).not.toContain("emitted no anchoring event");
+    expect(
+      row.evidence.some((e) => e.value.includes("position unknown")),
+      "the row must cite the log it could not place",
+    ).toBe(true);
+  });
+
+  it("the GATING row names the unpositioned GRANT log, not a false 'signer could not be resolved'", async () => {
+    // Control for the arm that had no branch at all: `issuedBy` resolving non-zero is the only reason
+    // control reaches that fallthrough, so blaming the signer was false on its face.
+    const doc = validDoc();
+    const r = await bench(doc, {
+      ...genuineChain(doc),
+      grants: {
+        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]: UNPOSITIONED_LOG,
+      },
+    });
+    const row = check(r, "issuer-whitelisted");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.couldNotRunReason).toContain("no block or log position");
+    expect(row.couldNotRunReason).not.toContain("signer could not be resolved");
+    // ...and NOT the empty-history wording either: an unorderable log is not an absent grant.
+    expect(row.couldNotRunReason).not.toContain("emitted no anchoring event");
+  });
+
+  it("keeps the two definite log ANSWERS reading as before", async () => {
+    // The control that stops the two cases above from passing against a reason that names the
+    // unpositioned case unconditionally. A genuinely absent anchoring log still says so.
+    const doc = validDoc();
+    const r = await bench(doc, { ...genuineChain(doc), rootIssuedLogs: {} });
+    const row = check(r, "issuer-whitelisted");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.couldNotRunReason).toContain("emitted no anchoring event");
+    expect(row.couldNotRunReason).not.toContain("no block or log position");
+  });
+
   it("could-not-run - never fail - when the clone names NO governing registry", async () => {
     // An initialized clone never answers zero here, so nothing can be concluded about which authority
     // governs it. Falling back to the configured registry would ask a different contract's mapping.
