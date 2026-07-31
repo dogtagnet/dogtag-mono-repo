@@ -1425,10 +1425,37 @@ from `git grep` alone while the thing you just wrote is still untracked.**
 **Write the gate in bash, never zsh.** zsh does not word-split an unquoted `"$var"`, so iterating a
 space-separated address list runs ONE iteration with the whole string as the pattern, every `git grep`
 misses, and the script reports a clean tree - a check that passes by not running. This bit during
-development, and it is the same trap AGENTS.md already records for `swiftc $SRC`. Also use `LC_ALL=C`
-around every `sort`/`comm`: `comm` needs one collation on both inputs, and locale ordering puts
-`AGENTS.md` differently from codepoint ordering, which made the gate report every file as *both*
-undeclared and stale.
+development, and it is the same trap AGENTS.md already records for `swiftc $SRC`. Also `export LC_ALL=C`
+for the WHOLE script, not just around each `sort`: `comm` needs one collation on both inputs, and locale
+ordering puts `AGENTS.md` differently from codepoint ordering, which made the gate report every file as
+*both* undeclared and stale. Qualifying only the `sort`s leaves the verdict dependent on the CALLER's
+locale - green in a `LC_COLLATE=C` shell and a dozen bogus pairs in an ordinary terminal - so an
+unqualified local run proves nothing about what CI or a captain's shell will say.
+
+**A grep for the CURRENT address is structurally blind to a consumer holding a SUPERSEDED one**, and
+that blind spot was live: `stacks/owner/web/src/lib/config.ts` pinned the retired M5
+`VerificationRegistryConsent` while its own comment called it live, so the owner wallet's
+`eth_getLogs` consent-history scan queried a dead contract and rendered "no consent history" for
+absence of evidence - permanently, with no error, because a retired contract answers `eth_getLogs`
+with nothing rather than reverting. The manifest's `retiredAddresses` closes it with the SAME
+declared-allowlist discipline as the inventory, never a blanket ban: the historical ledger records
+such an address by design, golden-ABI encodings are pinned to it, and hermetic MemChain/mocked
+fixtures reuse it cosmetically, so an UNDECLARED carrier is the error and a declared-but-absent one is
+only a note. The allowlist is scoped PER ADDRESS - a file cleared to carry one is not cleared to carry
+another - and the manifest declares ITSELF there for the same reason it declares itself in `consumers`.
+
+**`IssuerRegistry` splits by READ vs WRITE, and only the read half moves at C-9.** `ProviderRegistry`
+implements `isWhitelistedFor` and implements NEITHER `whitelistFor` nor `delistFor`, and has no
+fallback. Vet/groomer/government and both portals only read, so their `ISSUER_REGISTRY_ADDR` moves;
+`stacks/admin/.env.example`'s identically-named variable feeds the grant/revoke console's
+`whitelistFor`/`delistFor` calldata and is RETAINED on generation 1 through C-12. It would not even
+fail cleanly - `ProviderRegistry.hasRole(WHITELIST_ADMIN, owner)` returns true, so
+`governance::dispatch` reads the hosted key as the holder and BROADCASTS a reverting transaction
+instead of proposing - and worse, C-12's delisting freeze runs through that same console, and that
+freeze is the operational precondition for closing `CloneProvenanceRouter`'s open mirror direction.
+The general property, stated so it is checkable: **a variable naming a WRITE path may only be
+repointed to a contract that implements those writes.** The read/write asymmetry is what makes the
+mistake invisible - the successor answers the read the same variable also serves.
 
 **The factory is the ONE moving address with no single target**, so the manifest's top-level
 `supersededBy` for it names the split rather than an address, and the three diverging consumers carry

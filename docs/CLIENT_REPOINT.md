@@ -32,7 +32,7 @@ Six addresses move. Run `scripts/check-cutover-consumers.sh` for the values and 
 | Contract | Superseded by | Step |
 |---|---|---|
 | `DogTagIssuerFactory` | `CloneProvenanceRouter` for readers, `DogTagIssuerFactoryV2` for writers - see below | C-9 |
-| `IssuerRegistry` | `ProviderRegistry` | C-9 |
+| `IssuerRegistry` | `ProviderRegistry` for readers, **retained** for writers - see below | C-9 readers; writers not before C-12 |
 | `VerificationRegistryConsent` | `VerificationRegistryConsent` V2 | C-9 |
 | `ProtocolRegistry` | `ProtocolRegistryV2`, under the new discovery key `dogtag-levelb/2` | C-8, then C-9 |
 | `IssuerDomainRegistry` | `ServiceDomainResolver` | C-7, then C-9 |
@@ -75,6 +75,29 @@ A generation-1-only answer would report every genuine generation-2 clone as `Not
 
 The manifest encodes this split in the data: the factory's top-level `supersededBy` names the split rather than an address, the three diverging consumers carry their own `supersededBy`, and `check-cutover-consumers.sh` prints those divergences on every run.
 S-14 drives from that file, and reading only the top-level entry would get two of them backwards.
+
+## `IssuerRegistry` splits by read versus write, and only the read half moves at C-9
+
+`ProviderRegistry` implements the READ `isWhitelistedFor(bytes32,address)` and implements **neither** of the writes `whitelistFor` / `delistFor`, and it has no fallback function.
+
+So the read half moves and the write half does not.
+Vet, groomer, government and both web portals only ever ask `isWhitelistedFor` - every use of `cfg.issuer_registry_addr` in `vet-api` and `government-api` is `is_whitelisted_for`, and `packages/ui`'s `ISSUER_REGISTRY_ABI` declares that one view function and nothing else - so their `ISSUER_REGISTRY_ADDR` and `VITE_ISSUER_REGISTRY_ADDR` repoint to `ProviderRegistry` at C-9.
+
+`stacks/admin/.env.example`'s `ISSUER_REGISTRY_ADDR` is the same variable name naming a write path, and it is **retained on the generation-1 registry through C-12**.
+Two reasons, and the second outranks the first.
+
+It would not fail cleanly.
+`ProviderRegistry.hasRole(WHITELIST_ADMIN, owner)` returns true, so `governance::dispatch` reads the hosted key as the authority holder and **broadcasts** a reverting transaction rather than downgrading to a proposal - a config error wearing the costume of a chain problem, at the moment in the cutover when an operator can least tell them apart.
+
+And it would disarm a later step of the same plan.
+C-12's delisting freeze on the generation-1 `IssuerRegistry` runs through this same admin console, and that freeze is the operational precondition for closing `CloneProvenanceRouter`'s open mirror direction (`AGENTS.md`, "CloneProvenanceRouter").
+Repointing the console at C-9 leaves C-12 with nothing to reach.
+
+The property this is an instance of, stated so it is checkable rather than remembered:
+
+> **A variable naming a WRITE path may only be repointed to a contract that implements those writes.**
+
+Reading the successor's ABI is the check, and the read/write asymmetry is exactly what makes the mistake invisible: the successor answers the read that the same variable also serves, so the repointed config looks correct until a write is attempted.
 
 ## The indexer is an append, not a swap - and it is the one that fails quietest
 
@@ -121,7 +144,7 @@ The adoption wait is a window in which both generations verify, not a gap in whi
 It fails when the tree and the manifest disagree in **either** direction: a file that carries a moving address and is not declared, and a declared file that no longer carries one.
 
 It exists because the cutover's realistic failure mode is not repointing the wrong address.
-It is repointing 21 of the 24 files in the repoint group and shipping the other 3 still aimed at generation 1, silently.
+It is repointing 22 of the 25 files in the repoint group and shipping the other 3 still aimed at generation 1, silently.
 A hand-maintained list in a document goes stale the moment a file is added, and the staleness is invisible until the cutover.
 
 Every file is classified, and the classes split into two groups.
@@ -179,6 +202,28 @@ One more shell trap, because the checker would be worthless if it hit it: the re
 Iterating a space-separated address list that way runs one iteration with the whole string as the pattern, every `git grep` misses, and the script reports a clean tree - a check that passes by not running.
 `scripts/check-cutover-consumers.sh` is `#!/usr/bin/env bash` and uses explicit arrays regardless.
 
+And the gate `export`s `LC_ALL=C` for the whole script rather than prefixing the `sort`s.
+`comm` compares with the locale collating sequence, so a C-sorted input fed to a UTF-8 `comm` mis-merges: `README.md` sorts after `packages/` in `en_US.UTF-8` and before `apps/` in C.
+The sorts alone were qualified at first, which left the answer dependent on the **caller's** locale - green in a `LC_COLLATE=C` shell and a dozen bogus "undeclared AND stale" pairs in an ordinary terminal.
+That direction is noisy rather than unsafe, since distinct paths never collate equal so a genuine miss cannot be swallowed into `comm`'s third column - but a gate that fails loudly and wrongly on its first real invocation is a gate that gets deleted.
+
+## A superseded address is invisible to a grep for the current one
+
+The inventory is derived by grepping the **current** generation-1 value, so it is structurally blind to a consumer already holding an **older** one: such a file carries no moving address at all, so it reads as clean.
+
+That blind spot was live.
+`stacks/owner/web/src/lib/config.ts` pinned the superseded M5 `VerificationRegistryConsent` while its own comment called it the live one, and `src/lib/chain.ts`'s `fetchVerifiedLogs` uses it as the `eth_getLogs` address for the owner's consent-history scan.
+A retired contract still answers `eth_getLogs` - with nothing - so the surface rendered "no consent history" for absence of evidence rather than for an absent history, permanently and without an error.
+This repo's own standing defect class, on a user-facing surface.
+
+`retiredAddresses` in the manifest closes it, with the same declared-allowlist discipline as the inventory rather than a blanket ban, because a retired address legitimately appears in many places: the historical ledger records it by design, golden-ABI encodings are pinned to it, and hermetic MemChain and mocked-network fixtures reuse it cosmetically.
+An **undeclared** carrier is an error; a declared carrier that no longer holds it is only a note, since an over-long allowlist is not a repointing hazard.
+The allowlist is scoped **per address**, so a file cleared to carry one retired address is not thereby cleared to carry another.
+Matching reuses the same full-40-hex case-insensitive rule and the same untracked-file scan.
+
+The manifest declares **itself** on that allowlist too - it is the record of what moved, so it holds every retired address by design - for exactly the reason it declares itself in `consumers`.
+An implicit self-exemption is a hole in the one check whose job is finding holes, and this file has already been on the wrong side of that once.
+
 ## Loud unset, where the address genuinely is not known
 
 `crates/dogtag-prover-rs/src/manifest.rs` recognises `dogtag-levelb/2` as a version key and records that it has **no deployment**, via `DeploymentStatus::AwaitingDeployment`.
@@ -210,6 +255,10 @@ Both `AnchorResolver`s carry the `dogtag-levelb/2` constant and a `decodeDiscove
 The `RoaxRpc`/`Net.swift` `getDiscoverySet` fetch does not exist, and both `ScanScreen` call sites pass `nil`/`null` with a comment naming what must change (`docs/PROTOCOL_REGISTRY_V2.md`).
 So do not read "the constant is there" as "mobile is repointed": mobile reads generation 1 only, and closing that is C-9 and C-10.
 
+**The admin console's `ISSUER_REGISTRY_ADDR` cannot move until C-12 is done**, which is the write-side twin of the pillar blocker above and the same class: a generation-2 successor that answers the read but not the write.
+It is recorded as a property rather than a to-do, because a property is checkable: *a variable naming a WRITE path may only be repointed to a contract that implements those writes.*
+Closing it needs `whitelistFor`/`delistFor` equivalents reachable from the console under the new core's own model, which is a behavioural change in the admin control plane rather than an address repoint.
+
 **`ProviderDirectory` has no consumer yet.**
 The indexer's provider directory still reads the admin business source.
 It is listed in the plan as S-5/S-17 work, and no address repoint is pending for it because nothing points at it.
@@ -217,8 +266,14 @@ It is listed in the plan as S-5/S-17 work, and no address repoint is pending for
 ## Evidence
 
 ```
-scripts/check-cutover-consumers.sh          # inventory + the gate, exits non-zero on disagreement
+make check-cutover-consumers                # inventory + the gate; also runs FIRST in `make test`
 cargo test -p dogtag-prover-rs --lib manifest
 cargo test -p vet-api --test protocol_manifest
 cargo check -p government-api --tests
 ```
+
+The gate is in `make test` rather than excluded like `test-consent-parity` and `rehearse-cutover*`, which are excluded for a stated reason (slow, or needs an endpoint).
+This one is a handful of `git grep`s plus python and needs neither, and an unrun gate has exactly the property it objects to in a hand-maintained list.
+
+Mutations that must redden it, each verified: an untracked file carrying a moving address; a tracked file carrying one and not declared; a declared file repointed away; dropping `-i` from the match; truncating the match to the 8-hex prefix; and a tracked, non-allowlisted file carrying a retired address.
+Run it under a non-C locale as well as your own shell's - the `comm` merge is what that catches, and a `LC_COLLATE=C` shell cannot see the difference.

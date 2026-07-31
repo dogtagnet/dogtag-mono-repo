@@ -14,14 +14,18 @@ import { roax } from "./chain";
  * portal may override via `VITE_*` env. These are the addresses the whitelist viewer + the
  * issue-status on-chain poller read against.
  *
- * CUTOVER (registry plan S-13/S-14, `docs/CLIENT_REPOINT.md`): four of these MOVE to generation 2 —
- * `IssuerRegistry` → `ProviderRegistry`, `DogTagIssuerFactory` → **`CloneProvenanceRouter`** (this
- * module READS `rootIssuer`, so it takes the router, never `DogTagIssuerFactoryV2` — that would
- * resolve every historical root to `address(0)` and surface as an indeterminate issuer-whitelist
- * pillar rather than an error), `VerificationRegistryConsent` → its V2, and `DogTagSBT` here is
- * already the reused `DogTagSBTConsent` and must NOT move. Because these are DEFAULTS, an unset
- * `VITE_*` override after the cutover silently keeps reading generation 1 — so move the constants,
- * do not rely on the env. `make check-cutover-consumers` is the gate.
+ * CUTOVER (registry plan S-13/S-14, `docs/CLIENT_REPOINT.md`): exactly THREE of these move to
+ * generation 2 - `IssuerRegistry` → `ProviderRegistry` (safe here because this module only READS
+ * `isWhitelistedFor`; a variable naming the whitelist WRITES may not be repointed there, since
+ * `ProviderRegistry` implements none of them), `DogTagIssuerFactory` → **`CloneProvenanceRouter`**
+ * (this module READS `rootIssuer`, so it takes the router, never `DogTagIssuerFactoryV2` - that
+ * would resolve every historical root to `address(0)` and surface as an indeterminate
+ * issuer-whitelist pillar rather than an error), and `VerificationRegistryConsent` → its V2.
+ * `DogTagSBT` here is already the reused `DogTagSBTConsent` and must NOT move - it is listed with
+ * the movers because it looks like it should move, not because it does. Because these are DEFAULTS,
+ * an unset `VITE_*` override after the cutover silently keeps reading generation 1 - so move the
+ * constants, do not rely on the env. `make check-cutover-consumers` is the gate, and it is what
+ * establishes the count above rather than a reading of this list.
  */
 export const DEPLOYED_ADDRESSES = {
   IssuerRegistry: "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",

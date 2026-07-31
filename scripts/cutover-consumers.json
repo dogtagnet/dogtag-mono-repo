@@ -5,8 +5,9 @@
     "",
     "This file is DATA for scripts/check-cutover-consumers.sh, which fails when the tree and this",
     "manifest disagree in either direction. It exists because the cutover's realistic failure mode is",
-    "not repointing the wrong address - it is repointing 30 of 35 files and shipping the other 5 still",
-    "aimed at generation 1, silently.",
+    "not repointing the wrong address - it is repointing 22 of the 25 files in the repoint group and",
+    "shipping the other 3 still aimed at generation 1, silently. Those counts are derived from the",
+    "`consumers` list below by the classes in _consumerClassDoc; do not restate them from memory.",
     "",
     "Addresses are matched in FULL (40 hex digits) and CASE-INSENSITIVELY. Both halves are load-bearing;",
     "see docs/CLIENT_REPOINT.md for the two ways an 8-hex case-sensitive grep gets this wrong.",
@@ -50,15 +51,36 @@
       "contract": "IssuerRegistry",
       "generation1": "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",
       "generation2": null,
-      "supersededBy": "ProviderRegistry",
-      "repointStep": "C-9",
+      "supersededBy": "SPLITS BY READ vs WRITE - ProviderRegistry for readers, RETAINED for writers",
+      "repointStep": "C-9 for readers; writers not before C-12",
       "note": [
-        "Superseded as the authority core. Generation-1 clones keep reading the generation-1 registry",
-        "on-chain regardless - a clone pins its registry at initialize with no setter - so this is a",
-        "CONSUMER-side repoint only, and generation-1 issuance is unaffected until the C-12 freeze.",
-        "The mandatory issuer-whitelist pillar does not yet answer for a generation-2 root: see",
-        "docs/ISSUER_V2_OWNERSHIP.md section 8. That is a cutover blocker, not part of this slice."
-      ]
+        "Superseded as the authority core FOR READERS ONLY. ProviderRegistry implements the READ",
+        "isWhitelistedFor(bytes32,address) and does NOT implement the WRITES whitelistFor/delistFor,",
+        "and it has no fallback function - so a variable naming a write path cannot be repointed here.",
+        "",
+        "WRITER (admin-api's grant/revoke console builds whitelistFor/delistFor calldata against",
+        "cfg.issuer_registry_addr) -> RETAINED on the generation-1 IssuerRegistry through C-12. Two",
+        "reasons, and the second outranks the first. (1) ProviderRegistry.hasRole(WHITELIST_ADMIN,",
+        "owner) returns true, so governance::dispatch would read the hosted key as the holder and",
+        "BROADCAST a reverting transaction rather than cleanly propose - during the cutover, when an",
+        "operator can least tell a config error from a chain problem. (2) C-12's delisting freeze on",
+        "the generation-1 registry is executed through this same console, and that freeze is the",
+        "operational precondition for closing CloneProvenanceRouter's open mirror direction. Repointing",
+        "the console at C-9 removes the reach C-12 needs.",
+        "",
+        "READER (vet, groomer, government and the admin/web portals ask only isWhitelistedFor)",
+        "-> ProviderRegistry. Verified: every use of cfg.issuer_registry_addr in vet-api and",
+        "government-api is is_whitelisted_for, and packages/ui's ISSUER_REGISTRY_ABI declares that one",
+        "view function and nothing else.",
+        "",
+        "Generation-1 clones keep reading the generation-1 registry on-chain regardless - a clone pins",
+        "its registry at initialize with no setter - so this is a CONSUMER-side repoint only, and",
+        "generation-1 issuance is unaffected until the C-12 freeze. The mandatory issuer-whitelist",
+        "pillar does not yet answer for a generation-2 root: see docs/ISSUER_V2_OWNERSHIP.md section 8.",
+        "That is a cutover blocker, not part of this slice."
+      ],
+      "supersededByReaders": "ProviderRegistry",
+      "supersededByWriters": "IssuerRegistry (RETAINED through C-12 - ProviderRegistry has no whitelistFor/delistFor)"
     },
     {
       "contract": "VerificationRegistryConsent",
@@ -166,6 +188,11 @@
       "note": "The signed-manifest mirror of the on-chain contract set. Generation 2 needs a second VersionDeployment keyed dogtag-levelb/2."
     },
     {
+      "path": "stacks/owner/web/src/lib/config.ts",
+      "class": "runtime-constant",
+      "note": "VERIFICATION_REGISTRY_CONSENT_ADDR - the eth_getLogs address for the owner wallet's consent-history scan (src/lib/chain.ts fetchVerifiedLogs). It carried the SUPERSEDED M5 instance while its own comment called it live, so the scan queried a dead contract and rendered 'no consent history' for absent evidence. That is why retiredAddresses exists: grepping the CURRENT value could never have found it."
+    },
+    {
       "path": "stacks/indexer/api/src/main.rs",
       "class": "service-default",
       "note": "INDEXER_GENERATIONS defaults. Must accept the generation-2 triple BEFORE generation 2 emits: the anti-spoof gate drops unrecognised emitters SILENTLY.",
@@ -196,7 +223,7 @@
     {
       "path": "stacks/admin/.env.example",
       "class": "config-template",
-      "supersededBy": "DogTagIssuerFactoryV2 - FACTORY_ADDR here is a WRITE target (predictIssuer + createIssuer calldata). Verified: no admin caller reads root_issuer or is_clone through cfg.factory_addr."
+      "supersededBy": "TWO divergences, both because this stack WRITES. (1) FACTORY_ADDR -> DogTagIssuerFactoryV2, not the router: it is a WRITE target (predictIssuer + createIssuer calldata), and verified no admin caller reads root_issuer or is_clone through cfg.factory_addr. (2) ISSUER_REGISTRY_ADDR -> RETAINED on the generation-1 IssuerRegistry through C-12, NOT ProviderRegistry, which implements no whitelistFor/delistFor and no fallback - see the IssuerRegistry note. This is the only .env.example where ISSUER_REGISTRY_ADDR names a write path."
     },
     {
       "path": "stacks/indexer/.env.example",
@@ -295,6 +322,109 @@
       "path": "scripts/cutover-consumers.json",
       "class": "inventory-manifest",
       "note": "Declared rather than skipped. An implicit self-exemption is a silent hole in the one check that exists to find silent holes - and this entry was added only because the gate flagged its own manifest the moment it became tracked. Until then the check was passing because git grep cannot see an untracked file, which is a check passing by not running."
+    }
+  ],
+  "_retiredAddressDoc": [
+    "Addresses this repo has ALREADY superseded. They need their own check because the inventory above",
+    "is derived by grepping the CURRENT generation-1 value, which is structurally blind to a consumer",
+    "still holding an older one - such a file carries no moving address at all, so it looks clean.",
+    "",
+    "The blind spot was live rather than theoretical: stacks/owner/web/src/lib/config.ts pinned the M5",
+    "VerificationRegistryConsent while its own comment called it the live one, so the owner wallet's",
+    "consent history scanned a dead contract and rendered 'no consent history'. Absence of evidence",
+    "presented as evidence of absence - this repo's own standing defect class, on a user-facing surface.",
+    "",
+    "A retired address appears legitimately in many places, so this uses the SAME declared-allowlist",
+    "discipline as the inventory rather than a blanket ban: an UNDECLARED carrier is an error, and a",
+    "declared carrier that no longer holds it is only a note. The allowlist is scoped PER ADDRESS, so a",
+    "file cleared to carry one is not thereby cleared to carry another. This manifest declares ITSELF,",
+    "for the same reason the inventory does - an implicit self-exemption is a hole in the one check",
+    "whose job is finding holes."
+  ],
+  "retiredAddresses": [
+    {
+      "contract": "VerificationRegistryConsent (M5 instance)",
+      "address": "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
+      "supersededBy": "VerificationRegistryConsent - the live one, recorded in contracts/deployments/roax.json under _r8_fresh_redeploy and carried in movingAddresses above",
+      "retiredBy": "the 2026-07-23 r8 fresh owner-hidden redeploy",
+      "allowedCarriers": [
+        {
+          "path": "contracts/deployments/roax.json",
+          "reason": "The historical ledger. It records superseded instances BY DESIGN; AGENTS.md forbids rewriting historical records."
+        },
+        {
+          "path": "AGENTS.md",
+          "reason": "Narrates the M3/M5 deployment history and explicitly labels this instance deployment history."
+        },
+        {
+          "path": "scripts/cutover-consumers.json",
+          "reason": "This file. It is the record of what moved and therefore holds every retired address by design - declared rather than skipped, because an implicit self-exemption is a silent hole in the one check that exists to find silent holes."
+        },
+        {
+          "path": "contracts/test/ProtocolRegistryV2.t.sol",
+          "reason": "Golden-ABI encoding pin. The bytes are frozen fixture input; changing the address would change the golden encoding both mobile anchor decoders are pinned against."
+        },
+        {
+          "path": "apps/android/app/src/test/java/io/liberalize/dogtag/net/AnchorResolverTest.kt",
+          "reason": "Decodes that same golden ABI fixture and asserts the field it decodes to. Moves only with the Solidity pin."
+        },
+        {
+          "path": "apps/ios/DogTagTests/AnchorResolverTests.swift",
+          "reason": "The iOS mirror of the same golden-ABI decode assertion."
+        },
+        {
+          "path": "crates/dogtag-standard-rs/src/discovery.rs",
+          "reason": "A unit-test constant for the anchor-validation cases. Resolves nothing live."
+        },
+        {
+          "path": "crates/dogtag-standard-rs/src/verify.rs",
+          "reason": "A unit-test constant in the provenance cases. Resolves nothing live."
+        },
+        {
+          "path": "packages/dogtag-standard-ts/test/verify_orchestration.test.ts",
+          "reason": "A unit-test constant. Resolves nothing live."
+        },
+        {
+          "path": "stacks/admin/api/tests/central.rs",
+          "reason": "Hermetic MemChain fixture."
+        },
+        {
+          "path": "stacks/admin/api/tests/common/mod.rs",
+          "reason": "Hermetic MemChain fixture (the shared test Config)."
+        },
+        {
+          "path": "stacks/admin/api/tests/whitelist.rs",
+          "reason": "Hermetic MemChain fixture."
+        },
+        {
+          "path": "stacks/government/api/src/app.rs",
+          "reason": "Inside `#[cfg(test)] mod tests`, in demo_cfg - a test fixture, not a live default. The live default lives in main.rs and already carries the current address."
+        },
+        {
+          "path": "stacks/government/api/tests/cross_role.rs",
+          "reason": "Hermetic MemChain fixture."
+        },
+        {
+          "path": "stacks/government/api/tests/flow_memchain.rs",
+          "reason": "Hermetic MemChain fixture."
+        },
+        {
+          "path": "stacks/government/api/tests/issuer_relabelling.rs",
+          "reason": "Hermetic MemChain fixture."
+        },
+        {
+          "path": "stacks/government/api/tests/oversight.rs",
+          "reason": "Hermetic MemChain fixture."
+        },
+        {
+          "path": "stacks/government/api/tests/records_crud.rs",
+          "reason": "Hermetic MemChain fixture."
+        },
+        {
+          "path": "stacks/owner/web/e2e/consentFixture.ts",
+          "reason": "Mocked-network fixture. It only STAMPS the address onto the logs the mock returns; owner.spec.ts dispatches on the JSON-RPC method and the dogTagId topic and never compares addresses, so this constant selects nothing and repointing config.ts cannot desynchronise it."
+        }
+      ]
     }
   ],
   "_elidedDoc": [
