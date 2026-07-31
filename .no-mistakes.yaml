@@ -45,13 +45,23 @@ commands:
   # @dogtag/ui's, which is the binary this second leg actually runs. Harmless while one install
   # links both, but it means a ui-only devDependency/lockfile fault would surface as vitest's own
   # "command not found" from the leg below rather than as this guard's named code finding.
+  # @dogtag/admin-web joins for the SAME reason @dogtag/ui did, and the parallel is exact: its suite
+  # renders the admin pages in jsdom to pin that an explorer link is offered only for a value that can
+  # actually be looked up, and that pin is worthless if the gate never runs it. Note this list is
+  # hardcoded and does NOT invoke the root `pnpm test` script - widening that script alone leaves the
+  # gate unchanged, which is precisely how a suite ends up green everywhere except where it counts.
+  # It needs the --sdk-dist prerequisite above it (it imports @dogtag/ui, which resolves
+  # @dogtag/standard through an exports map that points only at dist/), so it is sequenced after that
+  # call rather than before it. Still hermetic: no node, Mongo, chain or browser, and no Playwright -
+  # `vitest.config.ts` includes only `test/`, so the live-portal specs in other stacks stay out.
   test: >-
     bash scripts/test-no-mistakes-document-guard.sh &&
     bash scripts/test-ensure-ts-prereqs.sh &&
     bash scripts/ensure-ts-prereqs.sh &&
     pnpm --filter @dogtag/standard test &&
     bash scripts/ensure-ts-prereqs.sh --sdk-dist &&
-    pnpm --filter @dogtag/ui test
+    pnpm --filter @dogtag/ui test &&
+    pnpm --filter @dogtag/admin-web test
 
 document:
   instructions: |

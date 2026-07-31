@@ -379,11 +379,26 @@ function FilterField({ label, children }: { label: string; children: ReactNode }
  * The name is suppressed along with a missing address, since a business name floating above a bare
  * dash reads as a row about that business rather than a row with nothing to identify.
  */
-function ActorCell({ address, name }: { address?: string | null; name?: string | null }) {
+function ActorCell({
+  address,
+  name,
+  testId,
+}: {
+  address?: string | null;
+  name?: string | null;
+  /**
+   * Distinct per COLUMN. This component renders both the actor and the issuer-clone cell, so a
+   * hardcoded id would put the clone's address under the actor's name - and, in the actor cell, the
+   * same id on two nested elements. Nothing renders differently today, but the first e2e written
+   * against this table would either throw on a strict-mode match or silently assert about the wrong
+   * column, which is the sort of wrong-but-passing check this page is otherwise careful to avoid.
+   */
+  testId: string;
+}) {
   return (
     <div className="flex flex-col">
       {name && address && <span className="text-sm font-medium text-onSurface">{name}</span>}
-      <AddressRef address={address} testId="activity-actor" />
+      <AddressRef address={address} testId={testId} />
     </div>
   );
 }
@@ -473,10 +488,10 @@ function EventRow({ ev }: { ev: ActivityEvent }) {
         </div>
       </TableCell>
       <TableCell data-testid="activity-actor">
-        <ActorCell address={ev.actor} name={ev.actorName} />
+        <ActorCell address={ev.actor} name={ev.actorName} testId="activity-actor-address" />
       </TableCell>
       <TableCell data-testid="activity-clone">
-        <ActorCell address={ev.clone} name={ev.cloneName} />
+        <ActorCell address={ev.clone} name={ev.cloneName} testId="activity-clone-address" />
       </TableCell>
     </TableRow>
   );
