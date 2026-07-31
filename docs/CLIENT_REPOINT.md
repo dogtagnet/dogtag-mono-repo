@@ -63,7 +63,18 @@ Both spellings exist inside the admin stack alone, on variables named after the 
 - `stacks/admin/.env.example` `FACTORY_ADDR` is a write target. Verified: no admin caller reads `root_issuer` or `is_clone` through `cfg.factory_addr`. It takes the factory.
 - `stacks/admin/web/.env.example` `VITE_DOGTAG_ISSUER_FACTORY_ADDR` is the verification bench's anchor read. It takes the router.
 
+A third case is neither: `INDEXER_GENERATIONS.factory` is an **emitter allowlist**, keyed by who signed a log.
+It takes `DogTagIssuerFactoryV2`, because the router emits nothing and a router address there would silently match no event ever.
+
 The vet, groomer and government stacks are all readers.
+Government is verified rather than assumed: `stacks/government/api/src/routes.rs:579` calls `root_issuer(&factory_cfg, ...)`, and `:1001` calls `is_factory_clone` for the issuer-domain binding's LINK 1 clone-provenance check.
+
+That second one is worth stating precisely, because the router's `isClone` is **deliberately wider** than the generation-1 factory's: it answers true for a clone of any registered generation.
+That is exactly the question a post-cutover provenance check must ask.
+A generation-1-only answer would report every genuine generation-2 clone as `NotFactoryDeployed` - a definite false rather than an indeterminate, so it would fail the binding rather than degrade it.
+
+The manifest encodes this split in the data: the factory's top-level `supersededBy` names the split rather than an address, the three diverging consumers carry their own `supersededBy`, and `check-cutover-consumers.sh` prints those divergences on every run.
+S-14 drives from that file, and reading only the top-level entry would get two of them backwards.
 
 ## The indexer is an append, not a swap - and it is the one that fails quietest
 
@@ -125,8 +136,20 @@ A repo-wide empty grep is not achievable and not desirable: the ledger is the de
 ## Two ways to grep for an address wrongly, both of which have already happened
 
 The registry plan's own inventory (`dogtag-regplan-p3` section 9.6) reports 17 tracked files for the factory.
-Re-derived here the true figure was 22 at the plan's own commit, and the plan's list both **omits real consumers** and **includes files that do not carry the address**.
-Neither error is visible from reading the list.
+Re-running both greps at the plan's own commit `aa5f4c6` reproduces that 17 exactly and shows the true figure is **21**, because the plan's list both **omits real consumers** and **includes files that do not carry the address**.
+Neither error is visible from reading the list, and they partly cancel, which is why the total looks plausible:
+
+```bash
+B=aa5f4c6083fd9da1f98ca798ac4ef6dc19760151
+F=$(python3 -c 'import json;m=json.load(open("scripts/cutover-consumers.json"));print(next(a["generation1"] for a in m["movingAddresses"] if a["contract"]=="DogTagIssuerFactory"))')
+
+git grep -lI    "${F:0:10}" $B | wc -l   # the plan's grep: case-sensitive, 8-hex prefix  -> 17
+git grep -lI -i "$F"        $B | wc -l   # full address, case-insensitive                 -> 21
+```
+
+(The address is read from the manifest rather than written here, so this file carries none and cannot drift from it.)
+
+It reconciles exactly as `17 = 21 - 7 + 3`: seven real consumers missed, three non-consumers invented.
 
 **Case.**
 Addresses are stored EIP-55-checksummed in some files and lowercased in others - the indexer lowercases.
@@ -134,8 +157,8 @@ A case-sensitive grep for the checksummed form is blind to every lowercased cons
 That is how the plan's list omitted `stacks/indexer/api/src/main.rs`, which is the very file its own section 9.7 analysis of the silent-drop gate is about, and the one service whose late repoint is invisible rather than loud.
 
 **Prefix.**
-An 8-hex-prefix grep matches synthetic addresses that merely share a prefix.
-`packages/ui/test/provenance.test.ts` uses `0xED20269E1234567890abcdefABCDEF1234567890`, which is not the factory at all.
+An 8-hex-prefix grep matches synthetic addresses that merely share a prefix, and it matches elided prose.
+The three it invented at the plan's commit were `packages/ui/test/provenance.test.ts`, which uses `0xED20269E1234567890abcdefABCDEF1234567890` and is not the factory at all, plus `AGENTS.md` and `docs/ROLE_APPS.md`, which mention `0xED20269E…` in prose and carry no address to repoint.
 
 So the checker matches **full 40-hex addresses, case-insensitively**.
 Both halves are mutation-proven: dropping `-i` makes seven real consumers vanish from the inventory, and truncating to the 8-hex prefix pulls three non-consumers in.
@@ -182,7 +205,10 @@ This is a code change in five consumers and it changes verification behaviour, s
 It is recorded as a cutover blocker in `docs/ISSUER_V2_OWNERSHIP.md` section 8.
 Carrying `providerRegistry` on the validated anchor (S-11) is what gives those five consumers an attested address to migrate to.
 
-**The mobile `getDiscoverySet` fetch and the `ScanScreen` repoint** are C-9 and C-10; both call sites pass `nil`/`null` today with a comment naming what must change (`docs/PROTOCOL_REGISTRY_V2.md`).
+**Mobile's generation-2 wiring is INERT, not merely unset**, and the distinction matters because S-11 already landed parts of it.
+Both `AnchorResolver`s carry the `dogtag-levelb/2` constant and a `decodeDiscoverySet` for the 10-word record, so the *decoder* exists - but nothing calls it.
+The `RoaxRpc`/`Net.swift` `getDiscoverySet` fetch does not exist, and both `ScanScreen` call sites pass `nil`/`null` with a comment naming what must change (`docs/PROTOCOL_REGISTRY_V2.md`).
+So do not read "the constant is there" as "mobile is repointed": mobile reads generation 1 only, and closing that is C-9 and C-10.
 
 **`ProviderDirectory` has no consumer yet.**
 The indexer's provider directory still reads the admin business source.

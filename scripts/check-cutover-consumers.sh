@@ -155,6 +155,22 @@ for d in m["doNotMove"]:
 
 rm -f /tmp/.cutover-found.$$ /tmp/.cutover-declared.$$
 
+# Surface every per-consumer target that DIVERGES from its address's default. S-14 drives from this
+# manifest, and the factory is the one address whose target depends on what the caller does with it -
+# readers take the router, writers and the indexer's emitter allowlist take the factory. Printing the
+# divergences means that split cannot be missed by reading only the top-level `supersededBy`.
+python3 -c '
+import json
+m=json.load(open("scripts/cutover-consumers.json"))
+d=[c for c in m["consumers"] if "supersededBy" in c]
+if d:
+    print()
+    print("Per-consumer targets that DIVERGE from their address default:")
+    for c in d:
+        print("  " + c["path"])
+        print("      -> " + c["supersededBy"])
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "OK: the tree and $MANIFEST agree."
   echo "    Generation-2 addresses are all null - S-13 repoints, S-14 deploys."

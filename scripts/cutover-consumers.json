@@ -21,14 +21,30 @@
       "contract": "DogTagIssuerFactory",
       "generation1": "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
       "generation2": null,
-      "supersededBy": "CloneProvenanceRouter",
+      "supersededBy": "SPLITS BY CALLER ROLE - see supersededBy on each consumer entry",
       "repointStep": "C-9",
       "note": [
-        "READ consumers repoint to the ROUTER, never to DogTagIssuerFactoryV2. The router answers",
-        "rootIssuer + isClone across BOTH generations, oldest-generation-first. Pointing a reader at",
-        "factory V2 strands all 19 historical roots at rootIssuer == 0, which is the exact failure the",
-        "router exists to prevent - and it fails silently, as an indeterminate issuer-whitelist pillar."
-      ]
+        "THE ONLY MOVING ADDRESS THAT DOES NOT HAVE ONE TARGET. It splits by what the caller does with",
+        "it, and the two halves move in OPPOSITE directions - so a per-consumer `supersededBy` overrides",
+        "this entry wherever the answer is not the reader default.",
+        "",
+        "READER (resolves the write-once rootIssuer[R], or asks isClone) -> CloneProvenanceRouter, which",
+        "answers across BOTH generations oldest-first. Point a reader at DogTagIssuerFactoryV2 and every",
+        "one of the 19 historical roots resolves to address(0), surfacing as an indeterminate",
+        "issuer-whitelist pillar rather than an error. The router's isClone is also DELIBERATELY wider -",
+        "true for a clone of any registered generation - which is the question a post-cutover provenance",
+        "check must ask; a generation-1-only answer reports every genuine generation-2 clone as",
+        "NotFactoryDeployed.",
+        "",
+        "WRITER (predictIssuer / createIssuer calldata) -> DogTagIssuerFactoryV2. The router deploys",
+        "nothing and owns nothing.",
+        "",
+        "EMITTER ALLOWLIST (the indexer's INDEXER_GENERATIONS.factory) -> DogTagIssuerFactoryV2, and as an",
+        "APPEND beside generation 1 rather than a swap. That list is keyed by who SIGNED a log, and the",
+        "router emits nothing, so a router address there would silently match no event ever."
+      ],
+      "supersededByReaders": "CloneProvenanceRouter",
+      "supersededByWriters": "DogTagIssuerFactoryV2"
     },
     {
       "contract": "IssuerRegistry",
@@ -152,7 +168,8 @@
     {
       "path": "stacks/indexer/api/src/main.rs",
       "class": "service-default",
-      "note": "INDEXER_GENERATIONS defaults. Must accept the generation-2 triple BEFORE generation 2 emits: the anti-spoof gate drops unrecognised emitters SILENTLY."
+      "note": "INDEXER_GENERATIONS defaults. Must accept the generation-2 triple BEFORE generation 2 emits: the anti-spoof gate drops unrecognised emitters SILENTLY.",
+      "supersededBy": "DogTagIssuerFactoryV2 - DEFAULT_FACTORY seeds the same emitter allowlist as the env above."
     },
     {
       "path": "stacks/admin/api/src/main.rs",
@@ -178,11 +195,13 @@
     },
     {
       "path": "stacks/admin/.env.example",
-      "class": "config-template"
+      "class": "config-template",
+      "supersededBy": "DogTagIssuerFactoryV2 - FACTORY_ADDR here is a WRITE target (predictIssuer + createIssuer calldata). Verified: no admin caller reads root_issuer or is_clone through cfg.factory_addr."
     },
     {
       "path": "stacks/indexer/.env.example",
-      "class": "config-template"
+      "class": "config-template",
+      "supersededBy": "DogTagIssuerFactoryV2, APPENDED as a second INDEXER_GENERATIONS object rather than swapped - generation 1 keeps its object or its whole history leaves the oversight feed."
     },
     {
       "path": "stacks/admin/web/.env.example",

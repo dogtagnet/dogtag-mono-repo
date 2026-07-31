@@ -1393,16 +1393,19 @@ and the manifest disagree in either direction. Do not re-derive the list by hand
 
 **`grep -rl "0xED20269E"` - the obvious inventory command - both MISSES real consumers and INVENTS
 non-consumers, and neither error is visible from reading its output.** The registry plan's own §9.6
-reports 17 tracked files for the factory; re-derived at the plan's own commit the figure is 22.
+reports 17 tracked files for the factory. Both greps re-run at the plan's own commit `aa5f4c6`
+reproduce that 17 and show the true figure is **21**, reconciling exactly as `17 = 21 - 7 + 3`. The two
+errors partly cancel, which is why the total looks plausible.
 
 - **Case.** Addresses are stored EIP-55-checksummed in some files and lowercased in others - the
   indexer and the government tests lowercase. A case-sensitive grep for the checksummed form is blind
   to every lowercased consumer. That is how the plan's list omitted `stacks/indexer/api/src/main.rs`,
   the one service whose late repoint is *silent* (its anti-spoof gate drops unrecognised emitters with
   no error, so the oversight feed merely looks quiet) - and the very file the plan's own §9.7 is about.
-- **Prefix.** An 8-hex prefix matches synthetic addresses that share it.
+- **Prefix.** An 8-hex prefix matches synthetic addresses that share it, and elided prose.
   `packages/ui/test/provenance.test.ts` uses `0xED20269E1234567890abcdefABCDEF1234567890`, which is not
-  the factory. Truncating the gate's pattern to 8 hex pulls in three non-consumers.
+  the factory; `AGENTS.md` and `docs/ROLE_APPS.md` say `0xED20269E…` in prose and carry nothing to
+  repoint. Truncating the gate's pattern to 8 hex pulls in exactly those three.
 
 So match **full 40-hex, case-insensitively**. Both halves are mutation-proven: dropping `-i` makes seven
 real consumers vanish, and the prefix form invents three. Elided prose (`0xED20269E…`) is matchable by
@@ -1426,6 +1429,11 @@ development, and it is the same trap AGENTS.md already records for `swiftc $SRC`
 around every `sort`/`comm`: `comm` needs one collation on both inputs, and locale ordering puts
 `AGENTS.md` differently from codepoint ordering, which made the gate report every file as *both*
 undeclared and stale.
+
+**The factory is the ONE moving address with no single target**, so the manifest's top-level
+`supersededBy` for it names the split rather than an address, and the three diverging consumers carry
+their own `supersededBy`. The gate PRINTS those divergences on every run, because S-14 drives from that
+file and reading only the top-level entry would get two of them backwards.
 
 **The factory address splits in two at generation 2, and the halves move in OPPOSITE directions.**
 A READER resolving the write-once `rootIssuer[R]` repoints to the `CloneProvenanceRouter` (which answers
