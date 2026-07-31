@@ -288,8 +288,10 @@ The six display states do not change, but `noDomainClaimed` becomes reachable fr
 cd contracts && forge test --match-contract ServiceDomainResolver
 ```
 
-Use `forge test`, never a bare `forge build`: a full build tries to compile the vendored OpenZeppelin submodule's `certora/harnesses/*`, which import generated files that are not present, and fails with "File not found".
-That is a submodule artifact, not a project error.
+Prefer `forge test` over a bare `forge build`: it compiles only the real dependency closure.
+The blanket "never a bare `forge build`" rule recorded here described a real failure - a full build compiled the vendored OpenZeppelin submodule's `certora/harnesses/*`, which import generated files that are not present, and failed with "File not found" (a submodule artifact, not a project error).
+That **no longer reproduces**: re-measured 2026-07-30 on Foundry 1.5.1-stable with the submodules at their pinned revisions (`openzeppelin-contracts` `v4.8.0-743-g69c8def5`, `forge-std` `v1.9.4`), a bare `forge build` from a removed `out/` exits 0.
+The mechanism of the change was not established, so read that as a measurement on that toolchain rather than a guarantee.
 
 The fixture binds the **real** S-6 core, the **real** S-8 router and **real** generation-2 clones from the **real** self-service factory.
 No authority, provenance or ownership fact in these tests comes from a double, because the claims under test are precisely about how those three contracts compose — a mocked core would let the resolver agree with a stand-in rather than with the thing it will be deployed against.

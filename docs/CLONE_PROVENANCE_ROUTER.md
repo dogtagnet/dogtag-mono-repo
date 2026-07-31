@@ -219,8 +219,10 @@ The service-domain resolver that supersedes it (slice S-9) must take a generatio
 cd contracts && forge test --match-contract CloneProvenanceRouter
 ```
 
-Use `forge test`, never a bare `forge build`: a full build tries to compile the vendored OpenZeppelin submodule's `certora/harnesses/*`, which import generated files that are not present, and fails with "File not found".
-That is a submodule artifact, not a project error.
+Prefer `forge test` over a bare `forge build`: it compiles only the real dependency closure.
+The blanket "never a bare `forge build`" rule recorded here described a real failure - a full build compiled the vendored OpenZeppelin submodule's `certora/harnesses/*`, which import generated files that are not present, and failed with "File not found" (a submodule artifact, not a project error).
+That **no longer reproduces**: re-measured 2026-07-30 on Foundry 1.5.1-stable with the submodules at their pinned revisions (`openzeppelin-contracts` `v4.8.0-743-g69c8def5`, `forge-std` `v1.9.4`), a bare `forge build` from a removed `out/` exits 0.
+The mechanism of the change was not established, so read that as a measurement on that toolchain rather than a guarantee.
 
 To re-run the ordering mutation, reverse the loop in `rootIssuer` to `for (uint256 i = n; i > 0; i--)` over `_generations[i - 1]`, run the suite, and revert.
 Four tests must go red:

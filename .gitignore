@@ -36,3 +36,8 @@ circuits/*.dev.sol
 
 # agent memory symlink (AGENTS.md is the committed standard)
 CLAUDE.md
+
+# S-12 cutover rehearsal: the identity record (pid + port + process start time) of the anvil that
+# scripts/rehearse-cutover.sh started. Re-verified before any kill, so a recycled pid is refused
+# rather than signalled. Stop a stranded fork with `scripts/rehearse-cutover.sh --stop`.
+.anvil-rehearsal.pid

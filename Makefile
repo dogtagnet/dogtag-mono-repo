@@ -31,11 +31,23 @@ test-consent-parity: ## consent prove<->VK parity - LOUD gate, fails if artifact
 vendor-mobile-artifacts: ## copy the consent zkey+graph from circuits/build into both app bundles
 	scripts/vendor-mobile-artifacts.sh
 
-contracts: ## compile Foundry contracts
+contracts: ## compile Foundry contracts (incl. the S-12 rehearsal suite - no network needed)
 	cd contracts && forge build
+	# The rehearsal suite is outside the default profile's source dirs, so nothing else compiles it.
+	# Compile-only: this needs NO endpoint and runs no fork test, but it means API drift in
+	# ProviderRegistry/DogTagIssuerFactoryV2/CloneProvenanceRouter breaks the build instead of
+	# surfacing at the moment someone actually needs the rehearsal.
+	cd contracts && FOUNDRY_PROFILE=rehearsal forge build
 
 test-contracts: ## Foundry tests
 	cd contracts && forge test -vvv
+
+rehearse-cutover: ## S-12 registry cutover rehearsal on a ROAX FORK - deploys nothing live (NOT in `test`)
+	scripts/rehearse-cutover.sh
+	scripts/render-cutover-txlist.py
+
+rehearse-cutover-mutations: ## prove every cutover assertion can fail (NOT in `test`)
+	ROAX_FORK_RPC=$${ROAX_FORK_RPC:-https://devrpc.roax.net} scripts/rehearsal-mutations.sh
 
 deploy-contracts: ## deploy to ROAX (requires liveness precheck — see script/Deploy.s.sol)
 	cd contracts && forge script script/Deploy.s.sol --rpc-url $${ROAX_RPC:-https://devrpc.roax.net} --broadcast
