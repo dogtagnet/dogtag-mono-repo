@@ -4,7 +4,7 @@
 //!
 //! Signing (impl §1.8): EIP-1559 with a legacy `gas_price` fallback; chainId pinned to 135.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use alloy::primitives::{Address, Bytes, FixedBytes, B256, U256};
@@ -67,9 +67,29 @@ sol! {
         /// Both indexed, so one filtered `eth_getLogs` per pair reconstructs the whole grant history.
         /// `whitelistFor`/`delistFor` emit unconditionally (they do not check the prior value), so the
         /// log is complete rather than edge-triggered.
+        ///
+        /// NOTE `topic1` is the RECORD-TYPE KEY. That makes every reader of this log a record-type
+        /// caller in exactly the sense `docs/CLIENT_REPOINT.md` means, even though no getter is
+        /// involved — see [`ChainClient::whitelisted_at_issuance`].
         event Whitelisted(bytes32 indexed recordType, address indexed signer);
         event Delisted(bytes32 indexed recordType, address indexed signer);
         function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
+    }
+
+    /// The generation-2 authority (`contracts/src/ProviderRegistry.sol`), reached the same way the
+    /// generation-1 registry is: off the resolved clone's own `registry()`, never from this
+    /// deployment's configuration.
+    ///
+    /// Only the two reads this backend actually puts to it are declared. `isRecognizedIssuer` is
+    /// declared because it is the one selector a generation-1 `IssuerRegistry` provably does NOT
+    /// implement (that contract's entire external surface is `whitelistFor` / `delistFor` /
+    /// `isWhitelistedFor`), which is what makes it usable as a GENERATION discriminator. `canIssue`
+    /// is declared because it is what `DogTagIssuerV2`'s `onlyIssuanceCapable` modifier itself calls,
+    /// so a preflight built on it refuses exactly what the write would refuse.
+    #[sol(rpc)]
+    contract IProviderAuthority {
+        function isRecognizedIssuer(address service, address signer) external view returns (bool);
+        function canIssue(address service, address signer) external view returns (bool);
     }
 
     #[sol(rpc)]
@@ -143,6 +163,24 @@ pub struct TxView {
     pub root_issued_logs: Vec<(String, String)>,
 }
 
+/// May this signer anchor a NEW root on this clone, right now?
+///
+/// A PRESENT-TENSE question, and deliberately a different one from
+/// [`dogtag_standard::verify::GrantAtIssuance`], which asks whether a signer was authorised at the
+/// moment an EXISTING root was anchored. Those are the two halves of the split-by-question rule in
+/// `docs/CLIENT_REPOINT.md`: a pre-issue gate wants the present, a verifier wants the past, and one
+/// answer must never be handed to the other caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssuanceCapability {
+    /// The clone's own governing authority says yes.
+    Authorized,
+    /// The clone's own governing authority says no. Evidence about the signer.
+    NotAuthorized,
+    /// The authority could not be established, or answered in no vocabulary this build recognises.
+    /// Never a pass and never a definite refusal — the caller reports its inability instead.
+    Undetermined,
+}
+
 /// Abstract chain surface. Addresses/roots are passed as lowercase `0x..` hex strings.
 #[async_trait]
 pub trait ChainClient: Send + Sync {
@@ -195,12 +233,47 @@ pub trait ChainClient: Send + Sync {
     /// Still the right read for a forward-looking question ("may this relayer verify this purpose
     /// now?"), which is what the consent path asks. It is NOT the read the issuer-whitelist pillar
     /// makes: see [`ChainClient::whitelisted_at_issuance`].
+    ///
+    /// **Every surviving caller passes a VERIFY key**, never a record-type key, and that restriction
+    /// is what keeps `ISSUER_REGISTRY_ADDR` repointable. `ProviderRegistry` implements this exact
+    /// selector but branches on `msg.sender`; a plain `eth_call` sends none, so the successor always
+    /// takes its `_verifierCapabilities[key][signer]` branch. For a VERIFY key that is the same
+    /// question for the same inputs — `verify_key_from_purpose_word` reproduces
+    /// `ProviderRegistry.verificationKey` byte-for-byte (pinned by
+    /// `verify_key_matches_provider_registry_verification_key`). For a RECORD-TYPE key it is not:
+    /// that key is never a `verificationKey` output, so the successor answers a confident `false`
+    /// about every genuine issuer signer. Record-type callers use
+    /// [`ChainClient::issuance_capability`] instead.
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
         record_type: &str,
         signer: &str,
     ) -> Result<bool, ChainError>;
+    /// May `signer` anchor a NEW root on `issuer_addr` right now? The record-type-keyed issuance
+    /// preflight, asked service-scoped so it survives the generation-2 cutover.
+    ///
+    /// Like [`ChainClient::whitelisted_at_issuance`] it takes NO registry address — the authority is
+    /// the resolved clone's own `registry()`. That is the whole point: `ISSUER_REGISTRY_ADDR` is one
+    /// value read by both key shapes in one process, so there was nothing to split at the config
+    /// layer while a record-type caller still read it. Sourcing the authority from the clone removes
+    /// the record-type key shape from that variable entirely, and each clone then answers in its own
+    /// generation's vocabulary with no operator-asserted generation flag to get wrong.
+    ///
+    /// `record_type` is passed for the generation-1 arm only, whose grant is keyed by it. The
+    /// generation-2 arm is service-scoped and needs no key.
+    ///
+    /// The generation-2 target is `canIssue(service, signer)` and deliberately NOT
+    /// `isRecognizedIssuer(service, signer)`: the ladder is `isRecognizedIssuer` ⊇ `canRevoke` ⊇
+    /// `canIssue`, `DogTagIssuerV2.issue` is gated by `onlyIssuanceCapable` == `canIssue`, and a
+    /// preflight built on a wider rung passes where the write reverts — which is the one thing a
+    /// preflight exists to prevent.
+    async fn issuance_capability(
+        &self,
+        issuer_addr: &str,
+        record_type: &str,
+        signer: &str,
+    ) -> Result<IssuanceCapability, ChainError>;
     /// Was `signer` authorised for `record_type` at the moment `root` was anchored on `issuer_addr`?
     ///
     /// The issuer-whitelist pillar's read. It takes NO registry address: the authority comes off the
@@ -463,6 +536,23 @@ struct MemChainInner {
     /// the first `whitelist`/`delist` call, which is the matched factory/registry pair every honest
     /// test already wires — so this models the real `initialize` binding without a second setter.
     default_registry: String,
+    /// Registries that speak the GENERATION-2 vocabulary (`contracts/src/ProviderRegistry.sol`).
+    ///
+    /// A registry's vocabulary is modelled as a property OF THE REGISTRY rather than as a global mode,
+    /// because the whole defect this models is one process holding clones of both generations at once.
+    /// A fake with a single flat whitelist cannot express that, so it cannot fail the tests that
+    /// matter — which is why this exists rather than a `demo: bool`.
+    provider_registries: HashSet<String>,
+    /// (registry_addr, service_addr, signer) -> that authority's two issuance-axis rungs,
+    /// `(isRecognizedIssuer, canIssue)`. They are stored SEPARATELY, never derived from one another:
+    /// `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` is a real ladder, and a fake that computed the
+    /// narrow rung from the wide one could not model a superseded clone — which is precisely the case
+    /// that catches a preflight built on the wrong rung.
+    provider_capabilities: HashMap<(String, String, String), (bool, bool)>,
+    /// Registries that answer NEITHER vocabulary: a contract at that address that is not an
+    /// `IssuerRegistry` and not a `ProviderRegistry`, or one that cannot be reached. Its answer is
+    /// "could not determine", which must never render as either verdict.
+    unanswerable_registries: HashSet<String>,
     /// Monotone synthetic log position. Every emulated event — a registry grant, an anchoring — takes
     /// the next one, so CALL ORDER IS LOG ORDER: a test expresses "delisted after issuance" by
     /// delisting after it issued, and "before" by delisting before. Without an ordering this fake
@@ -639,6 +729,20 @@ impl MemChain {
         );
         g.grants.insert(key, history);
     }
+    /// Declare the registry every clone answers `registry()` with, without recording any grant.
+    ///
+    /// Needed because a real clone answers `registry()` whether or not anyone was ever whitelisted,
+    /// while this fake otherwise adopts that address from the first `whitelist`/`delist` call. So a
+    /// test that seeds NO grant leaves the fake with no authority at all, and every authority read
+    /// then reports "could not determine" where a real chain reports an authority whose mapping is
+    /// simply empty. Those are different answers — `Undetermined` versus `NotAuthorized` — and the
+    /// second is the one a never-whitelisted signer deserves.
+    ///
+    /// Mirrors `government-api`'s `MemChain::with_registry`, which exists for exactly this reason.
+    pub fn with_registry(self, registry: &str) -> Self {
+        self.inner.lock().unwrap().default_registry = registry.to_lowercase();
+        self
+    }
     /// Point a clone at an authority OTHER than the one its grants were recorded under — the
     /// mis-paired client. Without an override every clone answers `default_registry`, which is the
     /// matched pair `initialize` produces on a real chain.
@@ -648,6 +752,58 @@ impl MemChain {
             .unwrap()
             .governing_registry
             .insert(clone_addr.to_lowercase(), registry.to_lowercase());
+    }
+    /// Declare `registry` a GENERATION-2 authority: it answers `isRecognizedIssuer`/`canIssue` and
+    /// emits `IssuanceCapabilitySet` rather than `Whitelisted`/`Delisted`.
+    ///
+    /// Note what this deliberately does NOT do: it records no grant. A generation-2 registry with no
+    /// declared capability answers a definite `false` on both rungs, exactly as the real contract's
+    /// unwritten `_issuanceCapabilities` mapping does — and its `Whitelisted`/`Delisted` grant log is
+    /// EMPTY for every pair, which is the state that used to be read as a definite refusal.
+    pub fn set_provider_registry(&self, registry: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .provider_registries
+            .insert(registry.to_lowercase());
+    }
+    /// Seed a generation-2 authority's two issuance-axis rungs for `(service, signer)`.
+    ///
+    /// `recognized` and `can_issue` are set independently so a test can express the real ladder's
+    /// gap — a superseded clone is still a recognized issuer (its old roots stay revocable and stay
+    /// genuine) while `canIssue` is false (it may anchor nothing new). Implies
+    /// [`MemChain::set_provider_registry`], since only a generation-2 authority has these rungs.
+    pub fn set_provider_capability(
+        &self,
+        registry: &str,
+        service: &str,
+        signer: &str,
+        recognized: bool,
+        can_issue: bool,
+    ) {
+        let mut g = self.inner.lock().unwrap();
+        g.provider_registries.insert(registry.to_lowercase());
+        g.provider_capabilities.insert(
+            (
+                registry.to_lowercase(),
+                service.to_lowercase(),
+                signer.to_lowercase(),
+            ),
+            (recognized, can_issue),
+        );
+    }
+    /// Declare `registry` unable to answer EITHER vocabulary — an address that is neither an
+    /// `IssuerRegistry` nor a `ProviderRegistry`, or one that cannot be reached at all.
+    ///
+    /// Fault injection, default-off, for the same reason `set_grant_history` exists: "could not
+    /// determine" is a required state that the honest path cannot reach, and a state that cannot be
+    /// driven is a state whose renderer is untested.
+    pub fn set_registry_unanswerable(&self, registry: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .unanswerable_registries
+            .insert(registry.to_lowercase());
     }
     /// Decode an issue(bytes32)/revoke(bytes32) calldata into (is_issue, root_hex).
     fn decode_b32_call(calldata: &str) -> Option<(bool, String)> {
@@ -759,8 +915,51 @@ impl ChainClient for MemChain {
             .copied()
             .unwrap_or(false))
     }
-    /// Composed from the same three reads the Alloy implementation makes, in the same order, so this
-    /// fake models the real answer rather than short-circuiting to one.
+    async fn issuance_capability(
+        &self,
+        issuer_addr: &str,
+        record_type: &str,
+        signer: &str,
+    ) -> Result<IssuanceCapability, ChainError> {
+        let g = self.inner.lock().unwrap();
+        let clone = issuer_addr.to_lowercase();
+        let governing = g
+            .governing_registry
+            .get(&clone)
+            .cloned()
+            .unwrap_or_else(|| g.default_registry.clone());
+        if governing.is_empty() || g.unanswerable_registries.contains(&governing) {
+            return Ok(IssuanceCapability::Undetermined);
+        }
+        // Generation 2 is probed FIRST, exactly as the Alloy implementation does, and for the reason
+        // recorded there: a `ProviderRegistry` answers the legacy selector too, so asking it first
+        // would take a confident wrong `false` off the orthogonal VERIFY axis.
+        if g.provider_registries.contains(&governing) {
+            let (_recognized, can_issue) = g
+                .provider_capabilities
+                .get(&(governing, clone, signer.to_lowercase()))
+                .copied()
+                .unwrap_or((false, false));
+            return Ok(if can_issue {
+                IssuanceCapability::Authorized
+            } else {
+                IssuanceCapability::NotAuthorized
+            });
+        }
+        let allowed = g
+            .whitelist
+            .get(&(governing, record_type.to_lowercase(), signer.to_lowercase()))
+            .copied()
+            .unwrap_or(false);
+        Ok(if allowed {
+            IssuanceCapability::Authorized
+        } else {
+            IssuanceCapability::NotAuthorized
+        })
+    }
+    /// Composed from the same reads the Alloy implementation makes, in the same order, so this fake
+    /// models the real answer rather than short-circuiting to one — including the generation probe
+    /// that guards the empty-history refusal.
     async fn whitelisted_at_issuance(
         &self,
         issuer_addr: &str,
@@ -775,18 +974,30 @@ impl ChainClient for MemChain {
             .get(&clone)
             .cloned()
             .unwrap_or_else(|| g.default_registry.clone());
-        if governing.is_empty() {
+        if governing.is_empty() || g.unanswerable_registries.contains(&governing) {
             // No authority to ask — the fake's counterpart of an initialized clone answering zero.
             return Ok(GrantAtIssuance::Undetermined);
         }
-        let Some(anchored_at) = g.root_issued_at.get(&(clone, root.to_lowercase())).copied() else {
+        let Some(anchored_at) = g
+            .root_issued_at
+            .get(&(clone, root.to_lowercase()))
+            .copied()
+        else {
             return Ok(GrantAtIssuance::Undetermined);
         };
         let history = g
             .grants
-            .get(&(governing, record_type.to_lowercase(), signer.to_lowercase()))
+            .get(&(
+                governing.clone(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        // See the Alloy implementation for why the probe is scoped to the EMPTY case.
+        if history.is_empty() && g.provider_registries.contains(&governing) {
+            return Ok(GrantAtIssuance::Undetermined);
+        }
         Ok(grant_in_force_at(history, anchored_at))
     }
     async fn sign_and_send(
@@ -1150,6 +1361,69 @@ impl ChainClient for AlloyChain {
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
     }
+    async fn issuance_capability(
+        &self,
+        issuer_addr: &str,
+        record_type: &str,
+        signer: &str,
+    ) -> Result<IssuanceCapability, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+
+        // (1) WHICH authority answers — off the clone, never off this deployment's config. That is
+        // what makes this read generation-correct with no operator-asserted generation flag, and it
+        // is what removes the record-type key shape from `ISSUER_REGISTRY_ADDR`.
+        let governing = IDogTagIssuer::new(parse_addr(issuer_addr), provider.clone())
+            .registry()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?
+            ._0;
+        if governing.is_zero() {
+            return Ok(IssuanceCapability::Undetermined);
+        }
+
+        // (2) GENERATION 2 FIRST, and the order is load-bearing. `ProviderRegistry` implements the
+        // legacy `isWhitelistedFor` selector too, and at a plain `eth_call`'s zero `msg.sender` it
+        // answers off `_verifierCapabilities` — a confident `false` about every genuine issuer
+        // signer. Probing the legacy selector first would therefore take that wrong answer and never
+        // reach the successor. Asking the successor first cannot make the same mistake: a
+        // generation-1 `IssuerRegistry` implements ONLY `whitelistFor`/`delistFor`/`isWhitelistedFor`
+        // and has no fallback function, so this call reverts there rather than answering.
+        //
+        // `canIssue`, NOT `isRecognizedIssuer`: `DogTagIssuerV2.issue` is gated by
+        // `onlyIssuanceCapable`, which is `registry.canIssue(address(this), msg.sender)`. A preflight
+        // on the wider rung would pass where the write reverts.
+        if let Ok(r) = IProviderAuthority::new(governing, provider.clone())
+            .canIssue(parse_addr(issuer_addr), parse_addr(signer))
+            .call()
+            .await
+        {
+            return Ok(if r._0 {
+                IssuanceCapability::Authorized
+            } else {
+                IssuanceCapability::NotAuthorized
+            });
+        }
+
+        // (3) GENERATION 1. A revert here too means the authority answered in no vocabulary this
+        // build knows: never a pass, and never a definite refusal either.
+        match IIssuerRegistry::new(governing, provider)
+            .isWhitelistedFor(parse_b256(record_type), parse_addr(signer))
+            .call()
+            .await
+        {
+            Ok(r) => Ok(if r._0 {
+                IssuanceCapability::Authorized
+            } else {
+                IssuanceCapability::NotAuthorized
+            }),
+            Err(_) => Ok(IssuanceCapability::Undetermined),
+        }
+    }
     async fn whitelisted_at_issuance(
         &self,
         issuer_addr: &str,
@@ -1222,6 +1496,44 @@ impl ChainClient for AlloyChain {
                 at,
                 granted: l.topic0() == Some(&IIssuerRegistry::Whitelisted::SIGNATURE_HASH),
             });
+        }
+
+        // (4) An EMPTY history is a definite refusal ONLY if the authority actually speaks this
+        // vocabulary. That guard is what stops this read producing a confident wrong answer against
+        // generation 2.
+        //
+        // The query above is a RECORD-TYPE-KEYED read: `Whitelisted(bytes32 indexed recordType,
+        // address indexed signer)` puts the record-type key in `topic1`. So this is a record-type
+        // caller in exactly the sense `docs/CLIENT_REPOINT.md` means, even though no getter is
+        // involved — and it fails against the successor the same way, only more quietly. A
+        // `ProviderRegistry` records its grants as `IssuanceCapabilitySet(service, signer, allowed)`:
+        // a different name, a different `topic0` and a different argument shape, so this filter
+        // matches NOTHING there. Without this guard `grant_in_force_at(&[], _)` would then return
+        // `NotAuthorized` — a definite forgery verdict against a genuine generation-2 credential,
+        // delivered by a query that could never have matched.
+        //
+        // THE ASYMMETRY THAT MAKES THIS SOUND, and the reason the probe is scoped to the empty case
+        // rather than run unconditionally: a NON-EMPTY history is itself proof that this authority
+        // speaks generation 1, because these events came out of it. Only the empty case is ambiguous
+        // between "generation 1, never granted" and "generation 2, wrong vocabulary". So the probe
+        // fires on the refusal path alone, costs nothing on the hot path, and cannot perturb any
+        // answer #127 established.
+        //
+        // The probe's ANSWER is deliberately discarded. `isRecognizedIssuer` is a current-storage
+        // read (`_issuanceCapabilities[service][signer]`) with no block and no root, so it cannot
+        // answer "was this in force when that root was anchored". Using its boolean here would revert
+        // this pillar to a current-state getter under a new name — the exact regression #127 removed.
+        // It is used ONLY to identify the generation. Answering the historical question against a
+        // generation-2 authority needs its `IssuanceCapabilitySet` log, which is a separate change:
+        // see `docs/ISSUER_V2_OWNERSHIP.md` §8.
+        if history.is_empty()
+            && IProviderAuthority::new(governing, provider)
+                .isRecognizedIssuer(parse_addr(issuer_addr), parse_addr(signer))
+                .call()
+                .await
+                .is_ok()
+        {
+            return Ok(GrantAtIssuance::Undetermined);
         }
         Ok(grant_in_force_at(&history, anchored_at))
     }

@@ -31,6 +31,15 @@ import { roax } from "./chain";
  * The governing condition it violates: an address may be repointed only when the successor answers
  * THE SAME QUESTION FOR THE SAME INPUTS - a matching selector is not evidence of that.
  *
+ * That migration has now run on the Rust backends, and this module's `isWhitelistedFor` was
+ * deliberately LEFT on generation 1. Its only consumer is the admin console's whitelist viewer
+ * (`stacks/admin/web/src/lib/whitelist.ts`), whose WRITE axis cannot move with it: `ProviderRegistry`
+ * implements neither `whitelistFor` nor `delistFor`, so `whitelistGrant`/`whitelistRevoke` stay on
+ * generation 1 until C-12. Migrating the read alone would put generation-2 state beside buttons that
+ * write generation 1 - a console disagreeing with itself about which chain state it is showing,
+ * which is worse than one that is uniformly a generation behind. The read and the write move
+ * together or not at all. See `docs/CLIENT_REPOINT.md`.
+ *
  * `DogTagSBT` here is already the reused `DogTagSBTConsent` and must NOT move - it is listed with
  * the movers because it looks like it should move, not because it does. Because these are DEFAULTS,
  * an unset `VITE_*` override after the cutover silently keeps reading generation 1 - so move the

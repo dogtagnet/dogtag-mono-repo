@@ -183,7 +183,11 @@ async fn full_issuance_share_revoke_flow() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_whitelisted_signer_fails_preflight() {
-    let mem = MemChain::new();
+    // `with_registry` and NO grant. The preflight resolves the authority off the clone's own
+    // `registry()`, and a real clone answers that whether or not anyone was ever whitelisted — so
+    // without this the fake would report "no authority to ask" and the honest 403 below would arrive
+    // as a 502. The assertion is unchanged; only the fixture gains what every real clone has.
+    let mem = MemChain::new().with_registry(REGISTRY);
     let chain = Arc::new(mem.clone());
     let state = state_with(
         chain,

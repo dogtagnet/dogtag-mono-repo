@@ -111,9 +111,25 @@ sol! {
         /// Both indexed, so one filtered `eth_getLogs` per pair reconstructs the whole grant history.
         /// `whitelistFor`/`delistFor` emit unconditionally (neither checks the prior value), so the
         /// log is complete rather than edge-triggered.
+        ///
+        /// NOTE `topic1` is the RECORD-TYPE KEY, which makes every reader of this log a record-type
+        /// caller in the sense `docs/CLIENT_REPOINT.md` means — see `whitelisted_at_issuance`.
         event Whitelisted(bytes32 indexed recordType, address indexed signer);
         event Delisted(bytes32 indexed recordType, address indexed signer);
         function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
+    }
+
+    /// The generation-2 authority (`contracts/src/ProviderRegistry.sol`), reached off the resolved
+    /// clone's own `registry()` exactly as the generation-1 registry is.
+    ///
+    /// Only `isRecognizedIssuer` is declared, and only as a GENERATION DISCRIMINATOR: it is the one
+    /// selector a generation-1 `IssuerRegistry` provably does not implement (that contract's entire
+    /// external surface is `whitelistFor` / `delistFor` / `isWhitelistedFor`). Its BOOLEAN is never
+    /// consumed here — it is a current-storage read and cannot answer an at-issuance question.
+    /// This backend anchors no new roots, so it needs no `canIssue`.
+    #[sol(rpc)]
+    contract IProviderAuthority {
+        function isRecognizedIssuer(address service, address signer) external view returns (bool);
     }
 
     /// The ADDITIVE issuer↔domain claim registry. `getBinding` deliberately does NOT revert on an
@@ -798,6 +814,39 @@ impl ChainClient for AlloyChain {
                 granted: l.topic0() == Some(&IIssuerRegistry::Whitelisted::SIGNATURE_HASH),
             });
         }
+
+        // (4) An EMPTY history is a definite refusal ONLY if this authority speaks this vocabulary.
+        //
+        // The query above is RECORD-TYPE-KEYED — `Whitelisted(bytes32 indexed recordType, address
+        // indexed signer)` puts the record-type key in `topic1` — so it fails against the successor
+        // for the same reason the legacy getter does, only more quietly. `ProviderRegistry` records
+        // its grants as `IssuanceCapabilitySet(service, signer, allowed)`: different name, different
+        // `topic0`, different argument shape, so this filter matches nothing there. Unguarded,
+        // `grant_in_force_at(&[], _)` would answer `NotAuthorized` — a definite forgery verdict
+        // against a genuine generation-2 credential, on the UNAUTHENTICATED `POST /v1/verify`.
+        //
+        // Scoped to the empty case because a NON-EMPTY history is itself proof the authority speaks
+        // generation 1. So this costs one extra `eth_call` on the refusal path only, and cannot
+        // perturb any answer the forward-only rule already establishes.
+        //
+        // The probe's boolean is DISCARDED: `isRecognizedIssuer` reads current storage with no block
+        // and no root, so consuming it would revert this pillar to a current-state getter under a new
+        // name. It identifies the generation and nothing else. Answering the historical question for
+        // generation 2 needs its own log vocabulary — `docs/ISSUER_V2_OWNERSHIP.md` §8.
+        //
+        // `at_block` is honoured here too, so the probe observes the same snapshot as the verdict and
+        // the block anchor printed beside it.
+        if history.is_empty() {
+            let authority = IProviderAuthority::new(governing, provider);
+            let mut probe =
+                authority.isRecognizedIssuer(parse_addr(issuer_addr), parse_addr(signer));
+            if let Some(b) = at_block {
+                probe = probe.block(b.into());
+            }
+            if probe.call().await.is_ok() {
+                return Ok(GrantAtIssuance::Undetermined);
+            }
+        }
         Ok(grant_in_force_at(&history, anchored_at))
     }
     async fn issue(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError> {
@@ -930,6 +979,14 @@ struct MemChainInner {
     /// The registry every clone answers for unless `governing_registry` overrides it, adopted from
     /// the first `whitelist`/`delist` — the matched factory/registry pair `initialize` produces.
     default_registry: String,
+    /// Registries that speak the GENERATION-2 vocabulary (`contracts/src/ProviderRegistry.sol`):
+    /// they answer `isRecognizedIssuer` and record grants as `IssuanceCapabilitySet`, so their
+    /// `Whitelisted`/`Delisted` history is EMPTY for every pair.
+    ///
+    /// Modelled as a property OF THE REGISTRY rather than a global mode, because the defect being
+    /// modelled is one verifier meeting clones of both generations. A single flat whitelist cannot
+    /// express that, so it cannot fail the test that matters.
+    provider_registries: std::collections::HashSet<String>,
     /// Monotone synthetic log position. Every emulated event takes the next one, so CALL ORDER IS LOG
     /// ORDER and a test expresses "delisted after issuance" by delisting after it issued. Without an
     /// ordering this fake could not tell the two apart, and the tests that matter could not fail.
@@ -970,6 +1027,7 @@ impl Default for MemChainInner {
             root_issued_at: HashMap::new(),
             governing_registry: HashMap::new(),
             default_registry: String::new(),
+            provider_registries: std::collections::HashSet::new(),
             log_seq: 0,
             consumed: HashMap::new(),
             claimed_domains: HashMap::new(),
@@ -1242,6 +1300,19 @@ impl MemChain {
             .governing_registry
             .insert(clone_addr.to_lowercase(), registry.to_lowercase());
     }
+    /// Declare `registry` a GENERATION-2 authority (`ProviderRegistry`).
+    ///
+    /// It records NO grant, deliberately: the point of the state is that a real `ProviderRegistry`
+    /// keeps its grants in `IssuanceCapabilitySet`, so its `Whitelisted`/`Delisted` history is empty
+    /// for EVERY pair — including pairs it has genuinely authorised. That emptiness is what used to
+    /// fold to a definite `NotAuthorized`.
+    pub fn set_provider_registry(&self, registry: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .provider_registries
+            .insert(registry.to_lowercase());
+    }
 }
 
 #[async_trait]
@@ -1409,8 +1480,9 @@ impl ChainClient for MemChain {
             .copied()
             .unwrap_or(false))
     }
-    /// Composed from the same three reads the Alloy implementation makes, in the same order, so this
-    /// fake models the real answer rather than short-circuiting to one.
+    /// Composed from the same reads the Alloy implementation makes, in the same order, so this fake
+    /// models the real answer rather than short-circuiting to one — including the generation probe
+    /// that guards the empty-history refusal.
     async fn whitelisted_at_issuance(
         &self,
         issuer_addr: &str,
@@ -1431,14 +1503,27 @@ impl ChainClient for MemChain {
             // No authority to ask — the fake's counterpart of an initialized clone answering zero.
             return Ok(GrantAtIssuance::Undetermined);
         }
-        let Some(anchored_at) = g.root_issued_at.get(&(clone, root.to_lowercase())).copied() else {
+        let Some(anchored_at) = g
+            .root_issued_at
+            .get(&(clone, root.to_lowercase()))
+            .copied()
+        else {
             return Ok(GrantAtIssuance::Undetermined);
         };
         let history = g
             .grants
-            .get(&(governing, record_type.to_lowercase(), signer.to_lowercase()))
+            .get(&(
+                governing.clone(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        // See the Alloy implementation for why the probe is scoped to the EMPTY case: a non-empty
+        // history is itself proof the authority speaks generation 1.
+        if history.is_empty() && g.provider_registries.contains(&governing) {
+            return Ok(GrantAtIssuance::Undetermined);
+        }
         Ok(grant_in_force_at(history, anchored_at))
     }
     async fn issue(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError> {
