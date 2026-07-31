@@ -401,7 +401,7 @@ function Pillar({ label, state }: { label: string; state: FragmentState }) {
  * dog, and the remedies differ — one means refuse the document, the other means check which tag you
  * typed. Merging them would report a real credential as forged.
  *
- * All three states render, including "not compared", which is neither a pass nor a failure. The
+ * Every state renders, including "not compared", which is neither a pass nor a failure. The
  * commonest reason for it is that the pet simply has no microchip on file, which is an ordinary fact
  * about an ordinary animal and is shown neutrally.
  */

@@ -290,7 +290,7 @@ export function createApiClient(opts: ApiClientOptions) {
      * LINK a DogTag to this pet — writes the SHOP's own note of which tag the pet holds. Mints
      * nothing and writes nothing on chain.
      *
-     * The response ALWAYS carries `microchipCheck`, in all three states, so an absent key can never
+     * The response ALWAYS carries `microchipCheck`, in every state, so an absent key can never
      * be read as a check that passed. A mismatch is refused with 409 and the same structured verdict
      * rides in the error body ({@link MicrochipCheck}).
      */

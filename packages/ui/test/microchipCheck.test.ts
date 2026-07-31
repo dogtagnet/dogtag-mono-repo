@@ -138,3 +138,50 @@ describe("microchip cross-check presentation", () => {
     expect(microchipCheckFromError({ body: { microchipCheck: { state: "weird" } } })).toBeNull();
   });
 });
+
+describe("a microchip this system cannot READ", () => {
+  // The state that exists because of how this check first shipped: it read one key path no real
+  // issuer emits, so it was INERT on every real credential — and nothing said so, because "the
+  // credential has no microchip" is an ordinary, quiet, benign answer and a broken reader produced
+  // exactly that. So this gets its OWN state, and these cases pin that it can never be rendered as
+  // the unchipped animal's.
+  const unreadable: MicrochipCheck = {
+    state: "unrecognisedCredentialLeaf",
+    keyPaths: ["credentialSubject.chipDetails.microchipIdentifier"],
+    detail:
+      "The microchip could NOT be checked: this credential carries microchip data at " +
+      "credentialSubject.chipDetails.microchipIdentifier, which this system does not know how to read.",
+  };
+
+  it("is never neutral and never reads as 'not compared'", () => {
+    // Both are the unchipped animal's treatment, and on a credential that IS carrying a microchip
+    // they are indistinguishable from success — which is the whole camouflage.
+    expect(microchipTone(unreadable)).toBe("warning");
+    expect(microchipHeadline(unreadable)).not.toBe("Microchip not compared");
+    expect(microchipHeadline(unreadable)).toBe("Microchip check could not run");
+  });
+
+  it("is not positive evidence and is not an accusation", () => {
+    // Loud about OUR defect, but it says nothing about the animal or the credential, so it is not
+    // the red reserved for a genuine wrong pairing.
+    expect(microchipConfirmsAnimal(unreadable)).toBe(false);
+    expect(microchipTone(unreadable)).not.toBe("positive");
+    expect(microchipTone(unreadable)).not.toBe("negative");
+  });
+
+  it("names the key paths, because the path IS the remedy", () => {
+    expect(microchipExplanation(unreadable)).toContain(
+      "credentialSubject.chipDetails.microchipIdentifier",
+    );
+  });
+
+  it("survives the refusal-body parser rather than being dropped", () => {
+    // The allowlist in `microchipCheckFromError` drops any state it does not name, so a state added
+    // to the backend and not to that list vanishes on exactly the path an operator is looking at.
+    const err = Object.assign(new Error("conflict"), {
+      status: 409,
+      body: { error: "…", microchipCheck: unreadable },
+    });
+    expect(microchipCheckFromError(err)).toEqual(unreadable);
+  });
+});

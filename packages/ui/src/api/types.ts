@@ -275,7 +275,7 @@ export interface ImportPullResp {
   /**
    * Whether the imported credential's microchip matches the pet this shop has on file for its tag.
    *
-   * Always present, in all three states. A `mismatch` is refused with 409 and never reaches here —
+   * Always present, in every state. A `mismatch` is refused with 409 and never reaches here —
    * and it does NOT alter `verdict`: the credential verified and is genuine, it simply describes a
    * different animal to the one on file. See {@link MicrochipCheck}.
    */
@@ -1146,7 +1146,7 @@ export interface ClientPet {
    * The animal's microchip code as the shop recorded it, or `null`.
    *
    * `null` is NORMAL, not a gap to chase — many animals are not chipped. What it costs is the
-   * cross-check against the credential's own `credentialSubject.microchip.code`
+   * cross-check against the credential's own microchip leaf
    * ({@link MicrochipCheck}), never the ability to link a tag.
    */
   microchipCode: string | null;
@@ -1155,9 +1155,16 @@ export interface ClientPet {
 /**
  * Whether the credential attached to a tag describes the animal on the shop's own record.
  *
- * THREE STATES, and `notComparable` must never render as either neighbour. A check that did not run
- * is not a check that passed — and, on this surface especially, it is not a failure either: refusing
- * every unchipped cat would make the field unusable.
+ * FOUR STATES, and `notComparable` must never render as either of its neighbours. A check that did
+ * not run is not a check that passed — and, on this surface especially, it is not a failure either:
+ * refusing every unchipped cat would make the field unusable.
+ *
+ * `unrecognisedCredentialLeaf` is separate from `notComparable` on purpose, and the separation is
+ * load-bearing rather than tidy. This check shipped once reading a single key path no real issuer
+ * emits, so it was inert on every real credential — and what hid that is that "the credential has no
+ * microchip" (ordinary, quiet, benign) and "our reader could not find the microchip it is carrying"
+ * produced the same answer. So a reader that cannot read gets its OWN state, names the paths it
+ * found, and is never renderable as "nothing to compare".
  *
  * Emitted only by the routes that WRITE the tag↔pet binding (`linkPetDogTag`, `POST /import/pull`)
  * and inside their refusal bodies. Deliberately absent from {@link CrmPet} list rows, so an absent
@@ -1189,6 +1196,23 @@ export type MicrochipCheck =
       isFailure: boolean;
       /** The sentence to show. Always says the two could not be compared, and why. */
       detail: string;
+    }
+  | {
+      state: "unrecognisedCredentialLeaf";
+      /**
+       * The microchip-shaped key path(s) the credential carries that this system cannot read.
+       *
+       * Named so the remedy is obvious from the message alone: the path belongs in the backend's
+       * recognised set (`RECOGNISED_MICROCHIP_SUFFIXES` in `stacks/vet/api/src/microchip.rs`).
+       */
+      keyPaths: string[];
+      detail: string;
+      /**
+       * Deliberately NO `reason`/`isFailure` pair. Those belong to `notComparable`, and giving this
+       * state their shape is precisely how a client's fallback branch would absorb it back into
+       * "nothing to compare" — the camouflage it exists to escape.
+       */
+      isFailure?: undefined;
     };
 
 /**

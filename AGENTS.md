@@ -3640,12 +3640,38 @@ A DogTag link is otherwise unchecked.
 An operator types or scans a tag id, and a mistyped digit or two similar dogs in one afternoon give a
 link that is structurally perfect and about the wrong animal - the only thing between a correct link
 and a wrong one was the operator remembering.
-A credential already carries `credentialSubject.microchip.code` as a salted Merkle leaf (15-digit ISO,
-schema-validated in `crates/dogtag-standard-rs/src/schema.rs`), so recording the same code on the
-shop's own `ClientPet.microchip_code` gives the two sides something to compare.
+A credential already carries the animal's microchip as a salted Merkle leaf, so recording the same
+code on the shop's own `ClientPet.microchip_code` gives the two sides something to compare.
 The decision is the pure `stacks/vet/api/src/microchip.rs`; the presentation is
 `packages/ui/src/domain/microchipCheck.ts`; the routes are `crm.rs` + `routes.rs::import_pull`.
 This CONSUMES the Merkle coverage of that leaf and never redefines it.
+
+**WHICH leaf is a key-path SUFFIX match over FOUR real emitter shapes, and reading one exact path
+made this check INERT on every real credential.**
+It first shipped comparing `credentialSubject.microchip.code` by exact equality - a path NO issuer in
+this repo emits. It passed its whole suite and protected nothing.
+`RECOGNISED_MICROCHIP_SUFFIXES` in `microchip.rs` is the list, two suffix runs covering all four:
+- `microchip.code` at the data TOP LEVEL - the **vet portal** VACCINATION form. `recordTypes.ts`
+  declares `path: "microchip.code"` with no prefix, `buildFieldsObject` nests from the ROOT, and
+  `app::build_vc` clones the operator's fields verbatim while injecting only
+  `credentialSubject.dogTagId`, so the leaf is a SIBLING of `credentialSubject`. This is the same rule
+  CLAUDE.md already records for vaccination leaves ("extract by keyPath suffix"), applied here.
+- `credentialSubject.microchip.code` - the schema-conformant nested variant `schema.rs` validates.
+- `credentialSubject.microchipNumber` - **government** `EU_HEALTH_CERT` (`government/api/src/app.rs`).
+- `credentialSubject.animal.microchipNumber` - **government** `TRAVEL_CLEARANCE`, Section B.
+
+Matching is on whole trailing SEGMENTS split on `.`, never `str::ends_with`: that would make
+`previousMicrochipNumber` match `microchipNumber` and compare the animal against a RETIRED implant.
+Covering only the vet half was explicitly rejected - government is a real issuer, and half-covering
+reproduces the identical silent hole for the other half of the fleet.
+
+**Stated finding, not fixed here: the vet portal's real shape does not satisfy
+`crates/dogtag-standard-rs/src/schema.rs`, and nothing calls that validator on this path.**
+`validate_schema` reads `credentialSubject.microchip` (plus `type`/`credentialStatus`/`attestationType`
+and more), while `build_vc` emits the portal's fields verbatim with none of those. `grep -rn
+validate_schema stacks/vet/api/src` returns nothing, so the portal and the schema module already
+disagree independently of this check. Recorded rather than papered over; do not "align" the reader to
+the schema, which would restore the inertness.
 
 **ABSENT IS NORMAL, and it is the single most important rule here.**
 Many animals have no microchip at all - cats routinely are not chipped in Singapore - so `None` is a
@@ -3658,7 +3684,28 @@ would push the operator into leaving the field blank, silently costing the check
 enable. A legacy code that differs from the credential's is simply a **mismatch**, and the refusal
 names BOTH values so the operator can see it is a format difference in their own record.
 
-**Three states, and `NotComparable` must render as neither neighbour.**
+**A microchip we cannot READ gets its OWN state, and that separation is the remedy for the MECHANISM
+rather than for the key-path list.**
+Absent-microchip is normal and quiet (above) - which means "the credential has no microchip" and "the
+credential has a microchip at a key path we do not recognise" produced the SAME benign answer.
+Our own not-comparable state camouflaged the broken check; that is why the inertness survived review.
+So `MicrochipCheck::UnrecognisedCredentialLeaf` (wire `unrecognisedCredentialLeaf`) is a fourth state,
+never a `NotComparable` reason under any spelling. It NAMES the key paths it found (the path is the
+remedy), says the check could not RUN rather than that there was nothing to compare, gets the loudest
+non-negative tone, and does **not** refuse the write - it is evidence that our reader is wrong, not
+evidence about the animal.
+It is decided BEFORE any pet-side fact, in `microchip::unrunnable`, which `compare` and `import_pull`
+both route through: the commonest pet-side facts are "this pet has no microchip on file" and
+`noLinkedPet`, and either standing in front of it would restore the camouflage on exactly the ordinary
+case. Detection is a leaf whose FINAL segment contains `microchip` case-insensitively - chosen over
+"any segment" because the vet schema's real `microchip.standard` / `microchip.implantDate` siblings
+would otherwise fire the loud state on every ordinary unchipped animal.
+On the client, `microchipTone`/`microchipHeadline`/`microchipExplanation` all list it EXPLICITLY and
+their fall-through is a `never` exhaustiveness error: a `default:` arm was what would have absorbed it
+back into "not compared" and, worse, into `neutral` via an `isFailure` this state does not carry.
+`microchipCheckFromError`'s state allowlist must move with the union or the refusal body is dropped.
+
+**Four states, and `NotComparable` must render as neither neighbour.**
 Not as a silent pass (a check that did not run is not one that passed) and - the mistake THIS surface
 would make - not as a refusal either.
 Its seven reasons split into **facts** (`petHasNoMicrochip`, `credentialHasNoMicrochip`,
@@ -3709,8 +3756,14 @@ answer that way one line apart.
 Collapsing either one is a silent fail-open in its own flavour: the cache one arrives as the neutral
 *fact* "this shop holds no credential" on the strength of a read that never happened, and the pet one
 skips the guard entirely with no report at all.
-Pinned by `an_unreadable_credential_store_is_a_failure_not_an_absence` and
-`an_unreadable_pet_store_refuses_a_microchip_edit_rather_than_skipping_the_check`.
+Pinned by `an_unreadable_credential_store_is_a_failure_not_an_absence` (the CACHE read) and
+`an_unreadable_pet_store_refuses_a_microchip_edit_rather_than_skipping_the_check` (the PET read).
+`import_pull`'s tag lookup is a THIRD fallible read and fails open like the cache one - it files the
+verified credential and reports `couldNotRead` - because that route makes no claim about any pet.
+It has its own `MemStore::set_fail_find_pets_by_dog_tag_reads` switch (a shared one cannot express
+"the pet read is fine and only this one fails", since whichever comes first short-circuits) and its
+own pin, `an_unreadable_pet_lookup_files_the_credential_and_reports_the_skipped_check`; the cache
+test above does NOT cover it.
 
 **Stated assumption, recorded rather than closed: the leaf is read from the CACHED document without
 re-running `check_integrity`.**
@@ -3739,7 +3792,23 @@ existing `clients.spec.ts` echo test in the UI (mutation-checked - removing the 
 it). An explicit blank still CLEARS the code, which must stay possible: clearing a wrongly-typed code
 is the only way out of a mismatch an operator cannot otherwise correct.
 
-Coverage: `cargo test -p vet-api --test microchip_binding` (25, real router; the import half drives the
+**FIXTURES COME FROM THE EMITTERS, never from what the reader expects.**
+The inert version above passed 46 tests and 8 mutations for exactly one reason: every fixture was
+hand-written to the implementation's own shape, so they agreed with the code and disagreed with
+production. Mutation coverage over self-consistent fixtures proves the code agrees with itself.
+So `tests/microchip_binding.rs` carries one fixture per emitter, each naming its source:
+`vet_portal_fields` (DRIVEN end to end through `/credentials/prepare` in the flat top-level shape
+`buildFieldsObject` really produces), `government_eu_health_cert_doc` and
+`government_travel_clearance_doc` (**TRANSCRIBED** from `government/api/src/app.rs::build_gov_vc`, not
+driven - that function is in another crate vet-api's tests cannot call; the leaf names are copied
+verbatim and must be re-checked there).
+The shared `common::vaccination_fields()` is deliberately left alone - eleven call sites across six
+other suites read it - and it is NOT emitter-accurate: it hand-nests the microchip under
+`credentialSubject`, a shape the vet portal never produces. Do not treat it as one.
+`the_vet_portals_own_shape_is_read_end_to_end` is the mutation catcher: narrowing the matcher back to
+exact `credentialSubject.microchip.code` reddens it, where the old fixtures stayed green.
+
+Coverage: `cargo test -p vet-api --test microchip_binding` (35, real router; the import half drives the
 real outbound fetch and real `third_party_verify`, including a holder-OBFUSCATED microchip leaf, which
 leaves `R` unchanged so the credential still verifies while the check genuinely cannot run) plus the
 `microchip` unit tests in the crate and `packages/ui/test/microchipCheck.test.ts`.

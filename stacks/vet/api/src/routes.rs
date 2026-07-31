@@ -1050,45 +1050,59 @@ async fn import_pull(
     // different remedy, kept apart for the same reason `issuer_mismatch` is kept apart from
     // `issuer_not_whitelisted`. Folding it into `valid` would report a real credential as forged.
     let credential_chip = crate::microchip::credential_microchip(&doc);
+    // A credential this build cannot read the microchip OUT OF is decided here, before the pet
+    // lookup and ahead of every pet-side fact — `compare` applies the same precedence for the rows
+    // below. Without it the loud state would be swallowed by `NoLinkedPet` on exactly the imports
+    // that arrive before a tag is linked, which is the ordinary order for this route.
+    //
     // ONE lookup drives both the refusal and the reported state. Two would straddle a concurrent
     // edit and could refuse on one pet's code while reporting another's.
-    let (check, holder) = match st.store.try_find_pets_by_dog_tag(&dog).await {
-        Ok(pets) if pets.is_empty() => (
-            // No pet on file carries this tag, so there is no local record to compare against —
-            // reported as its own reason rather than as a passing check.
-            MicrochipCheck::NotComparable(MicrochipNotComparable::NoLinkedPet),
-            None,
-        ),
-        // The pet whose code MISMATCHES decides, if there is one; otherwise the first pet on the tag
-        // supplies the reported state. Uniqueness is enforced at every write, so this list is
-        // normally one row — but it was never enforced retroactively over rows written before that
-        // rule, so preferring the mismatch means a pre-existing duplicate cannot hide one.
-        Ok(pets) => {
-            let mut checked: Vec<_> = pets
-                .into_iter()
-                .map(|r| {
-                    let c =
-                        crate::microchip::compare(r.pet.microchip_code.as_deref(), &credential_chip);
-                    (c, Some(r))
-                })
-                .collect();
-            let i = checked.iter().position(|(c, _)| c.refuses()).unwrap_or(0);
-            checked.swap_remove(i)
-        }
-        // An unreadable pet store does NOT refuse the import. The import is not a claim about any
-        // pet — it files a verified credential under its own tag — and the link routes run this same
-        // check against a store they were able to read before any binding is written. Refusing here
-        // would block ordinary work over a lookup the operator never asked for. But it is REPORTED
-        // as a could-not-read rather than silently omitted, so the skipped check stays visible.
-        Err(e) => {
-            tracing::warn!(
-                error = %e, dog_tag_id = %dog,
-                "microchip cross-check could not read the pet records on import"
-            );
-            (
-                MicrochipCheck::NotComparable(MicrochipNotComparable::CouldNotRead(e.to_string())),
+    let (check, holder) = if let Some(loud) = crate::microchip::unrunnable(&credential_chip) {
+        (loud, None)
+    } else {
+        match st.store.try_find_pets_by_dog_tag(&dog).await {
+            Ok(pets) if pets.is_empty() => (
+                // No pet on file carries this tag, so there is no local record to compare against —
+                // reported as its own reason rather than as a passing check.
+                MicrochipCheck::NotComparable(MicrochipNotComparable::NoLinkedPet),
                 None,
-            )
+            ),
+            // The pet whose code MISMATCHES decides, if there is one; otherwise the first pet on the
+            // tag supplies the reported state. Uniqueness is enforced at every write, so this list
+            // is normally one row — but it was never enforced retroactively over rows written before
+            // that rule, so preferring the mismatch means a pre-existing duplicate cannot hide one.
+            Ok(pets) => {
+                let mut checked: Vec<_> = pets
+                    .into_iter()
+                    .map(|r| {
+                        let c = crate::microchip::compare(
+                            r.pet.microchip_code.as_deref(),
+                            &credential_chip,
+                        );
+                        (c, Some(r))
+                    })
+                    .collect();
+                let i = checked.iter().position(|(c, _)| c.refuses()).unwrap_or(0);
+                checked.swap_remove(i)
+            }
+            // An unreadable pet store does NOT refuse the import. The import is not a claim about
+            // any pet — it files a verified credential under its own tag — and the link routes run
+            // this same check against a store they were able to read before any binding is written.
+            // Refusing here would block ordinary work over a lookup the operator never asked for.
+            // But it is REPORTED as a could-not-read rather than silently omitted, so the skipped
+            // check stays visible.
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, dog_tag_id = %dog,
+                    "microchip cross-check could not read the pet records on import"
+                );
+                (
+                    MicrochipCheck::NotComparable(MicrochipNotComparable::CouldNotRead(
+                        e.to_string(),
+                    )),
+                    None,
+                )
+            }
         }
     };
     if check.refuses() {

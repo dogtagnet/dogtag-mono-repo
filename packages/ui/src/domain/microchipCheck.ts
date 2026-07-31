@@ -5,9 +5,10 @@
  * # What the check is
  *
  * A DogTag is linked to a pet by an operator typing or scanning a tag id, and nothing about that act
- * is self-checking. A credential carries `credentialSubject.microchip.code` as a salted Merkle leaf,
- * so recording the same code on the shop's own pet gives the two sides something to compare — which
- * turns operator memory into evidence.
+ * is self-checking. A credential carries the animal's microchip as a salted Merkle leaf, so recording
+ * the same code on the shop's own pet gives the two sides something to compare — which turns operator
+ * memory into evidence. WHICH leaf is a key-path suffix match over the four shapes real issuers emit;
+ * the backend owns that list and the reason it is a suffix rather than one exact path.
  *
  * # Absent is NORMAL
  *
@@ -15,12 +16,22 @@
  * pet is an ordinary state of an ordinary pet, never a defect to chase, and the check simply does not
  * run. That is why the copy below is neutral and never nags.
  *
- * # Three states, and the middle one is the point
+ * # Four states, and the middle two are the point
  *
- * `matched` / `mismatch` / `notComparable`, and `notComparable` must never render as either
- * neighbour. Not as a silent pass — a check that did not run is not a check that passed. And not as
- * a refusal either, which is the mistake this particular surface would make: painting every
- * unchipped cat red would make the field unusable and teach operators to route around it.
+ * `matched` / `mismatch` / `notComparable` / `unrecognisedCredentialLeaf`, and `notComparable` must
+ * never render as either of its neighbours. Not as a silent pass — a check that did not run is not a
+ * check that passed. And not as a refusal either, which is the mistake this particular surface would
+ * make: painting every unchipped cat red would make the field unusable and teach operators to route
+ * around it.
+ *
+ * # Why the fourth state is not a `notComparable` reason
+ *
+ * This check shipped once reading a single key path no real issuer emits, so it was inert on every
+ * real credential. What hid that is this file's own vocabulary: "the credential has no microchip" is
+ * ordinary, quiet and benign, and a reader that cannot FIND a microchip that is present produced the
+ * identical answer. So `unrecognisedCredentialLeaf` is a state of its own, gets the loudest
+ * non-negative tone, says the check could not RUN rather than that there was nothing to compare, and
+ * names the key paths it found so the remedy is obvious from the sentence.
  *
  * # The tone split is `isFailure`, and it comes from the wire
  *
@@ -41,6 +52,13 @@ import type { MicrochipCheck } from "../api/types";
 /** Same vocabulary as `bindingTone`, so the portals have one tone language. */
 export type MicrochipTone = "positive" | "negative" | "warning" | "neutral";
 
+/**
+ * Every arm below is EXPLICIT and the fall-through is an exhaustiveness error, not a default.
+ *
+ * A `default:` here is what quietly absorbed the state this file most needs to keep separate: it
+ * would have read `check.isFailure`, which `unrecognisedCredentialLeaf` does not carry, and landed
+ * on `neutral` — the one outcome a reader that could not read must never get.
+ */
 export function microchipTone(check: MicrochipCheck): MicrochipTone {
   switch (check.state) {
     case "matched":
@@ -49,10 +67,19 @@ export function microchipTone(check: MicrochipCheck): MicrochipTone {
       // The only red. It is a statement about the LINK, not about the credential — see
       // `microchipHeadline`, whose mismatch copy says so explicitly.
       return "negative";
-    default:
+    case "notComparable":
       // A check that did not run is neither. Which of the two "we did not compare" tones it gets
       // depends on whether something failed or simply does not exist.
       return check.isFailure ? "warning" : "neutral";
+    case "unrecognisedCredentialLeaf":
+      // The loudest treatment short of the red reserved for a mismatch, and never neutral. Our
+      // reader failed to read a microchip that is present — a defect on our side, so it warns; but
+      // it accuses neither the animal nor the credential, so it is not negative.
+      return "warning";
+    default: {
+      const exhaustive: never = check;
+      return exhaustive;
+    }
   }
 }
 
@@ -63,10 +90,19 @@ export function microchipHeadline(check: MicrochipCheck): string {
       return "Microchip matches the credential";
     case "mismatch":
       return "Microchip does not match this credential";
-    default:
+    case "notComparable":
       // ONE headline for every not-comparable reason, because the distinction that matters at a
       // glance is "compared" vs "not compared"; WHICH side was missing is the detail sentence's job.
       return "Microchip not compared";
+    case "unrecognisedCredentialLeaf":
+      // NOT "not compared". That wording is the camouflage: it is the sentence an unchipped cat
+      // gets, and reading it over a credential that IS carrying a microchip is what let this check
+      // ship inert. It says the check could not RUN.
+      return "Microchip check could not run";
+    default: {
+      const exhaustive: never = check;
+      return exhaustive;
+    }
   }
 }
 
@@ -88,8 +124,16 @@ export function microchipExplanation(check: MicrochipCheck): string {
         `but it describes a different animal to the one on this record. Check the DogTag id and this ` +
         `pet's microchip before linking.`
       );
-    default:
+    case "notComparable":
+    case "unrecognisedCredentialLeaf":
+      // Both pass the backend's own sentence through. For the unrecognised state that sentence names
+      // the key paths, which is the whole remedy, so re-wording it here would drop the actionable
+      // half of the message.
       return check.detail;
+    default: {
+      const exhaustive: never = check;
+      return exhaustive;
+    }
   }
 }
 
@@ -97,7 +141,8 @@ export function microchipExplanation(check: MicrochipCheck): string {
  * Whether this state is positive evidence that the tag and the animal belong together.
  *
  * ONLY `matched`. Exists so a caller cannot express the question as `!== "mismatch"`, which quietly
- * counts every not-comparable state as a pass — the exact collapse the three states exist to prevent.
+ * counts every other state as a pass — the exact collapse the four states exist to prevent, and the
+ * one that would swallow `unrecognisedCredentialLeaf` most quietly of all.
  */
 export function microchipConfirmsAnimal(check: MicrochipCheck): boolean {
   return check.state === "matched";
@@ -117,6 +162,15 @@ export function microchipCheckFromError(err: unknown): MicrochipCheck | null {
   const check = (body as { microchipCheck?: unknown }).microchipCheck;
   if (!check || typeof check !== "object") return null;
   const state = (check as { state?: unknown }).state;
-  if (state !== "matched" && state !== "mismatch" && state !== "notComparable") return null;
+  // Every state the backend can emit. A state missing from this list is DROPPED, so it must move
+  // with `MicrochipCheck` — the same reason `microchipTone` refuses a `default:` arm.
+  if (
+    state !== "matched" &&
+    state !== "mismatch" &&
+    state !== "notComparable" &&
+    state !== "unrecognisedCredentialLeaf"
+  ) {
+    return null;
+  }
   return check as MicrochipCheck;
 }

@@ -367,7 +367,7 @@ pub struct ClientPet {
     /// OPTIONAL microchip code for THIS animal, as the shop recorded it.
     ///
     /// It exists so the tag↔pet link can be checked against evidence instead of against the
-    /// operator's memory: a credential carries `credentialSubject.microchip.code` as a Merkle leaf,
+    /// operator's memory: a credential carries the animal's microchip as a Merkle leaf,
     /// so the two can be compared at the moment a tag is attached (see [`crate::microchip`]).
     ///
     /// `Option`, and ABSENT IS NORMAL — not a defect to chase and never a reason to refuse a link.
@@ -1117,6 +1117,14 @@ pub struct MemStore {
     /// exercised in the case where the PET reads fine and only the credential lookup fails, which a
     /// shared switch cannot express because the pet read short-circuits first.
     fail_client_cache_reads: Arc<std::sync::atomic::AtomicBool>,
+    /// FAULT INJECTION for the tag→pets read. Default OFF; test-only, like the three above.
+    ///
+    /// Its own switch because it is the ONLY way to reach `import_pull`'s `Err` arm, which is where
+    /// this feature's two fallible reads point in OPPOSITE directions: that one fails OPEN (files the
+    /// credential and reports `couldNotRead`) while `update_pet`'s pet read refuses with 503. Without
+    /// a switch, a regression flipping the import arm to a refusal — or to a silent omission —
+    /// reddens nothing.
+    fail_find_pets_by_dog_tag_reads: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MemStore {
@@ -1145,6 +1153,12 @@ impl MemStore {
     /// Make every subsequent [`Store::try_get_client_cache`] report a read failure. See the field.
     pub fn set_fail_client_cache_reads(&self, on: bool) {
         self.fail_client_cache_reads
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make every subsequent [`Store::try_find_pets_by_dog_tag`] report a read failure. See the field.
+    pub fn set_fail_find_pets_by_dog_tag_reads(&self, on: bool) {
+        self.fail_find_pets_by_dog_tag_reads
             .store(on, std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -1570,6 +1584,15 @@ impl Store for MemStore {
         &self,
         dog_tag_id: &str,
     ) -> Result<Vec<PetRow>, StoreReadError> {
+        // Reachable only by explicit fault injection — see `MemStore::fail_find_pets_by_dog_tag_reads`.
+        if self
+            .fail_find_pets_by_dog_tag_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreReadError(
+                "injected tag lookup read failure".to_string(),
+            ));
+        }
         let g = self.inner.read().unwrap();
         let mut out: Vec<PetRow> = g
             .clients

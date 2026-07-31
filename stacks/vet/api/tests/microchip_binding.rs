@@ -2,21 +2,27 @@
 //! describe THIS animal?
 //!
 //! A tag↔pet link is otherwise unchecked — a mistyped digit or two similar dogs in one afternoon
-//! produce a link that is structurally perfect and about the wrong animal. A credential carries
-//! `credentialSubject.microchip.code` as a Merkle leaf, so recording the same code on the shop's own
-//! pet gives the two sides something to compare.
+//! produce a link that is structurally perfect and about the wrong animal. A credential carries the
+//! animal's microchip as a Merkle leaf, so recording the same code on the shop's own pet gives the
+//! two sides something to compare.
 //!
 //! What these tests protect, in order of how badly each would hurt:
 //!
-//!  1. **A mismatch is REFUSED**, at every route that writes the binding — not just the link route.
+//!  1. **The check is not INERT.** It shipped once reading a single key path no real issuer emits,
+//!     passed every test, and protected nothing — because the fixtures were written to the shape the
+//!     reader expected rather than the shape the emitters produce. Section 6 drives the emitters'
+//!     own shapes, and everything else here rests on that.
+//!  2. **A mismatch is REFUSED**, at every route that writes the binding — not just the link route.
 //!     The binding is a pair and either half can move, so a guard on one route reads as an enforced
 //!     invariant while the way in stays open.
-//!  2. **An absent microchip NEVER blocks a link.** Many animals are not chipped; getting this
+//!  3. **An absent microchip NEVER blocks a link.** Many animals are not chipped; getting this
 //!     backwards makes the field unusable and teaches operators to route around it. This is the
 //!     commonest state in the product, so it gets the most cases here.
-//!  3. **"Could not compare" is reported as itself** — never as a pass, never as a refusal — with a
-//!     reason that says which side was missing or which read did not resolve.
-//!  4. **A mismatch is not an accusation against the credential.** It stays valid; the LINK is wrong.
+//!  4. **"Could not compare" is reported as itself** — never as a pass, never as a refusal — with a
+//!     reason that says which side was missing or which read did not resolve. And a microchip we
+//!     cannot READ is kept apart from one that is not there, because those look identical from the
+//!     operator's chair and that is what hid (1).
+//!  5. **A mismatch is not an accusation against the credential.** It stays valid; the LINK is wrong.
 
 mod common;
 
@@ -48,19 +54,15 @@ async fn app_with_state() -> (axum::Router, String, Arc<MemStore>) {
     (vet_api::router(state), op, store)
 }
 
-/// A held wrapped document as `POST /import/pull` files one: keyed by the tag HANDLE, with each leaf
-/// stored packed as `"<saltHex>:<typeTag>:<value>"`.
+/// Wrap a `data` block into the envelope `POST /import/pull` files, with each leaf packed as
+/// `"<saltHex>:<typeTag>:<value>"`.
 ///
-/// `chip: None` is a credential for an unchipped animal — the leaf is simply absent, exactly as it is
-/// on a real document for a pet that has no microchip.
-fn held_doc(chip: Option<&str>) -> Value {
-    let mut subject = json!({ "dogTagId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1:2:4" });
-    if let Some(c) = chip {
-        subject["microchip"] = json!({ "code": format!("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2:5:{c}") });
-    }
+/// Only `data` varies between the fixtures below, because only `data` is what `check_integrity`
+/// folds and only `data` is where a key path can differ between issuers.
+fn wrapped(data: Value) -> Value {
     json!({
         "version": "dogtag/1.0",
-        "data": { "credentialSubject": subject },
+        "data": data,
         "signature": {
             "type": "MerkleRoot",
             "targetHash": "0x00",
@@ -77,8 +79,104 @@ fn held_doc(chip: Option<&str>) -> Value {
     })
 }
 
+fn packed(value: &str) -> String {
+    format!("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2:5:{value}")
+}
+
+const DOG_TAG_LEAF: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1:2:4";
+
+/// A held document in the SCHEMA-CONFORMANT nested shape, `credentialSubject.microchip.code` — the
+/// one `dogtag_standard::schema::validate_schema` describes.
+///
+/// `chip: None` is a credential for an unchipped animal — the leaf is simply absent, exactly as it is
+/// on a real document for a pet that has no microchip.
+fn held_doc(chip: Option<&str>) -> Value {
+    let mut subject = json!({ "dogTagId": DOG_TAG_LEAF });
+    if let Some(c) = chip {
+        subject["microchip"] = json!({ "code": packed(c) });
+    }
+    wrapped(json!({ "credentialSubject": subject }))
+}
+
+// ---- fixtures CAPTURED FROM THE EMITTERS, not written to match the reader --------------------
+//
+// This check shipped reading ONE key path that no real issuer emits, and every test passed, because
+// the fixtures were hand-written to the shape the implementation expected. They agreed with the code
+// and disagreed with production. The three below are derived from the emitters instead, and each
+// names where it came from so a reader can re-check it against the source rather than against this
+// file's own habits.
+
+/// The vet portal's REAL VACCINATION `fields` payload, derived from the emitter.
+///
+/// `packages/ui/src/schema/recordTypes.ts` declares `path: "microchip.code"` with NO
+/// `credentialSubject.` prefix; `buildFieldsObject` in the same file nests from the ROOT;
+/// `stacks/vet/web/src/pages/Issue.tsx` keys its `values` map by `f.path` and posts the result as
+/// `fields`; and `app::build_vc` clones that object verbatim, injecting only
+/// `credentialSubject.dogTagId`. So the microchip lands at the data TOP LEVEL, a SIBLING of
+/// `credentialSubject` — never inside it.
+///
+/// The shared `common::vaccination_fields()` hand-nests it under `credentialSubject`, a shape the
+/// portal never produces. It is left alone (eleven call sites across six other suites read it) and
+/// this fixture is what the microchip cases drive instead.
+fn vet_portal_fields(chip: &str) -> Value {
+    json!({
+        "microchip": {
+            "code": { "tag": 2, "value": chip },
+            "standard": { "tag": 2, "value": "ISO_11784_11785" },
+            "implantDate": { "tag": 2, "value": "2023-10-01" },
+        },
+        "vaccineProductName": { "tag": 2, "value": "Rabvac 3" },
+        "vaccinationDate": { "tag": 2, "value": "2026-01-11" },
+    })
+}
+
+/// A government `EU_HEALTH_CERT` document: `credentialSubject.microchipNumber`.
+///
+/// TRANSCRIBED from `stacks/government/api/src/app.rs::build_gov_vc`, not driven through it —
+/// `build_gov_vc` lives in the `government-api` crate, which vet-api's tests cannot call, so this is
+/// the one gap that could not be closed by execution. The subject's leaf NAMES are copied verbatim
+/// from that match arm; re-check them there if the two ever disagree.
+fn government_eu_health_cert_doc(chip: &str) -> Value {
+    wrapped(json!({
+        "credentialSubject": {
+            "dogTagId": DOG_TAG_LEAF,
+            "receiptId": packed("A1B2C3D4E5F6"),
+            "species": packed("dog"),
+            "microchipNumber": packed(chip),
+            "rabiesVaccinationDate": packed("2026-01-15"),
+            "rabiesValidUntil": packed("2029-01-14"),
+        }
+    }))
+}
+
+/// A government `TRAVEL_CLEARANCE` document: `credentialSubject.animal.microchipNumber`, nested
+/// under the CDC Section B `animal` block.
+///
+/// TRANSCRIBED from the same function's `_` arm, with the same caveat as above. This is the shape
+/// that most needs a suffix match: neither the leaf name nor its parent matches the vet portal's.
+fn government_travel_clearance_doc(chip: &str) -> Value {
+    wrapped(json!({
+        "credentialSubject": {
+            "dogTagId": DOG_TAG_LEAF,
+            "receiptId": packed("A1B2C3D4E5F6"),
+            "validity": { "validFrom": packed("2026-07-01"), "validUntil": packed("2027-01-01") },
+            "importer": { "lastName": packed("Zagara") },
+            "animal": {
+                "name": packed("Blaze"),
+                "breed": packed("Poodle - Standard"),
+                "microchipNumber": packed(chip),
+            },
+            "travel": { "portOfEntry": packed("JFK") },
+        }
+    }))
+}
+
 async fn hold(store: &Arc<MemStore>, tag: &str, chip: Option<&str>) {
     store.upsert_client_cache(tag.to_string(), held_doc(chip)).await;
+}
+
+async fn hold_doc(store: &Arc<MemStore>, tag: &str, doc: Value) {
+    store.upsert_client_cache(tag.to_string(), doc).await;
 }
 
 /// Create a client with pets verbatim; returns the minted petIds in order.
@@ -601,9 +699,21 @@ async fn boot_import() -> Import {
 }
 
 /// Issue a real credential through the ordinary flow and read the shared document back.
+///
+/// Drives [`vet_portal_fields`], the shape the VET PORTAL actually posts, rather than the shared
+/// `vaccination_fields()` — so the end-to-end path exercises the emitter's key paths and not the
+/// reader's. Swapping this back to the shared fixture is what would let this suite go green over a
+/// check that is inert in production.
 async fn issue_doc(app: &axum::Router, op: &str, dog_tag_id: &str, chip: &str) -> Value {
-    let mut fields = vaccination_fields();
-    fields["credentialSubject"]["microchip"]["code"]["value"] = json!(chip);
+    issue_doc_with_fields(app, op, dog_tag_id, vet_portal_fields(chip)).await
+}
+
+async fn issue_doc_with_fields(
+    app: &axum::Router,
+    op: &str,
+    dog_tag_id: &str,
+    fields: Value,
+) -> Value {
     let (s, b) = call(
         app,
         "POST",
@@ -721,11 +831,11 @@ async fn a_withheld_microchip_leaf_imports_and_reports_the_withheld_count() {
     let doc = issue_doc(&d.app, &d.op, "1001", CHIP).await;
     let parsed: dogtag_standard::wrap::WrappedDoc = serde_json::from_value(doc).unwrap();
     let root_before = parsed.signature.merkle_root.clone();
-    let redacted = dogtag_standard::wrap::obfuscate(
-        &parsed,
-        &["credentialSubject.microchip.code".to_string()],
-    )
-    .expect("the microchip leaf is present and obfuscatable");
+    // The vet portal's own key path — `microchip.code` at the data TOP LEVEL, not under
+    // `credentialSubject`. Naming the nested path here fails outright with "cannot obfuscate missing
+    // field", which is the emitter shape asserting itself.
+    let redacted = dogtag_standard::wrap::obfuscate(&parsed, &["microchip.code".to_string()])
+        .expect("the microchip leaf is present and obfuscatable");
     assert_eq!(
         redacted.signature.merkle_root, root_before,
         "obfuscation must not move R, or this would be testing a different document"
@@ -892,4 +1002,223 @@ async fn an_edit_that_does_not_touch_the_microchip_is_not_refused_by_a_stored_mi
     assert_eq!(s, StatusCode::OK, "an unrelated edit must not be blocked: {b}");
     assert_eq!(b["breed"], "Standard Poodle", "{b}");
     assert_eq!(b["microchipCode"], OTHER_CHIP, "and the stored code is left alone: {b}");
+}
+
+// ============================================================================================
+// 6. the four REAL emitter shapes, and the reader that could not read one
+//
+// This check shipped reading exactly one key path — `credentialSubject.microchip.code` — that no
+// issuer in the fleet emits, so it was INERT on every real credential: it passed its whole suite
+// and protected nothing. What let that happen is not the key-path list, it is that the fixtures were
+// written to the shape the READER expected. So these cases drive the emitters' own shapes, and the
+// last group pins the state that makes a future inertness loud instead of invisible.
+// ============================================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_vet_portals_own_shape_is_read_end_to_end() {
+    // THE MUTATION CATCHER for the original defect. `issue_doc` posts the fields the vet portal
+    // really posts, so the microchip leaf reaches `data` at the TOP LEVEL as `microchip.code`.
+    // Narrowing the matcher back to exact `credentialSubject.microchip.code` makes this credential
+    // read as carrying no microchip at all, and this case goes red on `state` — where the previous
+    // fixtures, which nested it under `credentialSubject` themselves, stayed green.
+    let d = boot_import().await;
+    let doc = issue_doc(&d.app, &d.op, "1001", CHIP).await;
+    assert!(
+        doc["data"]["microchip"]["code"].is_string(),
+        "the vet portal emits this leaf at the data top level, NOT under credentialSubject: {doc}"
+    );
+    make_pets(
+        &d.app,
+        &d.op,
+        "Alice Tan",
+        json!([{ "name": "Rex", "dogTagId": "1001", "microchipCode": CHIP }]),
+    )
+    .await;
+
+    let (s, b) = import_pull(&d.app, &d.op, doc).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(
+        b["microchipCheck"]["state"], "matched",
+        "the vet portal's own shape must be READ, not reported as an absent microchip: {b}"
+    );
+}
+
+#[tokio::test]
+async fn the_governments_eu_health_cert_shape_is_read() {
+    // `credentialSubject.microchipNumber` — a different leaf NAME under a different parent. Half
+    // covering the fleet reproduces the identical silent hole for the other half.
+    let (app, op, store) = app_with_state().await;
+    hold_doc(&store, "4", government_eu_health_cert_doc(CHIP)).await;
+    let pets = make_pets(
+        &app,
+        &op,
+        "Alice Tan",
+        json!([{ "name": "Rex", "microchipCode": OTHER_CHIP }]),
+    )
+    .await;
+
+    let (s, b) = link(&app, &op, &pets[0], "4").await;
+    assert_eq!(s, StatusCode::CONFLICT, "a wrong pairing must be refused here too: {b}");
+    assert_eq!(b["microchipCheck"]["state"], "mismatch", "{b}");
+}
+
+#[tokio::test]
+async fn the_governments_travel_clearance_shape_is_read_from_its_section_b_block() {
+    // `credentialSubject.animal.microchipNumber` — nested one level deeper again. This is the shape
+    // an exact-path match cannot reach under any single spelling.
+    let (app, op, store) = app_with_state().await;
+    hold_doc(&store, "4", government_travel_clearance_doc(CHIP)).await;
+    let pets = make_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "microchipCode": CHIP }])).await;
+
+    let (s, b) = link(&app, &op, &pets[0], "4").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["microchipCheck"]["state"], "matched", "{b}");
+    assert_eq!(b["microchipCheck"]["microchip"], CHIP, "{b}");
+}
+
+#[tokio::test]
+async fn a_microchip_at_a_key_path_we_cannot_read_is_loud_and_never_reads_as_nothing_to_compare() {
+    // THE REMEDY FOR THE MECHANISM, not for the key-path list. "The credential has no microchip" is
+    // an ordinary, quiet, benign state — and it is exactly what a broken reader produced. So a
+    // microchip-shaped leaf we do not recognise gets its OWN state, names the path, and says the
+    // check could not RUN. Folding it back into `notComparable` under any reason re-creates the
+    // camouflage that let this ship inert.
+    let (app, op, store) = app_with_state().await;
+    hold_doc(
+        &store,
+        "4",
+        wrapped(json!({
+            "credentialSubject": {
+                "dogTagId": DOG_TAG_LEAF,
+                "chipDetails": { "microchipIdentifier": packed(CHIP) },
+            }
+        })),
+    )
+    .await;
+    let pets = make_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "microchipCode": CHIP }])).await;
+
+    let (s, b) = link(&app, &op, &pets[0], "4").await;
+    assert_eq!(s, StatusCode::OK, "a reader defect is not evidence about the animal: {b}");
+    let check = &b["microchipCheck"];
+    assert_eq!(check["state"], "unrecognisedCredentialLeaf", "{check}");
+    assert_ne!(check["state"], "notComparable", "{check}");
+    assert!(check["reason"].is_null(), "it must not borrow notComparable's shape: {check}");
+    assert_eq!(
+        check["keyPaths"],
+        json!(["credentialSubject.chipDetails.microchipIdentifier"]),
+        "the unreadable path must be NAMED, so the remedy is obvious from the message: {check}"
+    );
+    let detail = check["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("credentialSubject.chipDetails.microchipIdentifier"),
+        "{detail}"
+    );
+    assert!(
+        !detail.to_lowercase().contains("nothing to compare"),
+        "the one sentence it must never say — that is the unchipped animal's, and it reads as \
+         success: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_key_path_outranks_the_commonest_pet_side_fact() {
+    // The camouflage would come straight back if any pet-side fact could stand in front of it, and
+    // "this pet has no microchip on file" is the commonest state in the product.
+    let (app, op, store) = app_with_state().await;
+    hold_doc(
+        &store,
+        "4",
+        wrapped(json!({
+            "credentialSubject": { "dogTagId": DOG_TAG_LEAF, "microchipRef": packed(CHIP) }
+        })),
+    )
+    .await;
+    let pets = make_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex" }])).await;
+
+    let (s, b) = link(&app, &op, &pets[0], "4").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["microchipCheck"]["state"], "unrecognisedCredentialLeaf", "{b}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_with_no_linked_pet_still_reports_an_unreadable_key_path() {
+    // The import direction's OWN pet-side fact is `noLinkedPet`, and it is the ordinary order for
+    // this route — the credential arrives before the tag is linked. If it stood in front of the loud
+    // state, the reader defect would be invisible on precisely the commonest import.
+    let d = boot_import().await;
+    // A REAL issued document, so it passes `third_party_verify` — only its microchip key path is one
+    // this build does not recognise.
+    let doc = issue_doc_with_fields(
+        &d.app,
+        &d.op,
+        "1001",
+        json!({
+            "chipDetails": { "microchipIdentifier": { "tag": 2, "value": CHIP } },
+            "vaccinationDate": { "tag": 2, "value": "2026-01-11" },
+        }),
+    )
+    .await;
+
+    let (s, b) = import_pull(&d.app, &d.op, doc).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["imported"], true, "{b}");
+    assert_eq!(b["microchipCheck"]["state"], "unrecognisedCredentialLeaf", "{b}");
+}
+
+#[tokio::test]
+async fn a_chip_container_with_no_code_stays_the_ordinary_absent_case() {
+    // The detector's false-positive guard. The vet schema's `microchip.standard` and
+    // `microchip.implantDate` are real, common leaves that are NOT codes, so a credential carrying a
+    // chip container and no code is an ordinary unchipped animal — firing the loud state here would
+    // nag the commonest case in the product with a bug report.
+    let (app, op, store) = app_with_state().await;
+    hold_doc(
+        &store,
+        "4",
+        wrapped(json!({
+            "credentialSubject": {
+                "dogTagId": DOG_TAG_LEAF,
+                "microchip": {
+                    "standard": packed("ISO_11784_11785"),
+                    "implantDate": packed("2023-10-01"),
+                },
+            }
+        })),
+    )
+    .await;
+    let pets = make_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "microchipCode": CHIP }])).await;
+
+    let (s, b) = link(&app, &op, &pets[0], "4").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_not_comparable(&b["microchipCheck"], "credentialHasNoMicrochip", false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_pet_lookup_files_the_credential_and_reports_the_skipped_check() {
+    // The import's fallible pet read fails OPEN, and this is the ONLY case that reaches that arm.
+    // It is the deliberate OPPOSITE of `update_pet`'s pet read, which refuses with 503: this route
+    // makes no claim about any pet — it files a credential that already verified — so refusing here
+    // would block ordinary work over a lookup the operator never asked for. What it must NOT do is
+    // omit the check silently, which would be indistinguishable from a check that passed.
+    let d = boot_import().await;
+    let doc = issue_doc(&d.app, &d.op, "1001", CHIP).await;
+    make_pets(
+        &d.app,
+        &d.op,
+        "Alice Tan",
+        json!([{ "name": "Rex", "dogTagId": "1001", "microchipCode": OTHER_CHIP }]),
+    )
+    .await;
+    d.store.set_fail_find_pets_by_dog_tag_reads(true);
+
+    let (s, b) = import_pull(&d.app, &d.op, doc).await;
+    assert_eq!(s, StatusCode::OK, "an unreadable pet lookup must not refuse the import: {b}");
+    assert_eq!(b["imported"], true, "{b}");
+    assert_not_comparable(&b["microchipCheck"], "couldNotRead", true);
+
+    d.store.set_fail_find_pets_by_dog_tag_reads(false);
+    assert!(
+        d.store.get_client_cache("1001").await.is_some(),
+        "the verified credential is still filed"
+    );
 }

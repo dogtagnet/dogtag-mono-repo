@@ -563,7 +563,7 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 /**
- * The microchip cross-check's verdict, rendered in all three states.
+ * The microchip cross-check's verdict, rendered in every state.
  *
  * A DogTag link is otherwise unchecked — a mistyped digit or two similar dogs in one afternoon give
  * a link that is structurally perfect and about the wrong animal. The credential carries the

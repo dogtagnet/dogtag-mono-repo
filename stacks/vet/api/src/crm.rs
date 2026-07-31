@@ -1164,11 +1164,11 @@ async fn update_pet(
 /// # The microchip cross-check
 ///
 /// That uniqueness rule keeps two pets off one tag; it says nothing about whether THIS tag belongs to
-/// THIS animal. A credential carries `credentialSubject.microchip.code` as a Merkle leaf, so when the
+/// THIS animal. A credential carries the animal's microchip as a Merkle leaf, so when the
 /// shop holds one for the tag and has a microchip on the pet, the two are compared here — the moment
 /// the credential and the local record meet — and a mismatch is refused ([`microchip_check`]).
 ///
-/// The verdict is ALWAYS on the response, in all three states, so a client cannot read a missing key
+/// The verdict is ALWAYS on the response, in every state, so a client cannot read a missing key
 /// as a check that passed. It is emitted here rather than on `GET /pets` for exactly that reason: a
 /// list row carries no verdict, so its absence there is unambiguous.
 async fn link_pet_dogtag(

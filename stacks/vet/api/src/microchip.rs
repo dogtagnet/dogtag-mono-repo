@@ -7,7 +7,7 @@
 //! afternoon all produce a link that is structurally perfect and about the wrong animal. Until now
 //! the only thing standing between a correct link and a wrong one was the operator remembering.
 //!
-//! A credential already carries `credentialSubject.microchip.code` as a salted Merkle leaf, so it is
+//! A credential already carries the animal's microchip as a salted Merkle leaf, so it is
 //! covered by `signature.merkleRoot` and cannot be edited without breaking integrity. Recording the
 //! same code on the shop's own [`ClientPet`](crate::store::ClientPet) gives the two sides something
 //! to compare, which turns operator memory into evidence.
@@ -21,14 +21,34 @@
 //! absent code is a first-class ordinary state, never a failure and never a reason to refuse a link.
 //! The check fires ONLY when both sides carry a code.
 //!
-//! # Three states, and the middle one is the whole point
+//! # Four states, and the middle two are the whole point
 //!
-//! [`MicrochipCheck`] is `Matched` / `Mismatch` / `NotComparable`, and `NotComparable` must never
-//! render as either neighbour. This codebase's defining defect class is a check that did not run
-//! being reported as one that passed; the inverse — reporting it as a failure — is just as wrong and
-//! is the one this particular feature would get wrong, because refusing every unchipped cat would
-//! make the field unusable. So `NotComparable` carries a [`NotComparable`] reason that says which
-//! side was missing, or which read did not resolve, and the caller renders that sentence.
+//! [`MicrochipCheck`] is `Matched` / `Mismatch` / `NotComparable` / `UnrecognisedCredentialLeaf`,
+//! and `NotComparable` must never render as either neighbour. This codebase's defining defect class
+//! is a check that did not run being reported as one that passed; the inverse — reporting it as a
+//! failure — is just as wrong and is the one this particular feature would get wrong, because
+//! refusing every unchipped cat would make the field unusable. So `NotComparable` carries a
+//! [`NotComparable`] reason that says which side was missing, or which read did not resolve, and the
+//! caller renders that sentence.
+//!
+//! # Why inertness gets its OWN state
+//!
+//! This check shipped once reading a single key path — `credentialSubject.microchip.code` — that NO
+//! real issuer emits, so it was inert on every real credential: it would have passed its tests and
+//! protected nothing. What let that survive is subtler than the key-path list, and is the reason
+//! [`MicrochipCheck::UnrecognisedCredentialLeaf`] exists.
+//!
+//! "The credential has no microchip" is an ORDINARY, quiet, benign state (see above) — and a reader
+//! that cannot find a microchip that IS present produces exactly the same quiet answer. Our own
+//! not-comparable state camouflages a broken check. So the two are kept structurally apart:
+//!
+//!   * neither side carries a microchip → `NotComparable`, neutral, silent, never blocks; and
+//!   * the credential carries microchip-shaped data at a key path this build does not recognise →
+//!     `UnrecognisedCredentialLeaf`, LOUD, naming the paths it found.
+//!
+//! The loud state is deliberately NOT a [`NotComparable`] reason, under any spelling: it is not a
+//! pet without a chip, it is our reader failing to read one. It still does not REFUSE the write —
+//! it is evidence that our reader is wrong, never evidence about the animal.
 //!
 //! # Facts and failures are rendered differently
 //!
@@ -61,9 +81,71 @@
 use dogtag_standard::wrap::{flatten_data, parse_packed, WrappedDoc};
 use serde_json::{json, Value};
 
-/// The credential leaf this check reads. A salted Merkle leaf, so its value is covered by
-/// `signature.merkleRoot` — this module CONSUMES that coverage and never redefines it.
-pub const MICROCHIP_KEY_PATH: &str = "credentialSubject.microchip.code";
+/// The credential leaves this check reads, as trailing key-path SEGMENT runs.
+///
+/// # What this accepts, and why it is a suffix rather than an exact path
+///
+/// A leaf's key path is issuer-shaped, not protocol-fixed, and the four shapes real issuers emit
+/// today already disagree on the prefix. `flatten_data` produces, verbatim:
+///
+///   * `microchip.code` — the vet portal's VACCINATION form. Its field def is
+///     `path: "microchip.code"` with NO prefix (`packages/ui/src/schema/recordTypes.ts`),
+///     `buildFieldsObject` nests from the ROOT, and `app::build_vc` clones the operator's fields
+///     verbatim while injecting only `credentialSubject.dogTagId` — so this leaf sits at the `data`
+///     TOP LEVEL, a sibling of `credentialSubject` rather than a child of it.
+///   * `credentialSubject.microchip.code` — the schema-conformant nested variant that
+///     `dogtag_standard::schema::validate_schema` describes.
+///   * `credentialSubject.microchipNumber` — government `EU_HEALTH_CERT`
+///     (`stacks/government/api/src/app.rs`).
+///   * `credentialSubject.animal.microchipNumber` — government `TRAVEL_CLEARANCE`, nested under the
+///     CDC Section B `animal` block (same file).
+///
+/// Two suffixes cover all four. Reading ONE exact path is what made this check inert on every real
+/// credential, so the shape of the rule is part of the fix, not an implementation detail.
+///
+/// # Why it cannot collide with an unrelated leaf
+///
+/// Matching is on whole trailing SEGMENTS, split on `.` — never `str::ends_with`, which would make
+/// `credentialSubject.previousMicrochipNumber` match `microchipNumber` and compare against a
+/// different animal's retired chip. `microchip.code` likewise requires a segment `microchip` whose
+/// child segment is exactly `code`, so the vet schema's own `microchip.standard` and
+/// `microchip.implantDate` siblings cannot match. A colliding leaf would therefore have to be named
+/// with these exact final segments and mean something else, which no emitter in the fleet does.
+pub const RECOGNISED_MICROCHIP_SUFFIXES: &[&[&str]] = &[&["microchip", "code"], &["microchipNumber"]];
+
+/// `true` when `key_path`'s trailing segments are exactly `suffix`.
+fn has_suffix(key_path: &str, suffix: &[&str]) -> bool {
+    let segments: Vec<&str> = key_path.split('.').collect();
+    segments.len() >= suffix.len() && &segments[segments.len() - suffix.len()..] == suffix
+}
+
+/// `true` when `key_path` is one of [`RECOGNISED_MICROCHIP_SUFFIXES`].
+fn is_recognised(key_path: &str) -> bool {
+    RECOGNISED_MICROCHIP_SUFFIXES
+        .iter()
+        .any(|s| has_suffix(key_path, s))
+}
+
+/// `true` when a leaf LOOKS like it carries a microchip but is not one this build can read.
+///
+/// The detector is: the FINAL segment contains `microchip`, case-insensitively. Chosen over "any
+/// segment contains microchip" because the vet schema's `microchip.standard` and
+/// `microchip.implantDate` are real, common leaves that are NOT codes — flagging them would fire the
+/// loud state on every ordinary credential that carries a chip container and no code, which is
+/// precisely the benign absent case. Their final segments are `standard` and `implantDate`, so this
+/// rule leaves them alone while catching every plausible spelling of a code leaf itself
+/// (`microchipNumber`, `microchipId`, `microchipCode`, a bare `microchip`).
+///
+/// The trade, stated rather than hidden: a code leaf whose own final segment does not name the chip
+/// (a hypothetical `microchip.number`) still reads as absent. That is a narrower miss than the false
+/// alarms the wider rule would produce, and any such emitter belongs in
+/// [`RECOGNISED_MICROCHIP_SUFFIXES`] anyway.
+fn is_microchip_shaped(key_path: &str) -> bool {
+    key_path
+        .rsplit('.')
+        .next()
+        .is_some_and(|last| last.to_ascii_lowercase().contains("microchip"))
+}
 
 // ------------------------------------------------------------------------------------------------
 // the credential side
@@ -83,39 +165,80 @@ pub enum CredentialMicrochip {
     /// the salt and the value — neither of which we have. So the count is offered as context ("some
     /// fields were withheld") rather than a claim about WHICH field.
     Absent { withheld_leaves: usize },
-    /// The leaf is present but does not parse as a packed scalar, or holds an empty value.
+    /// The leaf is present but does not parse as a packed scalar, holds an empty value, or two
+    /// recognised leaves disagree about the code.
     Unreadable(String),
+    /// The document carries microchip-shaped leaves, but NONE at a key path this build recognises.
+    ///
+    /// The paths are carried so the message can NAME them: the remedy is a one-line addition to
+    /// [`RECOGNISED_MICROCHIP_SUFFIXES`], and it should be obvious from the sentence alone.
+    UnrecognisedKeyPath(Vec<String>),
 }
 
 /// Read the microchip leaf out of a wrapped credential.
 ///
 /// Reads `data`, which is what `check_integrity` folds — never `issuer` or any other block outside
 /// the Merkle root, where an attacker-supplied value would be uncovered.
+///
+/// A document may now match MORE than one recognised leaf (a government `TRAVEL_CLEARANCE` carrying
+/// both a Section B chip and a top-level one, say). Taking whichever `flatten_data` happened to emit
+/// first would decide a refusal on arbitrary evidence, so agreement is required: identical values
+/// are `Present`, and a disagreement is [`CredentialMicrochip::Unreadable`] naming both paths — a
+/// failure to read, never a silent pick and never a mismatch attributed to the pet.
 pub fn credential_microchip(doc: &WrappedDoc) -> CredentialMicrochip {
     let withheld_leaves = doc.privacy.obfuscated.len();
-    let Some((_, packed)) = flatten_data(&doc.data)
-        .into_iter()
-        .find(|(kp, _)| kp == MICROCHIP_KEY_PATH)
-    else {
-        return CredentialMicrochip::Absent { withheld_leaves };
-    };
-    match parse_packed(&packed) {
-        Ok((_, _, value)) => {
-            let v = value.trim();
-            if v.is_empty() {
-                // A leaf that is present and blank is not the same as no leaf: the issuer wrote
-                // something we cannot compare, which is a failure to read rather than an absence.
-                CredentialMicrochip::Unreadable(
-                    "the credential's microchip leaf is empty".to_string(),
-                )
-            } else {
-                CredentialMicrochip::Present(v.to_string())
-            }
+    let flat = flatten_data(&doc.data);
+
+    let recognised: Vec<(String, String)> = flat
+        .iter()
+        .filter(|(kp, _)| is_recognised(kp))
+        .cloned()
+        .collect();
+
+    if recognised.is_empty() {
+        // Only once NO recognised leaf exists does the shape detector get a say — a credential we
+        // CAN read is never reported as one we cannot.
+        let mut unrecognised: Vec<String> = flat
+            .into_iter()
+            .map(|(kp, _)| kp)
+            .filter(|kp| is_microchip_shaped(kp))
+            .collect();
+        if !unrecognised.is_empty() {
+            unrecognised.sort();
+            unrecognised.dedup();
+            return CredentialMicrochip::UnrecognisedKeyPath(unrecognised);
         }
-        Err(e) => CredentialMicrochip::Unreadable(format!(
-            "the credential's microchip leaf could not be decoded: {e}"
-        )),
+        return CredentialMicrochip::Absent { withheld_leaves };
     }
+
+    let mut seen: Vec<(String, String)> = Vec::with_capacity(recognised.len());
+    for (kp, packed) in recognised {
+        let value = match parse_packed(&packed) {
+            Ok((_, _, v)) => v,
+            Err(e) => {
+                return CredentialMicrochip::Unreadable(format!(
+                    "the credential's microchip leaf at {kp} could not be decoded: {e}"
+                ))
+            }
+        };
+        let v = value.trim();
+        if v.is_empty() {
+            // A leaf that is present and blank is not the same as no leaf: the issuer wrote
+            // something we cannot compare, which is a failure to read rather than an absence.
+            return CredentialMicrochip::Unreadable(format!(
+                "the credential's microchip leaf at {kp} is empty"
+            ));
+        }
+        seen.push((kp, v.to_string()));
+    }
+    let (first_path, first_value) = &seen[0];
+    if let Some((other_path, other_value)) = seen.iter().find(|(_, v)| v != first_value) {
+        return CredentialMicrochip::Unreadable(format!(
+            "the credential carries two different microchips ({first_path} says {first_value}, \
+             {other_path} says {other_value}), so which one describes the animal is unknown"
+        ));
+    }
+    CredentialMicrochip::Present(first_value.clone())
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -237,12 +360,21 @@ pub enum MicrochipCheck {
     Mismatch { pet: String, credential: String },
     /// The check did not run. See [`NotComparable`].
     NotComparable(NotComparable),
+    /// The check COULD NOT RUN: the credential carries microchip-shaped data at key path(s) this
+    /// build does not recognise, so the field it exists to compare was never read.
+    ///
+    /// Its OWN state, never a [`NotComparable`] reason — see the module header. That separation is
+    /// the whole remedy: folded in, this reads as the ordinary unchipped animal, which is
+    /// indistinguishable from success and is exactly how an inert check ships unnoticed.
+    ///
+    /// It does NOT refuse. It is evidence that our reader is wrong, not evidence about the animal.
+    UnrecognisedCredentialLeaf { key_paths: Vec<String> },
 }
 
 impl MicrochipCheck {
-    /// Whether a write carrying this verdict must be refused. ONLY a mismatch refuses; every
-    /// `NotComparable` state passes through, because a check that could not run is not a failure of
-    /// the thing being checked.
+    /// Whether a write carrying this verdict must be refused. ONLY a mismatch refuses; every other
+    /// state passes through, because a check that could not run is not a failure of the thing being
+    /// checked — least of all when what could not run is our own reader.
     pub fn refuses(&self) -> bool {
         matches!(self, Self::Mismatch { .. })
     }
@@ -252,7 +384,19 @@ impl MicrochipCheck {
             Self::Matched(_) => "matched",
             Self::Mismatch { .. } => "mismatch",
             Self::NotComparable(_) => "notComparable",
+            Self::UnrecognisedCredentialLeaf { .. } => "unrecognisedCredentialLeaf",
         }
+    }
+
+    /// The sentence for [`Self::UnrecognisedCredentialLeaf`], naming every path it found.
+    fn unrecognised_detail(key_paths: &[String]) -> String {
+        format!(
+            "The microchip could NOT be checked: this credential carries microchip data at {}, \
+             which this system does not know how to read, so nothing was compared. This is a defect \
+             in this system's reader, not a statement about the animal or the credential — report it \
+             so the key path can be added.",
+            key_paths.join(", ")
+        )
     }
 
     /// The operator-facing sentence for the refusal, naming BOTH values.
@@ -294,7 +438,38 @@ impl MicrochipCheck {
                 "isFailure": r.is_failure(),
                 "detail": r.detail(),
             }),
+            // Deliberately carries NO `reason`/`isFailure` pair: those belong to `notComparable`,
+            // and giving this state their shape is how a client's fallback branch would quietly
+            // absorb it back into "nothing to compare".
+            Self::UnrecognisedCredentialLeaf { key_paths } => json!({
+                "state": "unrecognisedCredentialLeaf",
+                "keyPaths": key_paths,
+                "detail": Self::unrecognised_detail(key_paths),
+            }),
         }
+    }
+}
+
+/// `Some(_)` when the CREDENTIAL alone makes the check impossible to run, whatever the pet side says.
+///
+/// Today that is exactly the unrecognised-key-path case. It is a separate function, and every caller
+/// that decides a verdict routes through it, because the loud state has to OUTRANK every pet-side
+/// fact: the commonest of those is "this pet has no microchip on file", so a reader bug reached
+/// through an unchipped pet — or through a tag no pet is linked to — would land back on the quiet
+/// benign answer this state exists to escape.
+///
+/// This function's `Some` set and [`compare`]'s `unreachable!` arm MUST move together: `compare`
+/// relies on every variant answered here being intercepted before its own match, and the compiler
+/// cannot check that. A new [`CredentialMicrochip`] variant routed through here without the matching
+/// arm turns a state into a panic.
+pub fn unrunnable(credential: &CredentialMicrochip) -> Option<MicrochipCheck> {
+    match credential {
+        CredentialMicrochip::UnrecognisedKeyPath(paths) => {
+            Some(MicrochipCheck::UnrecognisedCredentialLeaf {
+                key_paths: paths.clone(),
+            })
+        }
+        _ => None,
     }
 }
 
@@ -310,11 +485,17 @@ impl MicrochipCheck {
 /// find the chip number would be sending them on an errand that cannot succeed. Only once the
 /// credential is known to carry one does a missing pet-side code become the actionable answer.
 pub fn compare(pet: Option<&str>, credential: &CredentialMicrochip) -> MicrochipCheck {
+    // BEFORE anything pet-side, so an unchipped pet cannot camouflage a reader that failed to find a
+    // microchip the credential is carrying. See [`unrunnable`].
+    if let Some(loud) = unrunnable(credential) {
+        return loud;
+    }
     let pet_code = pet.map(str::trim).filter(|s| !s.is_empty());
     let credential_code = match credential {
         CredentialMicrochip::Unreadable(e) => {
             return MicrochipCheck::NotComparable(NotComparable::CredentialUnreadable(e.clone()))
         }
+        CredentialMicrochip::UnrecognisedKeyPath(_) => unreachable!("handled by `unrunnable` above"),
         CredentialMicrochip::Absent { withheld_leaves } => {
             return MicrochipCheck::NotComparable(NotComparable::CredentialHasNoMicrochip {
                 withheld_leaves: *withheld_leaves,
@@ -406,15 +587,254 @@ mod tests {
         )
     }
 
-    // ---- the credential side ----
+    // ---- the four REAL emitter shapes ----
+    //
+    // Reading one exact key path made this check inert on every real credential. These are the four
+    // shapes the fleet actually emits, each named for its emitter — the end-to-end counterparts live
+    // in `tests/microchip_binding.rs`.
 
     #[test]
-    fn reads_the_microchip_leaf_out_of_the_packed_scalar() {
+    fn the_vet_portals_top_level_leaf_is_read() {
+        // `recordTypes.ts` declares `path: "microchip.code"` with NO prefix, `buildFieldsObject`
+        // nests from the ROOT, and `build_vc` relocates nothing — so this leaf is a SIBLING of
+        // `credentialSubject`, not a child. Narrowing the matcher back to the exact nested path
+        // makes this read as a credential with no microchip at all.
+        let d = doc(
+            json!({
+                "credentialSubject": { "dogTagId": "aaaa:2:4" },
+                "microchip": {
+                    "code": "bbbb:5:985141006580319",
+                    "standard": "cccc:2:ISO_11784_11785",
+                    "implantDate": "dddd:2:2023-10-01",
+                },
+                "vaccinationDate": "eeee:2:2026-01-11",
+            }),
+            vec![],
+        );
+        assert_eq!(
+            credential_microchip(&d),
+            CredentialMicrochip::Present("985141006580319".into())
+        );
+    }
+
+    #[test]
+    fn the_schema_conformant_nested_leaf_is_read() {
         assert_eq!(
             credential_microchip(&chipped("985141006580319")),
             CredentialMicrochip::Present("985141006580319".into())
         );
     }
+
+    #[test]
+    fn the_government_eu_health_cert_leaf_is_read() {
+        // `credentialSubject.microchipNumber` — a different leaf NAME under a different parent.
+        let d = doc(
+            json!({
+                "credentialSubject": {
+                    "dogTagId": "aaaa:2:4",
+                    "species": "bbbb:2:dog",
+                    "microchipNumber": "cccc:5:985141006580319",
+                }
+            }),
+            vec![],
+        );
+        assert_eq!(
+            credential_microchip(&d),
+            CredentialMicrochip::Present("985141006580319".into())
+        );
+    }
+
+    #[test]
+    fn the_government_travel_clearance_leaf_is_read_from_section_b() {
+        // `credentialSubject.animal.microchipNumber`, one level deeper again.
+        let d = doc(
+            json!({
+                "credentialSubject": {
+                    "dogTagId": "aaaa:2:4",
+                    "animal": { "name": "bbbb:2:Blaze", "microchipNumber": "cccc:5:985141006580319" },
+                }
+            }),
+            vec![],
+        );
+        assert_eq!(
+            credential_microchip(&d),
+            CredentialMicrochip::Present("985141006580319".into())
+        );
+    }
+
+    #[test]
+    fn matching_is_on_whole_segments_so_a_different_leaf_cannot_masquerade() {
+        // `str::ends_with` would make this match `microchipNumber` and compare the animal against a
+        // RETIRED chip — a refusal on evidence about a different implant.
+        let d = doc(
+            json!({
+                "credentialSubject": {
+                    "dogTagId": "aaaa:2:4",
+                    "previousMicrochipNumber": "bbbb:5:900000000000001",
+                }
+            }),
+            vec![],
+        );
+        // Not read as the chip; reported as microchip-SHAPED but unreadable rather than silently
+        // absent, which is the point of the loud state.
+        assert_eq!(
+            credential_microchip(&d),
+            CredentialMicrochip::UnrecognisedKeyPath(vec![
+                "credentialSubject.previousMicrochipNumber".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn two_recognised_leaves_that_disagree_are_a_read_failure_not_an_arbitrary_pick() {
+        // Widening to a suffix set makes it possible for one document to match twice. Taking
+        // whichever `flatten_data` emitted first would decide a REFUSAL on arbitrary evidence.
+        let d = doc(
+            json!({
+                "credentialSubject": {
+                    "dogTagId": "aaaa:2:4",
+                    "microchipNumber": "bbbb:5:985141006580319",
+                    "animal": { "microchipNumber": "cccc:5:900000000000001" },
+                }
+            }),
+            vec![],
+        );
+        let v = credential_microchip(&d);
+        assert!(matches!(v, CredentialMicrochip::Unreadable(_)), "{v:?}");
+        // ...and it does not become a mismatch attributed to the pet.
+        assert!(!compare(Some("985141006580319"), &v).refuses());
+    }
+
+    #[test]
+    fn two_recognised_leaves_that_agree_are_simply_the_code() {
+        let d = doc(
+            json!({
+                "credentialSubject": {
+                    "dogTagId": "aaaa:2:4",
+                    "microchipNumber": "bbbb:5:985141006580319",
+                    "animal": { "microchipNumber": "cccc:5:985141006580319" },
+                }
+            }),
+            vec![],
+        );
+        assert_eq!(
+            credential_microchip(&d),
+            CredentialMicrochip::Present("985141006580319".into())
+        );
+    }
+
+    // ---- the LOUD state: a microchip we cannot READ is not a microchip that is not there ----
+
+    #[test]
+    fn a_microchip_shaped_leaf_we_do_not_recognise_is_its_own_state_and_names_the_path() {
+        let d = doc(
+            json!({
+                "credentialSubject": {
+                    "dogTagId": "aaaa:2:4",
+                    "chipDetails": { "microchipIdentifier": "bbbb:5:985141006580319" },
+                }
+            }),
+            vec![],
+        );
+        assert_eq!(
+            credential_microchip(&d),
+            CredentialMicrochip::UnrecognisedKeyPath(vec![
+                "credentialSubject.chipDetails.microchipIdentifier".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn the_loud_state_outranks_every_pet_side_fact_and_never_refuses() {
+        // Absent-microchip is the commonest state in the product, so if it could stand in front of
+        // the loud state the camouflage that let this check ship inert would come straight back.
+        let c = CredentialMicrochip::UnrecognisedKeyPath(vec!["credentialSubject.microchipRef".into()]);
+        for pet in [None, Some("985141006580319"), Some("900000000000001"), Some("  ")] {
+            let v = compare(pet, &c);
+            assert_eq!(
+                v,
+                MicrochipCheck::UnrecognisedCredentialLeaf {
+                    key_paths: vec!["credentialSubject.microchipRef".into()]
+                },
+                "pet={pet:?}"
+            );
+            assert!(!v.refuses(), "a reader defect is not evidence about the animal");
+        }
+    }
+
+    #[test]
+    fn the_loud_state_never_borrows_the_not_comparable_shape_or_its_wording() {
+        // Folded into `notComparable` under any reason, this reads as an ordinary unchipped animal —
+        // which is indistinguishable from success and is exactly how an inert check ships unnoticed.
+        let v = MicrochipCheck::UnrecognisedCredentialLeaf {
+            key_paths: vec!["credentialSubject.chipDetails.microchipIdentifier".into()],
+        };
+        let j = v.to_json();
+        assert_eq!(v.wire_state(), "unrecognisedCredentialLeaf");
+        assert_eq!(j["state"], json!("unrecognisedCredentialLeaf"));
+        assert!(j["reason"].is_null(), "{j}");
+        assert!(j["isFailure"].is_null(), "{j}");
+        assert_eq!(
+            j["keyPaths"],
+            json!(["credentialSubject.chipDetails.microchipIdentifier"])
+        );
+        let detail = j["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("credentialSubject.chipDetails.microchipIdentifier"),
+            "the path is the remedy and must be named: {detail}"
+        );
+        let lower = detail.to_lowercase();
+        assert!(
+            !lower.contains("nothing to compare"),
+            "that is the unchipped animal's sentence, and it reads as success: {detail}"
+        );
+        assert!(
+            lower.contains("not be checked") || lower.contains("could not"),
+            "it must say the check did not RUN: {detail}"
+        );
+    }
+
+    #[test]
+    fn a_chip_container_with_no_code_is_absent_not_loud() {
+        // The detector's false-positive guard, and the reason it reads the FINAL segment only. The
+        // vet schema's `standard` and `implantDate` are real, common leaves that are not codes, so
+        // flagging them would fire the loud state on ordinary unchipped animals.
+        let d = doc(
+            json!({
+                "credentialSubject": {
+                    "dogTagId": "aaaa:2:4",
+                    "microchip": { "standard": "bbbb:2:ISO_11784_11785", "implantDate": "cccc:2:2023-10-01" },
+                }
+            }),
+            vec![],
+        );
+        assert_eq!(
+            credential_microchip(&d),
+            CredentialMicrochip::Absent { withheld_leaves: 0 }
+        );
+    }
+
+    #[test]
+    fn a_recognised_leaf_wins_over_an_unrecognised_one() {
+        // A credential we CAN read is never reported as one we cannot: the loud state is for the
+        // case where nothing recognised exists at all.
+        let d = doc(
+            json!({
+                "credentialSubject": {
+                    "dogTagId": "aaaa:2:4",
+                    "microchipNumber": "bbbb:5:985141006580319",
+                    "legacyMicrochipRef": "cccc:2:old-scanner-dump",
+                }
+            }),
+            vec![],
+        );
+        assert_eq!(
+            credential_microchip(&d),
+            CredentialMicrochip::Present("985141006580319".into())
+        );
+    }
+
+    // ---- the credential side ----
 
     #[test]
     fn a_value_containing_colons_survives_the_packed_split() {
