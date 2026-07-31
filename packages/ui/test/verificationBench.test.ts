@@ -20,7 +20,10 @@ import {
   type BenchCheckId,
   type BenchReport,
   type DomainClaimReader,
+  type GrantHistoryReader,
+  type IssuerAuthorityReader,
 } from "../src/wallet/verificationBench";
+import type { LogPoint, WhitelistGrantEvent } from "../src/wallet/contracts";
 import {
   BENCH_MUTATIONS,
   expireValidityWindow,
@@ -41,6 +44,9 @@ const DOMAIN_REGISTRY = "0x00000000000000000000000000000000000d0a17";
 const VACCINATION_KEY = recordTypeKey("VACCINATION");
 const NOW = 1_700_000_000;
 const TODAY = "2023-11-14";
+/** Where the genuine baseline anchors its root, and where the signer's grant was recorded. */
+const ISSUED_AT_LOG = { blockNumber: 900_000n, logIndex: 4 };
+const GRANTED_AT_LOG = { blockNumber: 800_000n, logIndex: 1 };
 
 const ISSUER: IssuerMeta = {
   name: "Seaport Animal Hospital",
@@ -123,6 +129,13 @@ const asRecord = (d: WrappedDoc | Record<string, unknown>) => d as unknown as Re
 
 // ── the address-keyed fake chain ────────────────────────────────────────────────────────────────
 
+/** Every read the bench can make, including the two `eth_getLogs` it performs on its own account. */
+type FailableRead =
+  | keyof IssuerChainReader
+  | "issuerRegistry"
+  | "rootIssuedLog"
+  | "whitelistHistory";
+
 interface ChainCfg {
   /** factory rootIssuer index: root -> clone. Absent == the factory has NO record of that root. */
   rootIssuers?: Record<string, string>;
@@ -136,10 +149,16 @@ interface ChainCfg {
   issuedBy?: Record<string, string>;
   /** contract -> its immutable recordType(). */
   recordTypes?: Record<string, string>;
-  /** whitelisted "key|signer" pairs. */
+  /** whitelisted "key|signer" pairs - the CURRENT state, as `isWhitelistedFor` answers it. */
   whitelist?: Set<string>;
+  /** contract -> the registry its own `onlyWhitelisted` consults. Absent == the zero address. */
+  issuerRegistries?: Record<string, string>;
+  /** (contract|root) -> where `RootIssued` was emitted. Absent == no anchoring log. */
+  rootIssuedLogs?: Record<string, LogPoint>;
+  /** ("key|signer") -> the registry's grant history, oldest first. Absent == none ever recorded. */
+  grants?: Record<string, WhitelistGrantEvent[]>;
   /** Read kinds forced to fail, modelling a transient RPC error. */
-  failing?: Set<keyof IssuerChainReader>;
+  failing?: Set<FailableRead>;
 }
 
 const k = (a: string, b: string) => `${a.toLowerCase()}|${b.toLowerCase()}`;
@@ -159,6 +178,12 @@ function genuineChain(doc: WrappedDoc): ChainCfg {
     issuedBy: { [k(CLONE, root)]: SIGNER },
     recordTypes: { [CLONE.toLowerCase()]: VACCINATION_KEY },
     whitelist: new Set([k(VACCINATION_KEY, SIGNER)]),
+    // The clone is governed by the registry this client is configured with - the matched pair a
+    // factory guarantees, since `registry` is written once from the factory's own immutable.
+    issuerRegistries: { [CLONE.toLowerCase()]: DEPLOYED_ADDRESSES.IssuerRegistry },
+    // ...and the log agrees with the getters: granted at 800_000, anchored at 900_000.
+    rootIssuedLogs: { [k(CLONE, root)]: ISSUED_AT_LOG },
+    grants: { [k(VACCINATION_KEY, SIGNER)]: [{ kind: "whitelisted", ...GRANTED_AT_LOG }] },
   };
 }
 
@@ -210,6 +235,30 @@ function fakeReader(cfg: ChainCfg): IssuerChainReader {
   };
 }
 
+/** `DogTagIssuer.registry()` - which authority actually gates the clone's `onlyWhitelisted`. */
+function fakeAuthorityReader(cfg: ChainCfg): IssuerAuthorityReader {
+  return {
+    async registryOf(cloneAddr) {
+      if (cfg.failing?.has("issuerRegistry")) throw new Error("registry read failed");
+      return cfg.issuerRegistries?.[cloneAddr.toLowerCase()] ?? ZERO_ADDR;
+    },
+  };
+}
+
+/** The two `eth_getLogs` the bench makes on its own account, keyed exactly as the real ones are. */
+function fakeGrantHistoryReader(cfg: ChainCfg): GrantHistoryReader {
+  return {
+    async rootIssuedAt(cloneAddr, root) {
+      if (cfg.failing?.has("rootIssuedLog")) throw new Error("RootIssued log read failed");
+      return cfg.rootIssuedLogs?.[k(cloneAddr, root)] ?? null;
+    },
+    async grants(_registryAddr, key, signer) {
+      if (cfg.failing?.has("whitelistHistory")) throw new Error("grant history read failed");
+      return cfg.grants?.[k(key, signer)] ?? [];
+    },
+  };
+}
+
 const domainReader = (domain: string | null): DomainClaimReader => ({
   async claim() {
     return domain === null ? null : { domain, updatedAtBlock: 4242n };
@@ -222,6 +271,14 @@ const failingDomainReader: DomainClaimReader = {
   },
 };
 
+/**
+ * Every reader is injected HERE, including the two log readers.
+ *
+ * Not a convenience: `runVerificationBench` defaults each reader to a live viem one, so a suite that
+ * injected only `reader` would send real `eth_call`/`eth_getLogs` at ROAX from a unit test - slow,
+ * flaky, and (for a bench whose whole subject is what a chain answered) capable of going green against
+ * state nobody in this file wrote.
+ */
 async function bench(
   doc: WrappedDoc | Record<string, unknown>,
   cfg: ChainCfg,
@@ -230,6 +287,8 @@ async function bench(
   return runVerificationBench({
     wrappedDoc: asRecord(doc),
     reader: fakeReader(cfg),
+    authorityReader: fakeAuthorityReader(cfg),
+    grantHistoryReader: fakeGrantHistoryReader(cfg),
     blockNumber: 900_100n,
     today: TODAY,
     now: NOW,
@@ -809,6 +868,11 @@ describe("which rows the verifier's verdict folds in", () => {
       "not-expired": false,
       "issuer-domain-claim": false,
       "issuer-domain-dns": false,
+      // Observations about the verdict's own inputs. Both must stay `false`: the verifier's formula
+      // is `integrity && onchain && issuerWhitelisted === true` and this module copies it rather than
+      // competing with it, so a row promoted to gating here would be the bench inventing a verdict.
+      "registry-governs-issuer": false,
+      "whitelisted-at-issuance": false,
     });
   });
 

@@ -8,10 +8,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const readContract = vi.fn(async () => "0x0000000000000000000000000000000000000001");
+const getLogs = vi.fn(async () => [] as unknown[]);
 
 vi.mock("viem", async (importActual) => {
   const actual = await importActual<typeof import("viem")>();
-  return { ...actual, createPublicClient: () => ({ readContract }) };
+  return { ...actual, createPublicClient: () => ({ readContract, getLogs }) };
 });
 
 // Imported AFTER the mock is registered so the readers bind to the stubbed client.
@@ -24,6 +25,10 @@ const {
   recordTypeOf,
   isWhitelistedFor,
   issuerDomainClaimOf,
+  issuerRegistryOf,
+  rootIssuedAtLog,
+  whitelistGrantHistory,
+  sortLogPoints,
 } = await import("../src/wallet/contracts");
 const { roaxIssuerChainReader } = await import("../src/wallet/verifyCredential");
 
@@ -52,6 +57,7 @@ describe("every reader forwards blockNumber to the eth_call", () => {
       (blockNumber) =>
         isWhitelistedFor({ registryAddr: ADDR, recordTypeKey: ROOT, address: ADDR, rpcUrl: url(), blockNumber }),
     ],
+    ["issuerRegistryOf", (blockNumber) => issuerRegistryOf({ issuerAddr: ADDR, rpcUrl: url(), blockNumber })],
   ];
 
   for (const [name, call] of cases) {
@@ -88,6 +94,83 @@ describe("every reader forwards blockNumber to the eth_call", () => {
     expect(
       await issuerDomainClaimOf({ domainRegistryAddr: ADDR, cloneAddr: ADDR, rpcUrl: url() }),
     ).toBeNull();
+  });
+});
+
+/**
+ * The two LOG readers bound the same way, via `toBlock`.
+ *
+ * They answer the historical whitelist question, so an unbounded upper end would let a grant recorded
+ * after the report's block leak into an answer the report claims to have pinned - a verdict that
+ * cannot be reproduced at the height it names.
+ */
+describe("the log readers bound their range to the report's block", () => {
+  const lastLogCall = () => getLogs.mock.calls.at(-1)?.[0] as unknown as Record<string, unknown>;
+  beforeEach(() => getLogs.mockClear());
+
+  it("rootIssuedAtLog pins toBlock", async () => {
+    await rootIssuedAtLog({ issuerAddr: ADDR, root: ROOT, rpcUrl: url(), toBlock: AT });
+    expect(lastLogCall()?.toBlock).toBe(AT);
+    expect(lastLogCall()?.fromBlock).toBe(0n);
+  });
+
+  it("rootIssuedAtLog reads to latest when given no bound", async () => {
+    await rootIssuedAtLog({ issuerAddr: ADDR, root: ROOT, rpcUrl: url() });
+    // Omitted must stay OMITTED rather than becoming an explicit `undefined` viem would forward.
+    expect("toBlock" in (lastLogCall() ?? {})).toBe(false);
+  });
+
+  it("whitelistGrantHistory pins toBlock on BOTH event queries", async () => {
+    await whitelistGrantHistory({
+      registryAddr: ADDR,
+      recordTypeKey: ROOT,
+      signer: ADDR,
+      rpcUrl: url(),
+      toBlock: AT,
+    });
+    // Whitelisted and Delisted are two separate `eth_getLogs`; a bound on only one would silently
+    // admit a delisting from beyond the report's own height.
+    expect(getLogs.mock.calls.length).toBe(2);
+    for (const [call] of getLogs.mock.calls) {
+      expect((call as unknown as Record<string, unknown>).toBlock).toBe(AT);
+    }
+  });
+
+  it("whitelistGrantHistory asks about exactly the (recordType, signer) pair, indexed", async () => {
+    await whitelistGrantHistory({ registryAddr: ADDR, recordTypeKey: ROOT, signer: ADDR, rpcUrl: url() });
+    for (const [call] of getLogs.mock.calls) {
+      const c = call as unknown as Record<string, unknown>;
+      expect(c.address).toBe(ADDR);
+      expect(c.args).toEqual({ recordType: ROOT, signer: ADDR });
+    }
+  });
+});
+
+describe("sortLogPoints", () => {
+  it("orders by block, then by logIndex WITHIN a block", () => {
+    // `logIndex` is block-scoped, so it is only a tiebreak - comparing it across blocks would put a
+    // later block's first log before an earlier block's second.
+    const points = [
+      { blockNumber: 5n, logIndex: 1 },
+      { blockNumber: 3n, logIndex: 9 },
+      { blockNumber: 5n, logIndex: 0 },
+      { blockNumber: 3n, logIndex: 2 },
+    ];
+    expect(sortLogPoints(points)).toEqual([
+      { blockNumber: 3n, logIndex: 2 },
+      { blockNumber: 3n, logIndex: 9 },
+      { blockNumber: 5n, logIndex: 0 },
+      { blockNumber: 5n, logIndex: 1 },
+    ]);
+  });
+
+  it("does not mutate its input", () => {
+    const points = [
+      { blockNumber: 9n, logIndex: 0 },
+      { blockNumber: 1n, logIndex: 0 },
+    ];
+    sortLogPoints(points);
+    expect(points[0]?.blockNumber).toBe(9n);
   });
 });
 

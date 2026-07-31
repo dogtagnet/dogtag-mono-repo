@@ -6,7 +6,16 @@ import { toHex32 } from "@dogtag/standard/field";
 import { flattenData, parsePacked } from "@dogtag/standard/wrap";
 import type { WrappedDoc } from "@dogtag/standard/types";
 import type { VerifyCredentialResp } from "../api/types";
-import { DEPLOYED_ADDRESSES, ZERO_ADDRESS, issuerDomainClaimOf } from "./contracts";
+import {
+  DEPLOYED_ADDRESSES,
+  ZERO_ADDRESS,
+  issuerDomainClaimOf,
+  issuerRegistryOf,
+  rootIssuedAtLog,
+  whitelistGrantHistory,
+  type LogPoint,
+  type WhitelistGrantEvent,
+} from "./contracts";
 import {
   roaxIssuerChainReader,
   verifyCredentialOnchain,
@@ -80,7 +89,9 @@ export type BenchCheckId =
   | "integrity"
   | "issuer-descends-from-factory"
   | "document-names-issuing-contract"
+  | "registry-governs-issuer"
   | "issuer-whitelisted"
+  | "whitelisted-at-issuance"
   | "anchored-on-chain"
   | "not-revoked"
   | "not-expired"
@@ -112,6 +123,20 @@ const GATES_VERDICT: Record<BenchCheckId, boolean> = {
   "not-expired": false,
   "issuer-domain-claim": false,
   "issuer-domain-dns": false,
+  // Both of these are OBSERVATIONS ABOUT THE VERDICT'S OWN INPUTS rather than further tests of the
+  // credential, so neither gates - and marking them advisory is not a hedge, it is the finding.
+  //
+  // `registry-governs-issuer` asks whether the registry the whitelist row consulted is the one that
+  // actually gates the issuing contract. A `fail` there means the whitelist row's answer - pass OR
+  // fail - was about the wrong authority. It cannot gate, because a misconfiguration on OUR side is
+  // not evidence about a credential; that is the same rule `FACTORY_ADDR` already follows.
+  //
+  // `whitelisted-at-issuance` asks the question `isWhitelistedFor` cannot: was the signer authorised
+  // WHEN THE ROOT WAS ANCHORED. It does not gate because the verifier's formula does not fold it, and
+  // this module copies that formula rather than competing with it. The gap between the two rows is
+  // reported, never silently reconciled - see {@link whitelistedAtIssuanceCheck}.
+  "registry-governs-issuer": false,
+  "whitelisted-at-issuance": false,
 };
 
 /** One thing that was read, and from where. Rendered verbatim so a reader can reproduce it by hand. */
@@ -144,7 +169,12 @@ export interface BenchCheck {
 
 /** One observed chain read. `failed` and "absent from this list entirely" are different facts. */
 export interface ChainRead {
-  method: keyof IssuerChainReader | "issuerDomainClaim";
+  method:
+    | keyof IssuerChainReader
+    | "issuerDomainClaim"
+    | "issuerRegistry"
+    | "rootIssuedLog"
+    | "whitelistHistory";
   /** The contract the question was actually put to. */
   contract: string;
   args: string[];
@@ -233,6 +263,31 @@ export interface DomainClaimReader {
   ): Promise<{ domain: string; updatedAtBlock: bigint } | null>;
 }
 
+/** Reads the registry a clone's own `onlyWhitelisted` consults. See {@link issuerRegistryOf}. */
+export interface IssuerAuthorityReader {
+  registryOf(cloneAddr: string): Promise<string>;
+}
+
+/**
+ * The log reads behind {@link whitelistedAtIssuanceCheck}.
+ *
+ * Separate from {@link IssuerChainReader} deliberately: that interface is the VERIFIER's, and every
+ * method on it is a `view` call the verifier's own formula consumes. These are `eth_getLogs`, made by
+ * the bench on its own account to answer a question the verifier does not ask. Widening the verifier's
+ * interface for a bench row would oblige every one of its implementors - including the mobile and
+ * server ports - to serve a read none of them makes.
+ */
+export interface GrantHistoryReader {
+  /** Where `root` was anchored on `cloneAddr`, or `null` when that clone emitted no `RootIssued`. */
+  rootIssuedAt(cloneAddr: string, root: string): Promise<LogPoint | null>;
+  /** Every `whitelistFor`/`delistFor` for this pair, oldest first. `[]` means none was ever recorded. */
+  grants(
+    registryAddr: string,
+    recordTypeKey: string,
+    signer: string,
+  ): Promise<WhitelistGrantEvent[]>;
+}
+
 export interface BenchInput
   extends Pick<
     VerifyCredentialOnchainArgs,
@@ -248,6 +303,10 @@ export interface BenchInput
   domainRegistryAddr?: string;
   /** Injected domain reader (tests); defaults to a viem read pinned to `blockNumber`. */
   domainClaimReader?: DomainClaimReader;
+  /** Injected `DogTagIssuer.registry()` reader (tests); defaults to a viem read pinned to `blockNumber`. */
+  authorityReader?: IssuerAuthorityReader;
+  /** Injected log reader (tests); defaults to viem `eth_getLogs` bounded above by `blockNumber`. */
+  grantHistoryReader?: GrantHistoryReader;
   /**
    * The block to pin every on-chain read to. Omit when the head could not be read: the reads then use
    * `latest` and the report says it is unanchored, rather than naming a block it never saw.
@@ -534,9 +593,11 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
     expiryCheck(doc, today),
   ];
 
-  checks.push(
-    ...(await domainChecks(input, reads, claimedDomain, blockLine)),
-  );
+  // Sequential, not `Promise.all`: each pushes onto the shared `reads` log, and that log's ORDER is
+  // what the evidence lines and the reason strings are read back out of.
+  checks.push(await registryGovernsIssuerCheck(input, reads, registryAddr, blockLine));
+  checks.push(await whitelistedAtIssuanceCheck(input, reads, response, registryAddr));
+  checks.push(...(await domainChecks(input, reads, claimedDomain, blockLine)));
 
   return {
     // Stamped centrally so a newly added check cannot silently omit it; `GATES_VERDICT` is exhaustive
@@ -820,6 +881,351 @@ function whitelistCheck(
       (verifierError ? `The verifier stopped before this check: ${verifierError}` : "The check was not reached."),
     evidence,
   };
+}
+
+/**
+ * Is the registry the whitelist row consulted the one that actually gates this issuing contract?
+ *
+ * `IssuerRegistry._wl` is a plain per-contract mapping and `DogTagIssuer.onlyWhitelisted` consults the
+ * ONE registry stored in the clone's own `registry` slot. So a whitelist answer sourced from a
+ * different `IssuerRegistry` instance is not a weaker answer to the right question - it is a confident
+ * answer to a different one, in EITHER direction: a `true` from a foreign registry passes a signer this
+ * clone never authorised, and a `false` from one refuses a signer it did.
+ *
+ * This is the only place in the bench where a green row above can be void, which is why it is stated as
+ * its own row rather than folded into the whitelist finding. It does NOT gate: a registry/factory pair
+ * misconfigured on this client says nothing about the credential, and refusing a credential over our own
+ * configuration is the fail-closed mirror of the fail-open bug this surface exists to prevent.
+ *
+ * For a clone resolved through a MATCHED pair this can only pass - `registry` is written once at
+ * `initialize` from the factory's `immutable registry` and has no setter - so a failure here is
+ * diagnostic of the configuration, and the finding says so in those words.
+ */
+async function registryGovernsIssuerCheck(
+  input: BenchInput,
+  reads: ChainRead[],
+  registryAddr: string,
+  blockLine: EvidenceLine,
+): Promise<Omit<BenchCheck, "gatesVerdict">> {
+  const question = "Is the registry we asked about the signer the one that gates this issuing contract?";
+  const askedLine: EvidenceLine = {
+    label: "Registry this client asked",
+    value: registryAddr,
+    source: "this client's own configuration (never the document)",
+  };
+
+  const anchor = lastRead(reads, "rootIssuer");
+  const clone = anchor?.outcome === "ok" && !isZeroAddr(anchor.value) ? anchor.value : undefined;
+  if (!clone) {
+    return {
+      id: "registry-governs-issuer",
+      question,
+      outcome: "could-not-run",
+      finding: "There is no factory-resolved contract whose governing registry could be read.",
+      couldNotRunReason:
+        "The governing registry is read from the contract the FACTORY named. None was resolved, and reading it off the address the document names would let a forged document nominate its own authority.",
+      evidence: [askedLine],
+    };
+  }
+
+  const reader: IssuerAuthorityReader = input.authorityReader ?? {
+    registryOf: (cloneAddr) =>
+      issuerRegistryOf({
+        issuerAddr: cloneAddr,
+        rpcUrl: input.rpcUrl,
+        defaultRpcUrl: input.defaultRpcUrl,
+        blockNumber: input.blockNumber,
+      }),
+  };
+
+  let governing: string;
+  try {
+    governing = await reader.registryOf(clone);
+    reads.push({
+      method: "issuerRegistry",
+      contract: clone,
+      args: [],
+      outcome: "ok",
+      value: governing,
+    });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    reads.push({ method: "issuerRegistry", contract: clone, args: [], outcome: "failed", error });
+    return {
+      id: "registry-governs-issuer",
+      question,
+      outcome: "could-not-run",
+      finding: "The issuing contract's own governing registry could not be read.",
+      couldNotRunReason: `The chain read \`registry\` against ${clone} failed: ${error}`,
+      evidence: [askedLine, blockLine],
+    };
+  }
+
+  const read = lastRead(reads, "issuerRegistry");
+  const governingLine = read
+    ? readEvidence("Registry that gates this contract", read, "DogTagIssuer.registry()")
+    : askedLine;
+  const agrees =
+    !isZeroAddr(governing) && governing.toLowerCase() === registryAddr.toLowerCase();
+
+  if (isZeroAddr(governing) || !governing) {
+    return {
+      id: "registry-governs-issuer",
+      question,
+      outcome: "could-not-run",
+      finding: "The issuing contract names no governing registry.",
+      couldNotRunReason:
+        "`DogTagIssuer.registry()` answered the zero address, which an initialized clone never does. Nothing can be concluded about which authority governs it.",
+      evidence: [governingLine, askedLine, blockLine],
+    };
+  }
+
+  return {
+    id: "registry-governs-issuer",
+    question,
+    outcome: agrees ? "pass" : "fail",
+    finding: agrees
+      ? "The whitelist answer above came from the registry that actually gates this contract."
+      : "MISCONFIGURED: the whitelist answer above came from a registry that does NOT gate this contract, so it is about the wrong authority and neither its pass nor its fail means anything. This is a fault in this client's factory/registry pairing, not a claim about the credential.",
+    evidence: [governingLine, askedLine, blockLine],
+  };
+}
+
+/**
+ * Was that signer authorised AT THE MOMENT THIS ROOT WAS ANCHORED?
+ *
+ * `IssuerRegistry.isWhitelistedFor` - the read the verifier's mandatory pillar makes - answers only
+ * about NOW. The contract states the rule that getter cannot express, in its own source:
+ *
+ *     /// @notice Admin mass-revoke for a compromised signer (delisting is forward-only - §13.3).
+ *     ---  DogTagIssuer.sol:82, above `adminRevoke`
+ *
+ * `adminRevoke` exists precisely BECAUSE a delist does not retroactively invalidate what a signer
+ * already anchored. So a later `delistFor` flips the pillar's answer to `false` on credentials whose
+ * issuance was, and remains, genuine.
+ *
+ * That genuineness is not an assumption: `issue()` is `onlyWhitelisted`, it sets `issuedBy[r] =
+ * msg.sender` in the same call, and `rootIssuer[r]` is write-once and writable only from inside a
+ * clone's `issue()`. So for any root resolvable through the factory, "this signer was authorised at
+ * issuance" is guaranteed by the WRITE path. Read from the logs, this row states that fact; the
+ * pillar's current-state read cannot.
+ *
+ * ## This row is REPORTED, never reconciled
+ *
+ * Where the two disagree the bench says so and stops. It does not overrule the verifier: the pillar's
+ * verdict is shared by five surfaces which CLAUDE.md requires to agree, so changing the formula here
+ * alone would split them. Naming the divergence is the honest output; silently "correcting" it in the
+ * one surface that happens to be a bench would be the worse error.
+ */
+async function whitelistedAtIssuanceCheck(
+  input: BenchInput,
+  reads: ChainRead[],
+  response: VerifyCredentialResp | null,
+  registryAddr: string,
+): Promise<Omit<BenchCheck, "gatesVerdict">> {
+  const question = "Was that signer authorised at the moment this root was anchored?";
+  const unavailable = (finding: string, reason: string, evidence: EvidenceLine[] = []) => ({
+    id: "whitelisted-at-issuance" as const,
+    question,
+    outcome: "could-not-run" as const,
+    finding,
+    couldNotRunReason: reason,
+    evidence,
+  });
+
+  const anchor = lastRead(reads, "rootIssuer");
+  const clone = anchor?.outcome === "ok" && !isZeroAddr(anchor.value) ? anchor.value : undefined;
+  if (!clone) {
+    return unavailable(
+      "There is no factory-resolved contract whose anchoring log could be read.",
+      "The issuance point is read from the contract the FACTORY named. None was resolved, so there is no anchoring event to locate.",
+    );
+  }
+
+  const signerRead = lastRead(reads, "issuedBy");
+  const signer =
+    signerRead?.outcome === "ok" && !isZeroAddr(signerRead.value) ? signerRead.value : undefined;
+  const rtRead = lastRead(reads, "recordType");
+  const recordTypeKeyOnChain =
+    rtRead?.outcome === "ok" && rtRead.value && !/^0x0*$/.test(rtRead.value)
+      ? rtRead.value
+      : undefined;
+  if (!signer || !recordTypeKeyOnChain) {
+    // The verifier refuses a record-type relabel BEFORE it resolves a signer, deliberately - asking
+    // the registry about a document that has already misrepresented its issuer would only launder the
+    // answer. So there is genuinely no signer to ask the grant history about, and saying WHICH of the
+    // two questions was abandoned is more use than the generic "could not resolve the signer".
+    const refusedEarly =
+      !signerRead && !!recordTypeKeyOnChain && response?.fragments.issuerWhitelisted === false;
+    return unavailable(
+      "The signer and record type this question is about could not both be established.",
+      refusedEarly
+        ? "The verifier refused this document before resolving a signer - the record type it claims disagrees with the one the issuing contract declares - so there is no signer whose grant history could be read. The gating whitelist row above owns that refusal."
+        : whitelistUnresolvedReason(reads),
+    );
+  }
+
+  const claimedRoot = response?.root ?? "";
+  if (!claimedRoot) {
+    return unavailable(
+      "No root was established to locate an anchoring event for.",
+      "The verifier produced no response, so there is no claimed root to search the anchoring log for.",
+    );
+  }
+
+  const reader: GrantHistoryReader = input.grantHistoryReader ?? {
+    rootIssuedAt: (cloneAddr, root) =>
+      rootIssuedAtLog({
+        issuerAddr: cloneAddr,
+        root,
+        rpcUrl: input.rpcUrl,
+        defaultRpcUrl: input.defaultRpcUrl,
+        toBlock: input.blockNumber,
+      }),
+    grants: (registry, key, who) =>
+      whitelistGrantHistory({
+        registryAddr: registry,
+        recordTypeKey: key,
+        signer: who,
+        rpcUrl: input.rpcUrl,
+        defaultRpcUrl: input.defaultRpcUrl,
+        toBlock: input.blockNumber,
+      }),
+  };
+
+  let issuedPoint: LogPoint | null;
+  try {
+    issuedPoint = await reader.rootIssuedAt(clone, claimedRoot);
+    reads.push({
+      method: "rootIssuedLog",
+      contract: clone,
+      args: [claimedRoot],
+      outcome: "ok",
+      value: issuedPoint ? formatLogPoint(issuedPoint) : "(no RootIssued log for this root)",
+    });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    reads.push({ method: "rootIssuedLog", contract: clone, args: [claimedRoot], outcome: "failed", error });
+    return unavailable(
+      "The block this root was anchored at could not be established.",
+      `The log read \`RootIssued\` against ${clone} failed: ${error}`,
+    );
+  }
+  if (!issuedPoint) {
+    return unavailable(
+      "This contract emitted no anchoring event for this root.",
+      "Without a `RootIssued` log there is no moment to ask the whitelist history about. Note this is a different fact from the root being unanchored - the anchoring rows above own that answer.",
+      [lastReadEvidence(reads, "rootIssuedLog", "DogTagIssuer.RootIssued(root)", "Anchoring event")],
+    );
+  }
+
+  let history: WhitelistGrantEvent[];
+  try {
+    history = await reader.grants(registryAddr, recordTypeKeyOnChain, signer);
+    reads.push({
+      method: "whitelistHistory",
+      contract: registryAddr,
+      args: [recordTypeKeyOnChain, signer],
+      outcome: "ok",
+      value: history.length
+        ? history.map((h) => `${h.kind}@${formatLogPoint(h)}`).join(", ")
+        : "(no grant was ever recorded for this pair)",
+    });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    reads.push({
+      method: "whitelistHistory",
+      contract: registryAddr,
+      args: [recordTypeKeyOnChain, signer],
+      outcome: "failed",
+      error,
+    });
+    return unavailable(
+      "The registry's grant history could not be read.",
+      `The log read \`Whitelisted\`/\`Delisted\` against ${registryAddr} failed: ${error}`,
+      [lastReadEvidence(reads, "rootIssuedLog", "DogTagIssuer.RootIssued(root)", "Anchored at")],
+    );
+  }
+
+  const evidence = [
+    lastReadEvidence(reads, "rootIssuedLog", "DogTagIssuer.RootIssued(root)", "Anchored at"),
+    lastReadEvidence(
+      reads,
+      "whitelistHistory",
+      "IssuerRegistry.Whitelisted/Delisted(recordType, signer)",
+      "Grant history",
+    ),
+  ];
+
+  // The state as of the anchoring point: the LAST event at or before it. `logIndex` is block-scoped
+  // and therefore comparable across contracts within one block, so a grant and an issuance landing in
+  // the same block are sequenced correctly rather than by an arbitrary tiebreak.
+  const priorEvents = history.filter((h) => compareLogPoints(h, issuedPoint) <= 0);
+  const asOf = priorEvents[priorEvents.length - 1];
+  const authorisedThen = asOf?.kind === "whitelisted";
+  const authorisedNow = response?.fragments.issuerWhitelisted;
+
+  if (!asOf) {
+    return {
+      id: "whitelisted-at-issuance",
+      question,
+      outcome: "fail",
+      finding:
+        "The registry recorded NO grant to this signer for this record type at or before the anchoring block. Nothing in the log authorises this issuance.",
+      evidence,
+    };
+  }
+
+  if (!authorisedThen) {
+    return {
+      id: "whitelisted-at-issuance",
+      question,
+      outcome: "fail",
+      finding:
+        "The signer had been DELISTED before this root was anchored, so it held no authority at issuance. An honest `issue()` cannot pass `onlyWhitelisted` in that state, so this anchoring did not happen the way the document says it did.",
+      evidence,
+    };
+  }
+
+  return {
+    id: "whitelisted-at-issuance",
+    question,
+    outcome: "pass",
+    finding:
+      authorisedNow === false
+        ? "The signer WAS authorised when this root was anchored, and has since been delisted. Delisting is forward-only (DogTagIssuer.sol:82 - `adminRevoke` is the retroactive lever, and it was not used on this root), so the issuance remains genuine even though the gating whitelist row above reads its current-state answer as a failure."
+        : "The signer was authorised when this root was anchored.",
+    evidence,
+  };
+}
+
+/** `block/logIndex`, the ordering key rendered the way the evidence lines quote it. */
+function formatLogPoint(p: LogPoint): string {
+  return `block ${p.blockNumber}, log ${p.logIndex}`;
+}
+
+/** Total order over log points. `logIndex` is block-scoped, so it only breaks ties WITHIN a block. */
+function compareLogPoints(a: LogPoint, b: LogPoint): number {
+  if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
+  return a.logIndex - b.logIndex;
+}
+
+/**
+ * Cite the last read of `method`, or say plainly that it was never made.
+ *
+ * Goes through {@link readEvidence} whenever there IS a read, so the "…on <contract>" citation shape
+ * stays the exclusive property of observed reads - which is what THE INVARIANT's generic test keys on.
+ */
+function lastReadEvidence(
+  reads: ChainRead[],
+  method: ChainRead["method"],
+  call: string,
+  label: string,
+): EvidenceLine {
+  const read = lastRead(reads, method);
+  return read
+    ? readEvidence(label, read, call)
+    : { label, value: "(not read)", source: `no ${method} read was made` };
 }
 
 /** Which missing link left the whitelist pillar indeterminate, stated from the reads actually made. */

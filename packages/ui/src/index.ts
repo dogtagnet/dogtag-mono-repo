@@ -216,12 +216,23 @@ export {
   type CheckOutcome,
   type DomainClaimReader,
   type EvidenceLine,
+  type GrantHistoryReader,
+  type IssuerAuthorityReader,
 } from "./wallet/verificationBench";
 export {
   BENCH_MUTATIONS,
   type BenchMutation,
   type UncaughtBy,
 } from "./wallet/benchMutations";
+// The adversarial catalogue: fraudulent records with scripted chains, each naming the check that must
+// refuse it. Exported so the admin page can RUN it in the browser rather than describing it.
+export {
+  BENCH_SCENARIOS,
+  runBenchScenario,
+  type BenchScenario,
+  type ScenarioBlindSpot,
+  type ScenarioWorld,
+} from "./wallet/benchScenarios";
 
 // domain components
 export { SigningModeToggle, type SigningModeToggleProps } from "./domain/SigningModeToggle";
