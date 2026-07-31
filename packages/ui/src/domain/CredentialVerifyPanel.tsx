@@ -190,7 +190,10 @@ function CredentialVerifyResult({ result }: { result: VerifyCredentialResp }) {
         <Pillar label="On-chain valid" value={result.fragments.onchain} />
         <Pillar label="Issued" value={result.fragments.issued} />
         <Pillar label="Revoked" value={result.fragments.revoked} invert />
-        <Pillar label="Issuer whitelist" value={result.fragments.issuerWhitelisted} />
+        {/* "at issuance": the pillar reads the governing registry's grant LOG at the anchoring
+            block, not `isWhitelistedFor`. Delisting is forward-only, so a green tile beside a signer
+            an operator knows is delisted today is correct, and the label has to say why. */}
+        <Pillar label="Issuer authorised at issuance" value={result.fragments.issuerWhitelisted} />
       </div>
 
       <dl className="space-y-2 text-sm">

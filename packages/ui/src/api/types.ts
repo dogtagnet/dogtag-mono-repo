@@ -371,19 +371,21 @@ export interface VerifyCredentialResp {
     /**
      * What became of the caller's expected-signer assertion. It may only ever TIGHTEN: `differs` and
      * `unanchoredNotWhitelisted` are definite failures folded into the pillar, while
-     * `unanchoredUnconfirmed` (no clone resolved, but the asserted address DID hold the grant at the
-     * anchoring point) deliberately promotes nothing - holding it does not show that address issued
-     * THIS root. `unanchoredUnresolved` is its own state rather than a fold into the previous one:
-     * both promote nothing, but one says "checked, and it held the capability" and the other says
-     * "the grant history could not be sequenced at all".
+     * `unanchoredUnconfirmed` (no clone resolved, but the asserted address is whitelisted for the
+     * claimed record type) deliberately promotes nothing - being whitelisted does not show that
+     * address issued THIS root.
+     *
+     * This pair is the ONE place the CURRENT-state getter still answers: with no clone resolved there
+     * is no trusted anchoring point to ask the historical question against, and taking one off the
+     * document would let a forgery neutralise the last check standing. See the comment at the vet
+     * handler for the bounded cost.
      */
     expectedSignerState?:
       | "notAsserted"
       | "matched"
       | "differs"
       | "unanchoredNotWhitelisted"
-      | "unanchoredUnconfirmed"
-      | "unanchoredUnresolved";
+      | "unanchoredUnconfirmed";
   };
 }
 export interface VerifySessionStartReq {
