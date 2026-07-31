@@ -368,7 +368,7 @@ fun NearbyScreen(onBack: () -> Unit) {
                     actionError = if (openExternal(context, uri, dial)) {
                         null
                     } else {
-                        "No app could open this contact method."
+                        openFailureMessage(uri)
                     }
                 },
                 modifier = Modifier.weight(1f),
@@ -385,7 +385,7 @@ fun NearbyScreen(onBack: () -> Unit) {
                     actionError = if (openExternal(context, uri, dial)) {
                         null
                     } else {
-                        "No app could open this contact method."
+                        openFailureMessage(uri)
                     }
                 },
                 modifier = Modifier.weight(1f),
@@ -1026,6 +1026,30 @@ private suspend fun loadDirectoryPage(
         DirectoryScope.Contacts -> directory.contacts(query)
     }
 }
+
+/**
+ * Names what could not be opened, because the maps handoff and a contact channel are not the same
+ * failure and a published location is not a contact method.
+ *
+ * This is also the one branch that is actually likely: `tel:`, `mailto:` and `https:` resolve on
+ * essentially any device, while one with no maps app installed resolves no `geo:` intent at all.
+ *
+ * The scheme is the discriminator because the `dial` flag cannot be one - website, Telegram,
+ * WhatsApp and email all pass `false` exactly as the handoff does. `geo:` is what
+ * [NearbyDecision.directionsUri] emits and nothing else on this screen produces: every other action
+ * builds `tel:`, `mailto:`, `https://wa.me/`, `https://t.me/`, or an operator-supplied website
+ * already gated to an `http(s)://` prefix. `NearbyDecisionTest` asserts that exact URI string, so a
+ * change of scheme there fails a test rather than silently misnaming this failure.
+ *
+ * Neither sentence blames the owner or claims the provider published no location: the location is
+ * published and fine, what is missing is an app to show it.
+ */
+private fun openFailureMessage(uri: Uri): String =
+    if (uri.scheme.equals("geo", ignoreCase = true)) {
+        "No app on this device can open a map."
+    } else {
+        "No app could open this contact method."
+    }
 
 private fun openExternal(context: Context, uri: Uri, dial: Boolean): Boolean {
     val action = if (dial) Intent.ACTION_DIAL else Intent.ACTION_VIEW

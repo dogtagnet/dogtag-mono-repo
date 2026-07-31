@@ -692,14 +692,12 @@ struct NearbyScreen: View {
                         .background(RoundedRectangle(cornerRadius: 10).fill(c.surfaceVariant))
                 }
                 .buttonStyle(.plain)
-                .accessibilityValue(
-                    storedRecord
-                        ? NearbyDecision.storedDirectionsNote
-                        : "Open in your maps app"
-                )
+                .accessibilityValue(storedRecord ? "" : "Open in your maps app")
                 // The offer must carry its own qualification: this destination is the one saved on
                 // this phone, not one just confirmed with the service. The list-level stored banner
-                // is above the fold once the owner has scrolled to a row.
+                // is above the fold once the owner has scrolled to a row. It is the note's only
+                // carrier on a stored row, sighted or not - repeating it as the button's own
+                // accessibility value made VoiceOver read the same sentence twice in a row.
                 if storedRecord {
                     Text(NearbyDecision.storedDirectionsNote)
                         .font(.system(size: 11))
