@@ -416,6 +416,34 @@ The consumers that must move together, all of which read the pillar from a verif
 * `crates/dogtag-standard-rs/src/verify.rs`
 * the two mobile importers, `RoaxRpc.issuerWhitelistPillar` and `RecordImporter.foldIssuerWhitelist`
 
+### CORRECTION (PR #127 superseded the paragraphs above): the pillar's blocker is an EVENT vocabulary, not a getter
+
+Everything above was written while the pillar read the CURRENT-state getter.
+It no longer does.
+PR #127 moved it to the historical question - was a grant in force AT THE BLOCK THIS ROOT WAS ANCHORED - reconstructed from `Whitelisted`/`Delisted` logs, so any third party with an RPC reaches the same verdict without trusting our code.
+Three consequences, and the middle one is a live defect rather than a wording problem.
+
+**`isRecognizedIssuer` is NOT the pillar's migration target, and `ProviderRegistry.sol`'s own doc comment said otherwise until this correction.**
+That contract landed 2026-07-30 (#111) and #127 landed 2026-07-31, so the comment describes a pillar that had already changed.
+`_isRecognizedIssuer` is `s.providerId != bytes20(0) && _issuanceCapabilities[serviceAddress][signer]` - current storage, no block, no root.
+Handing its boolean to the pillar would revert #127 under a new name.
+
+**The pillar is ITSELF a record-type caller, via LOGS rather than a getter, and against generation 2 it produces a confident forgery verdict.**
+`Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in `topic1`, so the grant query fails against the successor for exactly the reason `docs/CLIENT_REPOINT.md` gives for the getter - only more quietly, because nothing reverts.
+`ProviderRegistry` records grants as `IssuanceCapabilitySet(service, signer, allowed)`: different name, different `topic0`, different argument shape.
+That filter therefore matches NOTHING there, and the fold's empty-history rule - deliberately a definite `NotAuthorized`, because on generation 1 an empty log really is evidence that `onlyWhitelisted` could not have passed - turns "we asked the wrong contract in the wrong language" into "this credential is forged".
+It reaches `POST /v1/verify`, which is unauthenticated.
+
+**What shipped, and what is still open.**
+Both Rust backends now guard that rule: an empty history is a definite refusal ONLY when the authority positively speaks generation 1, established by probing `isRecognizedIssuer` - a selector `IssuerRegistry` provably does not implement, since its entire external surface is `whitelistFor`/`delistFor`/`isWhitelistedFor` and it has no fallback.
+The probe's ANSWER is discarded; it identifies the generation and nothing else.
+It is scoped to the EMPTY case because a non-empty history is itself proof the authority speaks generation 1, so the extra call lands on the refusal path only and cannot perturb any answer #127 established.
+A generation-2 root now reports **could not determine**, never a forgery verdict.
+
+Still open, and it is what the cutover actually needs: **answering the historical question for generation 2 means decoding `IssuanceCapabilitySet`**, mirrored across all five surfaces above.
+That is not attempted here - `ProviderRegistry` has no deployed address, so a generation-2 event decoder could not be validated against anything, and the mirrored fold is #127-scale work (36 files, ~3,400 insertions).
+Until it lands, generation-2 credentials are honestly unresolvable rather than dishonestly refused, and `stacks/vet/api/tests/issuance_authority_migration.rs` pins that a generation-2 issuance fails LOUDLY at confirm rather than stranding a record silently.
+
 **Sequencing: this must land before a generation-2 clone anchors anything a consumer will verify.**
 Unlike the deferred `name()` readers of §6 - where the guarantee this slice ships is that there is no provider-chosen string to mistake - an unreconciled pillar does not degrade to "identity unavailable"; it refuses genuine credentials.
 None of those files is touched here, and nothing in this branch wires a consumer to either contract: the pair is built and undeployed, so the obligation is recorded for the cutover rather than discharged in this slice.

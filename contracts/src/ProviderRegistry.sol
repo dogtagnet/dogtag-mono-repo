@@ -684,11 +684,28 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     /// another: the extra terms each rung folds are exactly the terms that would be wrong to fold
     /// into the rung above it.
 
-    /// @notice THE historical issuer-status question, and the only sound migration target for a
-    /// direct legacy `isWhitelistedFor(recordTypeKey, signer)` reader such as the mandatory
-    /// issuer-whitelist verification pillar. It folds exactly two facts: the registrar attached this
-    /// clone, and the registrar's forward-only issuance grant for this signer still stands — the
-    /// precise `whitelistFor`/`delistFor` semantics that pillar was built on.
+    /// @notice The issuer-status question in the PRESENT TENSE, with `whitelistFor`/`delistFor`
+    /// semantics. It folds exactly two facts: the registrar attached this clone, and the registrar's
+    /// forward-only issuance grant for this signer still stands.
+    ///
+    /// CORRECTION, and it matters because the earlier wording sent a reader the wrong way. This was
+    /// documented as "THE historical issuer-status question, and the only sound migration target for
+    /// a direct legacy `isWhitelistedFor(recordTypeKey, signer)` reader such as the mandatory
+    /// issuer-whitelist verification pillar". That was written when the pillar really was a
+    /// current-state read. It no longer is: the pillar now asks whether a grant was in force AT THE
+    /// BLOCK A ROOT WAS ANCHORED, reconstructed from `Whitelisted`/`Delisted` logs, because delisting
+    /// is forward-only and a current-state read refused every credential a rotated signer ever
+    /// issued (`DogTagIssuer.sol:82`; `adminRevoke` is the retroactive lever).
+    ///
+    /// This function reads CURRENT STORAGE — `_issuanceCapabilities[service][signer]`, with no block
+    /// and no root parameter — so it cannot answer that question and is NOT the pillar's migration
+    /// target. Consuming its boolean there would revert the pillar to a current-state getter under a
+    /// new name. Verifiers use it only to establish that an authority speaks this generation's
+    /// vocabulary at all; answering the historical question for generation 2 needs this contract's
+    /// own `IssuanceCapabilitySet` log. See `docs/ISSUER_V2_OWNERSHIP.md` §8.
+    ///
+    /// It remains the sound target for a PRESENT-TENSE record-type reader that is not a pre-issue
+    /// gate — a console asking "is this signer a recognized issuer for this service now".
     ///
     /// It folds NO lifecycle or liveness state, deliberately. A repoint, a KYC suspension, a service
     /// retirement, a generation deprecation and an unconfirmed clone-owner handover all say nothing
