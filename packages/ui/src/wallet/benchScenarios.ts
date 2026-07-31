@@ -37,10 +37,19 @@ import {
  * of readers. Nothing here touches the network, so the catalogue runs identically in a unit test and in
  * the browser, and the page can render live outcomes beside the declared expectations.
  *
- * The scripting is ADDRESS-KEYED throughout. A fake that ignored which contract it was asked about
- * could not represent "the hostile contract answers `true` while the clone the factory named answers
- * `false`", and every forged-issuer scenario written against one would pass for the wrong reason - the
- * trap recorded against `MockChain` in `crates/dogtag-standard-rs/src/verify.rs`.
+ * EVERY read is keyed on the contract it is put to - the six `DogTagIssuer`/factory getters on the
+ * contract address, and the three registry reads (`isWhitelistedFor`, the grant log, and
+ * `DogTagIssuer.registry()`) on the registry address. A fake that ignored which contract it was asked
+ * about could not represent "the hostile contract answers `true` while the clone the factory named
+ * answers `false`", and every forged-issuer scenario written against one would pass for the wrong
+ * reason - the trap recorded against `MockChain` in `crates/dogtag-standard-rs/src/verify.rs`.
+ *
+ * That claim was once written as a blanket "ADDRESS-KEYED throughout" while `grants` in fact discarded
+ * its registry argument, and the blanket wording is why the gap survived review: it read as a property
+ * of the module rather than of each reader. Stated per-reader it is checkable, and
+ * `benchScenarios.test.ts` asserts the registry keying directly so a reader that stopped honouring its
+ * address goes red rather than quietly agreeing with itself. A claim broader than the code is its own
+ * defect - if a future reader cannot be keyed, narrow this sentence rather than widening it.
  *
  * # What a scenario may NOT do
  *
@@ -66,12 +75,12 @@ const CLONE = "0x00000000000000000000000000000000c10e0001";
 /** A contract the factory never deployed, run by whoever forged the document. */
 const HOSTILE = "0x000000000000000000000000000000000000ba0b";
 /** A second, unrelated `IssuerRegistry` instance - the misconfiguration case. */
-const FOREIGN_REGISTRY = "0x00000000000000000000000000000000f06e1600";
+export const FOREIGN_REGISTRY = "0x00000000000000000000000000000000f06e1600";
 /** The signer that anchored the root on chain (`clone.issuedBy[R]`). */
-const SIGNER = "0xabc0000000000000000000000000000000000abc";
+export const SIGNER = "0xabc0000000000000000000000000000000000abc";
 
 const RECORD_TYPE = "VACCINATION";
-const RECORD_TYPE_KEY = recordTypeKey(RECORD_TYPE);
+export const RECORD_TYPE_KEY = recordTypeKey(RECORD_TYPE);
 /** A record type the same signer holds no grant for - the relabelling target. */
 const OTHER_RECORD_TYPE = "TRAVEL_CLEARANCE";
 
@@ -117,6 +126,13 @@ function genuineDoc(issuer: IssuerMeta = ISSUER): WrappedDoc {
 
 const asRecord = (d: WrappedDoc) => JSON.parse(JSON.stringify(d)) as Record<string, unknown>;
 const k = (a: string, b: string) => `${a.toLowerCase()}|${b.toLowerCase()}`;
+/**
+ * The registry-scoped key: `IssuerRegistry._wl` and its `Whitelisted`/`Delisted` events are PER
+ * CONTRACT, so both the current-state set and the grant log are properties of one registry instance.
+ * Keying them on the pair alone made a foreign registry answer with the configured one's grants, which
+ * is precisely the state `foreignRegistry` exists to model.
+ */
+const k3 = (registry: string, a: string, b: string) => `${registry.toLowerCase()}|${k(a, b)}`;
 
 /** The scripted chain a scenario runs against. Absent entries are the chain's own "no" answers. */
 interface ChainScript {
@@ -127,11 +143,12 @@ interface ChainScript {
   isRevoked?: Record<string, boolean>;
   issuedBy?: Record<string, string>;
   recordTypes?: Record<string, string>;
-  /** CURRENT whitelist state, as `isWhitelistedFor` answers it. */
+  /** CURRENT whitelist state per REGISTRY, as that registry's `isWhitelistedFor` answers it. */
   whitelist?: Set<string>;
   /** contract -> the registry its own `onlyWhitelisted` consults. */
   issuerRegistries?: Record<string, string>;
   rootIssuedLogs?: Record<string, LogPoint>;
+  /** `(registry, recordTypeKey, signer)` -> that REGISTRY's own grant log, oldest first. */
   grants?: Record<string, WhitelistGrantEvent[]>;
   /** Every read throws with this message - the wrong-chain / unreachable-endpoint case. */
   allReadsFail?: string;
@@ -151,10 +168,15 @@ function honestChain(root: string): ChainScript {
     isRevoked: { [k(CLONE, root)]: false },
     issuedBy: { [k(CLONE, root)]: SIGNER },
     recordTypes: { [CLONE.toLowerCase()]: RECORD_TYPE_KEY },
-    whitelist: new Set([k(RECORD_TYPE_KEY, SIGNER)]),
+    whitelist: new Set([k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]),
     issuerRegistries: { [CLONE.toLowerCase()]: SCENARIO_REGISTRY },
     rootIssuedLogs: { [k(CLONE, root)]: ANCHORED },
-    grants: { [k(RECORD_TYPE_KEY, SIGNER)]: [{ kind: "whitelisted", ...GRANTED }] },
+    // Recorded in the registry that GOVERNS the clone - which here is also the one this client is
+    // configured with. `issue()` is `onlyWhitelisted` against the clone's own `registry` slot, so an
+    // honest anchoring implies the grant is in THAT registry's log and nowhere else.
+    grants: {
+      [k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [{ kind: "whitelisted", ...GRANTED }],
+    },
   };
 }
 
@@ -207,9 +229,9 @@ function readersFor(script: ChainScript): ScenarioReaders {
         guard();
         return script.issuedBy?.[k(addr, root)] ?? ZERO_ADDRESS;
       },
-      async isWhitelistedFor(_registry, key, signer) {
+      async isWhitelistedFor(registry, key, signer) {
         guard();
-        return script.whitelist?.has(k(key, signer)) ?? false;
+        return script.whitelist?.has(k3(registry, key, signer)) ?? false;
       },
     },
     authorityReader: {
@@ -223,11 +245,14 @@ function readersFor(script: ChainScript): ScenarioReaders {
         guard();
         return script.rootIssuedLogs?.[k(cloneAddr, root)] ?? null;
       },
-      async grants(_registryAddr, key, signer) {
+      // Keyed on the REGISTRY as well as the pair. A fake that discarded this argument would return
+      // the same history whichever authority was asked, so `foreignRegistry` would look correct while
+      // the production code read the wrong contract - which is exactly what happened.
+      async grants(registryAddr, key, signer) {
         guard();
         // Sorted here rather than trusted from the fixture, exactly as the live reader sorts what
         // `eth_getLogs` returns - so a scenario cannot accidentally rely on declaration order.
-        return sortLogPoints(script.grants?.[k(key, signer)] ?? []);
+        return sortLogPoints(script.grants?.[k3(registryAddr, key, signer)] ?? []);
       },
     },
   };
@@ -510,7 +535,7 @@ export const signerDelistedBeforeIssuance: BenchScenario = {
       ...base,
       whitelist: new Set<string>(),
       grants: {
-        [k(RECORD_TYPE_KEY, SIGNER)]: [
+        [k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [
           { kind: "whitelisted", ...GRANTED },
           { kind: "delisted", ...DELISTED_BEFORE },
         ],
@@ -567,9 +592,10 @@ export const signerDelistedAfterIssuance: BenchScenario = {
       ...base,
       // Current state: delisted. The getter the pillar reads answers `false`.
       whitelist: new Set<string>(),
-      // History: granted long before the anchoring, delisted long after it.
+      // History: granted long before the anchoring, delisted long after it - in the registry that
+      // governs the clone, which is the only log an honest `onlyWhitelisted` issuance could rest on.
       grants: {
-        [k(RECORD_TYPE_KEY, SIGNER)]: [
+        [k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [
           { kind: "whitelisted", ...GRANTED },
           { kind: "delisted", ...DELISTED_AFTER },
         ],
@@ -649,9 +675,13 @@ export const foreignRegistry: BenchScenario = {
       id: "issuer-descends-from-factory",
       why: "The clone really was deployed by the configured factory - it is the REGISTRY axis of the pair that is wrong.",
     },
+    {
+      id: "whitelisted-at-issuance",
+      why: "It PASSES, because it asks the registry the CLONE names rather than the one this client is configured with - and that registry's log does hold the grant. A row that asked the configured registry would find no grant and print a definite refusal of a genuine credential, which is our misconfiguration rendered as an accusation.",
+    },
   ],
   notes:
-    "The verdict stays `true` here, because the row is advisory by design. That is the honest outcome: the bench cannot know whether the credential is good, only that the answer it was given is void - and it says so rather than converting our own misconfiguration into an accusation.",
+    "The verdict stays `true` here, because the row is advisory by design. That is the honest outcome: the bench cannot know whether the credential is good, only that the answer it was given is void - and it says so rather than converting our own misconfiguration into an accusation. Note what the historical row does with the SAME misconfiguration: it reads the grant log of the registry the clone actually names, so it passes. It is also the live catcher for that rule - point it back at the configured registry and this scenario goes red, because the foreign registry's log is where the grant genuinely is.",
   expected: expect({ "registry-governs-issuer": "fail" }),
   // The credential itself is fine and the row that objects is ADVISORY, so the verifier's verdict
   // correctly stays `true`. Refusing it would convert this client's own misconfiguration into an
@@ -665,8 +695,19 @@ export const foreignRegistry: BenchScenario = {
       ...base,
       // The clone is gated by a registry this client is not configured with...
       issuerRegistries: { [CLONE.toLowerCase()]: FOREIGN_REGISTRY },
-      // ...while the one it IS configured with happens to list the signer.
-      whitelist: new Set([k(RECORD_TYPE_KEY, SIGNER)]),
+      // ...while the one it IS configured with also happens to list the signer, which is the hazard:
+      // the pillar reads green off an authority that governs nothing here.
+      whitelist: new Set([
+        k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER),
+        k3(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER),
+      ]),
+      // The grant sits in the GOVERNING registry, and it has to: `issue()` is `onlyWhitelisted`
+      // against the clone's own `registry` slot, so the anchoring this document reports could not have
+      // happened unless FOREIGN_REGISTRY - not the configured one - recorded the grant. A fixture with
+      // the grant only in SCENARIO_REGISTRY would be a chain state the protocol cannot produce.
+      grants: {
+        [k3(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [{ kind: "whitelisted", ...GRANTED }],
+      },
     });
   },
 };

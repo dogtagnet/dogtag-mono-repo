@@ -433,18 +433,23 @@ export function VerificationBench() {
   async function runAllScenarios() {
     setBusy(true);
     try {
-      const next: Record<string, ScenarioRun> = {};
+      // Committed per scenario, and the failure is caught INSIDE the loop, deliberately. Accumulating
+      // into a local and setting it once meant a single throwing `build()` - and `build()` does throw,
+      // on a fixture that lost its tamperable leaf or a malformed salt - discarded every result that
+      // had already succeeded AND abandoned every scenario after it, leaving nothing but a toast. A
+      // catalogue that reports nothing when one card breaks is the opposite of what this page is for.
       for (const s of BENCH_SCENARIOS) {
-        const report = await runBenchScenario(s);
-        next[s.id] = { report, unexpected: unexpectedRows(s, report) };
+        try {
+          const report = await runBenchScenario(s);
+          setRuns((prev) => ({ ...prev, [s.id]: { report, unexpected: unexpectedRows(s, report) } }));
+        } catch (e) {
+          toast({
+            title: `Scenario "${s.title}" could not run`,
+            description: e instanceof Error ? e.message : String(e),
+            variant: "danger",
+          });
+        }
       }
-      setRuns(next);
-    } catch (e) {
-      toast({
-        title: "The catalogue could not run",
-        description: e instanceof Error ? e.message : String(e),
-        variant: "danger",
-      });
     } finally {
       setBusy(false);
     }

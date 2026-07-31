@@ -6,19 +6,26 @@
 // it stays green while the check it is named after is dead. The vector is what makes a scenario that
 // starts passing for a different reason fail.
 //
-// No network: every scenario carries its own scripted, address-keyed chain (see `benchScenarios.ts`).
+// No network: every scenario carries its own scripted chain, keyed on the contract each read is put to
+// - the getters on the contract address, and the three registry reads on the registry address (see
+// `benchScenarios.ts`). That keying is asserted directly below, because a fake that discards its
+// address agrees with itself and no assertion about the resulting report can notice.
 import { describe, expect, it } from "vitest";
 import {
   BENCH_SCENARIOS,
   batchInclusionProof,
   foreignRegistry,
+  FOREIGN_REGISTRY,
   genuineCredential,
   hostileIssuerContract,
+  RECORD_TYPE_KEY,
   relabelledRecordType,
   revokedPresentedAsLive,
   runBenchScenario,
+  SCENARIO_REGISTRY,
   signerDelistedAfterIssuance,
   signerDelistedBeforeIssuance,
+  SIGNER,
   tamperedCoveredField,
   unanchoredSelfConsistentForgery,
   wrongChainEndpoint,
@@ -309,6 +316,43 @@ describe("a whitelist answer from a registry that does not govern the issuer", (
     expect(row?.finding).toContain("MISCONFIGURED");
   });
 
+  it("reads the grant history from the GOVERNING registry, not the one this client is configured with", async () => {
+    // The rule the historical row rests on. Under this misconfiguration the grant is in the registry
+    // the CLONE names, and only there - `issue()` is `onlyWhitelisted` against that slot, so an honest
+    // anchoring cannot rest on any other log. A row that asked the configured registry would find
+    // nothing and print a definite refusal of a genuine credential: our own misconfiguration turned
+    // into an accusation, the fail-closed mirror of the fail-open bug this surface exists to prevent.
+    const r = await runBenchScenario(foreignRegistry);
+    expect(outcome(r, "whitelisted-at-issuance")).toBe("pass");
+    expect(outcome(r, "whitelisted-at-issuance")).not.toBe("fail");
+    const read = r.reads.find((x) => x.method === "whitelistHistory");
+    expect(read?.contract.toLowerCase(), "the grant log was read from the wrong contract").toBe(
+      FOREIGN_REGISTRY.toLowerCase(),
+    );
+    expect(read?.contract.toLowerCase()).not.toBe(SCENARIO_REGISTRY.toLowerCase());
+    // ...and the row CITES that authority, so a reader can see which contract answered.
+    const row = r.checks.find((c) => c.id === "whitelisted-at-issuance");
+    expect(row?.evidence.some((e) => e.source.includes(FOREIGN_REGISTRY))).toBe(true);
+  });
+
+  it("keys its scripted registry reads on the REGISTRY, so a wrong-contract read finds nothing", async () => {
+    // The fake-integrity guard. Both registry-scoped reads used to discard their registry argument and
+    // answer identically whichever authority was asked - so this scenario went green while the
+    // production code read the wrong contract, exactly the `MockChain` trap recorded in
+    // `crates/dogtag-standard-rs/src/verify.rs`. Asserted against the readers directly, because a fake
+    // that agrees with itself cannot be caught by any assertion about the report.
+    const w = foreignRegistry.build();
+    expect(await w.grantHistoryReader.grants(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER)).not.toEqual([]);
+    expect(
+      await w.grantHistoryReader.grants(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER),
+      "a grant log read against a registry that never recorded it must come back empty",
+    ).toEqual([]);
+    // The current-state getter is keyed the same way, for the same reason.
+    const honest = genuineCredential.build();
+    expect(await honest.reader.isWhitelistedFor(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)).toBe(true);
+    expect(await honest.reader.isWhitelistedFor(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER)).toBe(false);
+  });
+
   it("does NOT convert this client's own misconfiguration into an accusation", async () => {
     // A configuration fault is not evidence about a credential - the same rule `FACTORY_ADDR` follows.
     // The row is advisory, so the verdict is untouched and the operator is told what is void.
@@ -377,6 +421,22 @@ describe("a wrong-chain endpoint", () => {
     const r = await runBenchScenario(wrongChainEndpoint);
     const reasons = r.checks.map((c) => c.couldNotRunReason ?? "").join("\n");
     expect(reasons).toContain("chain 135");
+  });
+
+  it("says the factory was never REACHED, not that it answered with nothing", async () => {
+    // The two are different facts and this is the scenario that separates them. Every read threw, so
+    // no factory answered at all - reporting "none was resolved" would describe a contract that
+    // answered with an empty index, which is the could-not-ask/asked-and-got-nothing collapse this
+    // module exists to prevent, arriving from the environment rather than the document.
+    const r = await runBenchScenario(wrongChainEndpoint);
+    for (const id of ["registry-governs-issuer", "whitelisted-at-issuance"] as const) {
+      const reason = r.checks.find((c) => c.id === id)?.couldNotRunReason ?? "";
+      expect(reason, `${id} must name the read that failed`).toContain("rootIssuer");
+      expect(reason).toContain("failed");
+      expect(reason, `${id} must not report an unreachable factory as one that resolved nothing`).not.toContain(
+        "None was resolved",
+      );
+    }
   });
 
   it("still answers the two OFFLINE rows, which need no chain", async () => {

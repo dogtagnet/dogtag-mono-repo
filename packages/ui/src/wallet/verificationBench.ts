@@ -280,7 +280,13 @@ export interface IssuerAuthorityReader {
 export interface GrantHistoryReader {
   /** Where `root` was anchored on `cloneAddr`, or `null` when that clone emitted no `RootIssued`. */
   rootIssuedAt(cloneAddr: string, root: string): Promise<LogPoint | null>;
-  /** Every `whitelistFor`/`delistFor` for this pair, oldest first. `[]` means none was ever recorded. */
+  /**
+   * Every `whitelistFor`/`delistFor` for this pair, oldest first. `[]` means none was ever recorded.
+   *
+   * `registryAddr` is the GOVERNING registry - the address `DogTagIssuer.registry()` answered - never
+   * whatever this client is configured with. An implementation that ignored it would answer about a
+   * different contract's mapping while looking correct; keep any fake keyed on it.
+   */
   grants(
     registryAddr: string,
     recordTypeKey: string,
@@ -594,9 +600,11 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
   ];
 
   // Sequential, not `Promise.all`: each pushes onto the shared `reads` log, and that log's ORDER is
-  // what the evidence lines and the reason strings are read back out of.
-  checks.push(await registryGovernsIssuerCheck(input, reads, registryAddr, blockLine));
-  checks.push(await whitelistedAtIssuanceCheck(input, reads, response, registryAddr));
+  // what the evidence lines and the reason strings are read back out of. The order is also load-bearing
+  // rather than cosmetic - `whitelistedAtIssuanceCheck` sources the governing registry from the
+  // `issuerRegistry` read the row above records, so it must run after it.
+  checks.push(await registryGovernsIssuerCheck(input, reads, registryAddr, blockLine, verifierError));
+  checks.push(await whitelistedAtIssuanceCheck(input, reads, response, verifierError));
   checks.push(...(await domainChecks(input, reads, claimedDomain, blockLine)));
 
   return {
@@ -906,6 +914,7 @@ async function registryGovernsIssuerCheck(
   reads: ChainRead[],
   registryAddr: string,
   blockLine: EvidenceLine,
+  verifierError: string | null,
 ): Promise<Omit<BenchCheck, "gatesVerdict">> {
   const question = "Is the registry we asked about the signer the one that gates this issuing contract?";
   const askedLine: EvidenceLine = {
@@ -922,8 +931,13 @@ async function registryGovernsIssuerCheck(
       question,
       outcome: "could-not-run",
       finding: "There is no factory-resolved contract whose governing registry could be read.",
+      // Only a factory that ANSWERED, with nothing, licenses "none was resolved". A read that threw
+      // means we could not ask at all, and reporting that as an empty answer collapses the two states
+      // this whole module exists to keep apart - so those cases go through the shared three-way split.
       couldNotRunReason:
-        "The governing registry is read from the contract the FACTORY named. None was resolved, and reading it off the address the document names would let a forged document nominate its own authority.",
+        anchor?.outcome === "ok"
+          ? "The governing registry is read from the contract the FACTORY named. None was resolved, and reading it off the address the document names would let a forged document nominate its own authority."
+          : unobservedReason(reads, anchor, "rootIssuer", verifierError),
       evidence: [askedLine],
     };
   }
@@ -1010,6 +1024,18 @@ async function registryGovernsIssuerCheck(
  * issuance" is guaranteed by the WRITE path. Read from the logs, this row states that fact; the
  * pillar's current-state read cannot.
  *
+ * ## The authority asked is the GOVERNING registry, never this client's configured one
+ *
+ * `IssuerRegistry._wl` and its `Whitelisted`/`Delisted` events are per-CONTRACT, so a grant history
+ * read from a different instance is a confident answer about a different mapping. Read from the
+ * configured registry, a client merely pointed at the wrong instance would find no grant at all and
+ * this row would print a definite refusal of a genuine credential - our own misconfiguration rendered
+ * as an accusation, which is the fail-closed mirror of the fail-open bug this surface exists to
+ * prevent. So the address comes off the `DogTagIssuer.registry()` read {@link registryGovernsIssuerCheck}
+ * already recorded, and when that authority cannot be established at all the row reports
+ * `could-not-run` rather than `fail`. This opens no trust surface: that address is read from the clone
+ * the FACTORY resolved, never from the document, so it rests on the same anchor as every other read here.
+ *
  * ## This row is REPORTED, never reconciled
  *
  * Where the two disagree the bench says so and stops. It does not overrule the verifier: the pillar's
@@ -1021,7 +1047,7 @@ async function whitelistedAtIssuanceCheck(
   input: BenchInput,
   reads: ChainRead[],
   response: VerifyCredentialResp | null,
-  registryAddr: string,
+  verifierError: string | null,
 ): Promise<Omit<BenchCheck, "gatesVerdict">> {
   const question = "Was that signer authorised at the moment this root was anchored?";
   const unavailable = (finding: string, reason: string, evidence: EvidenceLine[] = []) => ({
@@ -1038,7 +1064,11 @@ async function whitelistedAtIssuanceCheck(
   if (!clone) {
     return unavailable(
       "There is no factory-resolved contract whose anchoring log could be read.",
-      "The issuance point is read from the contract the FACTORY named. None was resolved, so there is no anchoring event to locate.",
+      // As in the sibling check above: only a factory that ANSWERED with nothing may be described as
+      // having resolved none. A read that threw is a question we never got to put.
+      anchor?.outcome === "ok"
+        ? "The issuance point is read from the contract the FACTORY named. None was resolved, so there is no anchoring event to locate."
+        : unobservedReason(reads, anchor, "rootIssuer", verifierError),
     );
   }
 
@@ -1070,6 +1100,30 @@ async function whitelistedAtIssuanceCheck(
     return unavailable(
       "No root was established to locate an anchoring event for.",
       "The verifier produced no response, so there is no claimed root to search the anchoring log for.",
+    );
+  }
+
+  // WHICH authority's log answers this. Sourced from the `DogTagIssuer.registry()` read the sibling
+  // check recorded one row earlier rather than re-read, so both rows speak about the same observation.
+  // With no authority established the row says so; substituting this client's configured registry
+  // would ask a different contract's mapping and could refuse a genuine credential over our own
+  // configuration. See the doc comment above.
+  const govRead = lastRead(reads, "issuerRegistry");
+  const governing =
+    govRead && govRead.outcome === "ok" && govRead.value && !isZeroAddr(govRead.value)
+      ? govRead.value
+      : undefined;
+  if (!govRead || !governing) {
+    const substituting =
+      "Reading this client's configured registry in its place would ask a different contract's grant mapping, which could refuse a genuine credential over our own configuration.";
+    return unavailable(
+      "The authority whose grant history would answer this could not be established.",
+      govRead?.outcome === "failed"
+        ? `The chain read \`registry\` against ${clone} failed: ${govRead.error ?? "unknown error"}. ${substituting}`
+        : govRead
+          ? `\`DogTagIssuer.registry()\` answered the zero address, which an initialized clone never does, so no authority governs this contract as far as the chain will say. ${substituting}`
+          : `The issuing contract's own governing registry was never read, so there is no authority whose grant history could be asked. ${substituting}`,
+      govRead ? [readEvidence("Registry that gates this contract", govRead, "DogTagIssuer.registry()")] : [],
     );
   }
 
@@ -1119,12 +1173,18 @@ async function whitelistedAtIssuanceCheck(
     );
   }
 
+  const governingLine = readEvidence(
+    "Registry that gates this contract",
+    govRead,
+    "DogTagIssuer.registry()",
+  );
+
   let history: WhitelistGrantEvent[];
   try {
-    history = await reader.grants(registryAddr, recordTypeKeyOnChain, signer);
+    history = await reader.grants(governing, recordTypeKeyOnChain, signer);
     reads.push({
       method: "whitelistHistory",
-      contract: registryAddr,
+      contract: governing,
       args: [recordTypeKeyOnChain, signer],
       outcome: "ok",
       value: history.length
@@ -1135,20 +1195,24 @@ async function whitelistedAtIssuanceCheck(
     const error = e instanceof Error ? e.message : String(e);
     reads.push({
       method: "whitelistHistory",
-      contract: registryAddr,
+      contract: governing,
       args: [recordTypeKeyOnChain, signer],
       outcome: "failed",
       error,
     });
     return unavailable(
       "The registry's grant history could not be read.",
-      `The log read \`Whitelisted\`/\`Delisted\` against ${registryAddr} failed: ${error}`,
-      [lastReadEvidence(reads, "rootIssuedLog", "DogTagIssuer.RootIssued(root)", "Anchored at")],
+      `The log read \`Whitelisted\`/\`Delisted\` against ${governing} failed: ${error}`,
+      [
+        lastReadEvidence(reads, "rootIssuedLog", "DogTagIssuer.RootIssued(root)", "Anchored at"),
+        governingLine,
+      ],
     );
   }
 
   const evidence = [
     lastReadEvidence(reads, "rootIssuedLog", "DogTagIssuer.RootIssued(root)", "Anchored at"),
+    governingLine,
     lastReadEvidence(
       reads,
       "whitelistHistory",
@@ -1171,7 +1235,7 @@ async function whitelistedAtIssuanceCheck(
       question,
       outcome: "fail",
       finding:
-        "The registry recorded NO grant to this signer for this record type at or before the anchoring block. Nothing in the log authorises this issuance.",
+        "The registry that gates this contract recorded NO grant to this signer for this record type at or before the anchoring block. Nothing in the authority's own log authorises this issuance.",
       evidence,
     };
   }
