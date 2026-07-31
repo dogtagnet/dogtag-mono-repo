@@ -47,6 +47,8 @@ use vet_api::chain::{record_type_key, MemChain};
 
 const REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
 const ISSUER: &str = "0x00000000000000000000000000000000000000bb";
+/// A second authority the clone can be pointed at, so "which registry did we ask" is observable.
+const CLONE_OWN_REGISTRY: &str = "0x00000000000000000000000000000000000000a2";
 /// A contract the factory never deployed, answering exactly as an attacker would want. Reached only
 /// by a document that names it in `issuer.documentStore`.
 const HOSTILE: &str = "0x00000000000000000000000000000000000000c1";
@@ -553,6 +555,139 @@ async fn a_signer_delisted_after_issuance_still_verifies_and_before_issuance_doe
     assert_eq!(b["fragments"]["issuerWhitelisted"], false, "{b}");
     assert_eq!(b["fragments"]["issuerWhitelistState"], "failed", "{b}");
     assert_eq!(b["status"], "issuer_not_whitelisted", "{b}");
+}
+
+/// A GENERATION-2 AUTHORITY MUST BE UNDETERMINED, NEVER A FORGERY VERDICT.
+///
+/// The pillar reconstructs the grant from `Whitelisted`/`Delisted`, whose `topic1` is the RECORD-TYPE
+/// key — so it is a record-type caller in the sense `docs/CLIENT_REPOINT.md` means, via logs rather
+/// than a getter, and it fails against the successor the same way, only more quietly.
+/// `ProviderRegistry` records its grants as `IssuanceCapabilitySet(service, signer, allowed)`, a
+/// different name and `topic0`, so that filter matches nothing there.
+///
+/// Unguarded, the empty history folds to `NotAuthorized` and this route answers
+/// `issuer_not_whitelisted` — a definite forgery verdict against a genuine credential, produced by a
+/// query that could never have matched. That is the confident-wrong-answer the S-13 governing
+/// condition forbids.
+///
+/// The verdict stays `false` either way (an unresolved pillar never passes), so asserting the verdict
+/// alone would pin NOTHING. What this test pins is the STATE and the STATUS — the difference between
+/// "we could not check" and "this credential is forged", which is the whole point.
+///
+/// Mutation: drop the `provider_registries` guard from `whitelisted_at_issuance` -> this goes red
+/// with `issuerWhitelistState: "failed"`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_generation_two_authority_is_undetermined_not_a_forgery_verdict() {
+    let (app, op, backend, mem) = boot().await;
+    let (_id, root, doc) = issue_doc(&app, &op, "49").await;
+    mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
+
+    // The clone's `registry()` is now a `ProviderRegistry`. It holds no `Whitelisted`/`Delisted` for
+    // ANY pair — including pairs it has genuinely authorised — because it does not speak that
+    // vocabulary at all.
+    mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
+    mem.set_provider_registry(CLONE_OWN_REGISTRY);
+
+    let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
+    assert_eq!(
+        b["fragments"]["issuerWhitelistState"], "unresolved",
+        "an authority whose vocabulary we cannot read is UNDETERMINED: {b}"
+    );
+    assert_ne!(
+        b["fragments"]["issuerWhitelistState"], "failed",
+        "must never accuse a genuine generation-2 credential of forgery: {b}"
+    );
+    assert_ne!(
+        b["status"], "issuer_not_whitelisted",
+        "and must not report it as an unauthorised signer: {b}"
+    );
+    assert!(
+        b["fragments"]["issuerWhitelisted"].is_null(),
+        "indeterminate is null, not false: {b}"
+    );
+    // Still refused — an unresolved pillar has never permitted a pass, and this must not have
+    // loosened that.
+    assert_eq!(b["verdict"], false, "{b}");
+    // The signer really was ungranted in the generation-1 sense the ungrarded code would have read,
+    // so the fixture genuinely exercises the empty-history path rather than sidestepping it.
+    let _ = backend;
+}
+
+/// THE GUARD MUST NOT SOFTEN GENERATION 1. An `IssuerRegistry` whose log records no grant for this
+/// pair is a definite refusal, and stays one — that emptiness is an ANSWER, because an honest
+/// `issue()` cannot pass `onlyWhitelisted` in that state.
+///
+/// Without this, the guard above could be written to return `Undetermined` for EVERY empty history
+/// and the test above would still pass, while every never-granted signer quietly stopped being
+/// refused. This is the case that makes the guard's scoping load-bearing rather than decorative.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_history_on_a_generation_one_registry_is_still_a_definite_refusal() {
+    let (app, op, backend, mem) = boot().await;
+    let (_id, root, doc) = issue_doc(&app, &op, "50").await;
+    mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
+
+    // A generation-1 authority (the default) with the pair's history erased.
+    mem.set_grant_history(REGISTRY, &record_type_key("VACCINATION"), &backend, vec![]);
+
+    let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
+    assert_eq!(
+        b["fragments"]["issuerWhitelistState"], "failed",
+        "an empty generation-1 log is evidence about the credential, not about us: {b}"
+    );
+    assert_eq!(b["fragments"]["issuerWhitelisted"], false, "{b}");
+    assert_eq!(b["status"], "issuer_not_whitelisted", "{b}");
+    assert_eq!(b["verdict"], false, "{b}");
+}
+
+/// A PROBE THAT COULD NOT BE DELIVERED MUST NOT LEAVE THE REFUSAL STANDING.
+///
+/// The generation guard turns on a probe, and a probe has THREE outcomes rather than two: it
+/// answered (generation 2), the node executed it and the contract refused it (generation 1), or it
+/// never arrived. Only the second is evidence about the contract. Reading a timeout, a reset
+/// connection or a rate-limit response as "generation 1" hands the empty history straight back to
+/// `grant_in_force_at`, which correctly folds it to a definite refusal — so one transient becomes a
+/// forgery verdict against a genuine credential, on a read that never happened.
+///
+/// That is the same could-not-check-rendered-as-a-definite-answer this whole pillar exists to refuse,
+/// reproduced inside the guard built to refuse it. On government's mirror of this read the route is
+/// UNAUTHENTICATED.
+///
+/// This pins the trait's CONTRACT. The Alloy error classification is pinned separately by
+/// `chain::tests::a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one`, because
+/// `MemChain` is a different `ChainClient` and cannot reach that code at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undelivered_generation_probe_is_undetermined_not_a_forgery_verdict() {
+    let (app, op, backend, mem) = boot().await;
+    let (_id, root, doc) = issue_doc(&app, &op, "51").await;
+    mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
+
+    // An authority with an empty grant history — exactly the state the guard is scoped to — whose
+    // generation probe cannot be delivered. Its vocabulary is therefore unestablished.
+    mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
+    mem.set_grant_history(
+        CLONE_OWN_REGISTRY,
+        &record_type_key("VACCINATION"),
+        &backend,
+        vec![],
+    );
+    mem.set_provider_probe_unreachable(CLONE_OWN_REGISTRY);
+
+    let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
+    assert_eq!(
+        b["fragments"]["issuerWhitelistState"], "unresolved",
+        "a probe that never arrived establishes nothing: {b}"
+    );
+    assert_ne!(
+        b["fragments"]["issuerWhitelistState"], "failed",
+        "must never accuse a credential over a read that did not happen: {b}"
+    );
+    assert_ne!(b["status"], "issuer_not_whitelisted", "{b}");
+    assert!(
+        b["fragments"]["issuerWhitelisted"].is_null(),
+        "indeterminate is null, not false: {b}"
+    );
+    // Unresolved has never permitted a pass, and this must not have loosened that.
+    assert_eq!(b["verdict"], false, "{b}");
 }
 
 /// "We never asked" must be visible, and must not be spelled the same way as "we asked and it passed".

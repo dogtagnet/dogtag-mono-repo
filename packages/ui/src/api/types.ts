@@ -242,7 +242,19 @@ export interface UpdateRecordReq {
 export interface WhitelistRow {
   recordType: string;
   address: string;
-  whitelisted: boolean;
+  /**
+   * TRI-STATE on the wire, and `null` is not a neighbour of `false`.
+   *
+   * `true` / `false` are answers ABOUT THE SIGNER, read from the authority the clone itself names.
+   * `null` says the read did not resolve - an unreachable RPC, an authority that answered in no
+   * vocabulary this build knows - which is a fact about US and must never be rendered as "this signer
+   * is not approved". It was a bare bool defaulting to `false` on any read failure, i.e. an operator's
+   * own RPC blip shown to them as a permissions problem.
+   *
+   * Every renderer must branch on `null` FIRST; `null` is falsy, so a `w.whitelisted ? … : …` reads it
+   * as a definite refusal. See {@link whitelistBadge}, which is the one place that decision is made.
+   */
+  whitelisted: boolean | null;
 }
 /**
  * `GET /issuer/signers` answers with TWO different shapes, and modelling only one of them is how a

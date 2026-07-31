@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, HelpCircle, XCircle } from "lucide-react";
 import { formatUnits } from "viem";
 import { useAccount, useBalance } from "wagmi";
 import { Badge } from "../components/Badge";
@@ -26,6 +26,66 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex items-center justify-between gap-3 py-1.5">
       <span className="text-sm text-muted">{label}</span>
       <span className="text-sm font-medium text-onSurface">{children}</span>
+    </div>
+  );
+}
+
+/** How one whitelist row renders. Exported so the decision has one definition and one set of tests. */
+export interface WhitelistBadge {
+  tone: "success" | "neutral" | "warning";
+  /** The record type, plus - for the third state ONLY - what could not be established about it. */
+  label: string;
+  icon: "granted" | "refused" | "unresolved";
+}
+
+/**
+ * THE decision behind a whitelist badge, over the wire's THREE states.
+ *
+ * `null` is "we could not check", and it gets its own tone AND its own words. Not a tooltip and not a
+ * `title` attribute: a state legible only on hover survives neither a screenshot, nor a touch device,
+ * nor a paste into an incident report - the same reason the admin portal's inert explorer links carry
+ * visible text rather than a hover. And not the red X either, which says the authority answered and
+ * refused this signer; an operator shown that goes looking for a permissions problem that does not
+ * exist, while the real fault is their RPC.
+ *
+ * `warning` rather than a fourth tone: this repo already spells "unresolved" amber - the verification
+ * bench's could-not-run rows and `CredentialVerifyPanel`'s Unresolved treatment - and a new colour for
+ * the same meaning would be a second vocabulary to keep in step.
+ *
+ * Pure and exhaustive over the three states, so both render sites below share ONE rule; backend mode
+ * previously distinguished nothing at all, printing the same neutral chip whatever the answer.
+ */
+export function whitelistBadge(row: Pick<WhitelistRow, "recordType" | "whitelisted">): WhitelistBadge {
+  if (row.whitelisted === null || row.whitelisted === undefined) {
+    return {
+      tone: "warning",
+      label: `${row.recordType} — could not check`,
+      icon: "unresolved",
+    };
+  }
+  return row.whitelisted
+    ? { tone: "success", label: row.recordType, icon: "granted" }
+    : { tone: "neutral", label: `${row.recordType} — not approved`, icon: "refused" };
+}
+
+function WhitelistBadges({ rows }: { rows: WhitelistRow[] }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {rows.map((w) => {
+        const b = whitelistBadge(w);
+        return (
+          <Badge key={w.recordType} variant={b.tone}>
+            {b.icon === "granted" ? (
+              <CheckCircle2 className="h-3 w-3" />
+            ) : b.icon === "refused" ? (
+              <XCircle className="h-3 w-3" />
+            ) : (
+              <HelpCircle className="h-3 w-3" />
+            )}
+            {b.label}
+          </Badge>
+        );
+      })}
     </div>
   );
 }
@@ -87,22 +147,13 @@ export function StatusPanel({
             </Row>
             <div className="py-2">
               <span className="text-sm text-muted">Whitelist (per record type)</span>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {whitelist && whitelist.length > 0 ? (
-                  whitelist.map((w) => (
-                    <Badge key={w.recordType} variant={w.whitelisted ? "success" : "neutral"}>
-                      {w.whitelisted ? (
-                        <CheckCircle2 className="h-3 w-3" />
-                      ) : (
-                        <XCircle className="h-3 w-3" />
-                      )}
-                      {w.recordType}
-                    </Badge>
-                  ))
-                ) : (
+              {whitelist && whitelist.length > 0 ? (
+                <WhitelistBadges rows={whitelist} />
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-1.5">
                   <span className="text-sm text-muted">No record types configured</span>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </>
         ) : (
@@ -134,13 +185,7 @@ export function StatusPanel({
             {whitelist && whitelist.length > 0 && (
               <div className="py-2">
                 <span className="text-sm text-muted">Whitelist (per record type)</span>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {whitelist.map((w) => (
-                    <Badge key={w.recordType} variant={w.whitelisted ? "success" : "neutral"}>
-                      {w.recordType}
-                    </Badge>
-                  ))}
-                </div>
+                <WhitelistBadges rows={whitelist} />
               </div>
             )}
           </>

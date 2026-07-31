@@ -253,6 +253,12 @@ enum RoaxRpc {
     /// `initialize` from the factory's own `immutable registry`, with no setter.
     static let registrySelector = functionSelector("registry()")
 
+    /// The generation-2 authority's `isRecognizedIssuer(address,address)`
+    /// (`contracts/src/ProviderRegistry.sol`), used ONLY as a generation discriminator - it is the one
+    /// selector a generation-1 `IssuerRegistry` provably does not implement. Its BOOLEAN is never
+    /// consumed; see `generationFromProbe`.
+    static let isRecognizedIssuerSelector = functionSelector("isRecognizedIssuer(address,address)")
+
     /// Topics for the grant history the issuer-whitelist pillar folds. Both event arguments are
     /// `indexed` on `IssuerRegistry`, so one filtered `eth_getLogs` per `(recordType, signer)` pair
     /// reconstructs the whole history - and `whitelistFor`/`delistFor` emit unconditionally, so the
@@ -313,6 +319,60 @@ enum RoaxRpc {
                 return e.at >= best.at ? e : best
             }
         return asOf?.granted == true ? .authorized : .notAuthorized
+    }
+
+    /// Which generation's vocabulary an authority contract speaks.
+    ///
+    /// THREE outcomes, and the third is not a neighbour of the other two. `.legacy` is a conclusion
+    /// ABOUT THE CONTRACT and licenses treating an empty grant history as a definite refusal;
+    /// `.undetermined` says the probe could not be put, which licenses nothing.
+    ///
+    /// Mirrors Rust `AuthorityGeneration` (`stacks/{vet,government}/api/src/chain.rs`), TS
+    /// `AuthorityGeneration` (`packages/ui/src/wallet/contracts.ts`) and Kotlin
+    /// `RoaxRpc.AuthorityGeneration`.
+    enum AuthorityGeneration { case successor, legacy, undetermined }
+
+    /// Classify a generation probe against `isRecognizedIssuer` - the one selector a generation-1
+    /// `IssuerRegistry` provably does not implement (its entire external surface is
+    /// `whitelistFor`/`delistFor`/`isWhitelistedFor`, and it has no fallback, so the call reverts
+    /// there rather than answering).
+    ///
+    /// The probe's VALUE is never consulted, here or by any caller: `isRecognizedIssuer` reads current
+    /// storage with no block and no root, so using its boolean would revert the pillar to a
+    /// current-state getter under a new name. It identifies the GENERATION and nothing else.
+    ///
+    /// ONLY A REVERT identifies generation 1. A probe that never arrived establishes nothing, and
+    /// reading it as generation 1 hands an empty history back to the fold, which correctly folds it to
+    /// a definite refusal - so one transient would become a forgery verdict against a genuine
+    /// credential.
+    static func generationFromProbe(_ probe: CallResult) -> AuthorityGeneration {
+        switch probe {
+        case .success: return .successor
+        case .refused: return .legacy
+        case .unreachable: return .undetermined
+        }
+    }
+
+    /// Fold a grant history against an anchoring point, given what the probe established about the
+    /// authority that produced it.
+    ///
+    /// `grantInForceAt` alone treats an EMPTY history as a definite refusal, which is right for a
+    /// generation-1 `IssuerRegistry`: an honest `issue()` cannot pass `onlyWhitelisted` in that state,
+    /// so the emptiness is evidence about the credential. It is WRONG for the successor.
+    /// `Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in
+    /// `topic1`, so the history read is a record-type caller in the sense `docs/CLIENT_REPOINT.md`
+    /// means - via logs rather than a getter - and `ProviderRegistry` records its grants as
+    /// `IssuanceCapabilitySet(service, signer, allowed)` instead. That filter matches NOTHING there, so
+    /// every genuine generation-2 credential arrives with an empty history.
+    ///
+    /// Scoped to the empty case, and that scoping is load-bearing: a NON-EMPTY history is itself proof
+    /// the authority speaks generation 1, because those events came out of it. So the probe fires on
+    /// the refusal path alone and cannot perturb any answer the forward-only rule established.
+    static func grantAtIssuance(
+        _ history: [GrantEvent], anchoredAt: LogPoint, generation: AuthorityGeneration
+    ) -> GrantAtIssuance {
+        if history.isEmpty, generation != .legacy { return .undetermined }
+        return grantInForceAt(history, anchoredAt: anchoredAt)
     }
 
     static func isValid(rpcUrl: String, documentStore: String, root: String) async -> Result {
@@ -392,7 +452,7 @@ enum RoaxRpc {
         guard !factory.isEmpty, !root.isEmpty else { return .failure("missing factory/root") }
         let data = rootIssuerSelector + pad32(root)
         switch await ethCall(rpcUrl: rpcUrl, to: factory, data: data, atBlock: atBlock) {
-        case .failure(let e): return .failure(e)
+        case .refused(let e), .unreachable(let e): return .failure(e)
         case .success(let hex):
             guard let addr = decodeAbiAddress(hex) else { return .failure("not an address word") }
             return isZeroAddress(addr) ? .noRecord : .value(addr)
@@ -435,7 +495,7 @@ enum RoaxRpc {
         guard !factory.isEmpty, !candidate.isEmpty else { return .unknown("missing factory/candidate") }
         let data = isCloneSelector + padAddr(candidate)
         switch await ethCall(rpcUrl: rpcUrl, to: factory, data: data, atBlock: atBlock) {
-        case .failure(let e): return .unknown(e)
+        case .refused(let e), .unreachable(let e): return .unknown(e)
         case .success(let hex):
             // A call to a non-contract returns empty. That is not `false` — it is "no answer".
             if hex.isEmpty { return .unknown("empty result") }
@@ -467,7 +527,7 @@ enum RoaxRpc {
         rpcUrl: String, to: String, data: String, atBlock: UInt64?
     ) async -> StringRead {
         switch await ethCall(rpcUrl: rpcUrl, to: to, data: data, atBlock: atBlock) {
-        case .failure(let e): return .failure(e)
+        case .refused(let e), .unreachable(let e): return .failure(e)
         case .success(let hex):
             if hex.isEmpty { return .noContract }
             return .value(decodeAbiString(hex) ?? "")
@@ -531,7 +591,7 @@ enum RoaxRpc {
         case let .success(hex):
             guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit }) else { return nil }
             return "0x" + hex.lowercased()
-        case .failure: return nil
+        case .refused, .unreachable: return nil
         }
     }
 
@@ -550,7 +610,7 @@ enum RoaxRpc {
             guard hex.count >= 64 else { return .unknown("the registry returned no answer") }
             let truthy = hex.contains { $0 != "0" }
             return truthy ? .valid : .invalid
-        case let .failure(reason):
+        case let .refused(reason), let .unreachable(reason):
             return .unknown(reason)
         }
     }
@@ -568,7 +628,7 @@ enum RoaxRpc {
             guard hex.count >= 40 else { return .unresolved("the issuer clone returned no address") }
             guard hex.contains(where: { $0 != "0" }) else { return .unset }
             return .found("0x" + hex.suffix(40).lowercased())
-        case let .failure(reason): return .unresolved(reason)
+        case let .refused(reason), let .unreachable(reason): return .unresolved(reason)
         }
     }
 
@@ -589,7 +649,7 @@ enum RoaxRpc {
             }
             guard hex.contains(where: { $0 != "0" }) else { return .unset }
             return .found("0x" + hex.lowercased())
-        case let .failure(reason): return .unresolved(reason)
+        case let .refused(reason), let .unreachable(reason): return .unresolved(reason)
         }
     }
 
@@ -691,7 +751,7 @@ enum RoaxRpc {
         case let .success(hex):
             guard hex.count >= 40, hex.contains(where: { $0 != "0" }) else { return .undetermined }
             governing = "0x" + String(hex.suffix(40)).lowercased()
-        case .failure: return .undetermined
+        case .refused, .unreachable: return .undetermined
         }
 
         // (2) WHEN this root was anchored, as a log point. `issuedAt` is a unix TIMESTAMP and cannot
@@ -719,7 +779,21 @@ enum RoaxRpc {
             let topic0 = ((log["topics"] as? [String])?.first ?? "").lowercased()
             history.append(GrantEvent(at: at, granted: topic0 == whitelistedTopic.lowercased()))
         }
-        return grantInForceAt(history, anchoredAt: anchoredAt)
+
+        // (4) An EMPTY history is a definite refusal ONLY if this authority speaks this vocabulary.
+        // Probed on the refusal path alone - a non-empty history is itself proof of generation 1 - so
+        // this costs nothing on the hot path. See `grantAtIssuance` and `generationFromProbe`.
+        var generation = AuthorityGeneration.legacy
+        if history.isEmpty {
+            generation = generationFromProbe(
+                await ethCall(
+                    rpcUrl: rpcUrl,
+                    to: governing,
+                    data: isRecognizedIssuerSelector + padAddr(clone) + padAddr(signer)
+                )
+            )
+        }
+        return grantAtIssuance(history, anchoredAt: anchoredAt, generation: generation)
     }
 
     /// `keccak256(recordType utf8)` — the `IssuerRegistry` whitelist key, and the same value the
@@ -742,7 +816,7 @@ enum RoaxRpc {
         let data = consumedSelector + padUint(nullifier)
         switch await ethCall(rpcUrl: rpcUrl, to: verificationRegistry, data: data) {
         case let .success(hex): return hex.contains { $0 != "0" }
-        case .failure: return false
+        case .refused, .unreachable: return false
         }
     }
 
@@ -764,7 +838,7 @@ enum RoaxRpc {
         let data = getContractSetSelector + versionId(version)
         switch await ethCall(rpcUrl: rpcUrl, to: protocolRegistry, data: data) {
         case let .success(hex): return AnchorResolver.decodeContractSet(hex)
-        case .failure: return nil
+        case .refused, .unreachable: return nil
         }
     }
 
@@ -777,11 +851,58 @@ enum RoaxRpc {
         let data = getActiveArtifactSetSelector + versionId(version)
         switch await ethCall(rpcUrl: rpcUrl, to: protocolRegistry, data: data) {
         case let .success(hex): return AnchorResolver.decodeArtifactSet(hex)
-        case .failure: return nil
+        case .refused, .unreachable: return nil
         }
     }
 
-    private enum CallResult { case success(String); case failure(String) }
+    /// The outcome of one `eth_call`.
+    ///
+    /// THREE cases, not two, and the split between the failures is load-bearing rather than
+    /// bookkeeping: a node returning a JSON-RPC error for a request it PROCESSED is how a revert
+    /// arrives, and a revert is evidence about the contract, while a timeout, a dropped connection or
+    /// a non-2xx status is no answer at all and is evidence about nothing. Any caller that draws a
+    /// conclusion ABOUT A CONTRACT from a failed call has to know which it got - see
+    /// `generationFromProbe`.
+    ///
+    /// A THIRD CASE rather than a flag on `.failure`, deliberately: it makes every existing site a
+    /// compile error until it decides, which is the whole point. Most genuinely do not care and match
+    /// `case .refused(let e), .unreachable(let e)`.
+    enum CallResult {
+        case success(String)
+        /// The CONTRACT executed the call and reverted - see `isExecutionRevert`. The only failure
+        /// that is evidence about the contract.
+        case refused(String)
+        /// No contract answer was obtained: a transport failure, an unparseable body, or a JSON-RPC
+        /// error the node raised about ITSELF (a rate limit, an internal error).
+        case unreachable(String)
+    }
+
+    /// The JSON-RPC error code geth returns for a call the EVM EXECUTED and reverted. Confirmed
+    /// against ROAX on 2026-07-31 with the exact production case: `isRecognizedIssuer` put to the
+    /// deployed generation-1 `IssuerRegistry` answers
+    /// `{"code":3,"message":"execution reverted","data":"0x"}`.
+    static let executionRevertedCode = 3
+
+    /// Did the CONTRACT execute this call and revert, or did the NODE fail on its own account?
+    ///
+    /// A JSON-RPC error member is not by itself evidence the contract did anything. `-32005` rate
+    /// limit, `-32603` internal error, `-32601` method not found and `-32002` resource unavailable are
+    /// the node speaking about ITSELF; reading one of those as generation 1 leaves an empty grant
+    /// history standing as a definite refusal, i.e. a forgery verdict against a genuine credential
+    /// produced by a call that never ran.
+    ///
+    /// Only an execution revert licenses that conclusion, and it is exactly the signal wanted: a
+    /// generation-1 `IssuerRegistry` has no `isRecognizedIssuer` and no fallback, so its dispatcher
+    /// reverts. The code is the typed discriminator; the canonical message is accepted alongside it
+    /// for clients that report the same revert under a different code (several spell it `-32000`),
+    /// without which the pillar would stop refusing every never-granted signer against such a peer.
+    ///
+    /// Mirrors Rust `answered_with_execution_revert`, Kotlin `RoaxRpc.isExecutionRevert` and viem's
+    /// `ExecutionRevertedError` (`code === 3 || /execution reverted/`, the same pair).
+    static func isExecutionRevert(code: Int, message: String) -> Bool {
+        code == executionRevertedCode
+            || message.range(of: "execution reverted", options: .caseInsensitive) != nil
+    }
 
     private static func ethCall(
         rpcUrl: String, to: String, data: String, atBlock: UInt64? = nil
@@ -794,14 +915,24 @@ enum RoaxRpc {
             "params": [["to": to, "data": data], blockTag],
         ]
         guard let raw = try? JSONSerialization.data(withJSONObject: payload),
-              let bodyStr = String(data: raw, encoding: .utf8) else { return .failure("encode") }
+              let bodyStr = String(data: raw, encoding: .utf8) else { return .unreachable("encode") }
         let resp = await guardedPostJSON(rpcUrl: rpcUrl, body: bodyStr)
-        guard resp.ok else { return .failure("rpc \(resp.code)") }
+        // A non-2xx is the transport failing, not the node answering: a revert comes back as a 200
+        // carrying a JSON-RPC `error` member.
+        guard resp.ok else { return .unreachable("rpc \(resp.code)") }
         guard let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
-            return .failure("bad rpc json")
+            return .unreachable("bad rpc json")
         }
-        if let err = o["error"] as? [String: Any] { return .failure((err["message"] as? String) ?? "rpc error") }
+        if let err = o["error"] as? [String: Any] {
+            let message = (err["message"] as? String) ?? "rpc error"
+            // Carrying an `error` member is NOT enough to call this a contract answer - most of what
+            // arrives that way is the node speaking about itself. See `isExecutionRevert`.
+            let code = (err["code"] as? Int) ?? 0
+            return isExecutionRevert(code: code, message: message)
+                ? .refused(message)
+                : .unreachable(message)
+        }
         let result = (o["result"] as? String) ?? ""
         return .success(result.hasPrefix("0x") ? String(result.dropFirst(2)) : result)
     }

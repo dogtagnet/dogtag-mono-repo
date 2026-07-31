@@ -8,6 +8,7 @@ import {
   DEPLOYED_ADDRESSES,
   recordTypeKey,
   UNPOSITIONED_LOG,
+  type AuthorityGeneration,
   type LogPoint,
   type UnpositionedLog,
   type WhitelistGrantEvent,
@@ -82,6 +83,11 @@ interface ReaderCfg {
    * `UNPOSITIONED_LOG` models a grant the node returned with no position, which cannot be ordered.
    */
   grantHistory?: WhitelistGrantEvent[] | UnpositionedLog;
+  /**
+   * What the successor probe establishes about the governing authority. Defaults to `"legacy"`, the
+   * generation the rest of these fixtures model, so an empty grant history stays a real answer.
+   */
+  authorityGeneration?: AuthorityGeneration;
 }
 
 /** The honest ordering: granted, then the root anchored, and never withdrawn. */
@@ -104,6 +110,7 @@ function fakeReader(cfg: ReaderCfg) {
     issuerRegistry: [] as string[],
     rootIssuedAt: [] as Array<[string, string]>,
     grantHistory: [] as Array<[string, string, string]>,
+    authorityGeneration: [] as Array<[string, string, string]>,
   };
   const reader: IssuerChainReader = {
     async rootIssuer(factory, root) {
@@ -141,6 +148,10 @@ function fakeReader(cfg: ReaderCfg) {
     async grantHistory(registry, key, signer) {
       calls.grantHistory.push([registry, key, signer]);
       return cfg.grantHistory ?? [{ kind: "whitelisted", ...GRANTED }];
+    },
+    async authorityGeneration(registry, issuerAddr, signer) {
+      calls.authorityGeneration.push([registry, issuerAddr, signer]);
+      return cfg.authorityGeneration ?? "legacy";
     },
   };
   return { reader, calls };
@@ -259,6 +270,76 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     });
     expect(before.fragments.issuerWhitelisted).toBe(false);
     expect(before.verdict).toBe(false);
+  });
+
+  it("a generation-2 authority is undetermined, never a forgery verdict", async () => {
+    // `Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in
+    // `topic1`, so the grant-history read is a RECORD-TYPE caller via logs. Against a
+    // `ProviderRegistry` - which records `IssuanceCapabilitySet(service, signer, allowed)` under a
+    // different `topic0` - that filter matches nothing, so a genuine generation-2 credential comes
+    // back with an empty history. Unguarded, `grantInForceAt` folds that to a definite refusal.
+    const doc = validDoc();
+    const { reader, calls } = fakeReader({
+      issuedAt: 1_699_000_000n,
+      isValid: true,
+      grantHistory: [],
+      authorityGeneration: "successor",
+    });
+    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+
+    expect(r.fragments.issuerWhitelisted).toBeNull();
+    expect(r.fragments.issuerWhitelisted).not.toBe(false);
+    // Unresolved has never permitted a pass, and this guard must not have loosened that.
+    expect(r.verdict).toBe(false);
+    // Probed against the GOVERNING authority, with the chain-resolved clone and signer.
+    expect(calls.authorityGeneration).toEqual([
+      [GOVERNING_REGISTRY, ISSUER.documentStore, SIGNER],
+    ]);
+  });
+
+  it("a probe that could not be put is undetermined too, never generation 1", async () => {
+    // The probe has THREE outcomes, and only "the node executed it and the contract refused it"
+    // licenses treating an empty history as an answer. A timeout or a dropped connection establishes
+    // nothing - reading it as generation 1 would turn one transient into a forgery verdict.
+    const doc = validDoc();
+    const r = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      now: NOW,
+      reader: fakeReader({
+        issuedAt: 1_699_000_000n,
+        isValid: true,
+        grantHistory: [],
+        authorityGeneration: "undetermined",
+      }).reader,
+    });
+    expect(r.fragments.issuerWhitelisted).toBeNull();
+    expect(r.verdict).toBe(false);
+  });
+
+  it("the guard does not soften generation 1, and does not run on a non-empty history", async () => {
+    // Without this, the guard could return undetermined for EVERY empty history and the two cases
+    // above would still pass while every never-granted signer quietly stopped being refused.
+    const doc = validDoc();
+    const empty = fakeReader({ issuedAt: 1_699_000_000n, isValid: true, grantHistory: [] });
+    const refused = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      reader: empty.reader,
+      now: NOW,
+    });
+    expect(refused.fragments.issuerWhitelisted).toBe(false);
+    expect(refused.verdict).toBe(false);
+
+    // A NON-EMPTY history is itself proof the authority speaks generation 1 - those events came out
+    // of it - so the probe must not fire on the hot path at all, where it could only add latency and
+    // a chance to perturb an answer the forward-only rule already established.
+    const granted = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
+    const passed = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      reader: granted.reader,
+      now: NOW,
+    });
+    expect(passed.verdict).toBe(true);
+    expect(granted.calls.authorityGeneration).toEqual([]);
   });
 
   it("could-not-determine is neither a pass nor an accusation", async () => {

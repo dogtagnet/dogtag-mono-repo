@@ -1156,6 +1156,159 @@ async fn a_signer_delisted_after_issuance_still_verifies_and_before_issuance_doe
     assert_eq!(v["fragments"]["issuerWhitelistState"], "failed", "{v}");
 }
 
+/// A GENERATION-2 AUTHORITY MUST BE UNDETERMINED, NEVER A FORGERY VERDICT — on the UNAUTHENTICATED
+/// `POST /v1/verify`, which is where a wrong answer travels furthest.
+///
+/// `whitelisted_at_issuance` reconstructs the grant from `Whitelisted`/`Delisted`, whose `topic1` is
+/// the RECORD-TYPE key, so it is a record-type caller in the sense `docs/CLIENT_REPOINT.md` means —
+/// via logs rather than a getter. `ProviderRegistry` records grants as `IssuanceCapabilitySet(service,
+/// signer, allowed)`: different name, different `topic0`, different shape. That filter matches nothing
+/// there, and an unguarded empty history folds to `NotAuthorized`.
+///
+/// The verdict is `false` under both the guarded and unguarded code, so asserting it alone would pin
+/// nothing. The STATE is what differs, and it is the difference between "we could not check" and an
+/// accusation of forgery against a genuine credential.
+///
+/// Mutation: drop the `provider_registries` guard from `whitelisted_at_issuance` -> goes red with
+/// `issuerWhitelistState: "failed"`.
+#[tokio::test]
+async fn a_generation_two_authority_is_undetermined_not_a_forgery_verdict() {
+    let (state, chain) = demo_state();
+
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "78", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+    let doc = issued["wrappedDoc"].clone();
+
+    // Control first: this document verifies today, so any change below is attributable to the
+    // authority swap rather than to the fixture.
+    let (_, v) = call(&state, "POST", "/v1/verify", json!({ "wrapped_doc": doc.clone() })).await;
+    assert_eq!(v["verdict"], true, "control: {v}");
+
+    // Repoint the clone's `registry()` at a `ProviderRegistry`, which holds no `Whitelisted`/
+    // `Delisted` for ANY pair — including pairs it has genuinely authorised.
+    const PROVIDER_REGISTRY: &str = "0x00000000000000000000000000000000000000a2";
+    chain.set_governing_registry(ISSUER_ADDR, PROVIDER_REGISTRY);
+    chain.set_provider_registry(PROVIDER_REGISTRY);
+
+    let (_, v) = call(&state, "POST", "/v1/verify", json!({ "wrapped_doc": doc })).await;
+    assert_eq!(
+        v["fragments"]["issuerWhitelistState"], "unresolved",
+        "an authority whose vocabulary we cannot read is UNDETERMINED: {v}"
+    );
+    assert_ne!(
+        v["fragments"]["issuerWhitelistState"], "failed",
+        "must never accuse a genuine generation-2 credential of forgery: {v}"
+    );
+    assert!(
+        v["fragments"]["issuerWhitelisted"].is_null(),
+        "indeterminate is null, not false: {v}"
+    );
+    // Still refused: an unresolved pillar has never permitted a pass, and this must not loosen that.
+    assert_eq!(v["verdict"], false, "{v}");
+}
+
+/// THE GUARD MUST NOT SOFTEN GENERATION 1. An `IssuerRegistry` whose own log records no grant for the
+/// pair is a definite refusal and stays one — an honest `issue()` cannot pass `onlyWhitelisted` in
+/// that state, so the emptiness is evidence about the credential.
+///
+/// Without this, the guard could be written to return `Undetermined` for EVERY empty history and the
+/// test above would still pass while every never-granted signer quietly stopped being refused.
+#[tokio::test]
+async fn an_empty_history_on_a_generation_one_registry_is_still_a_definite_refusal() {
+    let (state, chain) = demo_state();
+    let rt = government_api::app::record_type_key(TRAVEL_CLEARANCE);
+    let signer = chain.signer_address().expect("demo signer");
+
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "79", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+    let doc = issued["wrappedDoc"].clone();
+
+    chain.set_grant_history(REGISTRY_ADDR, &rt, &signer, vec![]);
+
+    let (_, v) = call(&state, "POST", "/v1/verify", json!({ "wrapped_doc": doc })).await;
+    assert_eq!(
+        v["fragments"]["issuerWhitelistState"], "failed",
+        "an empty generation-1 log is evidence about the credential, not about us: {v}"
+    );
+    assert_eq!(v["fragments"]["issuerWhitelisted"], false, "{v}");
+    assert_eq!(v["verdict"], false, "{v}");
+}
+
+/// A PROBE THAT COULD NOT BE DELIVERED MUST NOT LEAVE THE REFUSAL STANDING.
+///
+/// The guard turns on a probe, and a probe has THREE outcomes rather than two: it answered
+/// (generation 2), the node executed it and the contract refused it (generation 1), or it never
+/// arrived. Only the second is evidence about the contract. Reading a timeout, a reset connection or
+/// a rate-limit response as "generation 1" hands the empty history back to `grant_in_force_at`, which
+/// correctly folds it to a definite refusal — so one transient becomes a forgery verdict against a
+/// genuine credential, produced by a read that never happened, on a route ANYONE can call without
+/// authenticating.
+///
+/// This pins the trait's CONTRACT. The Alloy error classification is pinned separately by
+/// `chain::tests::a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one`, because
+/// `MemChain` is a different `ChainClient` and cannot reach that code at all.
+#[tokio::test]
+async fn an_undelivered_generation_probe_is_undetermined_not_a_forgery_verdict() {
+    let (state, chain) = demo_state();
+    let rt = government_api::app::record_type_key(TRAVEL_CLEARANCE);
+    let signer = chain.signer_address().expect("demo signer");
+
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "80", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+    let doc = issued["wrappedDoc"].clone();
+
+    // Control: this document verifies today, so the change below is attributable to the probe.
+    let (_, v) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": doc.clone() }),
+    )
+    .await;
+    assert_eq!(v["verdict"], true, "control: {v}");
+
+    // An authority with an EMPTY grant history — exactly the state the guard is scoped to — whose
+    // generation probe cannot be delivered, so its vocabulary is unestablished.
+    const UNREACHABLE_PROBE_REGISTRY: &str = "0x00000000000000000000000000000000000000a3";
+    chain.set_governing_registry(ISSUER_ADDR, UNREACHABLE_PROBE_REGISTRY);
+    chain.set_grant_history(UNREACHABLE_PROBE_REGISTRY, &rt, &signer, vec![]);
+    chain.set_provider_probe_unreachable(UNREACHABLE_PROBE_REGISTRY);
+
+    let (_, v) = call(&state, "POST", "/v1/verify", json!({ "wrapped_doc": doc })).await;
+    assert_eq!(
+        v["fragments"]["issuerWhitelistState"], "unresolved",
+        "a probe that never arrived establishes nothing: {v}"
+    );
+    assert_ne!(
+        v["fragments"]["issuerWhitelistState"], "failed",
+        "must never accuse a credential over a read that did not happen: {v}"
+    );
+    assert!(
+        v["fragments"]["issuerWhitelisted"].is_null(),
+        "indeterminate is null, not false: {v}"
+    );
+    // Unresolved has never permitted a pass, and this must not have loosened that.
+    assert_eq!(v["verdict"], false, "{v}");
+}
+
 /// AUDIT FINDING (2026-07-27): the receipt QR encoded `https://gov.example/r/<id>` — NXDOMAIN — because
 /// three renderers built it from `issuer.domain`, a `did:web` IDENTITY, instead of a reachable host.
 ///

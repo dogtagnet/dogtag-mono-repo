@@ -142,6 +142,24 @@ Four sites: `stacks/vet/api/src/routes.rs:1463`, `stacks/vet/api/src/verify.rs:5
 `keccak256(recordType)` is never a `verificationKey` output, so `_verifierCapabilities[keccak256(recordType)][signer]` is `false` for **every genuine issuer signer**.
 Seven sites: `stacks/vet/api/src/routes.rs:549`, `:658`, `:969`, `:1258`, `:1308`; `stacks/government/api/src/routes.rs:702`; and `packages/ui`'s `isWhitelistedFor`, whose key is `recordTypeKey(...)` by construction.
 
+**That enumeration counted GETTERS only, and it is therefore incomplete.**
+A record-type key also travels as a LOG TOPIC: `Whitelisted(bytes32 indexed recordType, address indexed signer)` puts it in `topic1`, so the mandatory pillar's grant-history read is a record-type caller too, and fails against the successor for the same reason - only more quietly, because no call reverts and no answer looks wrong.
+`ProviderRegistry` records grants as `IssuanceCapabilitySet(service, signer, allowed)`, a different name and `topic0`, so that filter matches nothing and the fold's empty-history rule renders the miss as a definite forgery verdict.
+All five surfaces now guard it - the two Rust backends, `packages/ui`, and both mobile clients; see `docs/ISSUER_V2_OWNERSHIP.md` §8 for the guard, for the revert-versus-undelivered-probe split it rests on, and for what remains open.
+It reached the two backends first while §8 already claimed the guarantee globally, so read any surviving "both backends" wording as the narrower, superseded statement.
+Generalize the lesson rather than the list: **an inventory built by grepping for a getter name cannot see a consumer that reads the same key from an event**, which is the third way this document's own enumeration method has been wrong - after case and after prefix.
+
+**Status after the `isRecognizedIssuer` migration.**
+The getter sites above have moved, and where they did not, the reason is recorded at the call site:
+`vet routes.rs`'s issuance preflight and its `issuer/signers` matrix now ask `ChainClient::issuance_capability`, which resolves the authority from the RESOLVED CLONE's own `registry()` rather than from `ISSUER_REGISTRY_ADDR`, and dispatches to `canIssue(service, signer)` or the legacy getter by generation;
+the confirm-time re-check moved to the historical `whitelisted_at_issuance`, because a present-tense read there rejects a genuine, already-mined issuance whenever a key rotates between broadcast and confirm - which the C-12 freeze does to every generation-1 signer at once;
+and `vet routes.rs`'s factory-less `expectedSignerState` **cannot** be migrated at all, because every generation-2 issuance-axis read is service-scoped and that branch is defined by having no resolved clone to pass. It is the one surviving record-type-keyed read of `ISSUER_REGISTRY_ADDR`.
+`packages/ui`'s `isWhitelistedFor` stayed deliberately: its only consumer is the admin whitelist console, whose WRITE axis cannot move with it, and a console showing generation-2 state beside buttons that write generation 1 is worse than one uniformly a generation behind.
+
+**Not a preference, and the reason the title of that migration is only half right:** the split is BY QUESTION.
+A pre-issue gate takes `canIssue`, because `DogTagIssuerV2.issue` is gated by `onlyIssuanceCapable` == `canIssue` and a preflight on the wider `isRecognizedIssuer` passes where the write reverts.
+A verifier asking whether a credential was genuinely issued takes neither getter: it asks the past, from events.
+
 **The consequence, stated so nobody has to reconstruct it.**
 `vet routes.rs:1258` and `government routes.rs:702` **are** the mandatory issuer-whitelist pillar, and that pillar treats a definite `false` as an **authenticity failure**.
 Following the earlier instruction would therefore have **refused genuine credentials as forged, fleet-wide**.

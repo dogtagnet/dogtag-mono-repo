@@ -416,6 +416,52 @@ The consumers that must move together, all of which read the pillar from a verif
 * `crates/dogtag-standard-rs/src/verify.rs`
 * the two mobile importers, `RoaxRpc.issuerWhitelistPillar` and `RecordImporter.foldIssuerWhitelist`
 
+### CORRECTION (PR #127 superseded the paragraphs above): the pillar's blocker is an EVENT vocabulary, not a getter
+
+Everything above was written while the pillar read the CURRENT-state getter.
+It no longer does.
+PR #127 moved it to the historical question - was a grant in force AT THE BLOCK THIS ROOT WAS ANCHORED - reconstructed from `Whitelisted`/`Delisted` logs, so any third party with an RPC reaches the same verdict without trusting our code.
+Three consequences, and the middle one is a live defect rather than a wording problem.
+
+**`isRecognizedIssuer` is NOT the pillar's migration target, and `ProviderRegistry.sol`'s own doc comment said otherwise until this correction.**
+That contract landed 2026-07-30 (#111) and #127 landed 2026-07-31, so the comment describes a pillar that had already changed.
+`_isRecognizedIssuer` is `s.providerId != bytes20(0) && _issuanceCapabilities[serviceAddress][signer]` - current storage, no block, no root.
+Handing its boolean to the pillar would revert #127 under a new name.
+
+**The pillar is ITSELF a record-type caller, via LOGS rather than a getter, and against generation 2 it produces a confident forgery verdict.**
+`Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in `topic1`, so the grant query fails against the successor for exactly the reason `docs/CLIENT_REPOINT.md` gives for the getter - only more quietly, because nothing reverts.
+`ProviderRegistry` records grants as `IssuanceCapabilitySet(service, signer, allowed)`: different name, different `topic0`, different argument shape.
+That filter therefore matches NOTHING there, and the fold's empty-history rule - deliberately a definite `NotAuthorized`, because on generation 1 an empty log really is evidence that `onlyWhitelisted` could not have passed - turns "we asked the wrong contract in the wrong language" into "this credential is forged".
+It reaches `POST /v1/verify`, which is unauthenticated.
+
+**What shipped, and what is still open.**
+All five surfaces now guard that rule: an empty history is a definite refusal ONLY when the authority positively speaks generation 1, established by probing `isRecognizedIssuer` - a selector `IssuerRegistry` provably does not implement, since its entire external surface is `whitelistFor`/`delistFor`/`isWhitelistedFor` and it has no fallback.
+The probe's ANSWER is discarded; it identifies the generation and nothing else.
+It is scoped to the EMPTY case because a non-empty history is itself proof the authority speaks generation 1, so the extra call lands on the refusal path only and cannot perturb any answer #127 established.
+A generation-2 root now reports **could not determine**, never a forgery verdict.
+
+Read "all five" as a correction rather than as the original claim.
+It first shipped on the two Rust backends alone while this section already stated the guarantee globally - `packages/ui/src/wallet/contracts.ts` (`authorityGenerationOf`, consumed by `verifyCredential.ts`), Kotlin `RoaxRpc.grantAtIssuance` and Swift `RoaxRpc.grantAtIssuance` all still folded an empty history to a definite refusal.
+A claim ahead of its code is its own defect: the gap was set to surface at the C-9/C-10 client repoint, as a genuine credential refused as forged on the vet/groomer verify panel, the admin bench and both mobile importers, rather than at review.
+The SDK path needs no sixth change - `crates/dogtag-standard-rs/src/verify.rs` reaches the chain through vet's `ChainRpcAdapter`, which delegates to `whitelisted_at_issuance` and inherits the guard.
+
+**A REVERT and an UNDELIVERED PROBE are different facts, and only the first licenses the generation-1 conclusion.**
+The guard shipped on all three Rust sites as `.is_ok()` / `if let Ok(..)`, which reads a timeout, a reset connection or a rate-limit response as "the contract refused it" - could-not-check rendered as a definite answer, inside the guard built to remove exactly that.
+On the pillar a transport failure leaves the definite `NotAuthorized` standing, i.e. a forgery accusation from a read that never happened.
+In `issuance_capability` it is worse: the fall-through asks the LEGACY getter, which `ProviderRegistry` *does* implement and answers `false` for off the orthogonal VERIFY axis at a zero `msg.sender`, so a genuinely authorised generation-2 signer is refused with 403 "address not approved for this recordType yet".
+**A node-level error is not a contract answer either**, and that is the same defect one level in.
+The first cut keyed on "the node returned a JSON-RPC error for a request it processed" - alloy's `RpcError::ErrorResp`, mobile's "HTTP 200 carrying an `error` member", the web's `ContractFunctionRevertedError`.
+A `-32005` rate limit, a `-32603` internal error, a `-32601` method-not-found and a `-32002` resource-unavailable all satisfy that, and none is evidence the contract executed anything - so one of them left an empty grant history standing as a definite forgery verdict, on the unauthenticated `POST /v1/verify` where rate limiting is realistic rather than hypothetical.
+Only an EXECUTION REVERT licenses the generation-1 conclusion, which is also exactly the signal wanted: `IssuerRegistry` has no `isRecognizedIssuer` and no fallback, so its dispatcher reverts.
+The rule is `code == 3 || message contains "execution reverted"`, now identical on all four surfaces: Rust `answered_with_execution_revert`, Kotlin and Swift `isExecutionRevert`, and viem's `ExecutionRevertedError`, whose `getNodeError` keys on that same pair.
+`ErrorPayload::as_revert_data` is deliberately not the discriminator - it requires revert DATA, and this revert is a bare dispatcher refusal carrying none (`"data":"0x"`, confirmed against ROAX on 2026-07-31 with the real generation-1 registry).
+The web probe uses `client.call` rather than `readContract` for the same reason: `getContractError` folds both code `3` and `-32603` into `ContractFunctionRevertedError`, so walking for that class read an internal error as a refusal.
+`MemChain` is a different `ChainClient` and cannot reach the alloy code at all, so the classifier is extracted (`answered_with_error` / `generation_from_probe`) and pinned by `chain::tests`, while the MemChain cases pin the trait's contract; `scripts/verify-issuance-authority-mutations.sh` mutates the two separately.
+
+Still open, and it is what the cutover actually needs: **answering the historical question for generation 2 means decoding `IssuanceCapabilitySet`**, mirrored across all five surfaces above.
+That is not attempted here - `ProviderRegistry` has no deployed address, so a generation-2 event decoder could not be validated against anything, and the mirrored fold is #127-scale work (36 files, ~3,400 insertions).
+Until it lands, generation-2 credentials are honestly unresolvable rather than dishonestly refused, and `stacks/vet/api/tests/issuance_authority_migration.rs` pins that a generation-2 issuance fails LOUDLY at confirm rather than stranding a record silently.
+
 **Sequencing: this must land before a generation-2 clone anchors anything a consumer will verify.**
 Unlike the deferred `name()` readers of §6 - where the guarantee this slice ships is that there is no provider-chosen string to mistake - an unreconciled pillar does not degrade to "identity unavailable"; it refuses genuine credentials.
 None of those files is touched here, and nothing in this branch wires a consumer to either contract: the pair is built and undeployed, so the obligation is recorded for the cutover rather than discharged in this slice.

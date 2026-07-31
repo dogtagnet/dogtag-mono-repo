@@ -40,7 +40,7 @@ use serde_json::{json, Value};
 
 use crate::app::{self, AppState};
 use crate::auth::{self, ShareClaims};
-use crate::chain::GrantAtIssuance;
+use crate::chain::{GrantAtIssuance, IssuanceCapability};
 use crate::microchip::{MicrochipCheck, NotComparable as MicrochipNotComparable};
 use crate::store::{ApptReplica, Record, RecordStatus, VerifySession};
 
@@ -546,16 +546,30 @@ async fn prepare(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
     let rt_key = app::rt_key(&body.record_type);
+    // PRESENT TENSE, deliberately: "may this signer anchor a new root right now". Asked
+    // service-scoped against the clone we are about to write to, so the authority is that clone's
+    // own `registry()` and this preflight refuses exactly what the write would refuse — on either
+    // generation, with no configured registry address involved. See
+    // `ChainClient::issuance_capability`.
     match st
         .chain
-        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, &signer_addr)
+        .issuance_capability(&issuer_addr, &rt_key, &signer_addr)
         .await
     {
-        Ok(true) => {}
-        Ok(false) => {
+        Ok(IssuanceCapability::Authorized) => {}
+        Ok(IssuanceCapability::NotAuthorized) => {
             return err(
                 StatusCode::FORBIDDEN,
                 "address not approved for this recordType yet",
+            )
+        }
+        // Could not determine is neither verdict. Refusing the issuance is right — we will not spend
+        // gas on a write we cannot show will land — but it must not be reported as the signer's
+        // fault, which is what the FORBIDDEN arm above says.
+        Ok(IssuanceCapability::Undetermined) => {
+            return err(
+                StatusCode::BAD_GATEWAY,
+                "preflight: could not determine issuance authority for this issuer contract",
             )
         }
         Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("preflight: {e}")),
@@ -653,18 +667,37 @@ async fn confirm_inner(st: &AppState, record_id: &str, tx_hash: &str) -> Result<
     }
     // DERIVE signer from the tx (never the body).
     let signer = view.from.to_lowercase();
-    // authorized at confirm time.
+    // Authorized WHEN IT ANCHORED — not "authorized now".
+    //
+    // This is the same defect #127 fixed in the verification pillar, reached from the other side. The
+    // transaction under confirmation has already mined, and `DogTagIssuer.issue` is `onlyWhitelisted`,
+    // so the chain itself already established this signer's authority at that moment. Asking the
+    // current-state getter here therefore cannot make the check stronger, and it can make it wrong:
+    // delisting is forward-only, so a signer rotated between broadcast and confirm — an ordinary key
+    // rotation, or the C-12 cutover freeze itself — would see its own genuine, mined issuance
+    // rejected, with the record stranded in `Prepared` and no way to advance it.
+    //
+    // Asking the historical question also makes this path generation-correct for free, since
+    // `whitelisted_at_issuance` resolves the authority off the clone rather than off configuration.
     let rt_key = app::rt_key(&r.record_type);
     match st
         .chain
-        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, &signer)
+        .whitelisted_at_issuance(&issuer_addr, &rt_key, &signer, &r.root)
         .await
     {
-        Ok(true) => {}
-        Ok(false) => {
+        Ok(GrantAtIssuance::Authorized) => {}
+        Ok(GrantAtIssuance::NotAuthorized) => {
             return Err(err(
                 StatusCode::FORBIDDEN,
-                "signer not whitelisted at confirm",
+                "signer was not whitelisted when this root was anchored",
+            ))
+        }
+        // Never a pass and never an accusation. The remaining binding checks below still have to
+        // hold, so a confirm is not waved through on an unanswerable authority.
+        Ok(GrantAtIssuance::Undetermined) => {
+            return Err(err(
+                StatusCode::BAD_GATEWAY,
+                "whitelist: could not determine the issuing signer's authority at anchoring",
             ))
         }
         Err(e) => return Err(err(StatusCode::BAD_GATEWAY, &format!("whitelist: {e}"))),
@@ -962,15 +995,23 @@ async fn issuer_signers(State(st): State<AppState>, headers: HeaderMap) -> Resp 
         return ok(json!({ "signers": [] }));
     }
     let active = st.custody.active_address().unwrap_or_default();
-    // whitelist matrix across the configured record types.
+    // Issuance-eligibility matrix across the configured record types. Same present-tense question as
+    // the prepare preflight, asked the same service-scoped way, so the console cannot report a signer
+    // as able to issue where the preflight would refuse it.
+    //
+    // `whitelisted` is now TRI-state on the wire: `true` / `false` / `null`. It was a bare bool
+    // defaulting to `false` on any read failure, which stated "this signer is not approved" on the
+    // strength of a read that never happened — an operator's own RPC blip rendered as a permissions
+    // problem, and the very collapse this slice exists to remove. Consumers must branch on `null`
+    // first; `issuer/signers` is operator-gated and read-only, so no gate depends on it.
     let mut matrix = Vec::new();
-    for rt in st.cfg.issuer_addrs.keys() {
+    for (rt, issuer_addr) in st.cfg.issuer_addrs.iter() {
         let key = app::rt_key(rt);
-        let wl = st
-            .chain
-            .is_whitelisted_for(&st.cfg.issuer_registry_addr, &key, &active)
-            .await
-            .unwrap_or(false);
+        let wl = match st.chain.issuance_capability(issuer_addr, &key, &active).await {
+            Ok(IssuanceCapability::Authorized) => Some(true),
+            Ok(IssuanceCapability::NotAuthorized) => Some(false),
+            Ok(IssuanceCapability::Undetermined) | Err(_) => None,
+        };
         matrix.push(json!({ "recordType": rt, "address": active, "whitelisted": wl }));
     }
     ok(json!({ "activeSigner": active, "matrix": matrix }))
@@ -1425,6 +1466,23 @@ async fn verify_credential(
     // trusted anchor and with it the historical question. Closing it properly means reading the grant
     // history from THIS deployment's registry while taking the anchoring point from the document's
     // contract; that is a real design, not a tweak, and it is not this change.
+    //
+    // IT IS ALSO THE ONE RECORD-TYPE CALLER THAT CANNOT BE MIGRATED AT ALL, for a reason independent
+    // of the one above: every generation-2 issuance-axis read is SERVICE-SCOPED —
+    // `isRecognizedIssuer(service, signer)`, `canRevoke(service, signer)`, `canIssue(service, signer)`
+    // all take a service address as their first argument — and this branch is defined by there being
+    // no resolved clone to pass. There is no service address here, so the successor cannot be asked
+    // this question at ALL, let alone asked it for the same inputs. Supplying `documentStore` to
+    // satisfy the signature would be strictly worse than the current read: it hands the attacker the
+    // choice of which contract answers, which is the substitution the whole anchor exists to close.
+    //
+    // So this stays on `isWhitelistedFor` against this deployment's own configured registry. The
+    // consequence for the cutover is stated plainly rather than left to be discovered: this is the
+    // ONE surviving record-type-keyed read of `ISSUER_REGISTRY_ADDR`, so that variable cannot be
+    // repointed to a `ProviderRegistry` while a factory-less vet deployment exists — the successor
+    // answers this key off `_verifierCapabilities` and would report `unanchoredNotWhitelisted`, a
+    // definite failure, for every genuine signer. A deployment WITH `FACTORY_ADDR` never reaches
+    // here, so configuring the factory is also what clears this blocker.
     let expected_signer_state = match (resolved_signer.as_deref(), want_signer) {
         (_, None) => "notAsserted",
         (Some(actual), Some(want)) if want.eq_ignore_ascii_case(actual) => "matched",

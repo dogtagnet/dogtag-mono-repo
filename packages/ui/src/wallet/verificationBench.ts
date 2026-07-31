@@ -7,6 +7,7 @@ import { flattenData, parsePacked } from "@dogtag/standard/wrap";
 import type { WrappedDoc } from "@dogtag/standard/types";
 import type { VerifyCredentialResp } from "../api/types";
 import {
+  authorityGenerationOf,
   DEPLOYED_ADDRESSES,
   ZERO_ADDRESS,
   compareLogPoints,
@@ -17,6 +18,7 @@ import {
   sortLogPoints,
   UNPOSITIONED_LOG,
   whitelistGrantHistory,
+  type AuthorityGeneration,
   type LogPoint,
   type UnpositionedLog,
   type WhitelistGrantEvent,
@@ -334,6 +336,17 @@ export function recordingReader(inner: IssuerChainReader): {
         () => inner.grantHistory(registry, key, signer),
         describeGrantHistory,
       ),
+    // Recorded like every other read, and NOT omitted because it is "only" a discriminator: when the
+    // grant history is empty this probe is what decides between a definite refusal and an unresolved
+    // pillar, so a report that showed the refusal without it would be citing a fold whose governing
+    // premise never appears in the evidence.
+    authorityGeneration: (registry, issuerAddr, signer) =>
+      record(
+        "authorityGeneration",
+        registry,
+        [issuerAddr, signer],
+        () => inner.authorityGeneration(registry, issuerAddr, signer),
+      ),
   };
   return { reader, reads };
 }
@@ -385,6 +398,21 @@ export interface GrantHistoryReader {
     recordTypeKey: string,
     signer: string,
   ): Promise<WhitelistGrantEvent[] | UnpositionedLog>;
+  /**
+   * Which generation's vocabulary `registryAddr` speaks, probed only when {@link grants} came back
+   * EMPTY - the one case where the emptiness is ambiguous between "generation 1, never granted" and
+   * "generation 2, whose grants this filter cannot match".
+   *
+   * This row folds the history itself rather than copying the verifier's answer, so it needs its own
+   * probe: without one it prints the definite refusal for a generation-2 authority even while the
+   * gating row above correctly reports unresolved - the forgery accusation relocated one row down,
+   * where a reader would take it as the reason the credential is bad.
+   */
+  authorityGeneration(
+    registryAddr: string,
+    cloneAddr: string,
+    signer: string,
+  ): Promise<AuthorityGeneration>;
 }
 
 export interface BenchInput
@@ -1262,6 +1290,15 @@ async function whitelistedAtIssuanceCheck(
         defaultRpcUrl: input.defaultRpcUrl,
         toBlock: input.blockNumber,
       }),
+    authorityGeneration: (registry, cloneAddr, who) =>
+      authorityGenerationOf({
+        registryAddr: registry,
+        issuerAddr: cloneAddr,
+        signer: who,
+        rpcUrl: input.rpcUrl,
+        defaultRpcUrl: input.defaultRpcUrl,
+        blockNumber: input.blockNumber,
+      }),
   };
 
   let issuedPoint: LogPoint | null | UnpositionedLog;
@@ -1355,6 +1392,51 @@ async function whitelistedAtIssuanceCheck(
       "At least one `Whitelisted`/`Delisted` log for this pair carried no `blockNumber`/`logIndex` - viem's shape for a log it considers pending. The fold takes the LAST event at or before the anchoring point, so an event that cannot be placed can change the answer: positioned at the start of the chain a delisting sorts before every issuance, and dropped it stops refusing one. Neither is a reading we have.",
       evidence,
     );
+  }
+
+  // An EMPTY history is a definite refusal ONLY if this authority speaks this vocabulary, and this row
+  // needs the guard in its OWN right: it folds the history itself rather than copying the verifier's
+  // verdict, so leaving it unguarded prints "recorded NO grant" for a generation-2 authority while the
+  // gating row above correctly says unresolved - the forgery accusation relocated one row down, which
+  // a reader takes as the reason the credential is bad.
+  //
+  // The read above is RECORD-TYPE-KEYED (`Whitelisted(bytes32 indexed recordType, address indexed
+  // signer)` puts the key in `topic1`), and `ProviderRegistry` records `IssuanceCapabilitySet(service,
+  // signer, allowed)` instead, so that filter matches nothing there.
+  //
+  // Scoped on `history.length`, NOT on "no event at or before the anchoring": a non-empty history is
+  // itself proof this authority speaks generation 1, so a history whose events all sit AFTER the
+  // anchoring is unambiguous and must keep its definite refusal.
+  if (history.length === 0) {
+    const generation = await reader
+      .authorityGeneration(governing, clone, signer)
+      // The live probe answers `"undetermined"` rather than throwing; a fake that throws means the
+      // same thing, and neither may become a refusal.
+      .catch((): AuthorityGeneration => "undetermined");
+    reads.push({
+      method: "authorityGeneration",
+      contract: governing,
+      args: [clone, signer],
+      outcome: "ok",
+      value: generation,
+    });
+    if (generation !== "legacy") {
+      return unavailable(
+        "The authority's grant log is empty, and it could not be established that this authority records grants in that vocabulary at all.",
+        generation === "successor"
+          ? "`isRecognizedIssuer` answered here, so this is a generation-2 `ProviderRegistry`, which records grants as `IssuanceCapabilitySet(service, signer, allowed)` - a different event with a different `topic0`. The `Whitelisted`/`Delisted` filter above therefore matches nothing REGARDLESS of whether this signer was authorised, so the empty log is evidence about the query rather than about the credential. Answering the historical question here needs an `IssuanceCapabilitySet` decoder, which is not built - see `docs/ISSUER_V2_OWNERSHIP.md` §8."
+          : "The generation probe (`isRecognizedIssuer`) neither answered nor was refused by the contract, so which vocabulary this authority records grants in is unknown. An empty `Whitelisted`/`Delisted` log is a definite refusal only when the authority is known to speak that vocabulary; here it may simply be the wrong question.",
+        [
+          ...evidence,
+          lastReadEvidence(
+            reads,
+            "authorityGeneration",
+            "ProviderRegistry.isRecognizedIssuer(service, signer)",
+            "Authority vocabulary",
+          ),
+        ],
+      );
+    }
   }
 
   // THE fold, and it is the VERIFIER'S OWN (`contracts.ts` `grantInForceAt`) rather than a second copy

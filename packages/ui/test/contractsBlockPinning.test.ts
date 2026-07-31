@@ -9,10 +9,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const readContract = vi.fn(async () => "0x0000000000000000000000000000000000000001");
 const getLogs = vi.fn(async () => [] as unknown[]);
+// The generation probe is a RAW `call`, deliberately - see `answeredWithExecutionRevert`. Stubbing it
+// separately from `readContract` is what lets these cases pin WHICH of the two the probe uses.
+const call = vi.fn(async () => ({ data: `0x${"0".repeat(63)}1` }));
 
 vi.mock("viem", async (importActual) => {
   const actual = await importActual<typeof import("viem")>();
-  return { ...actual, createPublicClient: () => ({ readContract, getLogs }) };
+  return { ...actual, createPublicClient: () => ({ readContract, getLogs, call }) };
 });
 
 // Imported AFTER the mock is registered so the readers bind to the stubbed client.
@@ -29,6 +32,7 @@ const {
   rootIssuedAtLog,
   whitelistGrantHistory,
   sortLogPoints,
+  authorityGenerationOf,
   UNPOSITIONED_LOG,
 } = await import("../src/wallet/contracts");
 const { roaxIssuerChainReader } = await import("../src/wallet/verifyCredential");
@@ -74,6 +78,27 @@ describe("every reader forwards blockNumber to the eth_call", () => {
       expect(lastCall()?.blockNumber).toBeUndefined();
     });
   }
+
+  it("authorityGenerationOf pins its probe to the block it was given", async () => {
+    // The probe decides whether an EMPTY grant history is a refusal, so it must observe the same
+    // snapshot as the verdict beside it - a generation established at `latest` could disagree with a
+    // history read at a pinned height.
+    await authorityGenerationOf({ registryAddr: ADDR, issuerAddr: ADDR, signer: ADDR, rpcUrl: url(), blockNumber: AT });
+    expect(call.mock.calls.at(-1)?.[0]?.blockNumber).toBe(AT);
+    await authorityGenerationOf({ registryAddr: ADDR, issuerAddr: ADDR, signer: ADDR, rpcUrl: url() });
+    expect(call.mock.calls.at(-1)?.[0]?.blockNumber).toBeUndefined();
+  });
+
+  it("authorityGenerationOf probes through `call`, never `readContract`", async () => {
+    // WHICH method is a correctness question, not a style one: `readContract` routes the failure
+    // through `getContractError`, which folds a -32603 internal error into the same class as a revert
+    // - so the probe would read the node's own error as evidence that the contract is generation 1.
+    readContract.mockClear();
+    call.mockClear();
+    await authorityGenerationOf({ registryAddr: ADDR, issuerAddr: ADDR, signer: ADDR, rpcUrl: url() });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(readContract).not.toHaveBeenCalled();
+  });
 
   it("issuerDomainClaimOf pins its read too", async () => {
     readContract.mockResolvedValueOnce({
