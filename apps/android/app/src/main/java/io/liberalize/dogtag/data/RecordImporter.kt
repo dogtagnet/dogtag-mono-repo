@@ -14,9 +14,12 @@ import uniffi.dogtag_standard.verifyIntegrity
  *   2. ISSUANCE (on-chain): `DogTagIssuer.isValid(merkleRoot)` over `issuer.documentStore` via ROAX RPC.
  *   3. ISSUER WHITELIST (on-chain): resolve the issuing clone from the app's OWN
  *      `DogTagIssuerFactory.rootIssuer(merkleRoot)`, then `recordType()` + `issuedBy(merkleRoot)` on
- *      THAT clone -> `IssuerRegistry.isWhitelistedFor` against the app's OWN bundled registry. This is
- *      what catches a forged `issuer` block, which sits outside the Merkle root and therefore passes
- *      pillars 1 and 2 unchanged.
+ *      THAT clone -> was that signer authorised for that record type AT THE BLOCK the root was
+ *      anchored, read from the grant log of the registry the CLONE names (`registry()`), never the
+ *      app's own bundled one. This is what catches a forged `issuer` block, which sits outside the
+ *      Merkle root and therefore passes pillars 1 and 2 unchanged. Delisting is forward-only
+ *      (`DogTagIssuer.sol:82`), so a signer rotated since issuance does not invalidate what it
+ *      anchored while it held the grant.
  *
  * Every pillar is tri-state and none may be skipped: a pillar that does not resolve yields an
  * indeterminate verdict, never a pass.
@@ -130,8 +133,9 @@ object RecordImporter {
         // Integrity and issuance together still accept a forged authority: the `issuer` block is
         // outside the Merkle root, so relabelling the issuer — or pointing `documentStore` at a
         // contract that returns true from `isValid` — passes both. This pillar resolves the issuing
-        // clone from the app's OWN factory, then asks THAT clone what record type it holds and who
-        // issued the root, and checks that signer against the app's own bundled registry.
+        // clone from the app's OWN factory, then asks THAT clone what record type it holds, who
+        // issued the root, and — off the clone's own `registry()`, never off the bundled registry —
+        // whether that signer was authorised at the block the root was anchored.
         val whitelist = RoaxRpc.issuerWhitelistPillar(
             rpcUrl, expectedChainId, issuerRegistry, issuerFactory,
             doc.documentStore, doc.merkleRoot, doc.recordType,
@@ -184,9 +188,12 @@ object RecordImporter {
      * only make a verdict stricter, never looser, so it composes with whatever that mapping decides —
      * including a stricter future mapping (e.g. once an unresolved chain read stops yielding VALID).
      *
-     * - [RoaxRpc.Result.Valid]   the issuing signer is authorized: the verdict stands as-is.
-     * - [RoaxRpc.Result.Invalid] resolved, and that signer may NOT issue this record type: a real
-     *   authenticity failure, so INVALID.
+     * - [RoaxRpc.Result.Valid]   the issuing signer HELD the capability when it anchored this root:
+     *   the verdict stands as-is. Whether it still holds it today is deliberately not asked -
+     *   delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the retroactive lever), so
+     *   a current-state read would refuse every credential a rotated signer ever issued.
+     * - [RoaxRpc.Result.Invalid] resolved, and the governing registry's own log shows no grant in
+     *   force at that moment: a real authenticity failure, so INVALID.
      * - [RoaxRpc.Result.Unknown] the pillar did not resolve. An unanswered check is never a passed
      *   check, so a would-be VALID degrades to UNVERIFIED; anything already worse stands.
      */
@@ -219,7 +226,7 @@ object IssuerWhitelist {
         when (pillar) {
             is RoaxRpc.Result.Valid -> verdict to reason
             is RoaxRpc.Result.Invalid ->
-                "INVALID" to "the address that issued this record is not authorised to issue this record type"
+                "INVALID" to "the address that issued this record was not authorised to issue this record type when it did"
             is RoaxRpc.Result.Unknown ->
                 if (verdict == "VALID") {
                     "UNVERIFIED" to "could not establish who issued this record (${pillar.reason})"

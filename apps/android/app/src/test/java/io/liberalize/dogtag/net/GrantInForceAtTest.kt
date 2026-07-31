@@ -1,0 +1,94 @@
+package io.liberalize.dogtag.net
+
+import io.liberalize.dogtag.net.RoaxRpc.GrantAtIssuance
+import io.liberalize.dogtag.net.RoaxRpc.GrantEvent
+import io.liberalize.dogtag.net.RoaxRpc.LogPoint
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+/**
+ * DELISTING IS FORWARD-ONLY, at the fold the mobile issuer-whitelist pillar rests on.
+ *
+ * `DogTagIssuer.sol:82` states the rule in the contract's own source and `adminRevoke` is the
+ * retroactive lever, so a credential anchored while its signer held the grant stays genuine when that
+ * grant is later withdrawn - an ordinary key rotation, a retirement, a lapsed practice licence. Before
+ * this rule moved, the pillar read `IssuerRegistry.isWhitelistedFor`, a CURRENT-state getter, so any
+ * such withdrawal retroactively rendered every credential that signer had ever issued a forgery.
+ *
+ * `RoaxRpc.grantInForceAt` is a pure mirror of Rust `dogtag_standard::verify::grant_in_force_at`,
+ * TS `grantInForceAt` and Swift `Net.grantInForceAt`. It is the one part of the mobile pillar that can
+ * be exercised without a chain, so it is where the ordering rule is pinned; the reads around it need a
+ * live RPC and are covered by the backends' and the web suites' equivalents.
+ */
+class GrantInForceAtTest {
+
+    private val anchored = LogPoint(blockNumber = 200, logIndex = 3)
+    private fun granted(block: Long) = GrantEvent(LogPoint(block, 0), granted = true)
+    private fun delisted(block: Long) = GrantEvent(LogPoint(block, 0), granted = false)
+
+    @Test
+    fun aSignerDelistedAfterTheAnchoringWasStillAuthorisedWhenItActed() {
+        assertEquals(
+            GrantAtIssuance.Authorized,
+            RoaxRpc.grantInForceAt(listOf(granted(100), delisted(700)), anchored),
+        )
+    }
+
+    @Test
+    fun aSignerDelistedBeforeTheAnchoringWasNot() {
+        assertEquals(
+            GrantAtIssuance.NotAuthorized,
+            RoaxRpc.grantInForceAt(listOf(granted(100), delisted(199)), anchored),
+        )
+    }
+
+    /** The mirror of the forward-only rule: a later grant cannot authorise an earlier anchoring. */
+    @Test
+    fun aGrantIssuedAfterTheAnchoringDoesNotAuthoriseItRetroactively() {
+        assertEquals(
+            GrantAtIssuance.NotAuthorized,
+            RoaxRpc.grantInForceAt(listOf(granted(201)), anchored),
+        )
+    }
+
+    /**
+     * An empty history is an ANSWER - the registry recorded no grant - not an absence of one. The
+     * could-not-read case never reaches this function; the caller returns `Undetermined` for it.
+     */
+    @Test
+    fun anEmptyHistoryIsADefiniteRefusalNotAnUndeterminedOne() {
+        assertEquals(GrantAtIssuance.NotAuthorized, RoaxRpc.grantInForceAt(emptyList(), anchored))
+    }
+
+    /**
+     * `logIndex` is block-scoped and therefore comparable ACROSS contracts within one block, which is
+     * the only reason a registry grant and a clone's issuance landing in the same block can be
+     * sequenced at all. Inclusive at the anchoring point.
+     */
+    @Test
+    fun grantsAndAnchoringsInOneBlockAreSequencedByLogIndex() {
+        fun at(logIndex: Long, granted: Boolean) =
+            GrantEvent(LogPoint(anchored.blockNumber, logIndex), granted)
+
+        assertEquals(
+            GrantAtIssuance.Authorized,
+            RoaxRpc.grantInForceAt(listOf(at(anchored.logIndex, true)), anchored),
+        )
+        assertEquals(
+            GrantAtIssuance.Authorized,
+            RoaxRpc.grantInForceAt(listOf(at(0, true), at(anchored.logIndex + 1, false)), anchored),
+        )
+        assertEquals(
+            GrantAtIssuance.NotAuthorized,
+            RoaxRpc.grantInForceAt(listOf(at(0, true), at(anchored.logIndex - 1, false)), anchored),
+        )
+    }
+
+    /** The fold takes the LAST event at or before the anchoring, whatever order it arrives in. */
+    @Test
+    fun theAnswerIsTheLastEventAtOrBeforeTheAnchoringRegardlessOfInputOrder() {
+        val events = listOf(delisted(199), granted(100), granted(150))
+        assertEquals(GrantAtIssuance.NotAuthorized, RoaxRpc.grantInForceAt(events, anchored))
+        assertEquals(GrantAtIssuance.NotAuthorized, RoaxRpc.grantInForceAt(events.reversed(), anchored))
+    }
+}

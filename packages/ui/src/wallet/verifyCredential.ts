@@ -7,16 +7,23 @@ import type { WrappedDoc } from "@dogtag/standard/types";
 import type { VerifyCredentialResp } from "../api/types";
 import {
   DEPLOYED_ADDRESSES,
+  grantInForceAt,
   isRootRevoked,
   isRootValid,
   issuedAtOf,
   issuedByOf,
-  isWhitelistedFor,
+  issuerRegistryOf,
   recordTypeKey,
   recordTypeOf,
+  rootIssuedAtLog,
   rootIssuerOf,
+  UNPOSITIONED_LOG,
+  whitelistGrantHistory,
   ZERO_ADDRESS,
   ZERO_BYTES32,
+  type LogPoint,
+  type UnpositionedLog,
+  type WhitelistGrantEvent,
 } from "./contracts";
 
 /**
@@ -58,8 +65,38 @@ export interface IssuerChainReader {
   isRevoked(issuerAddr: string, root: string): Promise<boolean>;
   /** DogTagIssuer.issuedBy(root) - the H-1 originator, zero address when never issued here. */
   issuedBy(issuerAddr: string, root: string): Promise<string>;
-  /** IssuerRegistry.isWhitelistedFor(recordTypeKey, signer). */
-  isWhitelistedFor(registryAddr: string, recordTypeKey: string, signer: string): Promise<boolean>;
+  /**
+   * DogTagIssuer.registry() - the ONE registry whose `_wl` mapping `onlyWhitelisted` consults, and
+   * therefore the only authority whose grant log answers for this contract's issuances. Written once
+   * in `initialize` from the factory's own `immutable registry`, with no setter, so for a
+   * factory-resolved clone it is as anchored as the clone itself.
+   */
+  issuerRegistry(issuerAddr: string): Promise<string>;
+  /**
+   * DogTagIssuer.RootIssued(root) - where this root was anchored, as a `(blockNumber, logIndex)`
+   * point, or `null` when this contract emitted no such event. `issuedAt` is a unix TIMESTAMP and
+   * cannot be compared against a log's height without a timestamp->block search.
+   *
+   * {@link UNPOSITIONED_LOG} when the node returned an anchoring log it gave no position - a third
+   * outcome, never folded into either neighbour: `null` says the chain emitted nothing, while this
+   * says we could not read where it emitted.
+   */
+  rootIssuedAt(
+    issuerAddr: string,
+    root: string,
+  ): Promise<LogPoint | null | UnpositionedLog>;
+  /**
+   * IssuerRegistry.Whitelisted/Delisted(recordTypeKey, signer) - the full grant history for one pair,
+   * oldest first. An empty array is a real answer ("no grant was ever recorded"); a read that FAILS
+   * rejects, so the caller keeps that apart from "the log could not be reached"; and
+   * {@link UNPOSITIONED_LOG} is the third, when some grant carried no position and so cannot be
+   * sequenced against the anchoring point.
+   */
+  grantHistory(
+    registryAddr: string,
+    recordTypeKey: string,
+    signer: string,
+  ): Promise<WhitelistGrantEvent[] | UnpositionedLog>;
 }
 
 /**
@@ -90,14 +127,20 @@ export function roaxIssuerChainReader(
       isRootRevoked({ issuerAddr, root, rpcUrl, defaultRpcUrl, blockNumber }),
     issuedBy: (issuerAddr, root) =>
       issuedByOf({ issuerAddr, root, rpcUrl, defaultRpcUrl, blockNumber }),
-    isWhitelistedFor: (registryAddr, key, address) =>
-      isWhitelistedFor({
+    issuerRegistry: (issuerAddr) =>
+      issuerRegistryOf({ issuerAddr, rpcUrl, defaultRpcUrl, blockNumber }),
+    // The log reads share the report's own upper bound, so the whole answer is one snapshot: a grant
+    // landing mid-verification cannot change a verdict printed under an earlier block.
+    rootIssuedAt: (issuerAddr, root) =>
+      rootIssuedAtLog({ issuerAddr, root, rpcUrl, defaultRpcUrl, toBlock: blockNumber }),
+    grantHistory: (registryAddr, key, signer) =>
+      whitelistGrantHistory({
         registryAddr,
         recordTypeKey: key,
-        address,
+        signer,
         rpcUrl,
         defaultRpcUrl,
-        blockNumber,
+        toBlock: blockNumber,
       }),
   };
 }
@@ -119,16 +162,18 @@ export interface VerifyCredentialOnchainArgs {
    */
   issuerAddr?: string;
   /**
-   * IssuerRegistry address for the whitelist read; defaults to the deployed ROAX registry. A MATCHED
-   * PAIR with {@link VerifyCredentialOnchainArgs.factoryAddr}: a clone is gated by its OWN
-   * `registry()`, so overriding one axis alone asks a registry about a signer resolved through a
-   * factory it does not govern.
+   * DEPRECATED for this function, and deliberately IGNORED: the issuer-whitelist pillar reads the
+   * governing registry off the resolved clone's own `registry()`, because `IssuerRegistry._wl` and
+   * its events are per-CONTRACT and only that instance's log can answer for this contract's
+   * issuances. Honouring an override here would let a mis-paired client find no grant and print a
+   * definite refusal of a genuine credential.
+   *
+   * Kept on the type because callers still pass it and other surfaces (the bench's
+   * `registry-governs-issuer` row) legitimately compare it against the governing one to diagnose a
+   * mis-paired configuration.
    */
   registryAddr?: string;
-  /**
-   * DogTagIssuerFactory address used to resolve the issuing clone; defaults to the ROAX factory.
-   * Matched pair with {@link VerifyCredentialOnchainArgs.registryAddr} - see there.
-   */
+  /** DogTagIssuerFactory address used to resolve the issuing clone; defaults to the ROAX factory. */
   factoryAddr?: string;
   /** Public RPC URL override; defaults to the ROAX devrpc configured in the chain definition. */
   rpcUrl?: string;
@@ -186,10 +231,10 @@ export async function verifyCredentialOnchain(
 
   const reader =
     args.reader ?? roaxIssuerChainReader(args.rpcUrl, undefined, args.defaultRpcUrl);
-  // The registry and the factory ALWAYS come from this client's own configuration, never from the
-  // document. If the document named either, an attacker would supply both sides of the question and
-  // the pillar would be theatre.
-  const registryAddr = args.registryAddr?.trim() || DEPLOYED_ADDRESSES.IssuerRegistry;
+  // The factory ALWAYS comes from this client's own configuration, never from the document. If the
+  // document named it, an attacker would supply both sides of the question and the pillar would be
+  // theatre. The registry is then derived from the clone the factory resolved, so it rests on the
+  // same anchor - see the pillar below, and `args.registryAddr` for why an override is ignored.
   const factoryAddr = args.factoryAddr?.trim() || DEPLOYED_ADDRESSES.DogTagIssuerFactory;
   const expectedSigner = args.signerAddr?.trim();
 
@@ -232,13 +277,22 @@ export async function verifyCredentialOnchain(
 
   // ISSUER-WHITELIST pillar, self-resolving and MANDATORY.
   //
+  // It asks whether the on-chain originator held the capability AT THE MOMENT this root was anchored,
+  // NOT whether it holds it now. Delisting is forward-only - `DogTagIssuer.sol:82` states the rule in
+  // the contract's own source and `adminRevoke` is the retroactive lever - so a current-state
+  // `isWhitelistedFor` read refuses every credential a rotated, retired or lapsed signer ever issued,
+  // fleet-wide, while the protocol says each one is genuine. The answer is reconstructed from the
+  // governing registry's own `Whitelisted`/`Delisted` logs, which anyone with an RPC can reproduce.
+  //
   // Tri-state, and only a definite `true` may contribute to a pass:
-  //   true  - resolved, and that signer is whitelisted for the record type the CHAIN says this root
-  //           has
-  //   false - resolved, but not whitelisted, not the expected signer, or the envelope misrepresents
-  //           the issuing clone / record type: a real authenticity failure
-  //   null  - unresolvable (no factory clone ever issued this root, or the clone names no issuer):
-  //           INDETERMINATE, and an unanswered check is never a passed check
+  //   true  - resolved, and that signer held the capability for the record type the CHAIN says this
+  //           root has, at the point it was anchored
+  //   false - resolved, and it did not (or the envelope misrepresents the issuing clone / record
+  //           type, or the caller's expected signer differs): a real authenticity failure
+  //   null  - unresolvable (no factory clone ever issued this root, the clone names no issuer or no
+  //           authority, the anchoring event could not be located, or a log came back with no
+  //           position and so could not be ordered): INDETERMINATE, and an
+  //           unanswered check is never a passed check
   let issuerWhitelisted: boolean | null = null;
   let resolvedSigner: string | null = null;
   if (resolvedClone && !cloneClaimsAgree) {
@@ -264,11 +318,34 @@ export async function verifyCredentialOnchain(
       resolvedSigner =
         originator && originator.toLowerCase() !== ZERO_ADDRESS ? originator : null;
       if (resolvedSigner) {
-        issuerWhitelisted = await reader.isWhitelistedFor(
-          registryAddr,
-          chainRecordTypeKey,
-          resolvedSigner,
-        );
+        // WHICH authority answers, off the clone rather than off this client's configuration.
+        // `IssuerRegistry._wl` and its events are per-CONTRACT, so a grant history read from a
+        // different instance is a confident answer about a different mapping - and a client merely
+        // pointed at the wrong registry would find no grant and refuse a genuine credential, which is
+        // our own misconfiguration rendered as an accusation. This opens no trust surface: `registry`
+        // is written once from the factory's own immutable, on a clone THIS client's factory resolved.
+        const governing = await reader.issuerRegistry(resolvedClone);
+        const anchoredAt =
+          governing && governing.toLowerCase() !== ZERO_ADDRESS
+            ? await reader.rootIssuedAt(resolvedClone, claimedRoot)
+            : null;
+        if (anchoredAt && anchoredAt !== UNPOSITIONED_LOG) {
+          const history = await reader.grantHistory(
+            governing,
+            chainRecordTypeKey,
+            resolvedSigner,
+          );
+          // A grant the node gave no position cannot be sequenced against the anchoring point, so the
+          // fold cannot be run at all - and running it anyway, in either of the two available ways,
+          // is a wrong answer rather than a rough one. Undetermined, exactly as the Rust, Kotlin and
+          // Swift ports answer for the same log.
+          if (history !== UNPOSITIONED_LOG) {
+            issuerWhitelisted = grantInForceAt(history, anchoredAt) === "authorized";
+          }
+        }
+        // else: no authority to ask, no anchoring event to sequence against, or an anchoring log whose
+        // position the node withheld. `issuerWhitelisted` stays `null` - never a pass, and never an
+        // accusation drawn from a question we could not put.
         if (expectedSigner && expectedSigner.toLowerCase() !== resolvedSigner.toLowerCase()) {
           issuerWhitelisted = false;
         }

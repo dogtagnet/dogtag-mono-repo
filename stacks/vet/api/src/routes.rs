@@ -40,6 +40,7 @@ use serde_json::{json, Value};
 
 use crate::app::{self, AppState};
 use crate::auth::{self, ShareClaims};
+use crate::chain::GrantAtIssuance;
 use crate::microchip::{MicrochipCheck, NotComparable as MicrochipNotComparable};
 use crate::store::{ApptReplica, Record, RecordStatus, VerifySession};
 
@@ -1300,13 +1301,22 @@ async fn verify_credential(
     // the one pillar that would have objected simply never ran.
     //
     // It now asks the chain who issued the root — `issuedBy`, set to `msg.sender` under
-    // `onlyWhitelisted` (`DogTagIssuer.sol:40,55`) — and checks THAT signer against THIS deployment's
-    // configured registry. Never an address named by the document, or the attacker supplies both sides
-    // of the question.
+    // `onlyWhitelisted` (`DogTagIssuer.sol:40,55`) — and asks whether THAT signer held the capability
+    // AT THE MOMENT it anchored this root. Never an address named by the document, or the attacker
+    // supplies both sides of the question.
+    //
+    // The authority is the GOVERNING registry — the address the resolved clone's own `registry()`
+    // answers — never this deployment's separately-configured `ISSUER_REGISTRY_ADDR`. `IssuerRegistry`
+    // `_wl` and its `Whitelisted`/`Delisted` events are per-CONTRACT, so a grant history read from any
+    // other instance is a confident answer about a different mapping: a merely mis-paired deployment
+    // would find no grant and print a definite refusal of a genuine credential, which is our own
+    // misconfiguration rendered as an accusation. It opens no trust surface — `registry` is written
+    // once in `initialize` from the factory's own immutable, on a clone THIS deployment's factory
+    // resolved, so it is as anchored as the clone itself.
     //
     // Tri-state, and only a definite `true` may contribute to a pass:
-    //   Some(true)  — resolved, and whitelisted for this record type
-    //   Some(false) — resolved, but not whitelisted (or not the expected signer): a real failure
+    //   Some(true)  — resolved, and authorised for this record type at the anchoring point
+    //   Some(false) — resolved, and it was not (or not the expected signer): a real failure
     //   None        — unresolvable: INDETERMINATE, and never a pass
     let rt_key = app::rt_key(&record_type);
     let want_signer = body
@@ -1345,24 +1355,31 @@ async fn verify_credential(
                             (Some(signer), Some(false))
                         }
                         Ok(Some(chain_rt_key)) => {
-                            let whitelisted = match st
+                            // ...and about the moment this root was ANCHORED, not about now.
+                            // Delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the
+                            // retroactive lever), so `isWhitelistedFor` — a current-state getter —
+                            // refuses every credential a since-rotated, retired or lapsed signer ever
+                            // issued, fleet-wide, while the protocol says each one is genuine. The
+                            // answer is reconstructed from the governing registry's own
+                            // `Whitelisted`/`Delisted` logs, so any verifier with an RPC reproduces it.
+                            match st
                                 .chain
-                                .is_whitelisted_for(
-                                    &st.cfg.issuer_registry_addr,
-                                    &chain_rt_key,
-                                    &signer,
-                                )
+                                .whitelisted_at_issuance(clone, &chain_rt_key, &signer, &claimed_root)
                                 .await
                             {
-                                Ok(v) => v,
+                                Ok(GrantAtIssuance::Authorized) => (Some(signer), Some(true)),
+                                Ok(GrantAtIssuance::NotAuthorized) => (Some(signer), Some(false)),
+                                // The reads succeeded but there was no anchoring point or authority
+                                // to sequence against: INDETERMINATE. Not a pass, and not an
+                                // accusation either.
+                                Ok(GrantAtIssuance::Undetermined) => (Some(signer), None),
                                 Err(e) => {
                                     return err(
                                         StatusCode::BAD_GATEWAY,
-                                        &format!("on-chain whitelist read failed: {e}"),
+                                        &format!("on-chain grant-history read failed: {e}"),
                                     )
                                 }
-                            };
-                            (Some(signer), Some(whitelisted))
+                            }
                         }
                     }
                 }
@@ -1392,6 +1409,22 @@ async fn verify_credential(
     //                              their signer happens to hold gains nothing by it.
     //   unanchoredUnconfirmed    — as above but the address IS whitelisted, which still does not show
     //                              it issued THIS root. Nothing is promoted.
+    //
+    // THE ONE PLACE THE CURRENT-STATE GETTER SURVIVES, and deliberately so. Everywhere else the
+    // pillar asks the historical question, because delisting is forward-only. Asking it HERE would
+    // need an anchoring point and an authority, and on this branch no clone resolved — so both could
+    // only come off `documentStore`, which is attacker-chosen. That would let a forged document
+    // neutralise the check by naming a contract whose logs say whatever it likes, on precisely the
+    // factory-less deployments where this assertion is the LAST check standing. The registry read
+    // below is this deployment's own and cannot be spoofed.
+    //
+    // The cost is stated rather than hidden: an operator who asserts a signer that was delisted AFTER
+    // it issued gets a definite refusal here, which is the very defect the rest of this change
+    // removes. It is bounded to a factory-less deployment WITH an explicit `signerAddr`, it fails
+    // loudly rather than silently, and the remedy is to configure `FACTORY_ADDR` — which restores the
+    // trusted anchor and with it the historical question. Closing it properly means reading the grant
+    // history from THIS deployment's registry while taking the anchoring point from the document's
+    // contract; that is a real design, not a tweak, and it is not this change.
     let expected_signer_state = match (resolved_signer.as_deref(), want_signer) {
         (_, None) => "notAsserted",
         (Some(actual), Some(want)) if want.eq_ignore_ascii_case(actual) => "matched",

@@ -3,8 +3,11 @@ import Foundation
 /// Implements the scan-to-import flow (impl §6.5). Fetch the wrapped doc with the Bearer JWT and run
 /// the verification pillars: INTEGRITY (offline Rust FFI `verifyIntegrity`), ISSUANCE (on-chain
 /// `DogTagIssuer.isValid` over ROAX RPC) and ISSUER WHITELIST (the app's own
-/// `DogTagIssuerFactory.rootIssuer` → that clone's `recordType()`/`issuedBy` → the app's own
-/// `IssuerRegistry`). Store the record under the matching pet, grouped by recordType.
+/// `DogTagIssuerFactory.rootIssuer` → that clone's `recordType()`/`issuedBy` → whether that signer
+/// held the grant AT THE ANCHORING BLOCK, read from the log of the registry the CLONE names
+/// (`registry()`), never the app's own bundled one; delisting is forward-only, so a since-rotated
+/// signer does not invalidate what it anchored). Store the record under the matching pet, grouped by
+/// recordType.
 ///
 /// Every pillar is tri-state and none may be skipped: a pillar that does not resolve yields an
 /// indeterminate verdict, never a pass.
@@ -71,8 +74,9 @@ enum RecordImporter {
         // Integrity and issuance together still accept a forged authority: the `issuer` block is
         // outside the Merkle root, so relabelling the issuer - or pointing `documentStore` at a
         // contract that returns true from `isValid` - passes both. This pillar resolves the issuing
-        // clone from the app's OWN factory, then asks THAT clone what record type it holds and who
-        // issued the root, and checks that signer against the app's own bundled registry.
+        // clone from the app's OWN factory, then asks THAT clone what record type it holds, who
+        // issued the root, and - off the clone's own `registry()`, never off the bundled registry -
+        // whether that signer was authorised at the block the root was anchored.
         let roax = RoaxConfig.load()
         let whitelist = await RoaxRpc.issuerWhitelistPillar(
             rpcUrl: rpcUrl, issuerRegistry: roax.issuerRegistry,
@@ -123,9 +127,13 @@ enum RecordImporter {
     /// only make a verdict stricter, never looser, so it composes with whatever that mapping decides -
     /// including a stricter future mapping (e.g. once an unresolved chain read stops yielding VALID).
     ///
-    /// - `.valid`   the issuing signer is authorized: the verdict stands as-is.
-    /// - `.invalid` resolved, and that signer may NOT issue this record type: a real authenticity
-    ///              failure, so INVALID.
+    /// - `.valid`   the issuing signer HELD the capability when it anchored this root: the verdict
+    ///              stands as-is. Whether it still holds it today is deliberately not asked -
+    ///              delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the retroactive
+    ///              lever), so a current-state read would refuse every credential a rotated signer
+    ///              ever issued.
+    /// - `.invalid` resolved, and the governing registry's own log shows no grant in force at that
+    ///              moment: a real authenticity failure, so INVALID.
     /// - `.unknown` the pillar did not resolve. An unanswered check is never a passed check, so a
     ///              would-be VALID degrades to UNVERIFIED; anything already worse stands.
     static func foldIssuerWhitelist(_ verdict: String, _ pillar: RoaxRpc.Result) -> String {
@@ -154,7 +162,7 @@ enum IssuerWhitelist {
         case .valid:
             return (verdict, reason)
         case .invalid:
-            return ("INVALID", "the address that issued this record is not authorised to issue this record type")
+            return ("INVALID", "the address that issued this record was not authorised to issue this record type when it did")
         case let .unknown(r):
             guard verdict == "VALID" else { return (verdict, reason) }
             return ("UNVERIFIED", "could not establish who issued this record (\(r))")

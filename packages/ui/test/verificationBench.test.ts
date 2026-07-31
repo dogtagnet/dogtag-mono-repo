@@ -2,7 +2,7 @@
 //
 // No network. Integrity is the real offline `@dogtag/standard` recompute, and every read in the fake
 // chain below is keyed on the contract it is put to: the six issuer/factory getters on the contract
-// address, and the three registry reads (`isWhitelistedFor`, the grant log, `DogTagIssuer.registry()`)
+// address, and the two registry reads (the grant log and `DogTagIssuer.registry()`)
 // on the registry address. That keying is not incidental: a fake that ignores which contract it is
 // asked about cannot represent "the hostile contract answers true while the clone the factory named
 // answers false", so every forged-issuer test written against one passes for the wrong reason. This
@@ -13,7 +13,7 @@
 // ONE thing off a genuine baseline.
 import { TypeTag, wrapDocument, type IssuerMeta, type WrappedDoc } from "@dogtag/standard";
 import { describe, expect, it } from "vitest";
-import { DEPLOYED_ADDRESSES, recordTypeKey } from "../src/wallet/contracts";
+import { DEPLOYED_ADDRESSES, recordTypeKey, UNPOSITIONED_LOG } from "../src/wallet/contracts";
 import type { IssuerChainReader } from "../src/wallet/verifyCredential";
 import {
   docFromShareResponse,
@@ -27,7 +27,11 @@ import {
   type GrantHistoryReader,
   type IssuerAuthorityReader,
 } from "../src/wallet/verificationBench";
-import type { LogPoint, WhitelistGrantEvent } from "../src/wallet/contracts";
+import type {
+  LogPoint,
+  UnpositionedLog,
+  WhitelistGrantEvent,
+} from "../src/wallet/contracts";
 import {
   BENCH_MUTATIONS,
   expireValidityWindow,
@@ -133,10 +137,19 @@ const asRecord = (d: WrappedDoc | Record<string, unknown>) => d as unknown as Re
 
 // ── the address-keyed fake chain ────────────────────────────────────────────────────────────────
 
-/** Every read the bench can make, including the two `eth_getLogs` it performs on its own account. */
+/**
+ * Every read the bench can make. The `keyof IssuerChainReader` half is what the VERIFIER reads
+ * through the recording wrapper; the three below are the bench's OWN independent reads.
+ *
+ * `benchIssuerRegistry` is deliberately distinct from the verifier's `issuerRegistry` even though on
+ * a real chain both are `DogTagIssuer.registry()`: they go through two separately injected readers,
+ * and a single key could not fail one without the other - which would collapse "the bench could not
+ * establish the authority" into "the verifier could not read the chain at all", two different
+ * reports with two different reasons.
+ */
 type FailableRead =
   | keyof IssuerChainReader
-  | "issuerRegistry"
+  | "benchIssuerRegistry"
   | "rootIssuedLog"
   | "whitelistHistory";
 
@@ -153,14 +166,18 @@ interface ChainCfg {
   issuedBy?: Record<string, string>;
   /** contract -> its immutable recordType(). */
   recordTypes?: Record<string, string>;
-  /** whitelisted "registry|key|signer" triples - the CURRENT state, per REGISTRY instance. */
-  whitelist?: Set<string>;
   /** contract -> the registry its own `onlyWhitelisted` consults. Absent == the zero address. */
   issuerRegistries?: Record<string, string>;
-  /** (contract|root) -> where `RootIssued` was emitted. Absent == no anchoring log. */
-  rootIssuedLogs?: Record<string, LogPoint>;
-  /** ("registry|key|signer") -> that REGISTRY's grant log, oldest first. Absent == none recorded. */
-  grants?: Record<string, WhitelistGrantEvent[]>;
+  /**
+   * (contract|root) -> where `RootIssued` was emitted. Absent == no anchoring log, and
+   * `UNPOSITIONED_LOG` == one the node returned with no `(blockNumber, logIndex)`.
+   */
+  rootIssuedLogs?: Record<string, LogPoint | UnpositionedLog>;
+  /**
+   * ("registry|key|signer") -> that REGISTRY's grant log, oldest first. Absent == none recorded, and
+   * `UNPOSITIONED_LOG` == a log that came back with no position and so cannot be ordered.
+   */
+  grants?: Record<string, WhitelistGrantEvent[] | UnpositionedLog>;
   /** Read kinds forced to fail, modelling a transient RPC error. */
   failing?: Set<FailableRead>;
 }
@@ -189,7 +206,6 @@ function genuineChain(doc: WrappedDoc): ChainCfg {
     isRevoked: { [k(CLONE, root)]: false },
     issuedBy: { [k(CLONE, root)]: SIGNER },
     recordTypes: { [CLONE.toLowerCase()]: VACCINATION_KEY },
-    whitelist: new Set([k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]),
     // The clone is governed by the registry this client is configured with - the matched pair a
     // factory guarantees, since `registry` is written once from the factory's own immutable.
     issuerRegistries: { [CLONE.toLowerCase()]: DEPLOYED_ADDRESSES.IssuerRegistry },
@@ -245,9 +261,20 @@ function fakeReader(cfg: ChainCfg): IssuerChainReader {
       fail("issuedBy");
       return cfg.issuedBy?.[k(addr, root)] ?? ZERO_ADDR;
     },
-    async isWhitelistedFor(registry, key, signer) {
-      fail("isWhitelistedFor");
-      return cfg.whitelist?.has(k3(registry, key, signer)) ?? false;
+    // The verifier's own pillar reads the SAME three script maps the bench's independent
+    // `grantHistoryReader` below does, and keyed identically - so the two rows cannot be shown
+    // different chains, and a read put to the wrong authority still comes back empty here.
+    async issuerRegistry(addr) {
+      fail("issuerRegistry");
+      return cfg.issuerRegistries?.[addr.toLowerCase()] ?? ZERO_ADDR;
+    },
+    async rootIssuedAt(addr, root) {
+      fail("rootIssuedAt");
+      return cfg.rootIssuedLogs?.[k(addr, root)] ?? null;
+    },
+    async grantHistory(registry, key, signer) {
+      fail("grantHistory");
+      return cfg.grants?.[k3(registry, key, signer)] ?? [];
     },
   };
 }
@@ -256,7 +283,7 @@ function fakeReader(cfg: ChainCfg): IssuerChainReader {
 function fakeAuthorityReader(cfg: ChainCfg): IssuerAuthorityReader {
   return {
     async registryOf(cloneAddr) {
-      if (cfg.failing?.has("issuerRegistry")) throw new Error("registry read failed");
+      if (cfg.failing?.has("benchIssuerRegistry")) throw new Error("registry read failed");
       return cfg.issuerRegistries?.[cloneAddr.toLowerCase()] ?? ZERO_ADDR;
     },
   };
@@ -462,10 +489,10 @@ describe("the recording reader", () => {
 
   it("re-throws the original failure rather than softening it into a value", async () => {
     const doc = validDoc();
-    const r = await bench(doc, { ...genuineChain(doc), failing: new Set(["isWhitelistedFor"] as const) });
+    const r = await bench(doc, { ...genuineChain(doc), failing: new Set(["grantHistory"] as const) });
     const failed = r.reads.find((x) => x.outcome === "failed");
-    expect(failed?.method).toBe("isWhitelistedFor");
-    expect(failed?.error).toContain("isWhitelistedFor read failed");
+    expect(failed?.method).toBe("whitelistHistory");
+    expect(failed?.error).toContain("grantHistory read failed");
     expect(r.verdict).toBeNull();
   });
 });
@@ -519,7 +546,7 @@ describe("the document-names-issuing-contract check", () => {
 describe("the issuer-whitelist check", () => {
   it("fails for a signer that is not authorised for the record type", async () => {
     const doc = validDoc();
-    const r = await bench(doc, { ...genuineChain(doc), whitelist: new Set<string>() });
+    const r = await bench(doc, { ...genuineChain(doc), grants: {} });
     expect(check(r, "issuer-whitelisted").outcome).toBe("fail");
     expect(r.verdict).toBe(false);
   });
@@ -582,7 +609,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const doc = validDoc();
     const r = await bench(doc, {
       ...genuineChain(doc),
-      failing: new Set(["issuerRegistry"] as const),
+      failing: new Set(["benchIssuerRegistry"] as const),
     });
     const row = check(r, "whitelisted-at-issuance");
     expect(row.outcome).toBe("could-not-run");
@@ -591,6 +618,109 @@ describe("the grant history is read from the GOVERNING registry", () => {
     // ...and it must say why substituting the configured registry is not an option, or the next
     // reader "helpfully" wires one in and reintroduces the accusation.
     expect(row.couldNotRunReason).toContain("configured registry");
+  });
+
+  it("could-not-run - never fail - when the ANCHORING log came back with no position", async () => {
+    // Its own row, and deliberately NOT the "emitted no anchoring event" one: this contract DID emit
+    // one, so that wording would be a false statement about the chain. A point that cannot be ordered
+    // cannot be compared against the grant history at all.
+    const doc = validDoc();
+    const cfg = genuineChain(doc);
+    const r = await bench(doc, {
+      ...cfg,
+      rootIssuedLogs: { [k(CLONE, doc.signature.merkleRoot)]: UNPOSITIONED_LOG },
+    });
+    const row = check(r, "whitelisted-at-issuance");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.outcome).not.toBe("fail");
+    expect(row.finding).toContain("without a position");
+    // `blockNumber` appears only in the unpositioned reasons, so this is what keeps the row from
+    // being satisfied by the sibling "emitted no anchoring event" wording.
+    expect(row.couldNotRunReason).toContain("blockNumber");
+    expect(row.finding).not.toContain("emitted no anchoring event");
+    // The evidence log must say the position was unknown rather than print a false "no log" line.
+    expect(r.reads.find((x) => x.method === "rootIssuedLog")?.value).toContain("position unknown");
+  });
+
+  it("could-not-run - never fail - when a GRANT log came back with no position", async () => {
+    // The registry ANSWERED, so this is not the read-failed case; but an unorderable history is not an
+    // empty one, and the empty case above is a definite refusal. Collapsing the two would accuse a
+    // credential of what our own reading could not settle.
+    const doc = validDoc();
+    const cfg = genuineChain(doc);
+    const r = await bench(doc, {
+      ...cfg,
+      grants: {
+        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]: UNPOSITIONED_LOG,
+      },
+    });
+    const row = check(r, "whitelisted-at-issuance");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.outcome).not.toBe("fail");
+    expect(row.finding).toContain("unorderable");
+    expect(row.couldNotRunReason).toContain("blockNumber");
+    // ...and NOT the empty-history refusal one line above, which is a definite `fail`.
+    expect(row.finding).not.toContain("NO grant");
+    expect(r.reads.find((x) => x.method === "whitelistHistory")?.value).toContain(
+      "position unknown",
+    );
+  });
+
+  /**
+   * The GATING `issuer-whitelisted` row, whose reason is derived from the recorded reads rather than
+   * from the verifier's response.
+   *
+   * Its two siblings above assert the ADVISORY `whitelisted-at-issuance` row, which reaches its own
+   * `unavailable` branches directly - so neither of them covers this path, and the reason here was
+   * being re-derived by sniffing the FORMATTED evidence string. Both cases print a definite claim
+   * about the chain that the reads contradict, which is the defect class this whole surface exists to
+   * remove: the anchoring one says the contract emitted no anchoring event, one line from its own
+   * evidence showing the log that came back.
+   */
+  it("the GATING row names the unpositioned ANCHORING log, not a false 'emitted no anchoring event'", async () => {
+    const doc = validDoc();
+    const r = await bench(doc, {
+      ...genuineChain(doc),
+      rootIssuedLogs: { [k(CLONE, doc.signature.merkleRoot)]: UNPOSITIONED_LOG },
+    });
+    const row = check(r, "issuer-whitelisted");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.couldNotRunReason).toContain("no block or log position");
+    // The exact false statement the string-sniff produced, beside evidence showing a log WAS returned.
+    expect(row.couldNotRunReason).not.toContain("emitted no anchoring event");
+    expect(
+      row.evidence.some((e) => e.value.includes("position unknown")),
+      "the row must cite the log it could not place",
+    ).toBe(true);
+  });
+
+  it("the GATING row names the unpositioned GRANT log, not a false 'signer could not be resolved'", async () => {
+    // Control for the arm that had no branch at all: `issuedBy` resolving non-zero is the only reason
+    // control reaches that fallthrough, so blaming the signer was false on its face.
+    const doc = validDoc();
+    const r = await bench(doc, {
+      ...genuineChain(doc),
+      grants: {
+        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]: UNPOSITIONED_LOG,
+      },
+    });
+    const row = check(r, "issuer-whitelisted");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.couldNotRunReason).toContain("no block or log position");
+    expect(row.couldNotRunReason).not.toContain("signer could not be resolved");
+    // ...and NOT the empty-history wording either: an unorderable log is not an absent grant.
+    expect(row.couldNotRunReason).not.toContain("emitted no anchoring event");
+  });
+
+  it("keeps the two definite log ANSWERS reading as before", async () => {
+    // The control that stops the two cases above from passing against a reason that names the
+    // unpositioned case unconditionally. A genuinely absent anchoring log still says so.
+    const doc = validDoc();
+    const r = await bench(doc, { ...genuineChain(doc), rootIssuedLogs: {} });
+    const row = check(r, "issuer-whitelisted");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.couldNotRunReason).toContain("emitted no anchoring event");
+    expect(row.couldNotRunReason).not.toContain("no block or log position");
   });
 
   it("could-not-run - never fail - when the clone names NO governing registry", async () => {
@@ -626,10 +756,10 @@ describe("the grant history is read from the GOVERNING registry", () => {
     expect(await logs.grants(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)).not.toEqual([]);
     expect(await logs.grants(FOREIGN_REGISTRY, VACCINATION_KEY, SIGNER)).toEqual([]);
     const reader = fakeReader(cfg);
-    expect(await reader.isWhitelistedFor(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)).toBe(
-      true,
+    expect(await reader.grantHistory(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)).not.toEqual(
+      [],
     );
-    expect(await reader.isWhitelistedFor(FOREIGN_REGISTRY, VACCINATION_KEY, SIGNER)).toBe(false);
+    expect(await reader.grantHistory(FOREIGN_REGISTRY, VACCINATION_KEY, SIGNER)).toEqual([]);
   });
 });
 
@@ -726,12 +856,12 @@ describe("no row asserts from a value the recorder never observed", () => {
     expect(check(r, "issuer-descends-from-factory").outcome).toBe("fail");
   });
 
-  it("does not claim the registry was asked when no isWhitelistedFor read was made", async () => {
+  it("does not claim the registry was asked when no grant-history read was made", async () => {
     const doc = validDoc();
     const r = await bench(doc, { ...genuineChain(doc), rootIssuers: {} });
     const wl = check(r, "issuer-whitelisted");
     expect(wl.outcome).toBe("could-not-run");
-    expect(r.reads.some((x) => x.method === "isWhitelistedFor")).toBe(false);
+    expect(r.reads.some((x) => x.method === "whitelistHistory")).toBe(false);
     const registryLine = wl.evidence.find((e) => e.label.startsWith("Registry"));
     expect(registryLine?.value).toContain("not consulted");
     expect(registryLine?.source).not.toContain(" on 0x");
@@ -1046,7 +1176,7 @@ describe("which rows the verifier's verdict folds in", () => {
       // integrity red
       await bench(tamperCoveredField.apply(asRecord(doc))!.doc, genuineChain(doc)),
       // whitelist red
-      await bench(doc, { ...genuineChain(doc), whitelist: new Set<string>() }),
+      await bench(doc, { ...genuineChain(doc), grants: {} }),
       // anchor red
       await bench(doc, { ...genuineChain(doc), rootIssuers: {} }),
       // store-agreement red

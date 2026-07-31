@@ -360,7 +360,10 @@ function IssuerWhitelistPillar({
   return (
     <div className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
       <span className="text-sm text-onSurface">
-        Issuer whitelist
+        {/* "at issuance", not "whitelisted", because the pillar asks whether the signer held the
+            capability when it ANCHORED this root - delisting is forward-only, so an operator who
+            knows the signer is delisted today must not read a green tile as contradicting them. */}
+        Issuer authorised at issuance
         {why && <span className="block text-xs text-muted">{why}</span>}
       </span>
       <Badge variant={variant}>

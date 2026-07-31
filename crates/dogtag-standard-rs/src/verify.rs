@@ -68,13 +68,17 @@ pub enum IssuerResolution {
 ///
 /// The vocabulary is the one vet-api's `POST /verify/credential` already puts on the wire as
 /// `issuerWhitelistState` (PR #96), so the two surfaces read identically.
+///
+/// **The QUESTION it answers is historical, not current** — see [`GrantAtIssuance`]. The names are
+/// unchanged because the pillar's ROLE is unchanged (was the authority behind this credential real?);
+/// only the moment it asks about moved, from "now" to "when this root was anchored".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssuerWhitelistState {
-    /// Resolved, and the on-chain originator is whitelisted for the clone's own record type.
+    /// Resolved, and the on-chain originator held the clone's own record type AT THE ANCHORING POINT.
     Passed,
-    /// Resolved, and NOT authorised (or the envelope relabelled the record type): a real failure.
+    /// Resolved, and NOT authorised then (or the envelope relabelled the record type): a real failure.
     Failed,
-    /// Indeterminate — the anchor, the originator or the whitelist read could not be established.
+    /// Indeterminate — the anchor, the originator or the grant history could not be established.
     /// Never a pass. This is where `NoRecord` and `ReadFailed` land: both gate.
     Unresolved,
     /// We never asked, because this verifier has no factory configured. The ONLY non-`Passed` state
@@ -124,6 +128,82 @@ impl IssuerStoreAgreement {
     /// May this term contribute to a pass? Only a definite `Differs` refuses.
     pub fn permits_pass(self) -> bool {
         !matches!(self, IssuerStoreAgreement::Differs)
+    }
+}
+
+/// A point in a log stream. Ordered by `(block_number, log_index)` — which is what the derived `Ord`
+/// gives, in that field order, so the ordering rule cannot drift from the declaration.
+///
+/// `log_index` is BLOCK-SCOPED and therefore comparable ACROSS contracts within one block, which is
+/// the only reason a registry grant and a clone's issuance landing in the same block can be sequenced
+/// against each other at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LogPoint {
+    pub block_number: u64,
+    pub log_index: u64,
+}
+
+/// One `IssuerRegistry.whitelistFor`/`delistFor` call, as observed in that registry's own log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrantEvent {
+    pub at: LogPoint,
+    /// `true` for `Whitelisted`, `false` for `Delisted`.
+    pub granted: bool,
+}
+
+/// Did the issuing signer hold the capability AT THE MOMENT this root was anchored?
+///
+/// # Why this is not `isWhitelistedFor`
+///
+/// `IssuerRegistry.isWhitelistedFor` answers only about NOW, and the contract states the rule that
+/// getter cannot express, in its own source:
+///
+/// ```text
+/// /// @notice Admin mass-revoke for a compromised signer (delisting is forward-only — §13.3).
+/// ---  DogTagIssuer.sol:82, above `adminRevoke`
+/// ```
+///
+/// `adminRevoke` exists precisely BECAUSE `delistFor` does not retroactively invalidate what a signer
+/// already anchored. A pillar built on the current-state getter therefore refuses every credential a
+/// rotated, retired or lapsed signer ever issued — fleet-wide — while the protocol says each of them
+/// is genuine. So the question moved to the moment of issuance, and the answer is reconstructed from
+/// `Whitelisted`/`Delisted` logs, which anyone with an RPC can reproduce without trusting this code.
+///
+/// The blast radius of the old read was bounded in the safe direction, and stays that way: `issue()`
+/// is `onlyWhitelisted`, sets `issuedBy[r] = msg.sender` in the same call, and `rootIssuer[r]` is
+/// write-once and writable only from inside a clone's `issue()`, so for a factory-resolved root a
+/// current-state read could only ever produce false NEGATIVES. Those are what this replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantAtIssuance {
+    /// The governing registry's own log shows a grant in force at the anchoring point.
+    Authorized,
+    /// The registry answered, and its log shows NO grant in force then — never granted for this pair
+    /// at all, or delisted before this root was anchored. That is evidence ABOUT the credential
+    /// (an honest `issue()` cannot pass `onlyWhitelisted` in that state), so it gates as a failure.
+    NotAuthorized,
+    /// The question could not be put: the anchoring event was not found, or the authority whose log
+    /// would answer could not be established. Never a pass, and never a definite failure either — an
+    /// unanswerable question rendered as a verdict is the defect this whole surface exists to refuse.
+    Undetermined,
+}
+
+/// Fold one `(recordType, signer)` grant history against the point a root was anchored.
+///
+/// THE definition of the rule, shared by every Rust caller so the three surfaces cannot drift: the
+/// state as of the anchoring point is the LAST event at or before it.
+///
+/// An EMPTY prior history is [`GrantAtIssuance::NotAuthorized`], not `Undetermined`: the registry
+/// answered and its own log records no grant, which is evidence about the credential rather than
+/// about our ability to check. Callers keep that apart from a log read that FAILED, which never
+/// reaches this function.
+pub fn grant_in_force_at(history: &[GrantEvent], anchored_at: LogPoint) -> GrantAtIssuance {
+    match history
+        .iter()
+        .filter(|e| e.at <= anchored_at)
+        .max_by_key(|e| e.at)
+    {
+        Some(e) if e.granted => GrantAtIssuance::Authorized,
+        _ => GrantAtIssuance::NotAuthorized,
     }
 }
 
@@ -212,11 +292,26 @@ pub trait RpcAdapter {
     /// the CHAIN says this root belongs to, never the one the envelope claims.
     fn issuer_record_type(&self, issuer_addr: &str) -> Result<Option<String>, AdapterError>;
 
-    /// `IssuerRegistry.isWhitelistedFor(recordTypeKey, signer)` against THIS VERIFIER'S OWN
-    /// registry — same reasoning as [`RpcAdapter::root_issuer`]: the registry address is never
-    /// supplied by the document or the caller.
-    fn is_whitelisted_for(&self, record_type_key: &str, signer: &str)
-        -> Result<bool, AdapterError>;
+    /// Was `signer` authorised for `record_type_key` at the moment `merkle_root` was anchored on
+    /// `issuer_addr`? Reconstructed from `Whitelisted`/`Delisted` logs — see [`GrantAtIssuance`] for
+    /// why the current-state getter cannot be asked instead.
+    ///
+    /// It takes NO registry address, same reasoning as [`RpcAdapter::root_issuer`]: an address the
+    /// caller or the document could name is an address an attacker can name. The implementor reads
+    /// the authority off the RESOLVED clone's own `registry()`, which for a factory-resolved clone is
+    /// unforgeable — `registry` is written once in `initialize` from the factory's own
+    /// `immutable registry` and has no setter, and `isClone` is set only for genuine bytecode the
+    /// factory itself deployed. That is also the only correct authority to ask: `IssuerRegistry._wl`
+    /// and its events are PER CONTRACT, so a grant history read from a different instance is a
+    /// confident answer about a different mapping, and a client merely mis-paired would find no grant
+    /// and refuse a genuine credential — our own misconfiguration rendered as an accusation.
+    fn whitelisted_at_issuance(
+        &self,
+        issuer_addr: &str,
+        record_type_key: &str,
+        signer: &str,
+        merkle_root: &str,
+    ) -> Result<GrantAtIssuance, AdapterError>;
 }
 
 pub trait DnsAdapter {
@@ -387,8 +482,15 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
     // ── The issuer-whitelist pillar — MANDATORY, and SELF-RESOLVING ───────────────────────────
     //
     // It asks the chain WHO issued the root (`issuedBy`, set to `msg.sender` under `onlyWhitelisted`,
-    // `DogTagIssuer.sol:40,55`) and checks THAT signer against THIS verifier's registry. Never an
-    // address the document names, or the attacker supplies both sides of the question.
+    // `DogTagIssuer.sol:40,55`) and whether THAT signer held the capability AT THE MOMENT it anchored
+    // this root — never whether it holds it now, because delisting is forward-only. Never an address
+    // the document names either, or the attacker supplies both sides of the question.
+    //
+    // The authority is the GOVERNING registry, the one the resolved clone's own `registry()` answers,
+    // so [`RpcAdapter::whitelisted_at_issuance`] takes NO registry address — the same invariant
+    // [`RpcAdapter::root_issuer`] has for the factory. A grant history read from any other instance
+    // answers about a different contract's `_wl` mapping, and a merely mis-paired deployment would
+    // find no grant and refuse a genuine credential: our own misconfiguration as an accusation.
     //
     // Only a definite `Passed` may contribute to a pass; see [`IssuerWhitelistState::permits_pass`].
     let claimed_rt_key = record_type_key(&doc.issuer.record_type);
@@ -422,12 +524,23 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
                     (IssuerWhitelistState::Failed, Some(signer))
                 }
                 // Ask about the record type the CLONE declares, not the one the envelope claims,
-                // so a relabelled credential is never checked against the wrong whitelist key.
+                // so a relabelled credential is never checked against the wrong whitelist key —
+                // and ask about the moment this root was ANCHORED, not about now. Delisting is
+                // forward-only (`DogTagIssuer.sol:82`), so a current-state read refuses every
+                // credential a since-rotated signer ever issued. See [`GrantAtIssuance`].
                 Ok(Some(chain_rt_key)) => (
-                    match opts.rpc.is_whitelisted_for(&chain_rt_key, &signer) {
-                        Ok(true) => IssuerWhitelistState::Passed,
-                        Ok(false) => IssuerWhitelistState::Failed,
-                        Err(_) => IssuerWhitelistState::Unresolved,
+                    match opts
+                        .rpc
+                        .whitelisted_at_issuance(clone, &chain_rt_key, &signer, root)
+                    {
+                        Ok(GrantAtIssuance::Authorized) => IssuerWhitelistState::Passed,
+                        Ok(GrantAtIssuance::NotAuthorized) => IssuerWhitelistState::Failed,
+                        // Both arms are "we could not establish it", never a pass and never an
+                        // accusation: `Undetermined` = the reads succeeded but there was no
+                        // anchoring point or authority to sequence against, `Err` = a read failed.
+                        Ok(GrantAtIssuance::Undetermined) | Err(_) => {
+                            IssuerWhitelistState::Unresolved
+                        }
                     },
                     Some(signer),
                 ),
@@ -667,8 +780,18 @@ mod tests {
         issued_by: HashMap<(String, String), String>,
         /// contract -> its immutable `recordType()` key.
         record_types: HashMap<String, String>,
-        /// (recordTypeKey, signer) whitelisted in THIS verifier's registry.
-        whitelist: HashSet<(String, String)>,
+        /// clone -> the registry whose `_wl` mapping actually gates it (`DogTagIssuer.registry()`).
+        /// Modelled per contract because `IssuerRegistry._wl` and its events ARE per contract, so a
+        /// fake with one global whitelist could not represent a mis-paired client at all.
+        governing_registry: HashMap<String, String>,
+        /// (registry, recordTypeKey, signer) -> that pair's grant history IN THAT REGISTRY, oldest
+        /// first. Keyed on the registry for the same reason the reads above are keyed on the
+        /// contract: a fake that ignores which authority it is asked about cannot fail the tests
+        /// that matter.
+        grants: HashMap<(String, String, String), Vec<GrantEvent>>,
+        /// (clone, root) -> where that clone's `RootIssued` for the root sits in the log. Absent ==
+        /// no anchoring event was found, which is a could-not-establish rather than an answer.
+        root_issued_at: HashMap<(String, String), LogPoint>,
         owner: Option<String>,
         /// Reads forced to fail, modelling a transient adapter error per read kind.
         failing: HashSet<&'static str>,
@@ -691,10 +814,33 @@ mod tests {
             c.is_valid
                 .insert((CLONE.to_lowercase(), root.clone()), true);
             c.issued_by
-                .insert((CLONE.to_lowercase(), root), SIGNER.to_lowercase());
+                .insert((CLONE.to_lowercase(), root.clone()), SIGNER.to_lowercase());
             c.record_types.insert(CLONE.to_lowercase(), rt.clone());
-            c.whitelist.insert((rt, SIGNER.to_lowercase()));
+            c.governing_registry
+                .insert(CLONE.to_lowercase(), REGISTRY.to_lowercase());
+            c.root_issued_at
+                .insert((CLONE.to_lowercase(), root), ANCHORED_AT);
+            // Granted well before the anchoring and never withdrawn — the ordinary honest history.
+            c.grants.insert(
+                (REGISTRY.to_lowercase(), rt, SIGNER.to_lowercase()),
+                vec![GrantEvent {
+                    at: GRANTED_AT,
+                    granted: true,
+                }],
+            );
             c
+        }
+        /// Rewrite the `(recordType, signer)` grant history in the GOVERNING registry.
+        fn with_grants(mut self, history: Vec<GrantEvent>) -> Self {
+            self.grants.insert(
+                (
+                    REGISTRY.to_lowercase(),
+                    record_type_key("VACCINATION"),
+                    SIGNER.to_lowercase(),
+                ),
+                history,
+            );
+            self
         }
         /// Install a contract the factory never deployed, answering with attacker-chosen values.
         fn with_hostile(mut self, addr: &str, root: &str, is_valid: bool, issued_by: &str) -> Self {
@@ -719,8 +865,21 @@ mod tests {
             self.failing.insert(what);
             self
         }
+        /// The governing registry's log records NO grant to this signer for this record type, ever.
+        /// The registry ANSWERED; it simply has nothing authorising this issuance.
         fn without_whitelist(mut self) -> Self {
-            self.whitelist.clear();
+            self.grants.clear();
+            self
+        }
+        /// The clone names an authority this fake knows nothing about, so the grant log cannot be
+        /// located: a could-not-establish, never an accusation.
+        fn without_governing_registry(mut self) -> Self {
+            self.governing_registry.clear();
+            self
+        }
+        /// No `RootIssued` was found for this root on the resolved clone.
+        fn without_anchoring_event(mut self) -> Self {
+            self.root_issued_at.clear();
             self
         }
         fn with_valid_at(mut self, addr: &str, root: &str, v: bool) -> Self {
@@ -776,13 +935,48 @@ mod tests {
             self.check("issuer_record_type")?;
             Ok(self.record_types.get(&addr.to_lowercase()).cloned())
         }
-        fn is_whitelisted_for(&self, rt: &str, signer: &str) -> Result<bool, AdapterError> {
-            self.check("is_whitelisted_for")?;
-            Ok(self
-                .whitelist
-                .contains(&(rt.to_lowercase(), signer.to_lowercase())))
+        /// Composed from the pieces a real adapter reads, rather than answered directly: the
+        /// governing registry off the clone, the anchoring event off the clone's log, then THAT
+        /// registry's grant history through the shared [`grant_in_force_at`] fold. A fake that
+        /// returned a canned verdict could not distinguish delisted-before from delisted-after, which
+        /// is the whole distinction under test.
+        fn whitelisted_at_issuance(
+            &self,
+            issuer_addr: &str,
+            record_type_key: &str,
+            signer: &str,
+            merkle_root: &str,
+        ) -> Result<GrantAtIssuance, AdapterError> {
+            self.check("whitelisted_at_issuance")?;
+            let clone = issuer_addr.to_lowercase();
+            let root = merkle_root.to_lowercase();
+            let Some(registry) = self.governing_registry.get(&clone) else {
+                return Ok(GrantAtIssuance::Undetermined);
+            };
+            let Some(anchored_at) = self.root_issued_at.get(&(clone, root)) else {
+                return Ok(GrantAtIssuance::Undetermined);
+            };
+            let key = (
+                registry.to_lowercase(),
+                record_type_key.to_lowercase(),
+                signer.to_lowercase(),
+            );
+            let history = self.grants.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+            Ok(grant_in_force_at(history, *anchored_at))
         }
     }
+
+    /// The registry that gates `CLONE` — read from the clone, never from this verifier's config.
+    const REGISTRY: &str = "0x00000000000000000000000000000000005e6157";
+    /// The honest ordering: the signer is granted, then anchors this root.
+    const GRANTED_AT: LogPoint = LogPoint {
+        block_number: 100,
+        log_index: 0,
+    };
+    const ANCHORED_AT: LogPoint = LogPoint {
+        block_number: 200,
+        log_index: 3,
+    };
 
     struct MockDns(Result<bool, ()>);
     impl DnsAdapter for MockDns {
@@ -1330,10 +1524,155 @@ mod tests {
     #[test]
     fn a_whitelist_read_failure_is_unresolved_not_passed() {
         let doc = good_doc();
-        let chain = MockChain::genuine(&doc).failing("is_whitelisted_for");
+        let chain = MockChain::genuine(&doc).failing("whitelisted_at_issuance");
         let v = third_party(&doc, &chain);
         assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Unresolved);
         assert!(!v.valid);
+    }
+
+    /// DELISTING IS FORWARD-ONLY — the pair of tests this whole change exists for. Both directions,
+    /// or the rule is unproven: a check that only ever refuses would pass the first half alone.
+    ///
+    /// `DogTagIssuer.sol:82` states the rule in the contract's own source and `adminRevoke` is the
+    /// retroactive lever, so a credential anchored while its signer held the grant stays genuine when
+    /// that grant is later withdrawn — an ordinary key rotation, a retirement, a lapsed licence.
+    ///
+    /// Mutation: revert the pillar to a current-state read (or make `grant_in_force_at` ignore the
+    /// anchoring point and answer from the LAST event in the history) -> the second half goes red.
+    /// Mutation: make `grant_in_force_at` ignore the ordering the other way (answer from the FIRST
+    /// event) -> the first half goes red.
+    #[test]
+    fn a_signer_delisted_after_issuance_still_verifies_and_before_issuance_does_not() {
+        let doc = good_doc();
+        let granted = GrantEvent {
+            at: GRANTED_AT,
+            granted: true,
+        };
+
+        // Delisted AFTER anchoring: the issuance was authorised and remains genuine.
+        let after = third_party(
+            &doc,
+            &MockChain::genuine(&doc).with_grants(vec![
+                granted,
+                GrantEvent {
+                    at: LogPoint {
+                        block_number: ANCHORED_AT.block_number + 500,
+                        log_index: 0,
+                    },
+                    granted: false,
+                },
+            ]),
+        );
+        assert_eq!(after.issuer_whitelist, IssuerWhitelistState::Passed);
+        assert!(
+            after.valid,
+            "delisting is forward-only: a genuine credential must survive its signer's rotation"
+        );
+
+        // Delisted BEFORE anchoring: an honest `issue()` could not have passed `onlyWhitelisted`,
+        // so the document reports an anchoring that cannot have happened as described.
+        let before = third_party(
+            &doc,
+            &MockChain::genuine(&doc).with_grants(vec![
+                granted,
+                GrantEvent {
+                    at: LogPoint {
+                        block_number: ANCHORED_AT.block_number - 1,
+                        log_index: 0,
+                    },
+                    granted: false,
+                },
+            ]),
+        );
+        assert_eq!(before.issuer_whitelist, IssuerWhitelistState::Failed);
+        assert!(!before.valid);
+    }
+
+    /// A re-grant AFTER the anchoring must not authorise it retroactively either — the mirror of the
+    /// forward-only rule, and the case a "does the history contain a grant?" shortcut would pass.
+    #[test]
+    fn a_grant_issued_after_the_anchoring_does_not_authorise_it() {
+        let doc = good_doc();
+        let v = third_party(
+            &doc,
+            &MockChain::genuine(&doc).with_grants(vec![GrantEvent {
+                at: LogPoint {
+                    block_number: ANCHORED_AT.block_number + 1,
+                    log_index: 0,
+                },
+                granted: true,
+            }]),
+        );
+        assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Failed);
+        assert!(!v.valid);
+    }
+
+    /// COULD-NOT-DETERMINE is its own answer, and it is neither of the other two.
+    ///
+    /// Two ways the historical question becomes unanswerable while every other read succeeds: the
+    /// authority whose log would answer cannot be established, and the anchoring event cannot be
+    /// located. Both must be `Unresolved` — never `Failed`, which would accuse a credential on the
+    /// strength of a question we never got to put, and never `Passed`.
+    ///
+    /// Mutation: fold either arm into `NotAuthorized` -> this goes red.
+    #[test]
+    fn an_unanswerable_grant_history_is_unresolved_not_an_accusation() {
+        let doc = good_doc();
+        for chain in [
+            MockChain::genuine(&doc).without_governing_registry(),
+            MockChain::genuine(&doc).without_anchoring_event(),
+        ] {
+            let v = third_party(&doc, &chain);
+            assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Unresolved);
+            assert_ne!(
+                v.issuer_whitelist,
+                IssuerWhitelistState::Failed,
+                "we could not ask; that is not evidence about the credential"
+            );
+            assert!(!v.valid, "and an unanswered check is never a passed check");
+        }
+    }
+
+    /// The fold's own ordering rule, at the boundary the other tests cannot reach: a grant and an
+    /// anchoring landing in the SAME BLOCK are sequenced by `logIndex`, which is block-scoped and so
+    /// comparable across the two contracts. Inclusive at the anchoring point — the grant in the same
+    /// transaction position or earlier is in force.
+    #[test]
+    fn grants_and_anchorings_in_one_block_are_sequenced_by_log_index() {
+        let at = |log_index| LogPoint {
+            block_number: ANCHORED_AT.block_number,
+            log_index,
+        };
+        let g = |log_index, granted| GrantEvent {
+            at: at(log_index),
+            granted,
+        };
+        // Granted at the same log index as the anchoring: in force (`<=`).
+        assert_eq!(
+            grant_in_force_at(&[g(ANCHORED_AT.log_index, true)], ANCHORED_AT),
+            GrantAtIssuance::Authorized
+        );
+        // Delisted one log later in the same block: still authorised at the anchoring.
+        assert_eq!(
+            grant_in_force_at(
+                &[g(0, true), g(ANCHORED_AT.log_index + 1, false)],
+                ANCHORED_AT
+            ),
+            GrantAtIssuance::Authorized
+        );
+        // Delisted one log EARLIER in the same block: not authorised.
+        assert_eq!(
+            grant_in_force_at(
+                &[g(0, true), g(ANCHORED_AT.log_index - 1, false)],
+                ANCHORED_AT
+            ),
+            GrantAtIssuance::NotAuthorized
+        );
+        // An empty history is an ANSWER (the registry recorded no grant), not an absence of one.
+        assert_eq!(
+            grant_in_force_at(&[], ANCHORED_AT),
+            GrantAtIssuance::NotAuthorized
+        );
     }
 
     /// The clone the factory named never issued this root — indeterminate, never a pass.

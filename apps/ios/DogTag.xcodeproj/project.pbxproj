@@ -15,6 +15,7 @@
 		09A737AC99AE3E9975BD2BDB /* LocalDataSweepTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3774010D8817B22E7B20E2ED /* LocalDataSweepTests.swift */; };
 		0A013EDB062A80EFCDB5BAD0 /* Consent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8AB4F26FEB853C4B49F7988 /* Consent.swift */; };
 		0CD09CC73CBEBC35C4DE543A /* DogTagCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C7B838A386A4B4C42759D30 /* DogTagCardTests.swift */; };
+		0CD09CC73CBEBC35C4DE543B /* GrantAtIssuanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C7B838A386A4B4C42759D31 /* GrantAtIssuanceTests.swift */; };
 		0FAAB8287B508C32516CFDE9 /* RecordImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0236E3495680C88FA6DA3FD /* RecordImporter.swift */; };
 		0FB8C02159824CEC716035CE /* NearbyDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F429771D8817FCAF6D988417 /* NearbyDecisionTests.swift */; };
 		147EEC920E43D6B126D4DC97 /* DogTagCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0338C98CEC9DA9E969E82F12 /* DogTagCard.swift */; };
@@ -118,6 +119,7 @@
 		9B1231C86A044F3FAC1BDBAA /* consent_final.zkey */ = {isa = PBXFileReference; path = consent_final.zkey; sourceTree = "<group>"; };
 		9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZkeyAsset.swift; sourceTree = "<group>"; };
 		9C7B838A386A4B4C42759D30 /* DogTagCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagCardTests.swift; sourceTree = "<group>"; };
+		9C7B838A386A4B4C42759D31 /* GrantAtIssuanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrantAtIssuanceTests.swift; sourceTree = "<group>"; };
 		A38289E086F9DD77EF41997A /* QrPayloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrPayloadTests.swift; sourceTree = "<group>"; };
 		A7926F506647E68F6A59FDAF /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		BAA8FE871C7EFE8AAB555A6C /* zk_selftest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = zk_selftest.json; sourceTree = "<group>"; };
@@ -167,6 +169,7 @@
 				3E7C0DECAD4479B4092A46E3 /* AnchorResolverTests.swift */,
 				CD27D8383FB0A2606530FE01 /* DirectoryCacheTests.swift */,
 				9C7B838A386A4B4C42759D30 /* DogTagCardTests.swift */,
+				9C7B838A386A4B4C42759D31 /* GrantAtIssuanceTests.swift */,
 				E5DC35D1F973834F7739F3F4 /* IssuerDomainBindingTests.swift */,
 				3774010D8817B22E7B20E2ED /* LocalDataSweepTests.swift */,
 				F429771D8817FCAF6D988417 /* NearbyDecisionTests.swift */,
@@ -396,6 +399,7 @@
 				69CFF59AC693CA9D8CD20EB8 /* DirectoryCacheTests.swift in Sources */,
 				8E263851C0C8BCE97196C224 /* DogTagCard.swift in Sources */,
 				0CD09CC73CBEBC35C4DE543A /* DogTagCardTests.swift in Sources */,
+				0CD09CC73CBEBC35C4DE543B /* GrantAtIssuanceTests.swift in Sources */,
 				403BF3AED72312547418E1EF /* IssuerDomainBinding.swift in Sources */,
 				73E6081D0C350292AAAA9739 /* IssuerDomainBindingTests.swift in Sources */,
 				636AE4FFE6B0E46AD35848BC /* Keccak256.swift in Sources */,

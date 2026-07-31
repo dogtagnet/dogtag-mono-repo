@@ -451,8 +451,10 @@ function PasteDocVerify() {
       <h2 className="text-base font-semibold text-onSurface">Verify a document (paste JSON)</h2>
       <p className="mt-1 max-w-2xl text-sm text-muted">
         Recomputes integrity (offline) and reads on-chain status (DogTagIssuer.isValid) + issuer
-        identity (IssuerRegistry.isWhitelistedFor) from ROAX. All reads are gasless. No owner and no
-        phone needed — this checks a document, not a consent.
+        identity from ROAX — whether the signer that anchored this root held the capability AT THAT
+        BLOCK, from the governing registry's own grant log. Delisting is forward-only, so a
+        since-rotated issuer does not invalidate what it issued. All reads are gasless. No owner and
+        no phone needed — this checks a document, not a consent.
       </p>
 
       <label className="mt-4 block text-xs font-medium text-muted">
@@ -500,7 +502,11 @@ function PasteDocVerify() {
           <div className="mt-3 flex flex-wrap gap-2">
             <Frag label="integrity" testid="pillar-integrity" v={frag?.integrity} />
             <Frag label="on-chain" testid="pillar-onchain" v={frag?.onchain} />
-            <Frag label="issuer whitelist" testid="pillar-whitelist" v={frag?.issuerWhitelisted} />
+            <Frag
+              label="issuer authorised at issuance"
+              testid="pillar-whitelist"
+              v={frag?.issuerWhitelisted}
+            />
             <ProvenanceFrag v={frag?.issuerProvenance} />
           </div>
 

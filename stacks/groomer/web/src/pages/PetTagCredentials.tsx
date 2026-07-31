@@ -284,10 +284,11 @@ function Fragments({ result }: { result: VerifyCredentialResp }) {
       <Pillar label="integrity" ok={f.integrity} />
       <Pillar label="anchored" ok={f.issued} />
       <Pillar label="not revoked" ok={!f.revoked} />
-      {/* Absent or `null` means the whitelist pillar was not checked (there is no issuer signer
-          address to check it for), which is distinct from checked-and-failed and must be drawn as
-          neither a pass nor a fail. */}
-      <Pillar label="issuer whitelisted" ok={f.issuerWhitelisted ?? null} />
+      {/* Absent or `null` means the pillar could not be resolved, which is distinct from
+          checked-and-failed and must be drawn as neither a pass nor a fail. The label says "at
+          issuance" because that is the question asked: delisting is forward-only, so a signer
+          delisted today still passes for what it anchored while it held the grant. */}
+      <Pillar label="issuer authorised at issuance" ok={f.issuerWhitelisted ?? null} />
     </div>
   );
 }

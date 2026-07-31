@@ -18,8 +18,10 @@
 //!
 //! MUTATION-CHECKED — each mutation was APPLIED, the named test observed going red, and the
 //! mutation reverted. Each kills a DIFFERENT term:
-//!   * dropping the `issuer_whitelist.permits_pass()` term from `credential_valid` reds
-//!     `a_delisted_issuing_signer_cannot_import`;
+//!   * dropping the `issuer_whitelist.permits_pass()` term from `credential_valid` reds the
+//!     delisted-BEFORE half of
+//!     `a_signer_delisted_after_issuance_still_imports_and_before_issuance_does_not`, and pointing
+//!     the pillar back at the current-state `is_whitelisted_for` reds its delisted-AFTER half;
 //!   * folding `NoRecord` into the non-gating `UnavailableNoFactoryConfigured` branch reds
 //!     `an_unanchored_root_cannot_import_but_a_factoryless_verifier_still_can`;
 //!   * dropping the clone-vs-envelope `recordType` comparison reds
@@ -56,7 +58,7 @@ use dogtag_standard::verify::{
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
-use vet_api::chain::{record_type_key, MemChain};
+use vet_api::chain::{record_type_key, ChainClient, MemChain};
 
 const REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
 const ISSUER: &str = "0x00000000000000000000000000000000000000bb";
@@ -291,9 +293,11 @@ async fn a_record_type_relabel_cannot_import() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refused_import_reports_why() {
     let d = boot_anchored().await;
-    let (_root, doc) = issue_doc(&d.app, &d.op, "1010").await;
-    d.mem
-        .delist(REGISTRY, &record_type_key("VACCINATION"), &d.backend);
+    let (root, doc) = issue_doc(&d.app, &d.op, "1010").await;
+    // A signer that held NO grant when it anchored this root — the refusal this test needs. A
+    // delist AFTER the anchoring is deliberately NOT it any more: that credential is genuine and
+    // imports (`a_signer_delisted_after_issuance_still_imports`).
+    delist_before_anchoring(&d, &root);
 
     let (s, b) = import_pull(&d.app, &d.op, doc).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
@@ -343,35 +347,104 @@ async fn a_forged_document_store_is_reported_as_a_store_mismatch_not_an_unauthor
     assert!(!v.valid);
 }
 
-/// The pillar is MANDATORY: a credential whose issuing signer is not authorised for the record type
-/// cannot import, even though the chain reports the root genuinely issued and not revoked.
+/// Rewrite the governing registry's grant history so the signer was DELISTED BEFORE it anchored
+/// `root` — the state in which the document reports an issuance that cannot have happened.
 ///
-/// Mutation: drop `issuer_whitelist.permits_pass()` from `credential_valid` -> this goes red.
+/// It has to be seeded rather than driven: issuance is itself gated on the whitelist, so a test that
+/// delists and then issues is refused at the backend preflight and never reaches the pillar.
+fn delist_before_anchoring(d: &Deployment, root: &str) {
+    use dogtag_standard::verify::{GrantEvent, LogPoint};
+    let anchored = d
+        .mem
+        .root_issued_at(ISSUER, root)
+        .expect("the honest issuance recorded an anchoring point");
+    d.mem.set_grant_history(
+        REGISTRY,
+        &record_type_key("VACCINATION"),
+        &d.backend,
+        vec![
+            GrantEvent {
+                at: LogPoint {
+                    block_number: anchored.block_number - 2,
+                    log_index: 0,
+                },
+                granted: true,
+            },
+            GrantEvent {
+                at: LogPoint {
+                    block_number: anchored.block_number - 1,
+                    log_index: 0,
+                },
+                granted: false,
+            },
+        ],
+    );
+}
+
+/// DELISTING IS FORWARD-ONLY, at the route. Both directions, because a pillar that only ever refuses
+/// would satisfy the second half alone.
+///
+/// `DogTagIssuer.sol:82` states the rule in the contract's own source and `adminRevoke` is the
+/// retroactive lever, so a credential anchored while its signer held the grant stays genuine when the
+/// grant is later withdrawn — an ordinary key rotation, a retirement, a lapsed practice licence. The
+/// write path guarantees the historical fact independently: `issue()` is `onlyWhitelisted`, sets
+/// `issuedBy[r] = msg.sender` in the same call, and `rootIssuer[r]` is write-once and writable only
+/// from inside a clone's `issue()`.
+///
+/// This test previously asserted the OPPOSITE for the after case — it was the defect, written down.
+/// Its own comment even contained the proof ("issuance is itself gated on the whitelist, so 'never
+/// authorised' is a state no real credential can be issued in") while asserting that such a
+/// credential is refused as a forgery.
+///
+/// Mutation: point the pillar back at `is_whitelisted_for` -> the AFTER half goes red.
+/// Mutation: drop `issuer_whitelist.permits_pass()` from `credential_valid` -> the BEFORE half does.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_delisted_issuing_signer_cannot_import() {
+async fn a_signer_delisted_after_issuance_still_imports_and_before_issuance_does_not() {
     let d = boot_anchored().await;
-    let (_root, doc) = issue_doc(&d.app, &d.op, "1003").await;
+    let (root, doc) = issue_doc(&d.app, &d.op, "1003").await;
 
     // Control: while the issuer is authorised, it imports and the pillar is a DEFINITE pass.
     let (s, b) = import_pull(&d.app, &d.op, doc.clone()).await;
     assert_eq!(s, StatusCode::OK, "control: {b}");
     assert_eq!(b["verdict"]["issuerWhitelistState"], "passed");
 
-    // Now delist the issuer. The credential is untouched and genuine in every other respect — the
-    // root is anchored, the clone declares its record type, `isValid` is still true. Only the
-    // authorisation is gone. It has to happen in this order because issuance is itself gated on the
-    // whitelist, so "never authorised" is a state no real credential can be issued in.
+    // (a) DELISTED AFTER. The credential is untouched and genuine in every respect — the root is
+    // anchored, the clone declares its record type, `isValid` is still true, and the signer really
+    // did hold the capability when it anchored this root. Only its CURRENT status changed.
     d.mem
         .delist(REGISTRY, &record_type_key("VACCINATION"), &d.backend);
+    assert!(
+        !d.mem
+            .is_whitelisted_for(REGISTRY, &record_type_key("VACCINATION"), &d.backend)
+            .await
+            .unwrap(),
+        "precondition: the current-state getter now answers false, which is what used to refuse it"
+    );
 
     let (s, b) = import_pull(&d.app, &d.op, doc.clone()).await;
     assert_eq!(
         s,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "an unauthorised issuer must not import: {b}"
+        StatusCode::OK,
+        "delisting is forward-only: a genuine credential must survive its signer's rotation: {b}"
     );
-    // The refusal SAYS which pillar refused. Without this the operator gets one generic message for
-    // a delisted issuer, a relabel and our own broken config alike.
+    assert_eq!(b["verdict"]["issuerWhitelistState"], "passed", "{b}");
+
+    let wrapped: dogtag_standard::wrap::WrappedDoc = serde_json::from_value(doc.clone()).unwrap();
+    let v = vet_api::verify::third_party_verify(&d.state, &wrapped).await;
+    assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Passed);
+    assert!(v.valid);
+
+    // (b) DELISTED BEFORE. An honest `issue()` cannot pass `onlyWhitelisted` in that state, so the
+    // document reports an anchoring that did not happen the way it says. Still a definite failure —
+    // and the refusal SAYS which pillar refused, so the operator does not get one generic message
+    // for this, a relabel and our own broken config alike.
+    delist_before_anchoring(&d, &root);
+    let (s, b) = import_pull(&d.app, &d.op, doc.clone()).await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an issuance the authority's own log does not authorise must not import: {b}"
+    );
     assert_eq!(b["verdict"]["issuerWhitelistState"], "failed", "{b}");
     assert_eq!(b["verdict"]["issuerStoreAgreement"], "matched", "{b}");
 

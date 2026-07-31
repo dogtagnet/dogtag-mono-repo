@@ -8,12 +8,28 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use alloy::primitives::{Address, Bytes, FixedBytes, B256, U256};
+use alloy::rpc::types::{Filter, Log};
 use alloy::sol;
 use alloy::sol_types::SolEvent;
 use async_trait::async_trait;
 
 // Owner-hidden consent public-signal indices.
 use dogtag_standard::public_signals::level_b as PB;
+// The issuer-whitelist pillar's historical question and its ordering/fold rule live in the SDK, so
+// every Rust surface that asks it shares ONE definition rather than three that can drift.
+pub use dogtag_standard::verify::{grant_in_force_at, GrantAtIssuance, GrantEvent, LogPoint};
+
+/// Where a mined log sits, as the ordering key the fold compares.
+///
+/// `None` for a log carrying no position. Callers must treat that as UNDETERMINED rather than
+/// silently dropping it: a grant whose place in the sequence is unknown could flip the answer, and
+/// answering anyway would be exactly the could-not-check-rendered-as-a-verdict this pillar refuses.
+fn log_point(l: &Log) -> Option<LogPoint> {
+    Some(LogPoint {
+        block_number: l.block_number?,
+        log_index: l.log_index?,
+    })
+}
 
 pub const ROAX_CHAIN_ID: u64 = 135;
 
@@ -29,6 +45,11 @@ sol! {
         function issuedAt(bytes32 r) external view returns (uint256);
         function issuedBy(bytes32 r) external view returns (address);
         function recordType() external view returns (bytes32);
+        /// The ONE registry whose `_wl` mapping `onlyWhitelisted` consults. Written once in
+        /// `initialize` from the factory's own `immutable registry`, with no setter — so for a
+        /// factory-resolved clone this is unforgeable, and it is the only authority whose grant log
+        /// can answer for this contract's issuances.
+        function registry() external view returns (address);
     }
 
     /// The clone factory. Its write-once `rootIssuer[R]` index (`DogTagIssuerFactory.sol:19`, written
@@ -43,6 +64,11 @@ sol! {
 
     #[sol(rpc)]
     contract IIssuerRegistry {
+        /// Both indexed, so one filtered `eth_getLogs` per pair reconstructs the whole grant history.
+        /// `whitelistFor`/`delistFor` emit unconditionally (they do not check the prior value), so the
+        /// log is complete rather than edge-triggered.
+        event Whitelisted(bytes32 indexed recordType, address indexed signer);
+        event Delisted(bytes32 indexed recordType, address indexed signer);
         function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
     }
 
@@ -164,13 +190,34 @@ pub trait ChainClient: Send + Sync {
     /// (uninitialized / not a clone). Read from the RESOLVED clone so the whitelist question is asked
     /// about the record type the CHAIN says this root belongs to, never the one the envelope claims.
     async fn issuer_record_type(&self, issuer_addr: &str) -> Result<Option<String>, ChainError>;
-    /// IssuerRegistry.isWhitelistedFor(recordType, signer).
+    /// IssuerRegistry.isWhitelistedFor(recordType, signer) — the CURRENT-state getter.
+    ///
+    /// Still the right read for a forward-looking question ("may this relayer verify this purpose
+    /// now?"), which is what the consent path asks. It is NOT the read the issuer-whitelist pillar
+    /// makes: see [`ChainClient::whitelisted_at_issuance`].
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
         record_type: &str,
         signer: &str,
     ) -> Result<bool, ChainError>;
+    /// Was `signer` authorised for `record_type` at the moment `root` was anchored on `issuer_addr`?
+    ///
+    /// The issuer-whitelist pillar's read. It takes NO registry address: the authority comes off the
+    /// resolved clone's own `registry()`, which is unforgeable for a factory-resolved clone and is the
+    /// only instance whose `_wl` mapping gated this contract's `issue()`. Answering from this client's
+    /// separately-configured registry would ask a different contract's mapping and, on a mis-paired
+    /// deployment, refuse a genuine credential over our own configuration.
+    ///
+    /// Delisting is forward-only (`DogTagIssuer.sol:82`), so the current-state getter above cannot
+    /// answer this: it refuses every credential a since-rotated signer ever issued.
+    async fn whitelisted_at_issuance(
+        &self,
+        issuer_addr: &str,
+        record_type: &str,
+        signer: &str,
+        root: &str,
+    ) -> Result<GrantAtIssuance, ChainError>;
     /// Sign+broadcast a tx FROM the backend signer at `account_index` to `to` with `calldata`.
     /// Returns the tx hash. EIP-1559 with legacy fallback.
     async fn sign_and_send(
@@ -400,8 +447,27 @@ struct MemChainInner {
     record_types: HashMap<String, String>,
     /// Contracts the factory never deployed, answering with attacker-chosen values.
     hostile: HashMap<String, HostileClone>,
-    /// (registry_addr, record_type, signer) -> whitelisted.
+    /// (registry_addr, record_type, signer) -> whitelisted NOW.
     whitelist: HashMap<(String, String, String), bool>,
+    /// (registry_addr, record_type, signer) -> that pair's grant history IN THAT REGISTRY, oldest
+    /// first. Separate from `whitelist` because the two answer different questions and the whole
+    /// point of this change is that they can disagree: a delisted signer is `false` above and still
+    /// authorised-at-issuance here.
+    grants: HashMap<(String, String, String), Vec<GrantEvent>>,
+    /// (clone_addr, root) -> where that clone's anchoring `RootIssued` sits in the log.
+    root_issued_at: HashMap<(String, String), LogPoint>,
+    /// clone_addr -> the registry whose `_wl` gates it (`DogTagIssuer.registry()`). Per contract,
+    /// because the real mapping is; a single global whitelist could not model a mis-paired client.
+    governing_registry: HashMap<String, String>,
+    /// The registry every clone answers for unless `governing_registry` overrides it. Adopted from
+    /// the first `whitelist`/`delist` call, which is the matched factory/registry pair every honest
+    /// test already wires — so this models the real `initialize` binding without a second setter.
+    default_registry: String,
+    /// Monotone synthetic log position. Every emulated event — a registry grant, an anchoring — takes
+    /// the next one, so CALL ORDER IS LOG ORDER: a test expresses "delisted after issuance" by
+    /// delisting after it issued, and "before" by delisting before. Without an ordering this fake
+    /// could not tell the two apart, and the tests that matter could not fail.
+    log_seq: u64,
     /// txHash -> TxView (recorded at sign_and_send time).
     txs: HashMap<String, TxView>,
     /// backend signer addresses by account index.
@@ -414,6 +480,18 @@ struct MemChainInner {
     sbt_roots: HashMap<(String, String), String>,
     nonce: u64,
     clock: u64,
+}
+
+impl MemChainInner {
+    /// The next synthetic log position. One event per block keeps it simple; the same-block ordering
+    /// the real fold has to handle is pinned directly on `grant_in_force_at` in the SDK.
+    fn next_log_point(&mut self) -> LogPoint {
+        self.log_seq += 1;
+        LogPoint {
+            block_number: self.log_seq,
+            log_index: 0,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -487,32 +565,89 @@ impl MemChain {
             .signers
             .insert(index, address.to_lowercase());
     }
-    /// Whitelist a signer for a (registry, recordType, signer) tuple.
+    /// Whitelist a signer for a (registry, recordType, signer) tuple — `IssuerRegistry.whitelistFor`,
+    /// flipping the current-state mapping AND emitting a `Whitelisted` into the grant history.
     pub fn whitelist(&self, registry: &str, record_type: &str, signer: &str) {
-        self.inner.lock().unwrap().whitelist.insert(
-            (
-                registry.to_lowercase(),
-                record_type.to_lowercase(),
-                signer.to_lowercase(),
-            ),
-            true,
-        );
+        self.grant(registry, record_type, signer, true);
     }
-    /// Withdraw a signer's authorization, mirroring `IssuerRegistry`'s `Delisted`
-    /// (`IssuerRegistry.sol:23`). Delisting is FORWARD-ONLY on the real contract: past credentials
-    /// keep their `issuedBy`, so a delisted issuer is exactly the state in which a genuinely issued
-    /// root has an unauthorized originator — the case the mandatory issuer-whitelist pillar exists
-    /// to catch, and one a test cannot reach by simply never whitelisting, because issuance itself
-    /// is gated on the whitelist.
+    /// Withdraw a signer's authorization, mirroring `IssuerRegistry.delistFor`/`Delisted`
+    /// (`IssuerRegistry.sol:23`).
+    ///
+    /// Delisting is FORWARD-ONLY on the real contract, which is why this fake records a positioned
+    /// EVENT rather than only flipping a boolean: whether a delist landed before or after an anchoring
+    /// is the entire question the issuer-whitelist pillar now asks, and a fake holding only the
+    /// current state cannot express the difference. `adminRevoke` remains the retroactive lever.
     pub fn delist(&self, registry: &str, record_type: &str, signer: &str) {
-        self.inner.lock().unwrap().whitelist.insert(
-            (
-                registry.to_lowercase(),
-                record_type.to_lowercase(),
-                signer.to_lowercase(),
-            ),
-            false,
+        self.grant(registry, record_type, signer, false);
+    }
+    /// Shared body of [`MemChain::whitelist`]/[`MemChain::delist`]: the real contract emits
+    /// unconditionally (neither call checks the prior value), so the log is complete rather than
+    /// edge-triggered, and a re-grant of an already-held capability really does appear twice.
+    fn grant(&self, registry: &str, record_type: &str, signer: &str, granted: bool) {
+        let mut g = self.inner.lock().unwrap();
+        let key = (
+            registry.to_lowercase(),
+            record_type.to_lowercase(),
+            signer.to_lowercase(),
         );
+        g.whitelist.insert(key.clone(), granted);
+        if g.default_registry.is_empty() {
+            g.default_registry = registry.to_lowercase();
+        }
+        let at = g.next_log_point();
+        g.grants.entry(key).or_default().push(GrantEvent { at, granted });
+    }
+    /// Where a clone's anchoring `RootIssued` for `root` sits, so a test can position a grant
+    /// RELATIVE to it rather than guessing at this fake's internal clock.
+    pub fn root_issued_at(&self, clone_addr: &str, root: &str) -> Option<LogPoint> {
+        self.inner
+            .lock()
+            .unwrap()
+            .root_issued_at
+            .get(&(clone_addr.to_lowercase(), root.to_lowercase()))
+            .copied()
+    }
+    /// Overwrite a `(registry, recordType, signer)` grant history outright.
+    ///
+    /// Needed for the same reason [`MemChain::with_hostile_clone`] is: the honest path CANNOT express
+    /// "delisted before this root was anchored", because issuance is gated on the whitelist, so a
+    /// test driving `delist` then `issue` through the backend is refused at the preflight and never
+    /// reaches the pillar. Without a way to seed it, the delisted-BEFORE half of the forward-only
+    /// rule would be untestable at the route level and the delisted-AFTER half would be a check that
+    /// only ever passes — which is exactly the shape of a test that cannot fail.
+    pub fn set_grant_history(
+        &self,
+        registry: &str,
+        record_type: &str,
+        signer: &str,
+        history: Vec<GrantEvent>,
+    ) {
+        let mut g = self.inner.lock().unwrap();
+        let key = (
+            registry.to_lowercase(),
+            record_type.to_lowercase(),
+            signer.to_lowercase(),
+        );
+        if g.default_registry.is_empty() {
+            g.default_registry = registry.to_lowercase();
+        }
+        // Keep the current-state mapping consistent with the history's last event, so a fake seeded
+        // this way cannot answer the two questions incoherently.
+        g.whitelist.insert(
+            key.clone(),
+            history.last().map(|e| e.granted).unwrap_or(false),
+        );
+        g.grants.insert(key, history);
+    }
+    /// Point a clone at an authority OTHER than the one its grants were recorded under — the
+    /// mis-paired client. Without an override every clone answers `default_registry`, which is the
+    /// matched pair `initialize` produces on a real chain.
+    pub fn set_governing_registry(&self, clone_addr: &str, registry: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .governing_registry
+            .insert(clone_addr.to_lowercase(), registry.to_lowercase());
     }
     /// Decode an issue(bytes32)/revoke(bytes32) calldata into (is_issue, root_hex).
     fn decode_b32_call(calldata: &str) -> Option<(bool, String)> {
@@ -624,6 +759,36 @@ impl ChainClient for MemChain {
             .copied()
             .unwrap_or(false))
     }
+    /// Composed from the same three reads the Alloy implementation makes, in the same order, so this
+    /// fake models the real answer rather than short-circuiting to one.
+    async fn whitelisted_at_issuance(
+        &self,
+        issuer_addr: &str,
+        record_type: &str,
+        signer: &str,
+        root: &str,
+    ) -> Result<GrantAtIssuance, ChainError> {
+        let g = self.inner.lock().unwrap();
+        let clone = issuer_addr.to_lowercase();
+        let governing = g
+            .governing_registry
+            .get(&clone)
+            .cloned()
+            .unwrap_or_else(|| g.default_registry.clone());
+        if governing.is_empty() {
+            // No authority to ask — the fake's counterpart of an initialized clone answering zero.
+            return Ok(GrantAtIssuance::Undetermined);
+        }
+        let Some(anchored_at) = g.root_issued_at.get(&(clone, root.to_lowercase())).copied() else {
+            return Ok(GrantAtIssuance::Undetermined);
+        };
+        let history = g
+            .grants
+            .get(&(governing, record_type.to_lowercase(), signer.to_lowercase()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        Ok(grant_in_force_at(history, anchored_at))
+    }
     async fn sign_and_send(
         &self,
         account_index: u32,
@@ -668,6 +833,11 @@ impl ChainClient for MemChain {
                 return Err(ChainError::Other("root taken".into()));
             }
             g.issued.insert(key.clone(), ts);
+            // `emit RootIssued(...)` (`DogTagIssuer.sol:57`) — positioned in the SAME synthetic log
+            // stream the registry's grants take their places from, which is what makes "granted, then
+            // anchored, then delisted" an orderable sequence in this fake rather than three booleans.
+            let at = g.next_log_point();
+            g.root_issued_at.insert(key.clone(), at);
             // `issuedBy[r] = msg.sender` (`DogTagIssuer.sol:55`) — the H-1 originator the mandatory
             // issuer-whitelist pillar resolves instead of asking an operator to type a signer in.
             g.issued_by.insert(key, signer.clone());
@@ -979,6 +1149,81 @@ impl ChainClient for AlloyChain {
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
+    }
+    async fn whitelisted_at_issuance(
+        &self,
+        issuer_addr: &str,
+        record_type: &str,
+        signer: &str,
+        root: &str,
+    ) -> Result<GrantAtIssuance, ChainError> {
+        use alloy::providers::{Provider, ProviderBuilder};
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+
+        // (1) WHICH authority answers. Off the clone, never off this deployment's config.
+        let governing = IDogTagIssuer::new(parse_addr(issuer_addr), provider.clone())
+            .registry()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?
+            ._0;
+        if governing.is_zero() {
+            // An initialized clone never answers zero here (`initialize` rejects it), so there is no
+            // authority to ask. Undetermined, not an accusation.
+            return Ok(GrantAtIssuance::Undetermined);
+        }
+
+        // (2) WHEN this root was anchored, as a log point. `issuedAt` is a unix TIMESTAMP and cannot
+        // be compared against a log's height without a timestamp->block search; the anchoring event
+        // carries the height directly.
+        let anchoring = provider
+            .get_logs(
+                &Filter::new()
+                    .address(parse_addr(issuer_addr))
+                    .event_signature(IDogTagIssuer::RootIssued::SIGNATURE_HASH)
+                    .topic1(parse_b256(root))
+                    .from_block(0u64),
+            )
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        // Write-once `issuedAt` makes a second `RootIssued` impossible on an honest clone; take the
+        // FIRST regardless, so a clone that somehow emitted twice cannot move the anchoring later.
+        let Some(anchored_at) = anchoring.iter().filter_map(log_point).min() else {
+            return Ok(GrantAtIssuance::Undetermined);
+        };
+
+        // (3) That authority's grant history for this exact pair. One call: topic0 accepts a SET, so
+        // `Whitelisted` and `Delisted` come back interleaved in log order.
+        let grants = provider
+            .get_logs(
+                &Filter::new()
+                    .address(governing)
+                    .event_signature(vec![
+                        IIssuerRegistry::Whitelisted::SIGNATURE_HASH,
+                        IIssuerRegistry::Delisted::SIGNATURE_HASH,
+                    ])
+                    .topic1(parse_b256(record_type))
+                    .topic2(parse_addr(signer).into_word())
+                    .from_block(0u64),
+            )
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let mut history: Vec<GrantEvent> = Vec::with_capacity(grants.len());
+        for l in &grants {
+            // A grant whose position is unknown cannot be sequenced, and dropping it could turn a
+            // delisted-before into an authorised. Refuse to answer instead.
+            let Some(at) = log_point(l) else {
+                return Ok(GrantAtIssuance::Undetermined);
+            };
+            history.push(GrantEvent {
+                at,
+                granted: l.topic0() == Some(&IIssuerRegistry::Whitelisted::SIGNATURE_HASH),
+            });
+        }
+        Ok(grant_in_force_at(&history, anchored_at))
     }
     async fn sign_and_send(
         &self,

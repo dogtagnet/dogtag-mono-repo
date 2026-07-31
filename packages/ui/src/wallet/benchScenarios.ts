@@ -37,12 +37,14 @@ import {
  * of readers. Nothing here touches the network, so the catalogue runs identically in a unit test and in
  * the browser, and the page can render live outcomes beside the declared expectations.
  *
- * EVERY read is keyed on the contract it is put to - the six `DogTagIssuer`/factory getters on the
- * contract address, and the three registry reads (`isWhitelistedFor`, the grant log, and
- * `DogTagIssuer.registry()`) on the registry address. A fake that ignored which contract it was asked
- * about could not represent "the hostile contract answers `true` while the clone the factory named
- * answers `false`", and every forged-issuer scenario written against one would pass for the wrong
- * reason - the trap recorded against `MockChain` in `crates/dogtag-standard-rs/src/verify.rs`.
+ * EVERY read is keyed on the contract it is put to - the six `DogTagIssuer`/factory getters and the
+ * `RootIssued` log on the contract address, `DogTagIssuer.registry()` on the clone whose authority is
+ * being asked for, and the `Whitelisted`/`Delisted` grant log on the REGISTRY address it is read from.
+ * A fake that ignored which contract it was asked about could not represent "the hostile contract
+ * answers `true` while the clone the factory named answers `false`", nor "the grant is in the registry
+ * the clone names and only there", and every forged-issuer scenario written against one would pass for
+ * the wrong reason - the trap recorded against `MockChain` in
+ * `crates/dogtag-standard-rs/src/verify.rs`.
  *
  * That claim was once written as a blanket "ADDRESS-KEYED throughout" while `grants` in fact discarded
  * its registry argument, and the blanket wording is why the gap survived review: it read as a property
@@ -61,7 +63,13 @@ import {
  * answer and the gap is recorded in {@link BenchScenario.knownDefect}, which pins today's behaviour
  * separately. The suite asserts BOTH, plus that the two still differ - so the day the defect is fixed
  * the scenario goes red and whoever fixed it must delete the field, rather than the finding quietly
- * evaporating. {@link signerDelistedAfterIssuance} is the one place that fires today.
+ * evaporating.
+ *
+ * NO SCENARIO CARRIES A PIN TODAY, and `benchScenarios.test.ts` asserts that set is empty.
+ * {@link signerDelistedAfterIssuance} is the worked example of the whole mechanism: it pinned the
+ * forward-only delisting defect until the verdict formula moved, at which point the scenario went red
+ * and the pin had to be deleted rather than the finding evaporating. The machinery is kept for the
+ * next finding, not because one is outstanding.
  */
 
 // ── the scripted world ──────────────────────────────────────────────────────────────────────────
@@ -143,8 +151,6 @@ interface ChainScript {
   isRevoked?: Record<string, boolean>;
   issuedBy?: Record<string, string>;
   recordTypes?: Record<string, string>;
-  /** CURRENT whitelist state per REGISTRY, as that registry's `isWhitelistedFor` answers it. */
-  whitelist?: Set<string>;
   /** contract -> the registry its own `onlyWhitelisted` consults. */
   issuerRegistries?: Record<string, string>;
   rootIssuedLogs?: Record<string, LogPoint>;
@@ -168,7 +174,6 @@ function honestChain(root: string): ChainScript {
     isRevoked: { [k(CLONE, root)]: false },
     issuedBy: { [k(CLONE, root)]: SIGNER },
     recordTypes: { [CLONE.toLowerCase()]: RECORD_TYPE_KEY },
-    whitelist: new Set([k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]),
     issuerRegistries: { [CLONE.toLowerCase()]: SCENARIO_REGISTRY },
     rootIssuedLogs: { [k(CLONE, root)]: ANCHORED },
     // Recorded in the registry that GOVERNS the clone - which here is also the one this client is
@@ -229,9 +234,20 @@ function readersFor(script: ChainScript): ScenarioReaders {
         guard();
         return script.issuedBy?.[k(addr, root)] ?? ZERO_ADDRESS;
       },
-      async isWhitelistedFor(registry, key, signer) {
+      // The verifier's own pillar reads the SAME three script maps the bench's independent
+      // `grantHistoryReader` below does. One fake feeds both, so the two rows cannot silently be
+      // shown different chains - and a scenario states its chain once rather than twice.
+      async issuerRegistry(cloneAddr) {
         guard();
-        return script.whitelist?.has(k3(registry, key, signer)) ?? false;
+        return script.issuerRegistries?.[cloneAddr.toLowerCase()] ?? ZERO_ADDRESS;
+      },
+      async rootIssuedAt(cloneAddr, root) {
+        guard();
+        return script.rootIssuedLogs?.[k(cloneAddr, root)] ?? null;
+      },
+      async grantHistory(registryAddr, key, signer) {
+        guard();
+        return sortLogPoints(script.grants?.[k3(registryAddr, key, signer)] ?? []);
       },
     },
     authorityReader: {
@@ -533,7 +549,6 @@ export const signerDelistedBeforeIssuance: BenchScenario = {
     const base = honestChain(root);
     return world(asRecord(doc), {
       ...base,
-      whitelist: new Set<string>(),
       grants: {
         [k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [
           { kind: "whitelisted", ...GRANTED },
@@ -545,23 +560,25 @@ export const signerDelistedBeforeIssuance: BenchScenario = {
 };
 
 /**
- * THE DEFECT. The signer was authorised when it anchored this root, and was delisted afterwards.
+ * The signer was authorised when it anchored this root, and was delisted afterwards. It MUST verify.
  *
- * The protocol says this credential is genuine and MUST STILL VERIFY. `DogTagIssuer.sol:82` states the
- * rule in the contract's own words - "delisting is forward-only" - and `adminRevoke` exists precisely
- * because a delist does NOT retroactively invalidate what a signer already anchored. The write path
- * guarantees the historical fact independently: `issue()` is `onlyWhitelisted`, sets `issuedBy[r] =
- * msg.sender` in the same call, and `rootIssuer[r]` is write-once and writable only from inside a
- * clone's `issue()`. A consequence worth stating, since it bounds the blast radius in the safe
- * direction: a current-state whitelist read therefore cannot produce a false PASS on a
- * factory-resolved root - only false negatives.
+ * `DogTagIssuer.sol:82` states the rule in the contract's own words - "delisting is forward-only" -
+ * and `adminRevoke` exists precisely because a delist does NOT retroactively invalidate what a signer
+ * already anchored. The write path guarantees the historical fact independently: `issue()` is
+ * `onlyWhitelisted`, sets `issuedBy[r] = msg.sender` in the same call, and `rootIssuer[r]` is
+ * write-once and writable only from inside a clone's `issue()`.
  *
- * The verifier refuses it anyway, because its mandatory pillar reads `isWhitelistedFor` - a
- * CURRENT-state getter - and a `delistFor` flips it. So an ordinary key rotation, a retiring vet or a
- * revoked practice licence renders every credential that signer ever issued as a forgery, fleet-wide.
+ * THIS SCENARIO WAS THE DEFECT, WRITTEN DOWN. Until the verdict formula moved, the verifier refused
+ * this credential: its mandatory pillar read `isWhitelistedFor`, a CURRENT-state getter, so an
+ * ordinary key rotation, a retiring vet or a lapsed practice licence rendered every credential that
+ * signer ever issued as a forgery, fleet-wide. `expected` was left stating the CORRECT answer and a
+ * separate `knownDefect` pinned what the code really did, with a test asserting the two still
+ * differed - so the day the defect was fixed this scenario went red and whoever fixed it had to
+ * delete the pin rather than let the finding quietly evaporate. That is what happened here.
  *
- * `expected` states the CORRECT answer (verdict `true`) and is deliberately NOT edited to match the
- * code; {@link BenchScenario.knownDefect} pins what the implementation really does. Both are asserted.
+ * The blast radius was always bounded in the safe direction, which is why nothing had to be revoked:
+ * by the write-path argument above, a current-state read on a factory-resolved root could only ever
+ * produce false NEGATIVES, never a false pass.
  */
 export const signerDelistedAfterIssuance: BenchScenario = {
   id: "signer-delisted-after-issuance",
@@ -572,28 +589,19 @@ export const signerDelistedAfterIssuance: BenchScenario = {
   refusedBy: [],
   blindSpots: [],
   notes:
-    "This is the scenario that shows why the two whitelist rows must be separate. `issuer-whitelisted: fail (gating)` sitting beside `whitelisted-at-issuance: pass (advisory)` is precisely legible - the refusal is about the signer's status today, not about whether the credential is real.",
-  // The CORRECT vector: nothing is wrong with this credential, so every check that can run passes and
-  // the verdict is `true`. This is NOT what the code produces - see `knownDefect` below - and it is
-  // deliberately left stating the right answer rather than the observed one.
+    "Both whitelist rows pass, and they are still separate on purpose: the gating one is the VERIFIER's own answer, the advisory one is the bench's INDEPENDENT reconstruction from the same log. Their agreeing here is corroboration, and it is what makes this scenario a regression detector - revert the verifier to a current-state read and the gating row alone turns red beside a green historical one.",
+  // Nothing is wrong with this credential, so every check that can run passes and the verdict is
+  // `true`. This vector was never edited to match the code; the code moved to match it.
   expected: expect({}),
   expectedVerdict: true,
-  knownDefect: {
-    observed: expect({ "issuer-whitelisted": "fail" }),
-    observedVerdict: false,
-    statement:
-      "DEFECT - the verifier refuses a genuine credential, contradicting the standing ruling that delisting is FORWARD-ONLY. `DogTagIssuer.sol:82` states the rule in the contract's own source, and `adminRevoke` exists as the retroactive lever precisely because `delistFor` is not one; it was not used on this root. The correct verdict is `true`. What happens instead: the mandatory `issuer-whitelisted` pillar reads `isWhitelistedFor`, a CURRENT-state getter, so a later `delistFor` flips it to `false` and the credential is refused. The bench's own `whitelisted-at-issuance` row reads the registry's LOGS and correctly reports the signer as authorised at the anchoring block, which is what makes the contradiction visible on the page. Consequence: an ordinary key rotation, a retirement or a lapsed licence renders every credential that signer ever issued as a forgery, fleet-wide. Not fixed in this change: that verdict formula is shared by five surfaces the repo requires to agree (packages/ui, government-api, vet-api, dogtag-standard-rs, both mobile importers), so moving it is its own change.",
-  },
   build() {
     const doc = genuineDoc();
     const root = doc.signature.merkleRoot;
     const base = honestChain(root);
     return world(asRecord(doc), {
       ...base,
-      // Current state: delisted. The getter the pillar reads answers `false`.
-      whitelist: new Set<string>(),
-      // History: granted long before the anchoring, delisted long after it - in the registry that
-      // governs the clone, which is the only log an honest `onlyWhitelisted` issuance could rest on.
+      // Granted long before the anchoring, delisted long after it - in the registry that governs the
+      // clone, which is the only log an honest `onlyWhitelisted` issuance could rest on.
       grants: {
         [k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [
           { kind: "whitelisted", ...GRANTED },
@@ -644,32 +652,35 @@ export const revokedPresentedAsLive: BenchScenario = {
 };
 
 /**
- * The whitelist question was put to a registry that does not gate this contract.
+ * This client is configured with a registry that does not gate the issuing contract.
  *
  * `IssuerRegistry._wl` is a per-contract mapping and `DogTagIssuer.onlyWhitelisted` consults the ONE
- * registry in the clone's own `registry` slot. A different instance answers about its own grants, so
- * its verdict is a confident answer to a different question - and in this scenario it answers `true`,
- * passing a signer the issuing contract never authorised.
+ * registry in the clone's own `registry` slot. So the only authority that can answer for this
+ * contract's issuances is that one, and both whitelist rows go there - off the clone, never off this
+ * client's configuration. Both therefore PASS here, correctly.
  *
- * This is the ONE case in the catalogue where a green whitelist row is void, which is why the check
- * exists at all. It cannot gate: a factory/registry pair misconfigured on this client is not evidence
- * about a credential.
+ * That is precisely what the scenario is for. It is the live catcher for the sourcing rule: point
+ * either row back at `registryAddr` and it goes red, because the configured registry's log is empty
+ * and the row would print a definite refusal of a genuine credential - our own misconfiguration
+ * rendered as an accusation, the fail-closed mirror of the fail-open bug this surface exists to
+ * prevent. `registry-governs-issuer` still reports the mis-pairing, because it IS worth telling an
+ * operator about; it just no longer voids anything.
  */
 export const foreignRegistry: BenchScenario = {
   id: "foreign-registry",
-  title: "The authority we asked does not govern this issuer",
+  title: "The authority this client is configured with does not govern this issuer",
   tells:
-    "The client is configured with a registry that does not gate the issuing contract, so its `isWhitelistedFor` answer - here a pass - is about the wrong authority.",
+    "The client's configured registry is not the one gating the issuing contract - a mis-paired factory/registry deployment.",
   mustVerify: false,
   refusedBy: ["registry-governs-issuer"],
   blindSpots: [
     {
       id: "issuer-whitelisted",
-      why: "It PASSES, and that is the hazard: the foreign registry does list this signer, so the row is green on an authority that governs nothing here.",
+      why: "It PASSES, and correctly: it asks the registry the CLONE names rather than the one this client is configured with, and that registry's log holds the grant. Asking the configured one would find nothing and refuse a genuine credential over our own misconfiguration.",
     },
     {
       id: "integrity",
-      why: "Nothing about the document changed; the fault is in which contract this client asked.",
+      why: "Nothing about the document changed; the fault is in which contract this client is configured with.",
     },
     {
       id: "issuer-descends-from-factory",
@@ -677,11 +688,11 @@ export const foreignRegistry: BenchScenario = {
     },
     {
       id: "whitelisted-at-issuance",
-      why: "It PASSES, because it asks the registry the CLONE names rather than the one this client is configured with - and that registry's log does hold the grant. A row that asked the configured registry would find no grant and print a definite refusal of a genuine credential, which is our misconfiguration rendered as an accusation.",
+      why: "It PASSES for the same reason and from the same log as the gating row - the bench reads it independently, so the two agreeing here is a corroboration rather than a restatement.",
     },
   ],
   notes:
-    "The verdict stays `true` here, because the row is advisory by design. That is the honest outcome: the bench cannot know whether the credential is good, only that the answer it was given is void - and it says so rather than converting our own misconfiguration into an accusation. Note what the historical row does with the SAME misconfiguration: it reads the grant log of the registry the clone actually names, so it passes. It is also the live catcher for that rule - point it back at the configured registry and this scenario goes red, because the foreign registry's log is where the grant genuinely is.",
+    "The verdict stays `true`, and that is the honest outcome: the credential is genuine, and this client's own mis-pairing is not evidence about it. The row that objects is ADVISORY by design and says which axis of the pair is wrong. Both whitelist rows source their authority from the clone, so both are unaffected - which is the property this scenario exists to hold in place: point either at `registryAddr` and it goes red here.",
   expected: expect({ "registry-governs-issuer": "fail" }),
   // The credential itself is fine and the row that objects is ADVISORY, so the verifier's verdict
   // correctly stays `true`. Refusing it would convert this client's own misconfiguration into an
@@ -693,18 +704,13 @@ export const foreignRegistry: BenchScenario = {
     const base = honestChain(root);
     return world(asRecord(doc), {
       ...base,
-      // The clone is gated by a registry this client is not configured with...
+      // The clone is gated by a registry this client is not configured with.
       issuerRegistries: { [CLONE.toLowerCase()]: FOREIGN_REGISTRY },
-      // ...while the one it IS configured with also happens to list the signer, which is the hazard:
-      // the pillar reads green off an authority that governs nothing here.
-      whitelist: new Set([
-        k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER),
-        k3(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER),
-      ]),
       // The grant sits in the GOVERNING registry, and it has to: `issue()` is `onlyWhitelisted`
       // against the clone's own `registry` slot, so the anchoring this document reports could not have
       // happened unless FOREIGN_REGISTRY - not the configured one - recorded the grant. A fixture with
-      // the grant only in SCENARIO_REGISTRY would be a chain state the protocol cannot produce.
+      // the grant only in SCENARIO_REGISTRY would be a chain state the protocol cannot produce, and it
+      // is the emptiness of the CONFIGURED registry's log that makes this scenario the catcher.
       grants: {
         [k3(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [{ kind: "whitelisted", ...GRANTED }],
       },

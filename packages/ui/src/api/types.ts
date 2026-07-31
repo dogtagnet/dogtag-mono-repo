@@ -340,6 +340,13 @@ export interface VerifyCredentialResp {
     onchain: boolean;
     issued: boolean;
     revoked: boolean;
+    /**
+     * Was the on-chain originator authorised for this record type AT THE MOMENT this root was
+     * anchored? Reconstructed from the governing registry's `Whitelisted`/`Delisted` logs, NOT from
+     * `isWhitelistedFor` - delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the
+     * retroactive lever), so a current-state read refuses every credential a since-rotated signer
+     * ever issued.
+     */
     issuerWhitelisted?: boolean | null;
     /**
      * Why `issuerWhitelisted` is what it is. A caller MUST be able to tell "not evaluated because this
@@ -367,6 +374,11 @@ export interface VerifyCredentialResp {
      * `unanchoredUnconfirmed` (no clone resolved, but the asserted address is whitelisted for the
      * claimed record type) deliberately promotes nothing - being whitelisted does not show that
      * address issued THIS root.
+     *
+     * This pair is the ONE place the CURRENT-state getter still answers: with no clone resolved there
+     * is no trusted anchoring point to ask the historical question against, and taking one off the
+     * document would let a forgery neutralise the last check standing. See the comment at the vet
+     * handler for the bounded cost.
      */
     expectedSignerState?:
       | "notAsserted"

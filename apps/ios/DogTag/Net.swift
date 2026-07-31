@@ -232,6 +232,89 @@ enum RoaxRpc {
         "0x" + Keccak256.digest(Data(signature.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// `topic0` = the FULL 32-byte keccak256 of an event's canonical signature, `0x`-prefixed hex.
+    ///
+    /// A separate function from `functionSelector` on purpose: a call selector is the first FOUR bytes
+    /// and a log topic is all thirty-two, so reaching for the selector here yields a topic that matches
+    /// no log at all - which reads exactly like "this pair was never granted" and would turn a genuine
+    /// credential into a definite refusal. Canonical signature form: no spaces, no parameter names, no
+    /// `indexed`.
+    ///
+    /// Deliberately NOT `private`, unlike every selector above: `DogTagTests` compiles this file, so
+    /// internal access is what lets the derived values be pinned the way `RoaxRpcSelectorTest` pins
+    /// Android's. The selectors stay private and therefore stay unpinned on this platform - a
+    /// pre-existing asymmetry, narrowed here rather than widened.
+    static func eventTopic(_ signature: String) -> String {
+        "0x" + Keccak256.digest(Data(signature.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The ONE registry whose `_wl` mapping the clone's `onlyWhitelisted` consults, and therefore the
+    /// only authority whose grant log can answer for that contract's issuances. Written once in
+    /// `initialize` from the factory's own `immutable registry`, with no setter.
+    static let registrySelector = functionSelector("registry()")
+
+    /// Topics for the grant history the issuer-whitelist pillar folds. Both event arguments are
+    /// `indexed` on `IssuerRegistry`, so one filtered `eth_getLogs` per `(recordType, signer)` pair
+    /// reconstructs the whole history - and `whitelistFor`/`delistFor` emit unconditionally, so the
+    /// log is complete rather than edge-triggered.
+    static let rootIssuedTopic = eventTopic("RootIssued(bytes32,address,uint256)")
+    static let whitelistedTopic = eventTopic("Whitelisted(bytes32,address)")
+    static let delistedTopic = eventTopic("Delisted(bytes32,address)")
+
+    /// Where a mined log sits. Ordered by `(blockNumber, logIndex)`; `logIndex` is BLOCK-SCOPED and so
+    /// comparable ACROSS contracts within one block, which is the only reason a registry grant and a
+    /// clone's issuance landing in the same block can be sequenced against each other at all.
+    ///
+    /// Mirrors Kotlin `RoaxRpc.LogPoint` and Rust `dogtag_standard::verify::LogPoint`.
+    struct LogPoint: Comparable, Equatable {
+        let blockNumber: UInt64
+        let logIndex: UInt64
+        static func < (a: LogPoint, b: LogPoint) -> Bool {
+            a.blockNumber != b.blockNumber
+                ? a.blockNumber < b.blockNumber
+                : a.logIndex < b.logIndex
+        }
+    }
+
+    /// One `IssuerRegistry.whitelistFor`/`delistFor` call, as observed in that registry's own log.
+    struct GrantEvent: Equatable {
+        let at: LogPoint
+        let granted: Bool
+    }
+
+    /// Did the issuing signer hold the capability AT THE MOMENT this root was anchored?
+    ///
+    /// `authorized` and `notAuthorized` are answers ABOUT the credential; `undetermined` says the
+    /// question could not be put. Only the first may contribute to a pass, only the second may refuse,
+    /// and the third must never be rendered as either.
+    enum GrantAtIssuance { case authorized, notAuthorized, undetermined }
+
+    /// Fold one `(recordType, signer)` grant history against the point a root was anchored.
+    ///
+    /// THE definition of the rule for this app, mirroring Rust `grant_in_force_at`, TS `grantInForceAt`
+    /// and Kotlin `RoaxRpc.grantInForceAt`: the state as of the anchoring point is the LAST event at or
+    /// before it.
+    ///
+    /// An EMPTY prior history is `.notAuthorized`, not `.undetermined`: the registry answered and its
+    /// own log records no grant, which is evidence about the credential rather than about our ability
+    /// to check. A log read that FAILED never reaches this function.
+    ///
+    /// The tie is broken EXPLICITLY on `>=`, taking the LAST of any events sharing one `(blockNumber,
+    /// logIndex)`, because that is what Rust's `max_by_key` and the TS sort-then-last do. A conforming
+    /// chain cannot produce such a pair - `logIndex` is unique within a block - so this only ever
+    /// arises from a lying or buggy peer, where either answer is equally arbitrary; the point is that
+    /// one rule mirrored four ways must not quietly be four rules. `max(by:)` would return the FIRST
+    /// maximum, so the divergence would be invisible in every language's own tests.
+    static func grantInForceAt(_ history: [GrantEvent], anchoredAt: LogPoint) -> GrantAtIssuance {
+        let asOf = history
+            .filter { $0.at <= anchoredAt }
+            .reduce(nil as GrantEvent?) { best, e in
+                guard let best else { return e }
+                return e.at >= best.at ? e : best
+            }
+        return asOf?.granted == true ? .authorized : .notAuthorized
+    }
+
     static func isValid(rpcUrl: String, documentStore: String, root: String) async -> Result {
         guard !documentStore.isEmpty, !root.isEmpty else { return .unknown("missing addr/root") }
         let data = isValidSelector + pad32(root)
@@ -520,9 +603,14 @@ enum RoaxRpc {
     ///
     /// So the clone is resolved from the FACTORY in the app's own bundled `roax.json`
     /// (`rootIssuer`) - never from the document. Then the record type comes from that clone's own
-    /// `recordType()`, and the issuing signer from its `issuedBy`, checked against the app's own
-    /// `IssuerRegistry`. An envelope naming a different clone, or a different record type, than the
-    /// chain does is a definite `.invalid`, not merely unresolved.
+    /// `recordType()`, and the issuing signer from its `issuedBy`. An envelope naming a different
+    /// clone, or a different record type, than the chain does is a definite `.invalid`, not merely
+    /// unresolved.
+    ///
+    /// WHICH AUTHORITY answers for that signer comes off the clone's own `registry()` too, never off
+    /// the bundled `IssuerRegistry` - see `whitelistedAtIssuance`. `issuerRegistry` survives here only
+    /// as an "is this bundle configured at all" precondition: an app shipped without one is missing
+    /// the whole address set, so refusing to state a chain fact from it is the honest answer.
     ///
     /// `.unknown` means the pillar did not resolve; a caller must treat that as indeterminate, never
     /// as a pass. A read that FAILED and a slot the chain says is empty both land there, but they say
@@ -570,9 +658,68 @@ enum RoaxRpc {
         case .unset: return .unknown("issuer clone reports no issuer for this root")
         case let .unresolved(r): return .unknown("could not read who issued this root (\(r))")
         }
-        return await isWhitelistedFor(
-            rpcUrl: rpcUrl, issuerRegistry: issuerRegistry,
-            key: chainRecordType, signer: signer)
+        // Ask whether that signer held the capability AT THE MOMENT it anchored this root, not
+        // whether it holds it now. Delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is
+        // the retroactive lever), so `isWhitelistedFor` - a current-state getter - would refuse every
+        // credential a rotated, retired or lapsed signer ever issued while the protocol says each one
+        // is genuine. `issuerRegistry` is deliberately NOT the authority asked: see below.
+        switch await whitelistedAtIssuance(
+            rpcUrl: rpcUrl, clone: clone, recordTypeKey: chainRecordType, signer: signer, root: root
+        ) {
+        case .authorized: return .valid
+        case .notAuthorized: return .invalid
+        case .undetermined:
+            return .unknown("could not establish whether the issuer was authorised at issuance")
+        }
+    }
+
+    /// Was `signer` authorised for `recordTypeKey` when `root` was anchored on `clone`?
+    ///
+    /// Takes no registry address on purpose. The authority comes off the clone's own `registry()`,
+    /// which for a factory-resolved clone is unforgeable - `registry` is written once in `initialize`
+    /// from the factory's own `immutable registry` - and is the only instance whose `_wl` mapping gated
+    /// that contract's `issue()`. Asking this app's own bundled registry would ask a different
+    /// contract's mapping and, on a mis-paired bundle, refuse a genuine credential over our own
+    /// configuration.
+    static func whitelistedAtIssuance(
+        rpcUrl: String, clone: String, recordTypeKey: String, signer: String, root: String
+    ) async -> GrantAtIssuance {
+        // (1) WHICH authority answers. Zero, or a read that did not answer, means there is no
+        // authority to ask - an initialized clone never reports zero here.
+        let governing: String
+        switch await ethCall(rpcUrl: rpcUrl, to: clone, data: registrySelector) {
+        case let .success(hex):
+            guard hex.count >= 40, hex.contains(where: { $0 != "0" }) else { return .undetermined }
+            governing = "0x" + String(hex.suffix(40)).lowercased()
+        case .failure: return .undetermined
+        }
+
+        // (2) WHEN this root was anchored, as a log point. `issuedAt` is a unix TIMESTAMP and cannot
+        // be compared against a log's height without a timestamp->block search.
+        guard let anchoring = await ethGetLogs(
+            rpcUrl: rpcUrl, address: clone,
+            topic0: [rootIssuedTopic], topics: [pad32Topic(root)]
+        ) else { return .undetermined }
+        // Write-once `issuedAt` makes a second `RootIssued` impossible on an honest clone; take the
+        // FIRST regardless, so a clone that somehow emitted twice cannot move the anchoring later.
+        guard let anchoredAt = anchoring.compactMap({ logPoint($0) }).min() else { return .undetermined }
+
+        // (3) That authority's grant history for this exact pair.
+        guard let grants = await ethGetLogs(
+            rpcUrl: rpcUrl, address: governing,
+            topic0: [whitelistedTopic, delistedTopic],
+            topics: [pad32Topic(recordTypeKey), "0x" + padAddr(signer)]
+        ) else { return .undetermined }
+        var history: [GrantEvent] = []
+        history.reserveCapacity(grants.count)
+        for log in grants {
+            // A grant whose position is unknown cannot be sequenced, and dropping it could turn a
+            // delisted-before into an authorised. Refuse to answer instead.
+            guard let at = logPoint(log) else { return .undetermined }
+            let topic0 = ((log["topics"] as? [String])?.first ?? "").lowercased()
+            history.append(GrantEvent(at: at, granted: topic0 == whitelistedTopic.lowercased()))
+        }
+        return grantInForceAt(history, anchoredAt: anchoredAt)
     }
 
     /// `keccak256(recordType utf8)` — the `IssuerRegistry` whitelist key, and the same value the
@@ -658,6 +805,58 @@ enum RoaxRpc {
         let result = (o["result"] as? String) ?? ""
         return .success(result.hasPrefix("0x") ? String(result.dropFirst(2)) : result)
     }
+
+    /// `eth_getLogs` over the SAME chain-guarded transport every `eth_call` uses, so a wrong-chain or
+    /// unavailable peer receives no address-bound log query either.
+    ///
+    /// `topic0` is a SET, which the JSON-RPC spec allows: `Whitelisted` and `Delisted` come back
+    /// interleaved in log order from one call rather than two. Returns `nil` for a read that did not
+    /// answer, which callers must keep apart from an empty array - the empty array is the registry
+    /// saying "nothing was ever recorded here".
+    private static func ethGetLogs(
+        rpcUrl: String, address: String, topic0: [String], topics: [String]
+    ) async -> [[String: Any]]? {
+        var topicFilter: [Any] = [topic0]
+        topicFilter.append(contentsOf: topics as [Any])
+        let payload: [String: Any] = [
+            "jsonrpc": "2.0", "id": 1, "method": "eth_getLogs",
+            "params": [[
+                "address": address,
+                "topics": topicFilter,
+                "fromBlock": "0x0",
+                "toBlock": "latest",
+            ]],
+        ]
+        guard let raw = try? JSONSerialization.data(withJSONObject: payload),
+              let bodyStr = String(data: raw, encoding: .utf8) else { return nil }
+        let resp = await guardedPostJSON(rpcUrl: rpcUrl, body: bodyStr)
+        guard resp.ok else { return nil }
+        guard let d = resp.body.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
+        if o["error"] != nil { return nil }
+        return o["result"] as? [[String: Any]]
+    }
+
+    /// A log's position, or `nil` when it carries none.
+    ///
+    /// A pending log has no established place in the sequence, so it must not be silently dropped and
+    /// must not be ordered by guess - the caller treats an unpositioned log as undetermined.
+    private static func logPoint(_ log: [String: Any]) -> LogPoint? {
+        guard let block = hexQuantity(log["blockNumber"] as? String),
+              let index = hexQuantity(log["logIndex"] as? String) else { return nil }
+        return LogPoint(blockNumber: block, logIndex: index)
+    }
+
+    /// Parse an `0x`-prefixed JSON-RPC quantity. `nil` for anything unparseable, never 0.
+    private static func hexQuantity(_ hex: String?) -> UInt64? {
+        guard let hex else { return nil }
+        let h = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
+        guard !h.isEmpty, h.count <= 15 else { return nil }
+        return UInt64(h, radix: 16)
+    }
+
+    /// A 32-byte topic value, `0x`-prefixed and left-padded, from a hex word of any width.
+    private static func pad32Topic(_ hex: String) -> String { "0x" + pad32(hex).lowercased() }
 
     private static func padAddr(_ addr: String) -> String {
         let h = (addr.hasPrefix("0x") ? String(addr.dropFirst(2)) : addr).lowercased()

@@ -12,7 +12,11 @@
 //   2. compares `issuedBy` to `doc.protocol.issuerSigner`, a SECOND field outside the root, so the
 //      document supplies both the contract and the expected answer;
 //   3. falls OPEN on a read error (`catch { issuance = "VALID" }`);
-//   4. never reads `recordType`, so relabelling a credential across record types is free.
+//   4. never reads `recordType`, so relabelling a credential across record types is free;
+//   5. has no issuer-whitelist pillar at all — so it also lacks the HISTORICAL grant check the Rust
+//      SDK now makes (`whitelisted_at_issuance`: the governing registry's `Whitelisted`/`Delisted`
+//      log folded at the anchoring block). The divergence therefore GREW, in the safe direction:
+//      this file is weaker, never stricter, so nothing here can refuse a credential the others pass.
 // Reproduction (derived from code, NOT executed): deploy a contract whose `isValid(R)` returns true
 // and whose `issuedBy(R)` returns any address A; set `issuer.documentStore` to that contract and
 // `protocol.issuerSigner` to A. `issuance` folds to VALID.

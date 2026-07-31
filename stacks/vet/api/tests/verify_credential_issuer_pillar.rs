@@ -459,13 +459,22 @@ async fn a_rewritten_document_store_on_an_anchored_root_is_a_mismatch() {
     assert_eq!(b["documentStore"], HOSTILE, "{b}");
 }
 
-/// A signer the registry does not whitelist is a DEFINITE failure, distinct from an unresolved one.
+/// A contract with no anchoring log of its own cannot answer the historical question, and the answer
+/// is UNRESOLVED — never a definite failure, and never a pass.
+///
+/// The pillar asks "was this signer authorised when this root was anchored HERE?", which is located
+/// from the contract's own `RootIssued`. A contract that answers the getters but emitted no such
+/// event leaves the question unputtable. That is a statement about our ability to check, not about
+/// the credential, so it must not be spelled `failed` — and the credential is refused anyway, by the
+/// envelope naming a contract the chain does not.
+///
+/// Mutation: map `GrantAtIssuance::Undetermined` to `Some(false)` -> this goes red.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_unwhitelisted_on_chain_signer_fails_the_pillar() {
+async fn a_signer_whose_anchoring_cannot_be_located_is_unresolved_not_an_accusation() {
     let (app, op, _backend, mem) = boot().await;
     let (_id, root, doc) = issue_doc(&app, &op, "47").await;
-    // The factory names a clone that DID issue this root — but the originator it recorded is an
-    // address the verifier's own registry knows nothing about.
+    // The factory names a clone that claims to have issued this root — but the originator it records
+    // is an address the verifier's own registry knows nothing about, and it emitted no anchoring log.
     mem.set_root_issuer(FACTORY_ADDR, &root, HOSTILE);
     mem.with_hostile_clone(
         HOSTILE,
@@ -478,10 +487,72 @@ async fn an_unwhitelisted_on_chain_signer_fails_the_pillar() {
     let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
 
     assert_eq!(b["verdict"], false, "{b}");
-    assert_eq!(b["fragments"]["issuerWhitelisted"], false, "{b}");
-    assert_eq!(b["fragments"]["issuerWhitelistState"], "failed", "{b}");
+    assert!(b["fragments"]["issuerWhitelisted"].is_null(), "{b}");
+    assert_eq!(b["fragments"]["issuerWhitelistState"], "unresolved", "{b}");
+    assert_ne!(
+        b["fragments"]["issuerWhitelistState"], "failed",
+        "we could not put the question; saying it failed accuses on the strength of a non-answer: {b}"
+    );
     // The envelope also names a different contract than the chain does, and that is reported.
     assert_eq!(b["fragments"]["documentStoreDiffers"], true, "{b}");
+}
+
+/// DELISTING IS FORWARD-ONLY, at `POST /verify/credential`. Both directions.
+///
+/// This route has its OWN orchestration of the pillar, separate from the SDK path `POST /import/pull`
+/// runs, so it is pinned separately — the five surfaces are required to agree, and the only way to
+/// know they do is to ask each of them.
+///
+/// Mutation: point this handler's arm back at `is_whitelisted_for` -> the AFTER half goes red.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_signer_delisted_after_issuance_still_verifies_and_before_issuance_does_not() {
+    use dogtag_standard::verify::{GrantEvent, LogPoint};
+    let (app, op, backend, mem) = boot().await;
+    let (_id, root, doc) = issue_doc(&app, &op, "48").await;
+    mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
+    let rt = record_type_key("VACCINATION");
+
+    // (a) DELISTED AFTER the anchoring — an ordinary key rotation. Nothing about the credential
+    // changed, and `DogTagIssuer.sol:82` says the withdrawal does not reach backwards.
+    mem.delist(REGISTRY, &rt, &backend);
+    let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc.clone() })).await;
+    assert_eq!(
+        b["verdict"], true,
+        "delisting is forward-only, so a genuine credential must still verify: {b}"
+    );
+    assert_eq!(b["status"], "valid", "{b}");
+    assert_eq!(b["fragments"]["issuerWhitelistState"], "passed", "{b}");
+
+    // (b) DELISTED BEFORE it. `issue()` is `onlyWhitelisted`, so this anchoring cannot have happened
+    // as the document describes. Seeded rather than driven: the honest path cannot reach this state,
+    // because issuance is itself gated on the whitelist.
+    let anchored = mem.root_issued_at(ISSUER, &root).expect("anchoring point");
+    mem.set_grant_history(
+        REGISTRY,
+        &rt,
+        &backend,
+        vec![
+            GrantEvent {
+                at: LogPoint {
+                    block_number: anchored.block_number - 2,
+                    log_index: 0,
+                },
+                granted: true,
+            },
+            GrantEvent {
+                at: LogPoint {
+                    block_number: anchored.block_number - 1,
+                    log_index: 0,
+                },
+                granted: false,
+            },
+        ],
+    );
+    let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
+    assert_eq!(b["verdict"], false, "{b}");
+    assert_eq!(b["fragments"]["issuerWhitelisted"], false, "{b}");
+    assert_eq!(b["fragments"]["issuerWhitelistState"], "failed", "{b}");
+    assert_eq!(b["status"], "issuer_not_whitelisted", "{b}");
 }
 
 /// "We never asked" must be visible, and must not be spelled the same way as "we asked and it passed".

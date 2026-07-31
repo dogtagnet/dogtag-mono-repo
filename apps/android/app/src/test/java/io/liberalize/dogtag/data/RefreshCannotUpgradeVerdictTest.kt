@@ -106,7 +106,7 @@ class RefreshCannotUpgradeVerdictTest {
 
         assertEquals("INVALID", out.verdict)
         assertEquals(
-            "the address that issued this record is not authorised to issue this record type",
+            "the address that issued this record was not authorised to issue this record type when it did",
             out.verdictReason,
         )
     }

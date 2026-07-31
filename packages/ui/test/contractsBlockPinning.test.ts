@@ -29,6 +29,7 @@ const {
   rootIssuedAtLog,
   whitelistGrantHistory,
   sortLogPoints,
+  UNPOSITIONED_LOG,
 } = await import("../src/wallet/contracts");
 const { roaxIssuerChainReader } = await import("../src/wallet/verifyCredential");
 
@@ -41,6 +42,7 @@ let seq = 0;
 const url = () => `http://pin-${++seq}.invalid`;
 
 const lastCall = () => readContract.mock.calls.at(-1)?.[0] as unknown as Record<string, unknown>;
+const lastLogQuery = () => getLogs.mock.calls.at(-1)?.[0] as unknown as Record<string, unknown>;
 
 beforeEach(() => readContract.mockClear());
 
@@ -146,6 +148,86 @@ describe("the log readers bound their range to the report's block", () => {
   });
 });
 
+/**
+ * A log the node returned with NO `(blockNumber, logIndex)` - viem's shape for one it considers
+ * pending - must reach the caller as `UNPOSITIONED_LOG`, never as a position.
+ *
+ * These pin the READER half, and it is the half the original defect lived in: `l.blockNumber ?? 0n`
+ * placed such a log at the very start of the chain, which sorts before every anchoring and could turn
+ * a delisted-before into an authorised. The consumer half - that the pillar answers indeterminate when
+ * handed the sentinel - is pinned in `verifyCredential.test.ts` and `verificationBench.test.ts`, whose
+ * fakes bypass these functions entirely and so cannot see a coercion reintroduced here.
+ */
+describe("a log with no position is reported as such, never placed", () => {
+  const positioned = { blockNumber: 700n, logIndex: 2 };
+  const pending = { blockNumber: null, logIndex: null };
+  beforeEach(() => getLogs.mockClear());
+
+  it("whitelistGrantHistory: an unpositioned WHITELISTED log makes the whole history unorderable", async () => {
+    getLogs.mockResolvedValueOnce([pending]).mockResolvedValueOnce([]);
+    const h = await whitelistGrantHistory({
+      registryAddr: ADDR,
+      recordTypeKey: ROOT,
+      signer: ADDR,
+      rpcUrl: url(),
+    });
+    expect(h).toBe(UNPOSITIONED_LOG);
+  });
+
+  it("whitelistGrantHistory: an unpositioned DELISTED log trips it too", async () => {
+    // The two events are separate `eth_getLogs`, so a guard applied to only one leaves the delisting -
+    // the event whose loss flips an answer to authorised - unguarded. Both sets are checked.
+    getLogs.mockResolvedValueOnce([positioned]).mockResolvedValueOnce([pending]);
+    const h = await whitelistGrantHistory({
+      registryAddr: ADDR,
+      recordTypeKey: ROOT,
+      signer: ADDR,
+      rpcUrl: url(),
+    });
+    expect(h).toBe(UNPOSITIONED_LOG);
+  });
+
+  it("whitelistGrantHistory: positioned logs still fold, and an empty log is still an empty history", async () => {
+    // The control. Without it a reader that returned the sentinel unconditionally would pass above.
+    getLogs.mockResolvedValueOnce([positioned]).mockResolvedValueOnce([]);
+    const granted = await whitelistGrantHistory({
+      registryAddr: ADDR,
+      recordTypeKey: ROOT,
+      signer: ADDR,
+      rpcUrl: url(),
+    });
+    expect(granted).toEqual([{ kind: "whitelisted", ...positioned }]);
+
+    getLogs.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const none = await whitelistGrantHistory({
+      registryAddr: ADDR,
+      recordTypeKey: ROOT,
+      signer: ADDR,
+      rpcUrl: url(),
+    });
+    // An EMPTY history keeps meaning what it meant: the registry answered and recorded no grant.
+    expect(none).toEqual([]);
+  });
+
+  it("rootIssuedAtLog: an unpositioned anchoring log is NOT block 0, and NOT 'no log'", async () => {
+    getLogs.mockResolvedValueOnce([pending]);
+    const at = await rootIssuedAtLog({ issuerAddr: ADDR, root: ROOT, rpcUrl: url() });
+    expect(at).toBe(UNPOSITIONED_LOG);
+    expect(at).not.toBeNull();
+    expect(at).not.toEqual({ blockNumber: 0n, logIndex: 0 });
+  });
+
+  it("rootIssuedAtLog: a positioned log still answers, and no log at all is still null", async () => {
+    getLogs.mockResolvedValueOnce([positioned]);
+    expect(await rootIssuedAtLog({ issuerAddr: ADDR, root: ROOT, rpcUrl: url() })).toEqual(
+      positioned,
+    );
+    getLogs.mockResolvedValueOnce([]);
+    // `null` says the chain emitted nothing - a different fact from a log we could not place.
+    expect(await rootIssuedAtLog({ issuerAddr: ADDR, root: ROOT, rpcUrl: url() })).toBeNull();
+  });
+});
+
 describe("sortLogPoints", () => {
   it("orders by block, then by logIndex WITHIN a block", () => {
     // `logIndex` is block-scoped, so it is only a tiebreak - comparing it across blocks would put a
@@ -175,7 +257,7 @@ describe("sortLogPoints", () => {
 });
 
 describe("roaxIssuerChainReader", () => {
-  it("pins every read it makes to the block the bench gave it", async () => {
+  it("pins every eth_call it makes to the block the bench gave it", async () => {
     const reader = roaxIssuerChainReader(url(), AT);
     await reader.rootIssuer(ADDR, ROOT);
     expect(lastCall()?.blockNumber).toBe(AT);
@@ -183,7 +265,29 @@ describe("roaxIssuerChainReader", () => {
     expect(lastCall()?.blockNumber).toBe(AT);
     await reader.recordType(ADDR);
     expect(lastCall()?.blockNumber).toBe(AT);
-    await reader.isWhitelistedFor(ADDR, ROOT, ADDR);
+    await reader.issuerRegistry(ADDR);
     expect(lastCall()?.blockNumber).toBe(AT);
+  });
+
+  it("bounds its LOG reads by the same block, so the pillar is one snapshot", async () => {
+    // The pillar's answer is a fold over these two, so an unbounded log read would let a grant landing
+    // mid-verification change a verdict printed under an earlier block - the anchor beside it would
+    // then be a claim about reads that did not all happen there.
+    getLogs.mockClear();
+    const reader = roaxIssuerChainReader(url(), AT);
+    await reader.rootIssuedAt(ADDR, ROOT);
+    expect(lastLogQuery()?.toBlock, "the anchoring log read dropped toBlock").toBe(AT);
+    await reader.grantHistory(ADDR, ROOT, ADDR);
+    // Whitelisted and Delisted are two queries; BOTH must carry the bound.
+    for (const call of getLogs.mock.calls.slice(-2)) {
+      expect((call[0] as Record<string, unknown>)?.toBlock).toBe(AT);
+    }
+  });
+
+  it("reads to latest when the head could not be pinned", async () => {
+    getLogs.mockClear();
+    const reader = roaxIssuerChainReader(url(), undefined);
+    await reader.rootIssuedAt(ADDR, ROOT);
+    expect(lastLogQuery()).not.toHaveProperty("toBlock");
   });
 });
