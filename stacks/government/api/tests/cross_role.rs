@@ -23,7 +23,6 @@ use tower::ServiceExt;
 const VACC_CLONE: &str = "0x5c703910111f942ee0f47e02214291b5274cdb53";
 const REGISTRY: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
 const VET_SIGNER: &str = "0x00000000000000000000000000000000000000a1";
-const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 
 /// Build a VACCINATION wrapped credential exactly as the vet stack would: a typed-scalar VC wrapped
 /// through the shared SDK's `wrap_document` (the same primitive `vet-api`'s `app::wrap` calls).

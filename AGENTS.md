@@ -1421,6 +1421,137 @@ On a fork the only mutable surface is what the rehearsal itself deploys or does.
 file must also be listed in the harness's `TARGETS`, or `restore` silently leaves the tree mutated; that
 gap has already occurred once. Check the scrutinee, not just the diff.
 
+## An address inventory built with the obvious grep is wrong in BOTH directions (S-13)
+
+Full record: `docs/CLIENT_REPOINT.md`. The inventory is DATA in `scripts/cutover-consumers.json` and a
+gate in `scripts/check-cutover-consumers.sh` (`make check-cutover-consumers`), which fails when the tree
+and the manifest disagree in either direction. Do not re-derive the list by hand; run the gate.
+
+**`grep -rl "0xED20269E"` - the obvious inventory command - both MISSES real consumers and INVENTS
+non-consumers, and neither error is visible from reading its output.** The registry plan's own §9.6
+reports 17 tracked files for the factory. Both greps re-run at the plan's own commit `aa5f4c6`
+reproduce that 17 and show the true figure is **21**, reconciling exactly as `17 = 21 - 7 + 3`. The two
+errors partly cancel, which is why the total looks plausible.
+
+- **Case.** Addresses are stored EIP-55-checksummed in some files and lowercased in others - the
+  indexer and the government tests lowercase. A case-sensitive grep for the checksummed form is blind
+  to every lowercased consumer. That is how the plan's list omitted `stacks/indexer/api/src/main.rs`,
+  the one service whose late repoint is *silent* (its anti-spoof gate drops unrecognised emitters with
+  no error, so the oversight feed merely looks quiet) - and the very file the plan's own §9.7 is about.
+- **Prefix.** An 8-hex prefix matches synthetic addresses that share it, and elided prose.
+  `packages/ui/test/provenance.test.ts` uses `0xED20269E1234567890abcdefABCDEF1234567890`, which is not
+  the factory; `AGENTS.md` and `docs/ROLE_APPS.md` say `0xED20269E…` in prose and carry nothing to
+  repoint. Truncating the gate's pattern to 8 hex pulls in exactly those three.
+
+So match **full 40-hex, case-insensitively**. Both halves are mutation-proven: dropping `-i` makes seven
+real consumers vanish, and the prefix form invents three. Elided prose (`0xED20269E…`) is matchable by
+neither without reintroducing the false positives, so it is DECLARED in the manifest's
+`elidedReferences` and checked for presence instead.
+
+**`git grep` sees TRACKED files only, and that blinded this gate to its own manifest.**
+`scripts/cutover-consumers.json` holds every generation-1 address by design, so it is a file the gate
+must account for - but while it was untracked `git grep` could not see it and the gate reported a clean
+tree throughout. A check passing by not running, aimed at itself. It surfaced the instant the file was
+committed. The manifest now DECLARES itself (`inventory-manifest`) rather than being silently skipped,
+because an implicit self-exemption is a hole in the one check whose job is finding holes; and the gate
+separately scans the untracked-but-not-ignored set, since any file about to be committed is invisible
+to `git grep` for exactly as long as that matters. Generalize it: **never conclude "the tree is clean"
+from `git grep` alone while the thing you just wrote is still untracked.**
+
+**Write the gate in bash, never zsh.** zsh does not word-split an unquoted `"$var"`, so iterating a
+space-separated address list runs ONE iteration with the whole string as the pattern, every `git grep`
+misses, and the script reports a clean tree - a check that passes by not running. This bit during
+development, and it is the same trap AGENTS.md already records for `swiftc $SRC`. Also `export LC_ALL=C`
+for the WHOLE script, not just around each `sort`: `comm` needs one collation on both inputs, and locale
+ordering puts `AGENTS.md` differently from codepoint ordering, which made the gate report every file as
+*both* undeclared and stale. Qualifying only the `sort`s leaves the verdict dependent on the CALLER's
+locale - green in a `LC_COLLATE=C` shell and a dozen bogus pairs in an ordinary terminal - so an
+unqualified local run proves nothing about what CI or a captain's shell will say.
+
+**A grep for the CURRENT address is structurally blind to a consumer holding a SUPERSEDED one**, and
+that blind spot was live: `stacks/owner/web/src/lib/config.ts` pinned the retired M5
+`VerificationRegistryConsent` while its own comment called it live, so the owner wallet's
+`eth_getLogs` consent-history scan queried a dead contract and rendered "no consent history" for
+absence of evidence - permanently, with no error, because a retired contract answers `eth_getLogs`
+with nothing rather than reverting. The manifest's `retiredAddresses` closes it with the SAME
+declared-allowlist discipline as the inventory, never a blanket ban: the historical ledger records
+such an address by design, golden-ABI encodings are pinned to it, and hermetic MemChain/mocked
+fixtures reuse it cosmetically, so an UNDECLARED carrier is the error and a declared-but-absent one is
+only a note. The allowlist is scoped PER ADDRESS - a file cleared to carry one is not cleared to carry
+another - and the manifest declares ITSELF there for the same reason it declares itself in `consumers`.
+
+**THE GOVERNING CONDITION FOR ANY REPOINT: an address may be repointed only when the successor
+answers THE SAME QUESTION FOR THE SAME INPUTS.** Implementing the same selector is not sufficient
+evidence, and neither is a successful call - a call that returns a confident wrong answer is worse
+than one that reverts, because nothing reports it. Every repointed variable owes a stated answer to
+"what does the successor answer, and under what caller context", and an unestablished repoint is
+recorded UNVERIFIED rather than assumed (`semanticEquivalence` per address in the manifest). S-13
+produced TWO instances of this failing on opposite axes, both on `ISSUER_REGISTRY_ADDR`, which is why
+it is a rule and not an anecdote. Full record: `docs/CLIENT_REPOINT.md`.
+
+**`ISSUER_REGISTRY_ADDR` therefore moves NOWHERE at C-9 - neither axis.** *Write axis:*
+`ProviderRegistry` implements NEITHER `whitelistFor` NOR `delistFor` and has no fallback, so the
+admin grant/revoke console stays on generation 1 through C-12. It would not even fail cleanly -
+`hasRole(WHITELIST_ADMIN, owner)` returns true, so `governance::dispatch` reads the hosted key as the
+holder and BROADCASTS a reverting transaction instead of proposing - and worse, C-12's delisting
+freeze runs through that same console, and that freeze is the operational precondition for closing
+`CloneProvenanceRouter`'s open mirror direction. *Read axis, the one that looked safe:*
+`ProviderRegistry.isWhitelistedFor` (`ProviderRegistry.sol:787-793`) branches on `msg.sender` - an
+attached service gets its own grant, EVERY OTHER caller gets `_verifierCapabilities[key][signer]`,
+the orthogonal VERIFY axis. Every production read is a plain `eth_call` with NO `from`
+(`grep -c '\.from('` over vet/government/admin `chain.rs` returns 0; `packages/ui` `readContract`
+passes no account), so `msg.sender` is `0x0` and that branch ALWAYS runs. So the VERIFY-key reads are
+compatible (`verify_key_from_purpose_word` == `verificationKey`, four sites) while EVERY
+record-type-key read returns a definite `false` for genuine issuer signers (seven sites, including
+the mandatory issuer-whitelist pillar at vet `routes.rs:1258` / government `routes.rs:702`, which
+treats a definite false as an AUTHENTICITY FAILURE - so repointing refuses genuine credentials as
+forged FLEET-WIDE, and vet `routes.rs:549`/`:658` additionally stop issuance). And the variable cannot
+move for the compatible half alone, because ONE value serves both key shapes in the same process. The
+unblock is the `isRecognizedIssuer(service, signer)` migration in `docs/ISSUER_V2_OWNERSHIP.md` §8;
+leaving readers on generation 1 is not a fix either (indeterminate instead of false - both broken).
+Note the SHAPE: `isWhitelistedFor` returns `false` where the honest answer is "this contract cannot
+answer that for this caller" - could-not-check rendered as failed, in Solidity, which is why no caller
+could detect it by observing behaviour. The CONTRACT side is pinned and the CONSUMER side is not:
+`contracts/test/ProviderRegistry.t.sol` covers both caller contexts (`vm.prank` affects only the NEXT
+call, so `:598`, `:836` and `:845` run unpranked), and `:598` is the exact case - unpranked, keyed on
+`RECORD_TYPE`, asserting false - with `:599` asserting `isRecognizedIssuer` TRUE for the same signer.
+The residual gap is one layer up: nothing asserts what the CONSUMERS do with that false, since no Rust
+or TS suite references `ProviderRegistry` and `MemChain::is_whitelisted_for` is a flat map lookup that
+cannot model the `msg.sender` branch at all.
+
+**The factory is the ONE moving address with no single target**, so the manifest's top-level
+`supersededBy` for it names the split rather than an address, and the three diverging consumers carry
+their own `supersededBy`. The gate PRINTS those divergences on every run, because S-14 drives from that
+file and reading only the top-level entry would get two of them backwards.
+
+**The factory address splits in two at generation 2, and the halves move in OPPOSITE directions.**
+A READER resolving the write-once `rootIssuer[R]` repoints to the `CloneProvenanceRouter` (which answers
+across both generations, oldest-first); pointing it at `DogTagIssuerFactoryV2` resolves every historical
+root to `address(0)`, surfacing as an indeterminate issuer-whitelist pillar rather than an error. A
+WRITER calling `predictIssuer`/`createIssuer` repoints to the factory, because the router deploys
+nothing. Both spellings live inside the admin stack alone: backend `FACTORY_ADDR` is a writer, web
+`VITE_DOGTAG_ISSUER_FACTORY_ADDR` is a reader. `INDEXER_GENERATIONS.factory` is a third case - an
+EMITTER allowlist, so it takes the factory, and it is an APPEND (the list keeps generation 1 forever)
+rather than a value swap.
+
+**`VITE_DOGTAG_ISSUER_FACTORY_ADDR` FALLS BACK to the SDK default when unset**
+(`packages/ui/src/wallet/verificationBench.ts`), so leaving it unset after a cutover does not disable
+the bench's anchor check - it silently keeps reading generation 1. Its neighbour
+`VITE_ISSUER_DOMAIN_REGISTRY_ADDR` has no fallback and fails closed. Adjacent lines, opposite failure
+modes; the fallback one is the one that can lie.
+
+**A source edit to a mobile bundle is NOT a repoint.** `apps/*/roax.json` are compile-time, so the
+repoint takes effect only after a rebuild AND a reinstall on each handset (C-10, the cutover's long
+pole). Nothing between the edited file and the installed build says which state you are in.
+
+**A recognized-but-undeployed version key is not an unknown one.** `manifest::deployment_status` returns
+`AwaitingDeployment` for `dogtag-levelb/2`, and `GET /protocol/manifest` answers 404 `version not yet
+deployed` naming the pending contracts rather than 404 `unknown version`. Both fail closed and serve
+nothing - only the DIAGNOSIS differs, because a typo is the caller's to fix while an undeployed key is
+fixed only by the cutover running. The record carries no address field at all, so it cannot decay into a
+placeholder. Note the generation-2 DISCOVERY key is not an ARTIFACT key: the artifacts are byte-for-byte
+generation 1's and keep `dogtag-levelb-artifacts/1`, so `artifact::resolve` fails closed on it too.
+
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 
 `contracts/src/CloneProvenanceRouter.sol`. Full rationale: `docs/CLONE_PROVENANCE_ROUTER.md`.

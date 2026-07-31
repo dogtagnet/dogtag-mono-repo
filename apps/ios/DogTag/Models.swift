@@ -458,6 +458,14 @@ extension Credential {
 }
 
 /// The live ROAX (chainId 135) deployment addresses, loaded from the bundled `roax.json`.
+///
+/// COMPILE-TIME. `roax.json` ships inside the app bundle, so editing that file is NOT a repoint — it
+/// is the prerequisite for a build that is one, and nothing between those two states says which you
+/// are in. At the generation-2 cutover this makes mobile the long pole (plan step C-10): an installed
+/// old build keeps reading `rootIssuer` from the generation-1 factory baked in here, so a
+/// generation-2 root resolves to zero and the credential degrades to `UNVERIFIED`. `issuerFactory`
+/// takes the `CloneProvenanceRouter`, not `DogTagIssuerFactoryV2`. See `docs/CLIENT_REPOINT.md`;
+/// `make check-cutover-consumers` is the gate. (The JSON itself can carry no comment saying this.)
 struct RoaxConfig {
     let chainId: Int
     let dogTagSbt: String

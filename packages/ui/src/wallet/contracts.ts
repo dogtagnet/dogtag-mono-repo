@@ -13,6 +13,29 @@ import { roax } from "./chain";
  * Deployed ROAX contract addresses (contracts/deployments/roax.json). Exposed as defaults; each
  * portal may override via `VITE_*` env. These are the addresses the whitelist viewer + the
  * issue-status on-chain poller read against.
+ *
+ * CUTOVER (registry plan S-13/S-14, `docs/CLIENT_REPOINT.md`): THREE of these are moving addresses,
+ * and only TWO may actually be repointed at C-9.
+ *
+ * `DogTagIssuerFactory` → **`CloneProvenanceRouter`**: this module READS `rootIssuer`, so it takes
+ * the router, never `DogTagIssuerFactoryV2` - that would resolve every historical root to
+ * `address(0)` and surface as an indeterminate issuer-whitelist pillar rather than an error.
+ * `VerificationRegistryConsent` → its V2.
+ *
+ * `IssuerRegistry` is **BLOCKED**, and being read-only does not rescue it. `ProviderRegistry`
+ * implements `isWhitelistedFor` but branches on `msg.sender`, and `readContract` below passes no
+ * `account` - so `msg.sender` is `0x0` and it answers the orthogonal VERIFY-key capability instead
+ * of the issuance whitelist. `isWhitelistedFor` here asks with `recordTypeKey(...)`, which is never
+ * a VERIFY key, so every answer would be a confident `false` for a genuine issuer signer. The
+ * unblock is the `isRecognizedIssuer(service, signer)` migration (`docs/ISSUER_V2_OWNERSHIP.md` §8).
+ * The governing condition it violates: an address may be repointed only when the successor answers
+ * THE SAME QUESTION FOR THE SAME INPUTS - a matching selector is not evidence of that.
+ *
+ * `DogTagSBT` here is already the reused `DogTagSBTConsent` and must NOT move - it is listed with
+ * the movers because it looks like it should move, not because it does. Because these are DEFAULTS,
+ * an unset `VITE_*` override after the cutover silently keeps reading generation 1 - so move the
+ * constants, do not rely on the env. `make check-cutover-consumers` is the gate, and it is what
+ * establishes the counts above rather than a reading of this list.
  */
 export const DEPLOYED_ADDRESSES = {
   IssuerRegistry: "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",

@@ -67,6 +67,28 @@ async fn manifest_route_serve_and_verify_offline() {
     let status_unknown = r.status();
     let body_unknown = r.text().await.unwrap();
     assert_eq!(status_unknown, 404, "unknown version must 404");
+    assert!(body_unknown.contains("unknown version"), "body: {body_unknown}");
+
+    // --- 5. S-13: RECOGNIZED but UNDEPLOYED -> 404, and NOT "unknown version" -------------------
+    // Both absences fail closed and serve nothing; what must differ is the REASON, because the
+    // remedies are unrelated. A typo is the caller's to fix; `dogtag-levelb/2` is fixed only by the
+    // cutover running. Reporting the second as "unknown version" sends an operator hunting a
+    // misspelling that does not exist.
+    let r = get("dogtag-levelb/2").await;
+    let status_pending = r.status();
+    let body_pending = r.text().await.unwrap();
+    assert_eq!(status_pending, 404, "an undeployed version still serves nothing");
+    assert!(
+        body_pending.contains("not yet deployed"),
+        "an undeployed version must say so: {body_pending}"
+    );
+    assert!(
+        !body_pending.contains("unknown version"),
+        "must NOT collapse into the typo case: {body_pending}"
+    );
+    // It names what is pending rather than only that something is - and invents no address.
+    assert!(body_pending.contains("CloneProvenanceRouter"), "body: {body_pending}");
+    assert!(!body_pending.contains("0x"), "no address may be invented: {body_pending}");
 
     // --- Emit a human-readable transcript for the evidence artifact (captured with --nocapture) --
     println!("\n================ GET /protocol/manifest — live HTTP transcript ================");
@@ -74,6 +96,7 @@ async fn manifest_route_serve_and_verify_offline() {
     println!("[1] key UNSET      -> HTTP {} : {}", status_unset.as_u16(), body_unset);
     println!("[2] key MALFORMED  -> HTTP {} : {}", status_bad.as_u16(), body_bad);
     println!("[4] unknown version-> HTTP {} : {}", status_unknown.as_u16(), body_unknown);
+    println!("[5] undeployed ver -> HTTP {} : {}", status_pending.as_u16(), body_pending);
     let pretty = serde_json::to_string_pretty(
         &serde_json::from_str::<serde_json::Value>(&raw).unwrap(),
     )

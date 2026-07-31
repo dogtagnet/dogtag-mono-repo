@@ -23,7 +23,6 @@ const API_TOKEN: &str = "dogtag-gov-demo-token";
 const DEPLOYMENT_URL: &str = "http://192.168.1.20:44832";
 const PURPOSE: &str = "travel_check";
 const RECORD_TYPE: &str = "VACCINATION";
-const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 
 /// BN254 r — the field modulus every public signal must be below.
 const BN254_R_DEC: &str =

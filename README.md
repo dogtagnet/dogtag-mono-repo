@@ -60,6 +60,14 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | demo clone — VACCINATION | `0x1456f93f7376789c46408CC4616751eB853edD9A` |
 | demo clone — DOG_PROFILE | `0x0e56Ae2e1ef684d3e90d7699B981C6B76df922bf` |
 
+> **Six of these addresses MOVE in the generation-2 cutover** — `IssuerRegistry`,
+> `DogTagIssuerFactory`, `DogTagIssuerImpl`, `VerificationRegistryConsent`, `ProtocolRegistry` and
+> `IssuerDomainRegistry` — while `DogTagSBTConsent` and `Groth16VerifierConsent` are deliberately
+> **reused** and must not move. `docs/CLIENT_REPOINT.md` is the record of what each becomes and in
+> what order; `make check-cutover-consumers` is the gate that fails if any consumer of a moving
+> address is unaccounted for. Do not re-derive the consumer list with `grep -rl <8-hex-prefix>` — it
+> misses every lowercased consumer and invents synthetic ones (see the S-13 entry in `AGENTS.md`).
+
 > **Historical.** The retired owner-revealing VerificationRegistry went through four generations: the
 > original was deployed with `zkVerifier = 0` (`VerificationRegistry_zk0_legacy` `0xb4FbbDb5…`), a
 > testnet **redeploy** wired in the then-live v1 verifier, a later **meta-tx migration** produced VR
