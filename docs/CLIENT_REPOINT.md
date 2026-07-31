@@ -25,18 +25,46 @@ Do not "simplify" that ordering: newest-first is the natural way to write the lo
 
 The property the whole order defends: at no point may a credential be issuable that cannot be verified.
 
-## What moves, and what must not
+## The governing condition for any repoint
 
-Six addresses move. Run `scripts/check-cutover-consumers.sh` for the values and the per-address file counts.
+> **An address may be repointed only when the successor answers THE SAME QUESTION FOR THE SAME INPUTS.**
 
-| Contract | Superseded by | Step |
-|---|---|---|
-| `DogTagIssuerFactory` | `CloneProvenanceRouter` for readers, `DogTagIssuerFactoryV2` for writers - see below | C-9 |
-| `IssuerRegistry` | `ProviderRegistry` for readers, **retained** for writers - see below | C-9 readers; writers not before C-12 |
-| `VerificationRegistryConsent` | `VerificationRegistryConsent` V2 | C-9 |
-| `ProtocolRegistry` | `ProtocolRegistryV2`, under the new discovery key `dogtag-levelb/2` | C-8, then C-9 |
-| `IssuerDomainRegistry` | `ServiceDomainResolver` | C-7, then C-9 |
-| `DogTagIssuerImpl` | `DogTagIssuerV2` implementation | C-3 |
+Implementing the same selector is not sufficient evidence of that, and neither is a successful call.
+A call that returns a confident wrong answer is worse than one that reverts, because nothing anywhere reports it.
+
+So every repointed variable owes a stated answer to one question - **what does the successor answer, and under what caller context?** - and "the ABI matches" is not that answer.
+A repoint whose semantic equivalence has not been established is listed as **UNVERIFIED**, not assumed.
+The manifest carries that verdict per address in `semanticEquivalence`; the table below is the same verdict in prose.
+
+This slice produced **two independent instances of the condition failing**, on opposite axes, which is why it is written as a rule rather than as an anecdote.
+
+**The write axis.** The successor implemented the selector the variable's *reads* use, and implemented none of its *writes*.
+That is the narrower property this section supersedes: *a variable naming a WRITE path may only be repointed to a contract that implements those writes.*
+It is now one instance of the condition above, not a separate rule.
+Worked example: `IssuerRegistry`'s admin console, below.
+
+**The read axis.** The successor implemented the selector, answered, and its answer **meant something else**, because it branches on `msg.sender`.
+Worked example: `IssuerRegistry`'s record-type reads, below.
+This is the harder one, and the reason the condition cannot be discharged by reading an ABI: the branch that decides the meaning is invisible from the ABI, from the contract's own documentation, and from any test that happens to set a sender.
+
+## What is superseded, and what is cleared to move
+
+Six addresses are **superseded**, which is not the same as six being **cleared to repoint**.
+Five are cleared at their step; `IssuerRegistry` is blocked on a code change, on every axis.
+Run `scripts/check-cutover-consumers.sh` for the values and the per-address file counts.
+
+| Contract | Superseded by | Step | Same question, same inputs? |
+|---|---|---|---|
+| `DogTagIssuerFactory` | `CloneProvenanceRouter` for readers, `DogTagIssuerFactoryV2` for writers - see below | C-9 | **VERIFIED** per role |
+| `IssuerRegistry` | **nothing yet** - no consumer may move at C-9; see below | **BLOCKED** on the `isRecognizedIssuer` migration | **FAILS** on the record-type key shape |
+| `VerificationRegistryConsent` | `VerificationRegistryConsent` V2 | C-9 | **UNVERIFIED** - V2 is not written |
+| `ProtocolRegistry` | `ProtocolRegistryV2`, under the new discovery key `dogtag-levelb/2` | C-8, then C-9 | **VERIFIED**, structurally |
+| `IssuerDomainRegistry` | `ServiceDomainResolver` | C-7, then C-9 | **UNVERIFIED** - `resolveDomain` is a different shape |
+| `DogTagIssuerImpl` | `DogTagIssuerV2` implementation | C-3 | **N/A** - no consumer calls it |
+
+Read that last column as scope on the whole slice: repointing is *recorded* for six addresses and *cleared* for two.
+`ProtocolRegistry`'s verdict is structural rather than argued - the record is deliberately renamed (`getDiscoverySet`, 10 words against 8), so a generation-1 client cannot dispatch and misdecode it, while `getArtifactSet` keeps its selector precisely because that record is unchanged.
+`IssuerDomainRegistry`'s is unverified for a stated reason: `ServiceDomainResolver` deliberately has no `domainOf(address) returns (string)`, because an empty string was three different facts, so `resolveDomain`'s tuple is a code change in every consumer.
 
 Two live addresses are **reused** by generation 2 and must not appear in any repoint.
 
@@ -76,14 +104,16 @@ A generation-1-only answer would report every genuine generation-2 clone as `Not
 The manifest encodes this split in the data: the factory's top-level `supersededBy` names the split rather than an address, the three diverging consumers carry their own `supersededBy`, and `check-cutover-consumers.sh` prints those divergences on every run.
 S-14 drives from that file, and reading only the top-level entry would get two of them backwards.
 
-## `IssuerRegistry` splits by read versus write, and only the read half moves at C-9
+## `IssuerRegistry` cannot be repointed at C-9 at all, and the read half is why
 
-`ProviderRegistry` implements the READ `isWhitelistedFor(bytes32,address)` and implements **neither** of the writes `whitelistFor` / `delistFor`, and it has no fallback function.
+Both instances of the governing condition live on this one variable.
+Neither is visible from the ABI, and the second was recorded as verified-safe for two revisions of this document before being caught.
 
-So the read half moves and the write half does not.
-Vet, groomer, government and both web portals only ever ask `isWhitelistedFor` - every use of `cfg.issuer_registry_addr` in `vet-api` and `government-api` is `is_whitelisted_for`, and `packages/ui`'s `ISSUER_REGISTRY_ABI` declares that one view function and nothing else - so their `ISSUER_REGISTRY_ADDR` and `VITE_ISSUER_REGISTRY_ADDR` repoint to `ProviderRegistry` at C-9.
+### The write axis: the successor implements none of the writes
 
-`stacks/admin/.env.example`'s `ISSUER_REGISTRY_ADDR` is the same variable name naming a write path, and it is **retained on the generation-1 registry through C-12**.
+`ProviderRegistry` implements the read `isWhitelistedFor(bytes32,address)` and implements **neither** of the writes `whitelistFor` / `delistFor`, and it has no fallback function.
+
+`stacks/admin/.env.example`'s `ISSUER_REGISTRY_ADDR` is the variable naming that write path, and it is **retained on the generation-1 registry through C-12**.
 Two reasons, and the second outranks the first.
 
 It would not fail cleanly.
@@ -93,11 +123,47 @@ And it would disarm a later step of the same plan.
 C-12's delisting freeze on the generation-1 `IssuerRegistry` runs through this same admin console, and that freeze is the operational precondition for closing `CloneProvenanceRouter`'s open mirror direction (`AGENTS.md`, "CloneProvenanceRouter").
 Repointing the console at C-9 leaves C-12 with nothing to reach.
 
-The property this is an instance of, stated so it is checkable rather than remembered:
+### The read axis: the successor answers a different question
 
-> **A variable naming a WRITE path may only be repointed to a contract that implements those writes.**
+`ProviderRegistry.isWhitelistedFor` (`contracts/src/ProviderRegistry.sol:787-793`) branches on `msg.sender`.
+An **attached service** caller gets its own service grant; **every other caller** gets `_verifierCapabilities[key][signer]` - the orthogonal VERIFY axis, a mapping written only by `setVerifierCapability`.
 
-Reading the successor's ABI is the check, and the read/write asymmetry is exactly what makes the mistake invisible: the successor answers the read that the same variable also serves, so the repointed config looks correct until a write is attempted.
+**The mechanism, because it is invisible from the ABI.**
+Every production read is a plain `eth_call` with **no `from` set**: `grep -c '\.from('` over `stacks/{vet,government,admin}/api/src/chain.rs` returns **0** in all three, and `packages/ui`'s `readContract` passes no `account`.
+So `msg.sender` is the zero address and the verifier-capability branch **always** runs.
+
+Which means the answer depends on **which key the caller passes**, not on which service it is.
+
+**Compatible - the VERIFY-key reads.**
+`verify_key_from_purpose_word` builds `keccak256(abi.encode("VERIFY:", purpose))`, byte-identical to `ProviderRegistry.verificationKey` (`:781`), so it indexes the very mapping that branch returns.
+Four sites: `stacks/vet/api/src/routes.rs:1463`, `stacks/vet/api/src/verify.rs:505`, `stacks/government/api/src/routes.rs:1452`, `stacks/government/api/src/verify.rs:302`.
+
+**Broken - the record-type-key reads.**
+`keccak256(recordType)` is never a `verificationKey` output, so `_verifierCapabilities[keccak256(recordType)][signer]` is `false` for **every genuine issuer signer**.
+Seven sites: `stacks/vet/api/src/routes.rs:549`, `:658`, `:969`, `:1258`, `:1308`; `stacks/government/api/src/routes.rs:702`; and `packages/ui`'s `isWhitelistedFor`, whose key is `recordTypeKey(...)` by construction.
+
+**The consequence, stated so nobody has to reconstruct it.**
+`vet routes.rs:1258` and `government routes.rs:702` **are** the mandatory issuer-whitelist pillar, and that pillar treats a definite `false` as an **authenticity failure**.
+Following the earlier instruction would therefore have **refused genuine credentials as forged, fleet-wide**.
+`vet routes.rs:549` and `:658` are the issuance preflight, so the vet's own whitelisted signer is refused and **issuance stops** - while this same document was simultaneously claiming issuance was uninterrupted.
+`vet :969` / `:1308` and the admin portal's whitelist viewer render every row false.
+
+**Why the variable cannot move for the compatible half either.**
+`ISSUER_REGISTRY_ADDR` is *one value* read by both key shapes **in the same process**: vet `routes.rs:1463` (VERIFY key) and `routes.rs:549` (record-type key) both read `st.cfg.issuer_registry_addr`.
+There is nothing to split at the config layer, so the whole variable stays on generation 1 until the record-type callers migrate to the service-scoped `isRecognizedIssuer(service, signer)` - a different selector with different arguments, i.e. a code change in five consumers, recorded as a cutover blocker in `docs/ISSUER_V2_OWNERSHIP.md` section 8.
+
+Leaving the readers on generation 1 is **not** a fix either: a generation-2 root then resolves nowhere and the pillar is indeterminate.
+Both states are broken, differently, and only the migration closes either.
+
+**The shape, in one sentence, because it is this project's own defect class expressed in Solidity.**
+`isWhitelistedFor` returns `false` where the honest answer is "this contract cannot answer that question for this caller" - a definite negative standing in for an unanswerable question, which is the same collapse this fleet keeps finding in application code, could-not-check rendered as failed.
+It is also why no caller could have detected it by observing behaviour: the call **succeeds** and returns a well-typed answer.
+
+**Stated coverage gap, not closed here.**
+`contracts/test/ProviderRegistry.t.sol` exercises `isWhitelistedFor` almost entirely under `vm.prank(address(serviceA))` / `vm.prank(address(serviceB))` (`:552`, `:588-592`, `:598`, `:841`, `:845`) - an attached service, which takes the **first** branch.
+The one unpranked case is `:836`, and it uses the VERIFY key.
+So the only case that runs at production's caller context is the one key shape that happens to be compatible, and the suite is silent exactly where it matters.
+That suite is deliberately testing the caller-scoped behaviour and is not rewritten in this slice.
 
 ## The indexer is an append, not a swap - and it is the one that fails quietest
 
@@ -107,6 +173,12 @@ Replacing the object instead of appending drops the entire pre-cutover history o
 
 Its `factory` member is the **factory**, not the router - the opposite of every other stack - because that list is an emitter allowlist keyed by who signed the log, and the router emits nothing.
 A router address there would silently match no event ever.
+
+Its `issuerRegistry` member fails the governing condition in a third way, and appending the address is **not sufficient on its own**.
+Every member of this triple is an *emitter*, so the question each must answer is "which events does it emit" - and `ProviderRegistry` emits **neither `Whitelisted` nor `Delisted`**.
+Its issuance grants are `IssuanceCapabilitySet(service, signer, allowed)` and `VerifierCapabilitySet(...)`: different names, different `topic0`, different argument shapes.
+The scanner filters by the `Whitelisted`/`Delisted` `topic0` (`stacks/indexer/api/src/chain.rs`), so appending `ProviderRegistry` without teaching the decoder the new events leaves that generation's whitelist axis permanently dark - and it fails the same silent way a late append does, with no error and no counter.
+Pair it with a decoder change, or do not append it.
 
 The append must land, and the service restart, **before** generation 2 emits its first event.
 The anti-spoof gate drops an unrecognised emitter with no error and no counter, so a late edit does not produce a failure - it produces an oversight feed that reads as merely quiet.
@@ -134,9 +206,13 @@ This is C-10 and it is the long pole of the entire cutover.
 An installed old build reads `rootIssuer` from the generation-1 factory baked into its bundle, so a generation-2 root resolves to zero: on mobile the monotone fold degrades the credential to `UNVERIFIED`, and on web the verdict is a hard false.
 Enforce the floor through the artifact axis `minAppVersion` rather than hoping.
 
-Issuance is uninterrupted for the whole of that wait, by design rather than by luck.
+Issuance is uninterrupted for the whole of that wait, by design rather than by luck - **provided `ISSUER_REGISTRY_ADDR` has not been moved**.
 Generation 1 is not frozen until C-12, so providers keep issuing through their existing clones and the router makes those roots resolve for old and new clients alike.
 The adoption wait is a window in which both generations verify, not a gap in which nothing can be issued.
+
+That proviso is not decorative, and it is the one claim in this document that an earlier revision falsified.
+The vet's issuance preflight (`stacks/vet/api/src/routes.rs:549`, `:658`) reads that variable, so repointing it at C-9 refuses the vet's own whitelisted signer and stops issuance outright - see the read-axis section above.
+The uninterrupted-issuance property holds for the **unmoved** registry only.
 
 ## The inventory is checked, not written down
 
@@ -255,9 +331,11 @@ Both `AnchorResolver`s carry the `dogtag-levelb/2` constant and a `decodeDiscove
 The `RoaxRpc`/`Net.swift` `getDiscoverySet` fetch does not exist, and both `ScanScreen` call sites pass `nil`/`null` with a comment naming what must change (`docs/PROTOCOL_REGISTRY_V2.md`).
 So do not read "the constant is there" as "mobile is repointed": mobile reads generation 1 only, and closing that is C-9 and C-10.
 
-**The admin console's `ISSUER_REGISTRY_ADDR` cannot move until C-12 is done**, which is the write-side twin of the pillar blocker above and the same class: a generation-2 successor that answers the read but not the write.
-It is recorded as a property rather than a to-do, because a property is checkable: *a variable naming a WRITE path may only be repointed to a contract that implements those writes.*
-Closing it needs `whitelistFor`/`delistFor` equivalents reachable from the console under the new core's own model, which is a behavioural change in the admin control plane rather than an address repoint.
+**No consumer of `ISSUER_REGISTRY_ADDR` moves in this slice, on either axis**, and both halves fail the governing condition rather than merely being awkward.
+The admin console's variable names a write path the successor does not implement; every record-type reader gets a definite `false` from a successor that answers a different question for a zero-address caller.
+Both are worked out in full under "`IssuerRegistry` cannot be repointed at C-9 at all" above, and both are recorded as properties rather than to-dos because a property is checkable.
+Closing the write half needs `whitelistFor`/`delistFor` equivalents reachable from the console under the new core's own model; closing the read half is the `isRecognizedIssuer(service, signer)` migration in `docs/ISSUER_V2_OWNERSHIP.md` section 8.
+Both are behavioural changes, not address repoints, which is why neither is opened here.
 
 **`ProviderDirectory` has no consumer yet.**
 The indexer's provider directory still reads the admin business source.

@@ -1444,18 +1444,41 @@ fixtures reuse it cosmetically, so an UNDECLARED carrier is the error and a decl
 only a note. The allowlist is scoped PER ADDRESS - a file cleared to carry one is not cleared to carry
 another - and the manifest declares ITSELF there for the same reason it declares itself in `consumers`.
 
-**`IssuerRegistry` splits by READ vs WRITE, and only the read half moves at C-9.** `ProviderRegistry`
-implements `isWhitelistedFor` and implements NEITHER `whitelistFor` nor `delistFor`, and has no
-fallback. Vet/groomer/government and both portals only read, so their `ISSUER_REGISTRY_ADDR` moves;
-`stacks/admin/.env.example`'s identically-named variable feeds the grant/revoke console's
-`whitelistFor`/`delistFor` calldata and is RETAINED on generation 1 through C-12. It would not even
-fail cleanly - `ProviderRegistry.hasRole(WHITELIST_ADMIN, owner)` returns true, so
-`governance::dispatch` reads the hosted key as the holder and BROADCASTS a reverting transaction
-instead of proposing - and worse, C-12's delisting freeze runs through that same console, and that
-freeze is the operational precondition for closing `CloneProvenanceRouter`'s open mirror direction.
-The general property, stated so it is checkable: **a variable naming a WRITE path may only be
-repointed to a contract that implements those writes.** The read/write asymmetry is what makes the
-mistake invisible - the successor answers the read the same variable also serves.
+**THE GOVERNING CONDITION FOR ANY REPOINT: an address may be repointed only when the successor
+answers THE SAME QUESTION FOR THE SAME INPUTS.** Implementing the same selector is not sufficient
+evidence, and neither is a successful call - a call that returns a confident wrong answer is worse
+than one that reverts, because nothing reports it. Every repointed variable owes a stated answer to
+"what does the successor answer, and under what caller context", and an unestablished repoint is
+recorded UNVERIFIED rather than assumed (`semanticEquivalence` per address in the manifest). S-13
+produced TWO instances of this failing on opposite axes, both on `ISSUER_REGISTRY_ADDR`, which is why
+it is a rule and not an anecdote. Full record: `docs/CLIENT_REPOINT.md`.
+
+**`ISSUER_REGISTRY_ADDR` therefore moves NOWHERE at C-9 - neither axis.** *Write axis:*
+`ProviderRegistry` implements NEITHER `whitelistFor` NOR `delistFor` and has no fallback, so the
+admin grant/revoke console stays on generation 1 through C-12. It would not even fail cleanly -
+`hasRole(WHITELIST_ADMIN, owner)` returns true, so `governance::dispatch` reads the hosted key as the
+holder and BROADCASTS a reverting transaction instead of proposing - and worse, C-12's delisting
+freeze runs through that same console, and that freeze is the operational precondition for closing
+`CloneProvenanceRouter`'s open mirror direction. *Read axis, the one that looked safe:*
+`ProviderRegistry.isWhitelistedFor` (`ProviderRegistry.sol:787-793`) branches on `msg.sender` - an
+attached service gets its own grant, EVERY OTHER caller gets `_verifierCapabilities[key][signer]`,
+the orthogonal VERIFY axis. Every production read is a plain `eth_call` with NO `from`
+(`grep -c '\.from('` over vet/government/admin `chain.rs` returns 0; `packages/ui` `readContract`
+passes no account), so `msg.sender` is `0x0` and that branch ALWAYS runs. So the VERIFY-key reads are
+compatible (`verify_key_from_purpose_word` == `verificationKey`, four sites) while EVERY
+record-type-key read returns a definite `false` for genuine issuer signers (seven sites, including
+the mandatory issuer-whitelist pillar at vet `routes.rs:1258` / government `routes.rs:702`, which
+treats a definite false as an AUTHENTICITY FAILURE - so repointing refuses genuine credentials as
+forged FLEET-WIDE, and vet `routes.rs:549`/`:658` additionally stop issuance). And the variable cannot
+move for the compatible half alone, because ONE value serves both key shapes in the same process. The
+unblock is the `isRecognizedIssuer(service, signer)` migration in `docs/ISSUER_V2_OWNERSHIP.md` §8;
+leaving readers on generation 1 is not a fix either (indeterminate instead of false - both broken).
+Note the SHAPE: `isWhitelistedFor` returns `false` where the honest answer is "this contract cannot
+answer that for this caller" - could-not-check rendered as failed, in Solidity, which is why no caller
+could detect it by observing behaviour. Coverage gap, stated not closed:
+`contracts/test/ProviderRegistry.t.sol` exercises `isWhitelistedFor` almost entirely under
+`vm.prank(address(serviceA/B))` (first branch); the ONE unpranked case is `:836` and it uses the
+VERIFY key - so the only case at production's caller context is the one shape that happens to work.
 
 **The factory is the ONE moving address with no single target**, so the manifest's top-level
 `supersededBy` for it names the split rather than an address, and the three diverging consumers carry

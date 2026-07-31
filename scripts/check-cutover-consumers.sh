@@ -74,8 +74,10 @@ missing = [k for k in ("movingAddresses", "consumers", "elidedReferences", "doNo
 if missing:
     print("missing section(s): " + ", ".join(missing), file=sys.stderr)
     raise SystemExit(1)
-if not m["movingAddresses"]:
-    print("movingAddresses is empty - the gate would check nothing", file=sys.stderr)
+empty = [k for k in ("movingAddresses", "retiredAddresses") if not m[k]]
+if empty:
+    print("empty section(s): " + ", ".join(empty) + " - the gate would check nothing", file=sys.stderr)
+    print("Emptying a seeded set is the cheapest way to silence a check without a trace.", file=sys.stderr)
     raise SystemExit(1)
 PY
 
