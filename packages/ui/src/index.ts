@@ -56,6 +56,16 @@ export {
   type IssuerDomainBindingState,
   type IssuerIdentity,
 } from "./domain/issuerDomainBinding";
+// The microchip cross-check's PRESENTATION — three states, and "not compared" is never rendered as
+// either neighbour. See the module header for why an absent microchip is normal.
+export {
+  microchipCheckFromError,
+  microchipConfirmsAnimal,
+  microchipExplanation,
+  microchipHeadline,
+  microchipTone,
+  type MicrochipTone,
+} from "./domain/microchipCheck";
 export {
   Table,
   TableHeader,

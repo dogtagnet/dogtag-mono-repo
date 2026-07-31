@@ -3634,6 +3634,116 @@ the import, so the caller re-checks the chain.
 UNFILTERED history — one pet's page would have shown its sibling's checks as its own. A client with two
 pets is the case that catches it; `clientId` cannot.
 
+## The microchip cross-check: is this credential about THIS animal? (`ClientPet.microchip_code`)
+
+A DogTag link is otherwise unchecked.
+An operator types or scans a tag id, and a mistyped digit or two similar dogs in one afternoon give a
+link that is structurally perfect and about the wrong animal - the only thing between a correct link
+and a wrong one was the operator remembering.
+A credential already carries `credentialSubject.microchip.code` as a salted Merkle leaf (15-digit ISO,
+schema-validated in `crates/dogtag-standard-rs/src/schema.rs`), so recording the same code on the
+shop's own `ClientPet.microchip_code` gives the two sides something to compare.
+The decision is the pure `stacks/vet/api/src/microchip.rs`; the presentation is
+`packages/ui/src/domain/microchipCheck.ts`; the routes are `crm.rs` + `routes.rs::import_pull`.
+This CONSUMES the Merkle coverage of that leaf and never redefines it.
+
+**ABSENT IS NORMAL, and it is the single most important rule here.**
+Many animals have no microchip at all - cats routinely are not chipped in Singapore - so `None` is a
+first-class ordinary state of an ordinary pet, never a failure and never a reason to refuse a link.
+The check fires ONLY when both sides carry a code.
+Getting this backwards makes the field unusable and teaches operators to route around it, which is why
+the tests weight the absent cases most heavily.
+The pet-side value is deliberately **not format-validated** either: refusing a legacy pre-ISO code
+would push the operator into leaving the field blank, silently costing the check the field exists to
+enable. A legacy code that differs from the credential's is simply a **mismatch**, and the refusal
+names BOTH values so the operator can see it is a format difference in their own record.
+
+**Three states, and `NotComparable` must render as neither neighbour.**
+Not as a silent pass (a check that did not run is not one that passed) and - the mistake THIS surface
+would make - not as a refusal either.
+Its seven reasons split into **facts** (`petHasNoMicrochip`, `credentialHasNoMicrochip`,
+`noCredentialHeld`, `noLinkedPet`) and **failures to look** (`cannotLookUpByFieldElement`,
+`couldNotRead`, `credentialUnreadable`), and the wire carries that split as `isFailure` so the client
+does not re-derive it - a reason added later would otherwise default to the wrong tone.
+Facts render NEUTRAL; failures warn.
+Deliberately NOT the issuer-whitelist pillar's "indeterminate renders amber" rule: that is for failing
+to establish something we needed, and an unchipped cat is not a failure to establish anything - amber
+there would over-claim in the other direction, on the commonest state in the product.
+Reasons must not collapse into each other: `noCredentialHeld` says the shop holds nothing while
+`cannotLookUpByFieldElement` says it CANNOT ASK (the cache is keyed by the tag handle and
+handle -> field element is a Poseidon hash that cannot be inverted - the same understatement
+`PetTagCredentials` already refuses to make about the same cache), and `noLinkedPet` says no pet
+carries that tag at all, which is not "this pet has no microchip on file".
+
+**When both sides are missing, the CREDENTIAL side is reported.**
+Both statements are true, so the choice is which remedy to offer: the credential is the immovable side,
+so no entry on the pet record could ever make the comparison possible and telling the operator to go
+find a chip number would be an errand that cannot succeed.
+
+**A mismatch refuses the WRITE (409) and never touches the verdict.**
+The credential is genuine and stays valid for everyone; it simply describes a different animal.
+Same rule that keeps `issuer_mismatch` apart from `issuer_not_whitelisted` - different accusations,
+different remedies - and `import_pull` returns its unchanged `verdict` alongside the 409 so an operator
+can see the credential passed every pillar and that what was refused is the PAIRING.
+Never fold it into `verdict.valid`, which would report a real credential as forged.
+And never auto-populate the pet's code from the credential: that makes the check permanently vacuous
+(it would forever match what it copied) and asserts an identity no human confirmed.
+
+**The binding is a PAIR and either half can move, so the guard is at SIX write points**, not just the
+link route: `link_pet_dogtag`, `create_pet`, `create_client`, `update_client`, `update_pet` and
+`import_pull`. `update_pet` is the non-obvious one and closes a two-step hole - link while the pet has
+no chip (correctly allowed), then set a chip belonging to a different animal - reachable through the
+adjacent route with the same field. Same reasoning that already made `reject_dog_tag_conflicts` the
+twin of `conflicting_pet`.
+
+**Both reads behind the guard are the FALLIBLE forms, and they fail in OPPOSITE directions - which
+is the subtlest thing here.**
+`Store::try_get_client_cache` is new and `get_client_cache` is derived from it; `update_pet` likewise
+sources the tag it checks through `try_get_pet`, never the collapsing `get_pet`.
+The credential-cache read REPORTS `couldNotRead` and lets the write through, because this check is
+evidence that can only tighten a link the operator was already entitled to make - failing closed there
+would refuse ordinary work.
+The PET read REFUSES with `unverifiable` (503), because it is the read that decides WHICH tag is being
+checked at all, making it the same uniqueness-class failure `create_pet` and `link_pet_dogtag` already
+answer that way one line apart.
+Collapsing either one is a silent fail-open in its own flavour: the cache one arrives as the neutral
+*fact* "this shop holds no credential" on the strength of a read that never happened, and the pet one
+skips the guard entirely with no report at all.
+Pinned by `an_unreadable_credential_store_is_a_failure_not_an_absence` and
+`an_unreadable_pet_store_refuses_a_microchip_edit_rather_than_skipping_the_check`.
+
+**Stated assumption, recorded rather than closed: the leaf is read from the CACHED document without
+re-running `check_integrity`.**
+Sound today because `POST /import/pull` verifies before filing and nothing else writes that cache, so
+the tamper-evidence this check rests on is the IMPORT's, not the read's - a cache altered at rest could
+fake a match. Revisit it if the store's at-rest integrity stops being assumed; the fix is an offline
+Merkle recompute per link, so cost is not the obstacle.
+
+**Only a SUPPLIED microchip is a claim.**
+`update_pet` checks the incoming code, never the stored one - otherwise a pet whose record already
+disagrees with its credential (possible in pre-rule data, since the guard postdates the field) could
+never be edited again, and an operator fixing a breed would be refused over a microchip they never
+touched. Same grandfathering `reject_dog_tag_conflicts` already applies to tags.
+
+**The verdict is emitted ONLY by the routes that WRITE the binding** (`POST /pets/:id/dogtag`,
+`POST /import/pull`) and inside every refusal body, never on a `CrmPet` list row.
+A verdict on a list row would be a claim about a comparison nobody ran for that row, and an absent key
+there would then be ambiguous with "checked and fine".
+
+**A whole-document client write ERASES a field the payload omits, and this failure is SILENT.**
+`PUT /clients/{id}` replaces the owner's entire pet list, so `ClientForm` (`stacks/groomer/web`) must
+SEED `microchipCode` from the stored pet and re-send it - exactly as it already does for `dogTagId`.
+Dropping it does not error; the cross-check just quietly stops firing on every future link.
+Pinned on both sides: `a_client_edit_that_echoes_the_microchip_preserves_it` on the wire, and the
+existing `clients.spec.ts` echo test in the UI (mutation-checked - removing the payload line reddens
+it). An explicit blank still CLEARS the code, which must stay possible: clearing a wrongly-typed code
+is the only way out of a mismatch an operator cannot otherwise correct.
+
+Coverage: `cargo test -p vet-api --test microchip_binding` (25, real router; the import half drives the
+real outbound fetch and real `third_party_verify`, including a holder-OBFUSCATED microchip leaf, which
+leaves `R` unchanged so the credential still verifies while the check genuinely cannot run) plus the
+`microchip` unit tests in the crate and `packages/ui/test/microchipCheck.test.ts`.
+
 ## Current provider search: exact body-only position, server-side nearest, paged list
 
 **The registry plan (`dogtag-regplan-p3/report.md`) is STALE on this point and must not be followed.**

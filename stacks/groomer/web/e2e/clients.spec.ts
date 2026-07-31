@@ -19,6 +19,7 @@ const OP_TOKEN_KEY = "groomer.opToken";
 const CLIENT_ID = "client-e2e-1";
 const PET_ID = "pet-e2e-1";
 const DOG_TAG = "4";
+const MICROCHIP = "985141006580319";
 
 interface MockState {
   puts: Record<string, unknown>[];
@@ -41,6 +42,7 @@ const storedClient = {
       dateOfBirth: "",
       notes: "",
       dogTagId: DOG_TAG,
+      microchipCode: MICROCHIP,
     },
   ],
   createdAt: 0,
@@ -108,4 +110,8 @@ test("still echoes a pet's stored DogTag so a client edit cannot unlink it", asy
   expect(pets[0].petId).toBe(PET_ID);
   // The whole point: absent here, the replace would drop the tag on the floor.
   expect(pets[0].dogTagId).toBe(DOG_TAG);
+  // Same hazard, second field. The microchip is what lets a DogTag link be cross-checked against the
+  // credential, and losing it fails SILENTLY — no error, the check simply stops firing on every
+  // future link. So an unrelated edit must carry it through exactly as it carries the tag.
+  expect(pets[0].microchipCode).toBe(MICROCHIP);
 });

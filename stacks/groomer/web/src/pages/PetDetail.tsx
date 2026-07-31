@@ -9,6 +9,11 @@ import {
   Input,
   Label,
   Spinner,
+  useToast,
+  microchipCheckFromError,
+  microchipExplanation,
+  microchipHeadline,
+  microchipTone,
   Table,
   TableBody,
   TableCell,
@@ -16,7 +21,13 @@ import {
   TableHeader,
   TableRow,
 } from "@dogtag/ui";
-import type { ClientPetInput, CrmAppointment, CrmPet, CrmVerification } from "@dogtag/ui";
+import type {
+  ClientPetInput,
+  CrmAppointment,
+  CrmPet,
+  CrmVerification,
+  MicrochipCheck,
+} from "@dogtag/ui";
 import {
   ArrowLeft,
   CalendarPlus,
@@ -183,6 +194,13 @@ export function PetDetail() {
             <Field label="Breed" value={pet.breed} />
             <Field label="Sex" value={pet.sex} />
             <Field label="Date of birth" value={pet.dateOfBirth} />
+            {/*
+              Rendered as an ordinary detail, with no badge and no nudge when it is absent. A pet
+              with no microchip is an ordinary pet — many are not chipped — so a warning here would
+              nag the commonest case in the shop. What an absent chip costs is the cross-check when a
+              DogTag is linked, and the DogTag card below says so at the moment it matters.
+            */}
+            <Field label="Microchip" value={pet.microchipCode ?? ""} />
             <Field label="Owner" value={pet.clientName} />
           </dl>
           {pet.notes && (
@@ -317,20 +335,41 @@ export function PetDetail() {
 function PetDogTagCard({ pet, onChanged }: { pet: CrmPet; onChanged: () => Promise<void> }) {
   const { api } = useApp();
   const { run, busy } = useAction();
+  const { toast } = useToast();
+  const [linking, setLinking] = useState(false);
   const [tagInput, setTagInput] = useState("");
   const [confirmingUnlink, setConfirmingUnlink] = useState(false);
+  // The microchip cross-check's verdict, from the LAST link attempt. Held on BOTH paths — a refusal
+  // carries the same structured object as a success — so the operator sees one explanation whichever
+  // way it went, rather than a rendered state on the happy path and a toast on the sad one.
+  const [check, setCheck] = useState<MicrochipCheck | null>(null);
 
   async function link(e: FormEvent) {
     e.preventDefault();
     const tag = tagInput.trim();
     if (!tag) return;
-    const ok = await run(() => api.linkPetDogTag(pet.petId, tag), {
-      success: `DogTag ${tag} linked to ${pet.name}`,
-      failure: "Could not link the DogTag",
-    });
-    if (ok) {
+    setCheck(null);
+    setLinking(true);
+    try {
+      const linked = await api.linkPetDogTag(pet.petId, tag);
+      setCheck(linked.microchipCheck ?? null);
+      toast({ title: `DogTag ${tag} linked to ${pet.name}`, variant: "success" });
       setTagInput("");
       await onChanged();
+    } catch (e) {
+      const refused = microchipCheckFromError(e);
+      setCheck(refused);
+      // A microchip refusal explains itself in the panel below, which can name both codes. The toast
+      // therefore only announces THAT it was refused; repeating the explanation would be the same
+      // sentence twice, and dropping the toast entirely would let a refusal pass unnoticed. Any other
+      // failure still carries its message, since the panel has nothing to say about it.
+      toast({
+        title: refused ? "DogTag not linked" : "Could not link the DogTag",
+        description: refused ? "The microchip does not match — see below." : (e as Error).message,
+        variant: "danger",
+      });
+    } finally {
+      setLinking(false);
     }
   }
 
@@ -408,12 +447,14 @@ function PetDogTagCard({ pet, onChanged }: { pet: CrmPet; onChanged: () => Promi
                   placeholder="The number the owner's app shows, or the full on-chain id"
                 />
               </div>
-              <Button type="submit" size="sm" loading={busy} disabled={!tagInput.trim()}>
+              <Button type="submit" size="sm" loading={linking} disabled={!tagInput.trim()}>
                 <Link2 className="h-4 w-4" /> Add DogTag
               </Button>
             </form>
           </>
         )}
+
+        {check && <MicrochipCheckPanel check={check} />}
 
         {/*
           Why there is no Issue and no Revoke button here. Hiding the absence would leave an operator
@@ -453,6 +494,7 @@ function PetEditForm({
     sex: pet.sex,
     dateOfBirth: pet.dateOfBirth,
     notes: pet.notes,
+    microchipCode: pet.microchipCode ?? "",
   });
 
   const nameInvalid = draft.name.trim().length === 0;
@@ -471,6 +513,10 @@ function PetEditForm({
           sex: draft.sex,
           dateOfBirth: draft.dateOfBirth,
           notes: draft.notes,
+          // Sent even when blank, because an explicit blank CLEARS the code — which is how an
+          // operator corrects a microchip typed onto the wrong pet. A wrong code that cannot be
+          // cleared would refuse every future link with no way out.
+          microchipCode: draft.microchipCode ?? "",
         }),
       { success: "Pet updated", failure: "Could not save the pet" },
     );
@@ -512,6 +558,42 @@ function Field({ label, value }: { label: string; value: string }) {
     <div>
       <dt className="text-xs font-semibold uppercase tracking-wide text-muted">{label}</dt>
       <dd className="mt-1 text-onSurface">{value || "—"}</dd>
+    </div>
+  );
+}
+
+/**
+ * The microchip cross-check's verdict, rendered in all three states.
+ *
+ * A DogTag link is otherwise unchecked — a mistyped digit or two similar dogs in one afternoon give
+ * a link that is structurally perfect and about the wrong animal. The credential carries the
+ * microchip as a Merkle leaf, so when the shop has one on file too the two can be compared, and this
+ * panel says what that comparison found.
+ *
+ * The whole point is the middle state. "Not compared" is neither a pass nor a failure: it is
+ * rendered with its own wording, in its own tone, saying which side was missing or which read did
+ * not resolve. Most often that is simply "this pet has no microchip on file" — an ordinary fact
+ * about an ordinary animal, so it stays NEUTRAL and does not nag. A failure to LOOK (an unreadable
+ * store, a document that will not parse) warns instead, because something that should have resolved
+ * did not. Both come from `microchipTone`, which reads the backend's own fact/failure flag rather
+ * than re-deriving it here.
+ */
+function MicrochipCheckPanel({ check }: { check: MicrochipCheck }) {
+  const tone = microchipTone(check);
+  const style =
+    tone === "positive"
+      ? "border-success/40 bg-success/10 text-onSurface"
+      : tone === "negative"
+        ? "border-danger/40 bg-danger/10 text-onSurface"
+        : tone === "warning"
+          ? "border-warning/40 bg-warning/10 text-onSurface"
+          : "border-border bg-surface-muted text-onSurface";
+  return (
+    <div className={`space-y-1 rounded-md border p-3 text-sm ${style}`} data-testid="microchip-check">
+      <p className="font-semibold" data-testid="microchip-check-headline">
+        {microchipHeadline(check)}
+      </p>
+      <p className="text-muted">{microchipExplanation(check)}</p>
     </div>
   );
 }

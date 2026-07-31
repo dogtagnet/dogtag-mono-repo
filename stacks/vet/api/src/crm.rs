@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 
 use crate::app::AppState;
 use crate::auth::now;
+use crate::microchip::{MicrochipCheck, NotComparable};
 use crate::store::{
     Appointment, AppointmentQuery, Client, ClientPet, ClientQuery, Page, PetQuery, PetRow, Store,
     StoreReadError, VerificationLog, VerificationQuery, VerifySession, APPOINTMENT_STATES,
@@ -59,6 +60,10 @@ fn pet_json(p: &ClientPet) -> Value {
         "dateOfBirth": p.date_of_birth,
         "notes": p.notes,
         "dogTagId": p.dog_tag_id,
+        // `null` when the shop has none. Deliberately NOT accompanied by a `microchipCheck` on this
+        // projection: a list row carries no verdict, so an absent key here can never be mistaken for
+        // "checked and fine". The verdict is emitted only by the routes that WRITE the binding.
+        "microchipCode": p.microchip_code,
     })
 }
 
@@ -164,6 +169,10 @@ struct PetBody {
     notes: String,
     #[serde(default)]
     dog_tag_id: Option<String>,
+    /// The animal's microchip code, if the shop has one. Absent is normal — see
+    /// [`ClientPet::microchip_code`].
+    #[serde(default)]
+    microchip_code: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -276,6 +285,9 @@ async fn create_client(
     if let Some(conflict) = reject_dog_tag_conflicts(&st.store, &pets, None).await {
         return conflict;
     }
+    if let Some(conflict) = reject_microchip_mismatches(&st.store, &pets).await {
+        return conflict;
+    }
     let ts = now();
     let mut c = Client {
         client_id: uuid::Uuid::new_v4().to_string(),
@@ -316,6 +328,15 @@ fn build_pet(p: &PetBody) -> ClientPet {
         // filed under "4" - one stray character reintroducing two separate bugs.
         dog_tag_id: p
             .dog_tag_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        // Trimmed and blank-normalized to `None` for the same reason: the microchip is compared as an
+        // exact string against a credential leaf, so a pasted " 985…" would report a mismatch between
+        // a code and itself — a refusal the operator cannot see the cause of and cannot clear.
+        microchip_code: p
+            .microchip_code
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -361,6 +382,9 @@ async fn update_client(
         return conflict;
     }
     if let Some(conflict) = reject_orphaning_pet_removals(&st.store, &existing.pets, &pets).await {
+        return conflict;
+    }
+    if let Some(conflict) = reject_microchip_mismatches(&st.store, &pets).await {
         return conflict;
     }
     let mut c = Client {
@@ -513,6 +537,10 @@ struct PetPatchBody {
     date_of_birth: Option<String>,
     #[serde(default)]
     notes: Option<String>,
+    /// The animal's microchip code. ABSENT leaves it alone (like every other field here); an explicit
+    /// blank CLEARS it, which is the only way to correct a code typed onto the wrong pet.
+    #[serde(default)]
+    microchip_code: Option<String>,
 }
 
 /// Body of `POST /pets` — a pet must be created UNDER an owner, so `clientId` is required.
@@ -565,6 +593,105 @@ fn unverifiable(e: StoreReadError) -> Resp {
         StatusCode::SERVICE_UNAVAILABLE,
         "The pet records could not be read, so this save could not be checked against the pets already on file. Nothing was changed — try again.",
     )
+}
+
+// ---- the microchip cross-check, at every place a tag↔pet binding is written --------------------
+
+/// Read the shop's held credential for `tag` and cross-check its microchip against `pet_code`.
+///
+/// The decision itself is [`crate::microchip::compare`]; this is the I/O half. It is deliberately
+/// ONE helper rather than a rule restated per route, because the binding is written from five places
+/// and a guard covering only some of them reads as an enforced invariant while the main way in stays
+/// open — the exact reasoning that already made [`reject_dog_tag_conflicts`] the twin of
+/// [`conflicting_pet`].
+///
+/// Never `Err`: an unreadable store is a `NotComparable` REASON, not a refusal. That is the opposite
+/// of [`unverifiable`], and the difference is what the two guards are protecting. Uniqueness is a
+/// safety invariant whose whole job is to keep two animals off one tag, so a check that could not run
+/// must refuse the write. This one is *evidence*: it can only ever tighten a link the operator was
+/// already entitled to make, so failing closed here would refuse ordinary work — most loudly for the
+/// commonest case of all, a pet with no microchip — and teach operators to route around it.
+///
+/// STATED ASSUMPTION: the leaf is read from the CACHED document without re-running `check_integrity`.
+/// That is sound because `POST /import/pull` verifies before filing and nothing else writes that
+/// cache, so a document only gets in by passing every pillar. It does mean the tamper-evidence this
+/// check rests on is the import's, not this read's: a cache altered AT REST could fake a match. Left
+/// as recorded rather than closed because re-verifying here would be an offline Merkle recompute per
+/// link — cheap enough to add if the store's at-rest integrity ever stops being assumed, which is the
+/// condition to revisit it under, not the cost.
+async fn microchip_check(
+    store: &Arc<dyn Store>,
+    tag: &str,
+    pet_code: Option<&str>,
+) -> MicrochipCheck {
+    let tag = tag.trim();
+    if !crate::microchip::is_handle_form(tag) {
+        return MicrochipCheck::NotComparable(NotComparable::CannotLookUpByFieldElement);
+    }
+    let held = match store.try_get_client_cache(tag).await {
+        Ok(Some(v)) => v,
+        Ok(None) => return MicrochipCheck::NotComparable(NotComparable::NoCredentialHeld),
+        Err(e) => return MicrochipCheck::NotComparable(NotComparable::CouldNotRead(e.to_string())),
+    };
+    // A cached document that will not parse is a failure to READ, never an absence: reporting it as
+    // "this shop holds no credential" would state a fact about the shop's records on the strength of
+    // a document it is holding and could not open.
+    let doc: dogtag_standard::wrap::WrappedDoc = match serde_json::from_value(held) {
+        Ok(d) => d,
+        Err(e) => {
+            return MicrochipCheck::NotComparable(NotComparable::CredentialUnreadable(format!(
+                "the held credential is not a readable wrapped document: {e}"
+            )))
+        }
+    };
+    crate::microchip::compare(pet_code, &crate::microchip::credential_microchip(&doc))
+}
+
+/// The 409 for a link whose microchip cross-check says the credential describes a DIFFERENT animal.
+///
+/// 409 CONFLICT, the same code (and shape) as [`dog_tag_conflict`], because it is the same kind of
+/// answer: the write is well-formed and the request is authorized — it just contradicts evidence
+/// already on file. Deliberately NOT `import_pull`'s 422, which means "this credential did not
+/// verify". The credential here is genuine and is not being accused of anything.
+///
+/// The structured verdict rides ALONG WITH the message, for the reason `a_refused_import_reports_why`
+/// exists: a bare sentence leaves a client unable to distinguish this refusal from any other 409, and
+/// gives it two vocabularies for one check.
+fn microchip_conflict(check: &MicrochipCheck) -> Resp {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": check.refusal_message().unwrap_or_default(),
+            "microchipCheck": check.to_json(),
+        })),
+    )
+}
+
+/// The same cross-check for the WHOLE-DOCUMENT client routes, over every pet in the payload.
+///
+/// The twin of [`reject_dog_tag_conflicts`], and present for the identical reason: `POST /clients`
+/// and `PUT /clients/{id}` carry pets inline, so guarding only the pet routes would leave the
+/// mis-link reachable through the adjacent route with the same fields.
+///
+/// Only a pet carrying BOTH a tag and a microchip can be refused; every other combination is
+/// `NotComparable` and passes through untouched.
+async fn reject_microchip_mismatches(
+    store: &Arc<dyn Store>,
+    pets: &[ClientPet],
+) -> Option<Resp> {
+    for p in pets {
+        let (Some(tag), Some(code)) = (
+            p.dog_tag_id.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            p.microchip_code.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        ) else {
+            continue;
+        };
+        let check = microchip_check(store, tag, Some(code)).await;
+        if check.refuses() {
+            return Some(microchip_conflict(&check));
+        }
+    }
+    None
 }
 
 /// The pet, if any, that already holds `tag` and is not `self_pet_id`.
@@ -722,10 +849,12 @@ async fn reject_dog_tag_conflicts<L: PetLookup + ?Sized>(
             Ok(v) => v,
             Err(e) => return Some(unverifiable(e)),
         };
-        let Some(other) = held
-            .into_iter()
-            .find(|r| client_id.is_none_or(|id| r.client_id != id))
-        else {
+        // Spelled as a `match` rather than `Option::is_none_or`, which is stable only since 1.82
+        // while this workspace's MSRV is 1.80 — clippy's `incompatible_msrv` flags it.
+        let Some(other) = held.into_iter().find(|r| match client_id {
+            Some(id) => r.client_id != id,
+            None => true,
+        }) else {
             continue;
         };
         let unchanged = match mine {
@@ -925,6 +1054,12 @@ async fn create_pet(
             Ok(None) => {}
             Err(e) => return unverifiable(e),
         }
+        // ...and the same microchip cross-check, for the same reason the line above is here: create
+        // carries both fields, so a guard on the link route alone would leave the mis-link reachable.
+        let check = microchip_check(&st.store, tag, pet.microchip_code.as_deref()).await;
+        if check.refuses() {
+            return microchip_conflict(&check);
+        }
     }
     c.pets.push(pet.clone());
     c.updated_at = now();
@@ -947,6 +1082,45 @@ async fn update_pet(
     if body.name.as_ref().is_some_and(|n| n.trim().is_empty()) {
         return err(StatusCode::BAD_REQUEST, "name cannot be blank");
     }
+    // The BINDING IS A PAIR, and this route moves the other half of it. Guarding only the places
+    // that write a TAG would leave the whole defect reachable in two ordinary steps: link a tag while
+    // the pet has no microchip (not comparable, correctly allowed), then set a microchip here that
+    // belongs to a different animal, with nothing to refuse it. So the incoming code is checked
+    // against the credential held for the tag the pet ALREADY carries.
+    //
+    // Only an explicitly supplied, non-blank code is a claim. An absent field changes nothing, and a
+    // deliberate blank CLEARS the code — which must stay possible, because clearing a wrongly-typed
+    // code is exactly how an operator gets out of a mismatch they cannot otherwise correct.
+    if let Some(code) = body
+        .microchip_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        // Reads the STORED tag, so a client whose portal predates this field cannot skip the check by
+        // omitting one; the tag is not patchable from this route at all.
+        //
+        // THE FALLIBLE FORM, and it has to be. `get_pet` collapses an unreadable store to `None`,
+        // which here would skip the whole `if let` arm and let the write land with no check and no
+        // report — the fail-open this feature exists to close, reintroduced through the guard itself.
+        // Unlike the CACHE read inside `microchip_check` (which reports `couldNotRead` and proceeds,
+        // because that check is evidence and can only tighten), an unresolved PET read is the same
+        // uniqueness-class failure `create_pet` and `link_pet_dogtag` already refuse one line away:
+        // it is the read that decides WHICH tag is being checked at all.
+        let tag = match st.store.try_get_pet(&id).await {
+            Ok(row) => row
+                .and_then(|r| r.pet.dog_tag_id)
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty()),
+            Err(e) => return unverifiable(e),
+        };
+        if let Some(tag) = tag {
+            let check = microchip_check(&st.store, &tag, Some(code)).await;
+            if check.refuses() {
+                return microchip_conflict(&check);
+            }
+        }
+    }
     let set = |dst: &mut String, src: Option<String>| {
         if let Some(v) = src {
             *dst = v.trim().to_string();
@@ -961,6 +1135,10 @@ async fn update_pet(
         // Notes keep their whitespace: a multi-line handling note is not a label to trim.
         if let Some(n) = body.notes {
             p.notes = n;
+        }
+        if let Some(m) = body.microchip_code {
+            let m = m.trim();
+            p.microchip_code = (!m.is_empty()).then(|| m.to_string());
         }
     })
     .await;
@@ -982,6 +1160,17 @@ async fn update_pet(
 /// records silently merged, with a mistyped digit the realistic way in. The refusal NAMES the pet
 /// already holding it, because that is what tells a typo apart from a genuine conflict. Re-linking a
 /// tag to the pet that already has it stays idempotent: nothing is being merged.
+///
+/// # The microchip cross-check
+///
+/// That uniqueness rule keeps two pets off one tag; it says nothing about whether THIS tag belongs to
+/// THIS animal. A credential carries `credentialSubject.microchip.code` as a Merkle leaf, so when the
+/// shop holds one for the tag and has a microchip on the pet, the two are compared here — the moment
+/// the credential and the local record meet — and a mismatch is refused ([`microchip_check`]).
+///
+/// The verdict is ALWAYS on the response, in all three states, so a client cannot read a missing key
+/// as a check that passed. It is emitted here rather than on `GET /pets` for exactly that reason: a
+/// list row carries no verdict, so its absence there is unambiguous.
 async fn link_pet_dogtag(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -996,16 +1185,24 @@ async fn link_pet_dogtag(
         return err(StatusCode::BAD_REQUEST, "dogTagId is required");
     }
     // Existence first, so an unknown pet reports 404 rather than a conflict with a pet it is not.
-    if st.store.get_pet(&id).await.is_none() {
+    let Some(row) = st.store.get_pet(&id).await else {
         return err(StatusCode::NOT_FOUND, "pet not found");
-    }
+    };
     match conflicting_pet(&st.store, &tag, &id).await {
         Ok(Some(other)) => return dog_tag_conflict(&tag, &other),
         Ok(None) => {}
         Err(e) => return unverifiable(e),
     }
+    let check = microchip_check(&st.store, &tag, row.pet.microchip_code.as_deref()).await;
+    if check.refuses() {
+        return microchip_conflict(&check);
+    }
     match mutate_pet(&st.store, &id, |p| p.dog_tag_id = Some(tag)).await {
-        Some(r) => ok(pet_row_json(&r)),
+        Some(r) => {
+            let mut v = pet_row_json(&r);
+            v["microchipCheck"] = check.to_json();
+            ok(v)
+        }
         None => err(StatusCode::NOT_FOUND, "pet not found"),
     }
 }
@@ -1611,6 +1808,9 @@ mod tests {
             date_of_birth: String::new(),
             notes: String::new(),
             dog_tag_id: tag.map(str::to_string),
+            // These guards are about pet ids and tag uniqueness; the microchip cross-check is a
+            // separate rule with its own tests (`crate::microchip` and `tests/pets.rs`).
+            microchip_code: None,
         }
     }
 
