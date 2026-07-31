@@ -452,9 +452,9 @@ function PasteDocVerify() {
       <p className="mt-1 max-w-2xl text-sm text-muted">
         Recomputes integrity (offline) and reads on-chain status (DogTagIssuer.isValid) + issuer
         identity from ROAX — whether the signer that anchored this root held the capability AT THAT
-        BLOCK, from the governing registry's own grant log. Delisting is forward-only, so a since-
-        rotated issuer does not invalidate what it issued. All reads are gasless. No owner and no
-        phone needed — this checks a document, not a consent.
+        BLOCK, from the governing registry's own grant log. Delisting is forward-only, so a
+        since-rotated issuer does not invalidate what it issued. All reads are gasless. No owner and
+        no phone needed — this checks a document, not a consent.
       </p>
 
       <label className="mt-4 block text-xs font-medium text-muted">
