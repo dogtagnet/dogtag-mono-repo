@@ -441,6 +441,24 @@ async fn a_pet_with_no_microchip_links_freely_and_the_reason_is_reported() {
     assert_eq!(s, StatusCode::OK, "an unchipped pet must never be blocked: {b}");
     assert_not_comparable(&b["microchipCheck"], "petHasNoMicrochip", false);
     assert_eq!(b["dogTagId"], "4", "{b}");
+
+    // ...and the credential's code is NOT copied onto the pet. Filling the blank from the document
+    // is the tempting convenience, and it would make this check permanently VACUOUS — it would
+    // forever match what it copied — while asserting an identity no human confirmed. Nothing else
+    // here would catch it: the link succeeds and the reported reason is computed before any write,
+    // so an auto-populating regression leaves every other case in this file green.
+    assert!(
+        b["microchipCode"].is_null(),
+        "the credential's code must not be copied onto the pet: {b}"
+    );
+    // Re-READ rather than trusting the response body alone, so a write made after the body was
+    // built cannot hide behind it.
+    let (s, pet) = call(&app, "GET", &format!("/pets/{}", pets[0]), Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "{pet}");
+    assert!(
+        pet["microchipCode"].is_null(),
+        "and it must still be absent when the record is read back: {pet}"
+    );
 }
 
 #[tokio::test]
