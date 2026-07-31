@@ -340,6 +340,7 @@ function DeployDialog({
                 <AddressRef
                   address={predicted}
                   full
+                  copyable={false}
                   className="break-all text-sm"
                   testId="issuers-predicted"
                 />

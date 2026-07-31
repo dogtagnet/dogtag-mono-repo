@@ -156,13 +156,18 @@ export interface ChainValueProps {
    */
   labelHidden?: boolean;
   /**
-   * WHY this value carries no explorer link, shown on the inert value's hover text.
+   * WHY this value carries no explorer link. Marks the value as unresolvable - struck through, the
+   * same way `TxRef` renders an unusable hash - and states the reason on its hover text.
    *
    * Withholding a link is a claim in itself - the reader is being told this value cannot be looked
    * up - and a claim with no stated reason is indistinguishable from a page that simply forgot to
    * link it. `TxRef` has always explained its inert branch; this brings the same to every other
    * identifier, so "not chain-addressable" and "we could not tell" never render as the same silence.
-   * Ignored when `href` is set: a linked value is not withholding anything.
+   *
+   * Pass it ONLY for a value that was resolved and came back unusable, never for one that ordinarily
+   * has no explorer page: it is what makes the two visually distinct, so a reason attached to an
+   * ordinary identifier marks a perfectly good value as broken. Ignored when `href` is set: a linked
+   * value is not withholding anything.
    */
   reason?: string | null;
   className?: string;
@@ -227,8 +232,20 @@ export function ChainValue({
             {shown}
           </a>
         ) : (
+          // A `reason` is what separates the two things this branch renders, and they must not look
+          // alike. WITHOUT one the value is an ordinary identifier that simply has no explorer page -
+          // a root, a record-type key, a nullifier - and nothing is wrong with it, so it stays plain.
+          // WITH one, something we tried to resolve could not be, and that is the same claim `TxRef`
+          // makes about an unusable hash, so it gets the same struck-through amber. Left plain it was
+          // discoverable only by hovering, which this repo does not count as reported; struck through
+          // unconditionally it would mark every ordinary identifier in the row as broken, which is the
+          // worse of the two. Hence the treatment keys on `reason`, never on the absence of `href`.
           <span
-            className={cn("font-mono text-onSurface", valueClass)}
+            className={cn(
+              "font-mono",
+              reason ? "text-muted line-through decoration-warning/60" : "text-onSurface",
+              valueClass,
+            )}
             title={reason ? `${value} — ${reason}` : value}
             data-testid={testId ? `${testId}-inert` : undefined}
             data-reason={reason ?? undefined}

@@ -1,4 +1,4 @@
-import { addressChainRef, cn } from "@dogtag/ui";
+import { CopyButton, addressChainRef, cn } from "@dogtag/ui";
 import { shortAddr } from "../lib/format";
 
 /**
@@ -19,9 +19,9 @@ import { shortAddr } from "../lib/format";
  *    own fallback (`—`, "hosted operator key") says what it means.
  *  - **cannot be looked up** - an address IS present but is not well-formed, so no explorer page can
  *    exist for it. The value is still shown (it is what the backend reported, and hiding it would cost
- *    the operator a fact) but it is inert and carries the reason. Never silently collapsed into either
- *    neighbour: "we have nothing" and "we have something unusable" are different situations with
- *    different remedies.
+ *    the operator a fact), inert, carrying the reason and a copy affordance. Never silently collapsed
+ *    into either neighbour: "we have nothing" and "we have something unusable" are different
+ *    situations with different remedies.
  *
  * The positive side claims only that the address is well-formed enough to LOOK UP - exactly what
  * `addressChainRef` checks. No chain read happens here, so nothing on this path may be read as
@@ -30,12 +30,20 @@ import { shortAddr } from "../lib/format";
 export function AddressRef({
   address,
   full = false,
+  copyable = true,
   className,
   testId = "chain-address",
 }: {
   address?: string | null;
   /** Show the address complete rather than middle-truncated (a detail row rather than a dense cell). */
   full?: boolean;
+  /**
+   * Whether the inert branch supplies its own copy affordance. Set `false` ONLY where the caller
+   * already renders one beside this component (`Governance`'s `AddrLink` with `withCopy`, the
+   * predicted-clone block in `Issuers`) - two copy buttons for one value is its own confusion, and the
+   * point is that the operator has exactly one way to take the full value away, not two.
+   */
+  copyable?: boolean;
   className?: string;
   testId?: string;
 }) {
@@ -66,8 +74,16 @@ export function AddressRef({
   // the same claim - "this cannot be looked up" - so they get the same visual language, and it has to
   // be a VISIBLE one: colour alone leaves the state legible only to someone who already knows the
   // linked form is blue, and this repo's standing rule is that a finding reachable only by hovering is
-  // not reported. The hover text still carries the full value and the reason.
-  return (
+  // not reported.
+  //
+  // The COPY affordance is on this branch for the same hovering rule, applied to the value rather than
+  // to its state. `shortAddr` middle-truncates, so the elided characters are not in the DOM at all,
+  // and the linked branch's escape hatch is gone here: there is no `href` to copy the full address out
+  // of. That would leave the tooltip as the only route to the one fact this row exists to give the
+  // operator - and a tooltip survives neither a screenshot, nor a touch device, nor a paste into an
+  // incident report, which is exactly what an unusable address has to be pasted into. `provenance.ts`
+  // states that rule for every middle-truncated value; `TxRef` and `ChainValue` already keep it.
+  const inert = (
     <span
       className={cn(
         "font-mono text-xs text-muted line-through decoration-warning/60",
@@ -78,6 +94,13 @@ export function AddressRef({
       data-reason={reason ?? undefined}
     >
       {shown}
+    </span>
+  );
+  if (!copyable) return inert;
+  return (
+    <span className="inline-flex min-w-0 max-w-full items-center gap-1">
+      {inert}
+      <CopyButton value={address} label="address" />
     </span>
   );
 }

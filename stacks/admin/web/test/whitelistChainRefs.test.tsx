@@ -116,6 +116,13 @@ describe("Whitelist — the address column", () => {
     // The value is still shown: it is what the backend reported, and hiding it costs the operator the
     // one fact they need to go and investigate.
     expect(inert!.textContent).toBeTruthy();
+    // ...and shown TRUNCATED, with no `href` to copy the whole thing out of, so the row has to offer
+    // the affordance itself or the address is reachable only by hovering. Scoped to this row rather
+    // than the page, so it cannot be satisfied by a copy button belonging to some other cell - the
+    // wrong-column mistake `ActorCell`'s split testIds exist to prevent.
+    // `addressRefCopy.test.tsx` pins that the button writes the FULL value; this one pins that the
+    // page actually renders it.
+    expect(inert!.parentElement!.querySelector('[data-testid="copy-button"]')).not.toBeNull();
   });
 
   it("keeps the two states distinguishable in one table", async () => {

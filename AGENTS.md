@@ -4772,6 +4772,11 @@ adding a file there means checking its whole import closure.
 
 ## An explorer link is a CLAIM, and the admin portal made it unconditionally
 
+**SCOPE: this section describes the rule and the ADMIN portal's migration onto it. It is not a
+statement that the fleet is done** - see the known-outstanding list at the end, which is every
+remaining `explorerAddressUrl`/`explorerTxUrl` site in the shared `packages/ui/src/domain` panels,
+verified line by line, and is queued separately.
+
 PR #88 established the rule for the government/vet audit tables and built the shared helpers in
 `packages/ui/src/chain/`; `Activity.tsx` followed.
 Every OTHER admin page still wrote `href={explorerTxUrl(x)}` / `href={explorerAddressUrl(x)}` directly,
@@ -4808,10 +4813,58 @@ Transactions go through the shared `TxRef` directly.
 so six pages cannot invent six explanations; a reason is attached ONLY to a value that is present and
 unusable, never to an absent one.
 
+**The same hovering rule governs the VALUE, not only its state, and it bites hardest exactly where the
+link was withheld.**
+The linked branch keeps the full address in its `href`, so a truncated anchor still lets the operator
+take the value away; the INERT branch has no such escape hatch, and `shortAddr` truncates the string
+itself, so the elided characters are not in the DOM at all.
+Left as it was, the one fact that row exists to hand over - the address to go and investigate - was
+reachable only by hovering, which survives neither a screenshot, nor a touch device, nor a paste into
+an incident report.
+So `AddressRef`'s inert branch carries the shared `CopyButton`, and `AddressRef` takes `copyable` for
+the two callers that already render their own (`Governance`'s `AddrLink` with `withCopy`, the
+predicted-clone block in `Issuers`) - one value must have exactly one copy affordance, not two.
+
+**`ChainValue`'s inert branch keys its treatment on `reason`, and that condition is the whole point.**
+That branch renders TWO different things. An ordinary identifier that simply has no explorer page - a
+credential root, a record-type key, a purpose key, a `dogTagId`, a nullifier - is fine and stays plain.
+A value we tried to resolve and could not is the same claim `TxRef` makes about an unusable hash, so it
+gets the same struck-through amber.
+Striking through every unlinked `ChainValue` would mark every ordinary identifier in the details column
+as broken, which is a worse regression than the invisible state it would fix - so the treatment must
+never key on the absence of `href`.
+Only `Activity.tsx` passes a `reason` today (from `addressChainRef(ev.contract)`); the government
+Oversight, vet Traceability and groomer tag-discovery consumers pass none and are unaffected.
+
 **The positive side still claims SHAPE only.**
 `MemChain` mints `0x{:064x}`, a well-formed hash for a transaction that was never broadcast, so it reads
 as chain-addressable - correct by design, and why the badge says "chain-addressable" and never "exists".
 Do not add simulated-transaction detection here.
+
+### KNOWN OUTSTANDING: the shared `packages/ui/src/domain` panels are NOT migrated
+
+The rule above is satisfied on the ADMIN portal only. The five shared components below serve the VET,
+GROOMER and OWNER portals and still emit their explorer anchors unconditionally, so the same defect is
+live on those surfaces. Verified present at this branch's head; a reader must not conclude from the
+section above that every portal is done.
+
+- `packages/ui/src/domain/StatusPanel.tsx:63`
+- `packages/ui/src/domain/StatusPanel.tsx:118`
+- `packages/ui/src/domain/VerifyFlow.tsx:228`
+- `packages/ui/src/domain/IssuanceStatusPanel.tsx:121`
+- `packages/ui/src/domain/CredentialVerifyPanel.tsx:203`
+- `packages/ui/src/domain/VerificationHistoryPanel.tsx:44`
+
+**`StatusPanel.tsx:63` is the worst of the six and deserves naming on its own**, because it is not an
+oversight that a guard was forgotten - it is `href={address ? explorerAddressUrl(address) : "#"}`, an
+anchor whose fallback goes deliberately NOWHERE. An anchor that goes nowhere is worse than no anchor:
+it is a link the operator can click, which reloads the page and tells them nothing, while its presence
+reads as evidence that there is something on chain to look at. That is precisely the defect this whole
+section is about, already written down and shipped as an intended fallback.
+
+Deliberately out of scope here (this change is the admin portal's migration) and queued separately. Fix
+them the same way - through `addressChainRef`/`txChainRef` and the shared `TxRef`/`ChainValue` - never
+by hiding the value when it cannot be linked, which is the same defect reached by omission.
 
 ### The admin portal now has a unit suite, and registering it took TWO separate edits
 
@@ -4852,3 +4905,12 @@ and the unconditional approval-tx anchor (2 red).
 One of those four silently FAILED to apply on the first attempt because the replacement string no longer
 matched the source, and the suite stayed green - which reads identically to an unpinned claim.
 Assert the old text is present before replacing it; check the scrutinee, not just the diff.
+
+**Five more, for the two affordances above** (`packages/ui/test/chainValueInert.test.ts`,
+`stacks/admin/web/test/addressRefCopy.test.tsx`), each likewise reddening its own named test: the
+`ChainValue` treatment reverted to always-plain (2 red) and pushed to always-struck-through (2 red) -
+BOTH directions, because a suite that only asserted the struck case would pass with the over-broad
+version that marks every ordinary identifier as broken; the inert copy button removed (2 red, one of
+them the page-level pin in `whitelistChainRefs.test.tsx`); the `copyable` opt-out ignored (1 red); and
+the copy button wired to the TRUNCATED form rather than the address (1 red), which is what keeps that
+case about the VALUE handed over rather than merely about a button existing.

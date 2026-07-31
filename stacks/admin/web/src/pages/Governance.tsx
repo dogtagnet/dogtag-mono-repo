@@ -631,15 +631,16 @@ function RunbookStep({ icon, text }: { icon: React.ReactNode; text: string }) {
  *
  * The external-link icon is part of that claim, so it appears only alongside a real link - an icon
  * promising "this opens the explorer" next to an inert value would reinstate the very impression the
- * withheld link removes. The copy button stays on every state: an address that cannot be looked up is
- * exactly the one an operator needs to paste somewhere and investigate.
+ * withheld link removes. An address that cannot be looked up is exactly the one an operator needs to
+ * paste somewhere and investigate, so it always carries a copy affordance - this row's own when
+ * `withCopy` is set, otherwise `AddressRef`'s. Never both: one value with two copy buttons.
  */
 function AddrLink({ addr, withCopy }: { addr: string; withCopy?: boolean }) {
   const { href } = addressChainRef(addr);
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className="inline-flex items-center gap-1">
-        <AddressRef address={addr} testId="governance-address" />
+        <AddressRef address={addr} copyable={!withCopy} testId="governance-address" />
         {href && <ExternalLink className="h-3 w-3 text-primary" aria-hidden />}
       </span>
       {withCopy && (
