@@ -66,28 +66,37 @@ describe("every scenario declares a complete, self-consistent expectation", () =
     }
   });
 
-  it("declares a divergence for exactly the cases whose real outcome contradicts the brief", () => {
-    // The catalogue's honesty rule, made mechanical: a scenario that MUST verify but whose expectation
-    // carries a gating failure has to say so out loud. Without this, softening the finding to a
-    // comment - or deleting it - passes silently.
+  it("keeps `expected` as the CORRECT answer - a scenario that must verify never expects a refusal", () => {
+    // The catalogue's honesty rule, made mechanical. An expectation edited down to whatever the
+    // implementation prints is a test that certifies the bug, so where the code is wrong the
+    // expectation stays right and the gap goes in `knownDefect`.
     for (const s of BENCH_SCENARIOS) {
-      const gatingFailures = (Object.entries(s.expected) as Array<[BenchCheckId, CheckOutcome]>)
+      if (!s.mustVerify) continue;
+      const refusals = (Object.entries(s.expected) as Array<[BenchCheckId, CheckOutcome]>)
         .filter(([, o]) => o === "fail")
         .map(([id]) => id);
-      if (s.mustVerify && gatingFailures.length > 0) {
-        expect(
-          s.divergence,
-          `${s.id} must verify but expects ${gatingFailures.join(", ")} to fail, with no divergence stated`,
-        ).toBeTruthy();
-      }
-      if (!s.mustVerify && s.divergence === undefined) {
-        // Nothing to assert - the ordinary case.
-      }
+      expect(
+        refusals,
+        `${s.id} must verify, so its EXPECTATION may not carry a failure - record the defect in knownDefect instead`,
+      ).toEqual([]);
+      expect(s.expectedVerdict, `${s.id} must verify, so its expected verdict is true`).toBe(true);
     }
-    // ...and the rule is not vacuous: exactly one scenario is in that state today.
-    expect(BENCH_SCENARIOS.filter((s) => s.divergence).map((s) => s.id)).toEqual([
+  });
+
+  it("declares a known defect for exactly the case the implementation gets wrong", () => {
+    expect(BENCH_SCENARIOS.filter((s) => s.knownDefect).map((s) => s.id)).toEqual([
       "signer-delisted-after-issuance",
     ]);
+    for (const s of BENCH_SCENARIOS) {
+      if (!s.knownDefect) continue;
+      // A defect that does not actually differ from the expectation is not a defect - it is a stale
+      // field that would keep reporting a fixed bug forever.
+      expect(
+        s.knownDefect.observed,
+        `${s.id} declares a defect identical to its expectation`,
+      ).not.toEqual(s.expected);
+      expect(s.knownDefect.statement.length).toBeGreaterThan(80);
+    }
   });
 });
 
@@ -95,7 +104,23 @@ describe("every scenario's run matches its declared expectation, row for row", (
   for (const s of BENCH_SCENARIOS) {
     it(`${s.id}: ${s.title}`, async () => {
       const r = await runBenchScenario(s);
+      if (s.knownDefect) {
+        // A DOCUMENTED DEFECT. Both halves are asserted: what the code does today (so a change is
+        // noticed) AND that it still differs from the correct answer (so the day it is fixed this
+        // goes red and whoever fixed it must delete the field, rather than the finding evaporating).
+        expect(
+          outcomes(r),
+          `${s.id}: the documented defect no longer reproduces. If the verifier was fixed, DELETE knownDefect and let the expectation stand.`,
+        ).toEqual(s.knownDefect.observed);
+        expect(r.verdict).toBe(s.knownDefect.observedVerdict);
+        expect(
+          outcomes(r),
+          `${s.id}: observed behaviour now matches the correct expectation - the defect is fixed, so remove knownDefect`,
+        ).not.toEqual(s.expected);
+        return;
+      }
       expect(outcomes(r), `${s.id} diverged from its declared vector`).toEqual(s.expected);
+      expect(r.verdict, `${s.id} verdict`).toBe(s.expectedVerdict);
       // The named refusing checks are asserted individually too, so a vector that drifts wholesale
       // cannot take the scenario's whole point with it silently.
       for (const id of s.refusedBy) expect(outcome(r, id), `${s.id} expected ${id} to refuse`).toBe("fail");
@@ -161,7 +186,16 @@ describe("a relabelled record type is refused by the whitelist pillar", () => {
 
 // ── the delisting pair: forward-only, and what the verifier actually does about it ───────────────
 
-describe("delisting BEFORE the issuance block", () => {
+describe("delisting BEFORE the issuance block - MUST be refused", () => {
+  it("is refused, and the scenario declares that refusal as the CORRECT outcome", async () => {
+    // Direction one of the pair, asserted as a requirement rather than an observation.
+    expect(signerDelistedBeforeIssuance.mustVerify).toBe(false);
+    expect(signerDelistedBeforeIssuance.expectedVerdict).toBe(false);
+    expect(signerDelistedBeforeIssuance.knownDefect).toBeUndefined();
+    const r = await runBenchScenario(signerDelistedBeforeIssuance);
+    expect(r.verdict).toBe(false);
+  });
+
   it("is refused by both whitelist rows, for two different reasons", async () => {
     const r = await runBenchScenario(signerDelistedBeforeIssuance);
     // The gating row: not authorised NOW.
@@ -188,14 +222,37 @@ describe("delisting AFTER the issuance block - the finding", () => {
     expect(outcome(r, "not-revoked")).toBe("pass");
   });
 
-  it("IS REFUSED ANYWAY, because the mandatory pillar reads current state", async () => {
-    // This assertion is the report, not an endorsement. It pins what the code does today so the
-    // divergence cannot be lost; the scenario's `divergence` field states why it is wrong.
+  it("MUST still verify - the scenario's expectation says so, and is not edited to match the code", async () => {
+    // Direction two of the pair, stated as the REQUIREMENT. This is the assertion the captain's
+    // ruling turns on: delisting is forward-only, so the correct verdict here is `true`.
+    expect(signerDelistedAfterIssuance.mustVerify).toBe(true);
+    expect(signerDelistedAfterIssuance.expectedVerdict).toBe(true);
+    expect(
+      signerDelistedAfterIssuance.expected["issuer-whitelisted"],
+      "the expectation must state the CORRECT outcome, never the observed one",
+    ).toBe("pass");
+  });
+
+  it("DOES NOT - the implementation refuses it, and that gap is the documented defect", async () => {
+    // The report, not an endorsement. It pins what the code does today so the defect cannot be lost,
+    // while the expectation above goes on stating the right answer.
+    const defect = signerDelistedAfterIssuance.knownDefect;
+    expect(defect, "the defect must be declared as data, not only in prose").toBeTruthy();
     const r = await runBenchScenario(signerDelistedAfterIssuance);
     expect(outcome(r, "issuer-whitelisted")).toBe("fail");
     expect(r.verdict, "a genuine credential is rendered as a forgery by a key rotation").toBe(false);
-    expect(signerDelistedAfterIssuance.mustVerify).toBe(true);
-    expect(signerDelistedAfterIssuance.divergence).toContain("NOT CAUGHT AS SPECIFIED");
+    expect(r.verdict).not.toBe(signerDelistedAfterIssuance.expectedVerdict);
+    expect(defect?.observedVerdict).toBe(false);
+  });
+
+  it("states the contradicted ruling by name, with its source in the contract", async () => {
+    // The defect statement is what a reviewer reads first. It has to name the rule it contradicts and
+    // where that rule is written down, or the finding degrades into "a test is red for some reason".
+    const statement = signerDelistedAfterIssuance.knownDefect?.statement ?? "";
+    expect(statement).toContain("FORWARD-ONLY");
+    expect(statement).toContain("DogTagIssuer.sol:82");
+    expect(statement).toContain("adminRevoke");
+    expect(statement).toContain("correct verdict is `true`");
   });
 
   it("renders the contradiction legibly: one row gates and fails, the other is advisory and passes", async () => {
@@ -344,13 +401,19 @@ describe("the genuine control", () => {
     ]);
   });
 
-  it("is refused by exactly ONE thing when each fraud is applied - the catalogue is discriminating", async () => {
+  it("trips a BOUNDED set of checks per fraud - the catalogue is discriminating", async () => {
     // A verifier that refused everything would pass every fraud case above. This asserts the opposite
-    // shape: from the same honest baseline, each scenario's declared vector differs from the control's
-    // in a bounded way rather than collapsing wholesale.
+    // shape: from the same honest baseline, each FRAUD's declared vector differs from the control's in
+    // a bounded way rather than collapsing wholesale.
+    //
+    // `mustVerify` scenarios are excluded because their records are GENUINE - matching the control is
+    // the correct answer for them, not a gap. That exclusion is not a loophole: their own cases assert
+    // the required verdict directly, and `delisted-after`'s real (defective) behaviour is checked below.
     const control = outcomes(await runBenchScenario(genuineCredential));
+    let frauds = 0;
     for (const s of BENCH_SCENARIOS) {
-      if (s.id === genuineCredential.id || s.id === wrongChainEndpoint.id) continue;
+      if (s.mustVerify || s.id === wrongChainEndpoint.id) continue;
+      frauds++;
       const differing = (Object.keys(control) as BenchCheckId[]).filter(
         (id) => control[id] !== s.expected[id],
       );
@@ -359,6 +422,17 @@ describe("the genuine control", () => {
         Object.keys(control).length,
       );
     }
+    expect(frauds, "no fraud scenarios were actually examined").toBeGreaterThan(4);
+  });
+
+  it("distinguishes the delisted-after DEFECT from the control, even though the record is genuine", async () => {
+    // The complement of the exclusion above. `delisted-after` SHOULD be indistinguishable from the
+    // control - both are genuine credentials - and the fact that it is not, in the run, is the defect.
+    const control = await runBenchScenario(genuineCredential);
+    const defective = await runBenchScenario(signerDelistedAfterIssuance);
+    expect(signerDelistedAfterIssuance.expected).toEqual(outcomes(control));
+    expect(outcomes(defective)).not.toEqual(outcomes(control));
+    expect(defective.verdict).not.toBe(control.verdict);
   });
 });
 
@@ -380,6 +454,22 @@ describe("the catalogue is hermetic and evidence-backed", () => {
       globalThis.fetch = original;
     }
     expect(calls, "a scenario reached the network").toBe(0);
+  });
+
+  it("is DETERMINISTIC - the same scenario twice gives byte-identical outcomes", async () => {
+    // What licenses the page leaving a scenario's result on screen while others are re-run: a
+    // scenario's world is fixed and network-free, so a result from an earlier click is not stale, it
+    // is identical to what a fresh click would produce. Without this the page would be showing
+    // answers whose provenance nobody could state.
+    for (const s of BENCH_SCENARIOS) {
+      const a = await runBenchScenario(s);
+      const b = await runBenchScenario(s);
+      expect(outcomes(b), `${s.id} is not deterministic`).toEqual(outcomes(a));
+      expect(b.verdict).toBe(a.verdict);
+      expect(b.reads.map((r) => `${r.method}|${r.contract}|${r.outcome}|${r.value ?? ""}`)).toEqual(
+        a.reads.map((r) => `${r.method}|${r.contract}|${r.outcome}|${r.value ?? ""}`),
+      );
+    }
   });
 
   it("cites no contract that is absent from its own recorded reads", async () => {
@@ -423,7 +513,11 @@ describe("the catalogue is hermetic and evidence-backed", () => {
 describe("the catalogue covers every fraud the brief names", () => {
   const required: Array<[string, BenchScenario]> = [
     ["a tampered field that breaks the Merkle proof", tamperedCoveredField],
-    ["a record whose issuer was never whitelisted for it", relabelledRecordType],
+    // Stated precisely rather than as the brief's flat "never whitelisted": for a factory-resolved
+    // root the flat case is UNREACHABLE (`issue()` is `onlyWhitelisted` and writes `issuedBy[r]` in
+    // the same call, and `rootIssuer[r]` is write-once and writable only from inside a clone's
+    // `issue()`), so scripting it would be testing a state the protocol cannot produce.
+    ["a record whose issuer was never whitelisted FOR THE TYPE IT CLAIMS", relabelledRecordType],
     ["a signer delisted BEFORE the issuance block (must be refused)", signerDelistedBeforeIssuance],
     ["a signer delisted AFTER the issuance block (must still verify)", signerDelistedAfterIssuance],
     ["a revoked credential presented as live", revokedPresentedAsLive],

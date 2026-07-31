@@ -44,11 +44,15 @@ import {
  *
  * # What a scenario may NOT do
  *
- * It may not adjust its expectation to whatever the code currently prints. Where the bench's real
- * behaviour diverges from what the protocol says should happen, the scenario states the divergence in
- * {@link BenchScenario.divergence} and the expectation records the CURRENT behaviour so the suite
- * stays green and honest at once - see {@link signerDelistedAfterIssuance}, which is the one place
- * that fires today.
+ * IT MAY NOT ADJUST ITS EXPECTATION TO WHATEVER THE CODE CURRENTLY PRINTS. An expectation edited down
+ * to match the implementation is a test that certifies the bug - the single failure mode that would
+ * make this whole catalogue worthless, because it converts every future regression into a green tick.
+ *
+ * So where the implementation is wrong, {@link BenchScenario.expected} goes on stating the CORRECT
+ * answer and the gap is recorded in {@link BenchScenario.knownDefect}, which pins today's behaviour
+ * separately. The suite asserts BOTH, plus that the two still differ - so the day the defect is fixed
+ * the scenario goes red and whoever fixed it must delete the field, rather than the finding quietly
+ * evaporating. {@link signerDelistedAfterIssuance} is the one place that fires today.
  */
 
 // ── the scripted world ──────────────────────────────────────────────────────────────────────────
@@ -267,16 +271,34 @@ export interface BenchScenario {
   refusedBy: BenchCheckId[];
   /** Checks that legitimately do not object, each with the reason. Half the content. */
   blindSpots: ScenarioBlindSpot[];
-  /**
-   * Set when the bench's ACTUAL behaviour contradicts what the protocol says should happen. The
-   * expectation below then records what the code really does, so the suite is green AND honest; this
-   * field is the finding, and deleting it to make the scenario read cleanly would be the fraud.
-   */
-  divergence?: string;
   /** Anything a reader needs in order not to over-read the result. */
   notes?: string;
-  /** The expected outcome of EVERY check. Partial vectors are how "refused for the wrong reason" hides. */
+  /**
+   * What SHOULD happen, per the protocol - for every check, never a partial vector.
+   *
+   * This is the CORRECT answer and stays correct even where the code disagrees. An expectation edited
+   * down to whatever the implementation currently prints is a test that certifies the bug, so where
+   * the two differ the gap is recorded in {@link knownDefect} and this field is left alone.
+   */
   expected: Record<BenchCheckId, CheckOutcome>;
+  /** The verdict the protocol requires. `null` means the verifier should produce none at all. */
+  expectedVerdict: boolean | null;
+  /**
+   * A DOCUMENTED DEFECT: the code does not do what {@link expected} says it should.
+   *
+   * Present only where the implementation is wrong. It pins the current behaviour so a change is
+   * noticed, WITHOUT moving the expectation - the suite asserts both, and additionally asserts that
+   * the two still differ, so the day the defect is fixed this scenario goes red and whoever fixed it
+   * must delete the field rather than the finding quietly evaporating.
+   */
+  knownDefect?: {
+    /** What the bench actually produces today, for every check. */
+    observed: Record<BenchCheckId, CheckOutcome>;
+    /** The verdict it actually produces today. */
+    observedVerdict: boolean | null;
+    /** Why the correct answer is the correct one, with its source. Rendered in the UI in full. */
+    statement: string;
+  };
   build(): ScenarioWorld;
 }
 
@@ -357,6 +379,7 @@ export const tamperedCoveredField: BenchScenario = {
     },
   ],
   expected: expect({ integrity: "fail" }),
+  expectedVerdict: false,
   build() {
     const doc = genuineDoc();
     const script = honestChain(doc.signature.merkleRoot);
@@ -399,6 +422,7 @@ export const hostileIssuerContract: BenchScenario = {
   notes:
     "No read is ever made against the attacker's address, so no evidence line may cite it - the report's `reads` log is the proof of that.",
   expected: expect({ ...NO_CLONE }),
+  expectedVerdict: false,
   build() {
     const doc = genuineDoc({ ...ISSUER, documentStore: HOSTILE });
     const root = doc.signature.merkleRoot;
@@ -443,8 +467,9 @@ export const relabelledRecordType: BenchScenario = {
     },
   ],
   notes:
-    "The whitelist row's refusal here is not 'this signer is unauthorised' but 'the envelope misrepresents the record type'. Both land on the same row, which is why the row's finding names both possibilities rather than asserting one.",
+    "The whitelist row's refusal here is not 'this signer is unauthorised' but 'the envelope misrepresents the record type'. Both land on the same row, which is why the row's finding names both possibilities rather than asserting one. Read the scenario precisely: it is 'not whitelisted FOR THE TYPE CLAIMED', not the flat 'never whitelisted'. The flat case is UNREACHABLE for a factory-resolved root - `issue()` is `onlyWhitelisted` and writes `issuedBy[r]` in the same call, and `rootIssuer[r]` is write-once and writable only from inside a clone's `issue()` - so a root the factory names was necessarily anchored by a then-authorised signer. Presenting a scripted chain in which it is not would be testing a state the protocol cannot produce.",
   expected: expect({ "issuer-whitelisted": "fail", "whitelisted-at-issuance": "could-not-run" }),
+  expectedVerdict: false,
   build() {
     const doc = genuineDoc({ ...ISSUER, recordType: OTHER_RECORD_TYPE });
     return world(asRecord(doc), honestChain(doc.signature.merkleRoot));
@@ -476,6 +501,7 @@ export const signerDelistedBeforeIssuance: BenchScenario = {
     },
   ],
   expected: expect({ "issuer-whitelisted": "fail", "whitelisted-at-issuance": "fail" }),
+  expectedVerdict: false,
   build() {
     const doc = genuineDoc();
     const root = doc.signature.merkleRoot;
@@ -494,21 +520,23 @@ export const signerDelistedBeforeIssuance: BenchScenario = {
 };
 
 /**
- * THE DIVERGENCE. The signer was authorised when it anchored this root, and was delisted afterwards.
+ * THE DEFECT. The signer was authorised when it anchored this root, and was delisted afterwards.
  *
- * The protocol says this credential is genuine and must still verify. `DogTagIssuer.sol:82` states the
+ * The protocol says this credential is genuine and MUST STILL VERIFY. `DogTagIssuer.sol:82` states the
  * rule in the contract's own words - "delisting is forward-only" - and `adminRevoke` exists precisely
  * because a delist does NOT retroactively invalidate what a signer already anchored. The write path
  * guarantees the historical fact independently: `issue()` is `onlyWhitelisted`, sets `issuedBy[r] =
  * msg.sender` in the same call, and `rootIssuer[r]` is write-once and writable only from inside a
- * clone's `issue()`.
+ * clone's `issue()`. A consequence worth stating, since it bounds the blast radius in the safe
+ * direction: a current-state whitelist read therefore cannot produce a false PASS on a
+ * factory-resolved root - only false negatives.
  *
  * The verifier refuses it anyway, because its mandatory pillar reads `isWhitelistedFor` - a
  * CURRENT-state getter - and a `delistFor` flips it. So an ordinary key rotation, a retiring vet or a
  * revoked practice licence renders every credential that signer ever issued as a forgery, fleet-wide.
  *
- * `expected` records what the code ACTUALLY does. The suite is green because it pins reality; this
- * comment and {@link BenchScenario.divergence} are the report.
+ * `expected` states the CORRECT answer (verdict `true`) and is deliberately NOT edited to match the
+ * code; {@link BenchScenario.knownDefect} pins what the implementation really does. Both are asserted.
  */
 export const signerDelistedAfterIssuance: BenchScenario = {
   id: "signer-delisted-after-issuance",
@@ -518,11 +546,19 @@ export const signerDelistedAfterIssuance: BenchScenario = {
   mustVerify: true,
   refusedBy: [],
   blindSpots: [],
-  divergence:
-    "NOT CAUGHT AS SPECIFIED - and it is over-refusal, not a bypass. The protocol says this credential is genuine: `DogTagIssuer.sol:82` states that delisting is forward-only, and `adminRevoke` is the retroactive lever, which was not used on this root. The bench's `whitelisted-at-issuance` row reads the registry's LOGS and correctly reports the signer as authorised at the anchoring block. But the verifier's mandatory `issuer-whitelisted` pillar reads `isWhitelistedFor`, which answers only about NOW, so it returns `false` and the verdict is refused. Every credential a delisted signer ever issued is rendered as a forgery - fleet-wide, on an ordinary key rotation. Not changed here: that pillar's verdict is shared by five surfaces the repo requires to agree (packages/ui, government-api, vet-api, dogtag-standard-rs, both mobile importers), so moving the formula in one of them is a product decision, not a bench fix.",
   notes:
     "This is the scenario that shows why the two whitelist rows must be separate. `issuer-whitelisted: fail (gating)` sitting beside `whitelisted-at-issuance: pass (advisory)` is precisely legible - the refusal is about the signer's status today, not about whether the credential is real.",
-  expected: expect({ "issuer-whitelisted": "fail" }),
+  // The CORRECT vector: nothing is wrong with this credential, so every check that can run passes and
+  // the verdict is `true`. This is NOT what the code produces - see `knownDefect` below - and it is
+  // deliberately left stating the right answer rather than the observed one.
+  expected: expect({}),
+  expectedVerdict: true,
+  knownDefect: {
+    observed: expect({ "issuer-whitelisted": "fail" }),
+    observedVerdict: false,
+    statement:
+      "DEFECT - the verifier refuses a genuine credential, contradicting the standing ruling that delisting is FORWARD-ONLY. `DogTagIssuer.sol:82` states the rule in the contract's own source, and `adminRevoke` exists as the retroactive lever precisely because `delistFor` is not one; it was not used on this root. The correct verdict is `true`. What happens instead: the mandatory `issuer-whitelisted` pillar reads `isWhitelistedFor`, a CURRENT-state getter, so a later `delistFor` flips it to `false` and the credential is refused. The bench's own `whitelisted-at-issuance` row reads the registry's LOGS and correctly reports the signer as authorised at the anchoring block, which is what makes the contradiction visible on the page. Consequence: an ordinary key rotation, a retirement or a lapsed licence renders every credential that signer ever issued as a forgery, fleet-wide. Not fixed in this change: that verdict formula is shared by five surfaces the repo requires to agree (packages/ui, government-api, vet-api, dogtag-standard-rs, both mobile importers), so moving it is its own change.",
+  },
   build() {
     const doc = genuineDoc();
     const root = doc.signature.merkleRoot;
@@ -568,6 +604,7 @@ export const revokedPresentedAsLive: BenchScenario = {
     },
   ],
   expected: expect({ "not-revoked": "fail" }),
+  expectedVerdict: false,
   build() {
     const doc = genuineDoc();
     const root = doc.signature.merkleRoot;
@@ -616,6 +653,10 @@ export const foreignRegistry: BenchScenario = {
   notes:
     "The verdict stays `true` here, because the row is advisory by design. That is the honest outcome: the bench cannot know whether the credential is good, only that the answer it was given is void - and it says so rather than converting our own misconfiguration into an accusation.",
   expected: expect({ "registry-governs-issuer": "fail" }),
+  // The credential itself is fine and the row that objects is ADVISORY, so the verifier's verdict
+  // correctly stays `true`. Refusing it would convert this client's own misconfiguration into an
+  // accusation about a credential.
+  expectedVerdict: true,
   build() {
     const doc = genuineDoc();
     const root = doc.signature.merkleRoot;
@@ -658,6 +699,7 @@ export const unanchoredSelfConsistentForgery: BenchScenario = {
   notes:
     "This report is INDISTINGUISHABLE from what a genuine credential anchored under a superseded contract generation produces - both resolve `rootIssuer` to the zero address. The bench cannot tell them apart, and the anchor row's wording ('no contract it deployed ever issued this credential') is literally true of THIS factory in both cases. Recorded rather than papered over; the repo's own note on `rootIssuer` anchoring says retiring the previous generation is intended behaviour and must not be diagnosed as a bug.",
   expected: expect({ ...NO_CLONE }),
+  expectedVerdict: false,
   build() {
     const doc = genuineDoc();
     // An honest chain for a DIFFERENT root: the factory is live and answering, it simply has no record
@@ -700,6 +742,7 @@ export const batchInclusionProof: BenchScenario = {
   notes:
     "The permissive fold this refuses is the DSDP C1 hazard: `processProof` authenticates nothing about the leaf it starts from, so presenting an internal node as a disclosed leaf would fold to the same root.",
   expected: expect({ integrity: "fail" }),
+  expectedVerdict: false,
   build() {
     const doc = genuineDoc();
     const script = honestChain(doc.signature.merkleRoot);
@@ -751,6 +794,9 @@ export const wrongChainEndpoint: BenchScenario = {
     "anchored-on-chain": "could-not-run",
     "not-revoked": "could-not-run",
   }),
+  // NOT `false`. The verifier fails closed and produces no verdict at all; rendering an absent
+  // verdict as a refusal is the collapse this whole surface exists to prevent.
+  expectedVerdict: null,
   build() {
     const doc = genuineDoc();
     return world(asRecord(doc), {
@@ -772,6 +818,7 @@ export const genuineCredential: BenchScenario = {
   notes:
     "A suite of nothing but frauds would go green against a verifier that refuses everything. This is the case that makes the other results mean something.",
   expected: expect({}),
+  expectedVerdict: true,
   build() {
     const doc = genuineDoc();
     return world(asRecord(doc), honestChain(doc.signature.merkleRoot));
