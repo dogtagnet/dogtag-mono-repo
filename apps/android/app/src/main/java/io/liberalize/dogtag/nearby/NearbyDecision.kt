@@ -477,6 +477,58 @@ object NearbyDecision {
     }
 
     /**
+     * What a Directions offer on an OFFLINE STORED row must say beside itself.
+     *
+     * The captain's 2026-07-30 ruling allowed the handoff on stored rows *and* required that the
+     * stored-not-current labelling stay on them, so the offer is honest. This sentence is that
+     * labelling at the point of the offer: the list-level stored banner scrolls away, and a bare
+     * Directions button on a remembered row would otherwise read as a destination just confirmed with
+     * the service. Pinned by a unit test on each platform and byte-identical to iOS
+     * `NearbyDecision.storedDirectionsNote`, for the same reason [LOCATION_DISCLOSURE] is.
+     */
+    const val STORED_DIRECTIONS_NOTE = "Saved on this phone - this address may be out of date."
+
+    /**
+     * The maps-app handoff for one provider: its PUBLISHED destination, and nothing else.
+     *
+     * This is a handoff, not a map. The owner leaves the app and the map belongs to whichever app
+     * resolves the `ACTION_VIEW` `geo:` intent - the owner's default maps app, or a chooser when no
+     * default is set - so it costs nothing and needs no key. The 2026-07-29 captain decision that
+     * declined an embedded map and a hosted place search kept this affordance as the thing that ships
+     * instead.
+     *
+     * **The origin is never included, and that is the whole privacy property.** The `geo:` scheme has
+     * no source parameter and none is synthesised here: the owner's own position must never reach a URI
+     * handed to another application, which is precisely the disclosure the body-only nearest request
+     * exists to avoid. The destination is public directory data the phone already holds, so handing it
+     * over discloses nothing about the owner - which is why this survives the server-nearest pivot
+     * untouched: that ruling changed WHO RANKS, not whether a row can open a map. A stored (offline)
+     * row may use this too, for the same reason.
+     *
+     * Returns `null` when the provider published no location. Absence is `geo == null` and ONLY that:
+     * `(0, 0)` is a real coordinate off the coast of Ghana, so it is a destination like any other.
+     * Mirrors iOS `NearbyDecision.directionsURL`; keep the two in step by hand.
+     */
+    fun directionsUri(provider: DirectoryProvider): String? {
+        val geo = provider.geo?.takeIf { it.isUsable } ?: return null
+        // The `?q=` term is what makes a maps app drop a MARKER on the destination; a bare
+        // `geo:lat,lng` only centres the map there and leaves the owner to find the place themselves.
+        // The point is therefore emitted twice. The label form `?q=lat,lng(Name)` is deliberately NOT
+        // used: a provider name is operator-entered free text, so it would need a hand-rolled
+        // percent-encoder for `&`, `#` and spaces - a correctness surface with nothing to gain, since
+        // the coordinate `q` value contains only digits, `.`, `,` and `-` and needs no encoder at all.
+        val destination = "${coordinate(geo.lat)},${coordinate(geo.lng)}"
+        return "geo:$destination?q=$destination"
+    }
+
+    /**
+     * Fixed-point and locale-independent. `Double.toString()` would emit `1.0E-5` near the meridian,
+     * which no maps app parses, and the default locale would emit `1,35` in a comma-decimal locale,
+     * silently splitting the coordinate pair in two.
+     */
+    private fun coordinate(value: Double): String = String.format(Locale.ROOT, "%.6f", value)
+
+    /**
      * How old a remembered record set is, in words.
      *
      * Rounds OUTWARD so a replay never reads fresher than it is, and promotes at the ceiling rather

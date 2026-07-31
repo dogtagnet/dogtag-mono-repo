@@ -172,7 +172,8 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   deliberate trade rather than a defect to close.**
   What IS verified locally: the indexer's own end-to-end HTTP behaviour (`cargo test -p indexer-api`,
   plus a real `indexer-api` binary driven over both public routes); the pure decision layers on both
-  platforms, including Android's three `NearbyDecision.storedFallback` cases and the
+  platforms, including the four mirrored `NearbyDecision.storedFallback` / `formatStoredAge` cases on
+  EACH platform and the
   `ProviderRecordCache` cases in `DirectoryCacheTest.kt` / `DirectoryCacheTests.swift`; and, via
   `apps/ios/maestro/nearby_scope_separation.yaml`, the iOS Nearby disclosure copy plus the absence of
   the retired chosen-location/map surfaces.
@@ -187,10 +188,16 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   host override added so a Maestro flow could reach a local instance would weaken that property for
   test convenience, and an override that can ship enabled on the one centralized endpoint is a worse
   risk than an unverified render assertion.
-  Second, narrower half of the same gap: no test in `DogTagTests` references `storedFallback` or
-  `storedProvidersOnly`, so the iOS half of that decision is currently defended by the
-  it-mirrors-Android argument only - the same shape as the pre-`VerdictDisplay` gap recorded under
-  "iOS unit tests", and the thing extraction-plus-tests is the remedy for if it is ever closed.
+  Second, narrower half of the same gap - **now CLOSED, and worth keeping as a worked example.**
+  `storedFallback`, `storedProvidersOnly` and `formatStoredAge` all shipped on iOS with no test in
+  `DogTagTests` referencing any of them, so the iOS half of the offline decision rested on an
+  it-mirrors-Android argument alone - the same shape as the pre-`VerdictDisplay` gap recorded under
+  "iOS unit tests". The tell that this is a real defect class rather than bookkeeping: Android's
+  `theStoredAgeIsCoarseAndNeverUnderstatesStaleness` carried a comment claiming it mirrored an iOS
+  test of that name, and no such test existed. `NearbyDecisionTests` now carries all four cases,
+  including the one that pins WHY the state is separate - routing remembered records through the live
+  `presentation` yields `noNearbyProviders`, i.e. a false absence about providers the phone is
+  holding. What remains open above is only the RENDERED-row half, which needs a real deployment.
 
 ### Sharp edges learned
 - **The parity gate is `circuits/scripts/gen-vectors.mjs`.** It is the source of truth: it computes the circom witness (reference-of-record) and cross-checks `poseidon-lite` (TS) and `circomlibjs`, then writes `circuits/poseidon-vectors.json` which Rust (`sdk_parity.rs`/`poseidon_parity.rs`) asserts. The parity gate is now the union of `make parity` + `test-rs` (the Solidity `PoseidonParity.t.sol` leg was retired with the owner-revealing layer; the owner-hidden `VerificationRegistryConsent` computes no on-chain Poseidon). (`circuits/scripts/check-ts.mjs` was referenced by `package.json` but never existed; it was removed — `gen-vectors.mjs` already covers TS↔circom.)
@@ -435,7 +442,8 @@ It scans the ROAX (chainId 135) contract event logs into a **non-PII** queryable
   - **Nearest is server-side, body-only, EXACT, and paged.** `POST /v1/businesses/nearest` takes `{"lat":number,"lng":number}` - the device's exact fix, NOT rounded (captain's ruling 2026-07-30, superseding an earlier three-decimal approximation). The fields are named `lat`/`lng` rather than `approximateLat`/`approximateLng` precisely because a field named "approximate" carrying a metre-precise value would overstate the privacy the wire format provides. The server validates finiteness and range ONLY: **do not reinstate a precision gate** - with nothing rounding in front of it, it would reject every honest caller. Query parameters remain name/repeatable kind-or-type/limit/offset; there is NO radius. Located matches are ordered by robust Haversine distance with source-order ties, page-selected without sorting the entire match set, and returned with `distanceKm`; contact-only `geo:null` rows cannot enter a nearest page. The position is never in a URL, response, cache key, trace/metric label, log, Mongo row, or audit record, and the response is `Cache-Control: private, no-store`.
   - **The app disclosure is part of the contract.** Immediately beside the action that starts location permission, Android and iOS say: “Your location is sent to DogTag to find nearby vets and groomers. It is not stored.” The word "approximate" was REMOVED from this sentence when the exact-position ruling landed - the copy has to describe what is actually sent, and what protects the position now is confinement (body-only, never logged, never stored), not imprecision. Nearest requests always carry the owner-owned `kind=vet&kind=groomer` restriction, consume the returned distance/order, and page rather than recomputing across a full list.
     **That sentence is a test-pinned constant on BOTH platforms, not a literal in a view** - Kotlin `NearbyDecision.LOCATION_DISCLOSURE` and Swift `NearbyDecision.locationDisclosure`, asserted byte-for-byte by `NearbyDecisionTest.disclosurePlainlyStatesSendPurposeAndRetentionAtTheGrantAction` and `NearbyDecisionTests.test_disclosurePlainlyStatesSendPurposeAndRetentionAtTheGrantAction`. It shipped first as an inline `Text(...)` literal in `NearbyScreen.swift` with no iOS coverage, so the copy could drift on one platform only - the same "the iOS half shipped on a written it-mirrors-Android argument" gap `VerdictDisplay` was extracted to close. Because the server-side nearest search REVERSED the privacy property the earlier slices were built for, a silent softening back toward "never leaves this phone" would be a false claim about a transfer that now really happens, which is why it is pinned rather than reviewed.
-  - **No map or place-search surface.** The chosen-coordinate UI, map/Directions handoff, place autocomplete, place hints, and any third-party geocoder are removed. URL-shaped coordinates (`searchCenter*`, `near`, bare `lat`/`lng`, current-GPS aliases), radius, viewport/bbox/geohash, and unknown parameters are rejected.
+  - **No map or place-search surface.** The chosen-coordinate UI, embedded map, place autocomplete, place hints, and any third-party geocoder are removed. URL-shaped coordinates (`searchCenter*`, `near`, bare `lat`/`lng`, current-GPS aliases), radius, viewport/bbox/geohash, and unknown parameters are rejected.
+    **The Directions HANDOFF is the one thing in that list that came back, and it is not a map.** The server-nearest pivot swept it out together with the chosen-coordinate/map surfaces, but that was collateral rather than a ruling: the 2026-07-29 captain decision had kept it deliberately as the free, key-less alternative to an embedded map, and the 2026-07-30 ruling changed WHO RANKS, not whether a row may open another app. It is restored as `NearbyDecision.directionsURL` / `directionsUri` - pure, mirrored, and in both test targets. Two properties are load-bearing and mutation-pinned on both platforms: the URI carries the provider's PUBLIC destination and never the owner's origin (iOS must never emit Apple Maps' `saddr`), and a provider with no published location offers nothing rather than a fabricated destination - where absence is `geo == null` and ONLY that, since `(0,0)` is a real coordinate. It renders on **nearby rows AND on offline stored rows** - the captain ruled on 2026-07-30 that an owner with no signal is exactly who most needs directions, that the cached coordinate is part of the saved provider RECORD rather than a derivative of the owner's position (so it is nothing the cache was forbidden to hold), and that a handoff to another app does not break the no-embedded-map promise. The condition attached to that ruling is that the stored-not-current labelling stays ON those rows, so the stored variant carries `NearbyDecision.storedDirectionsNote` / `STORED_DIRECTIONS_NOTE` beside the button - the list-level stored banner scrolls away, and a bare Directions button on a remembered row would read as a destination just confirmed with the service. That note is test-pinned byte-for-byte on both platforms, exactly like the location disclosure, and **one flag (`storedRecord`) turns on both the offer and its label** so the affordance cannot appear without the sentence that qualifies it. It is still absent from the live Provider contacts SEARCH scope, which shares the same row component: that list's own copy promises it "sends no position and shows no map", and the ruling was about the offline case rather than that promise; `apps/ios/maestro/nearby_scope_separation.yaml` pins that separation from both sides.
   - **Request logging audit (2026-07-29).** `indexer-api` installs `tracing_subscriber::fmt` but no HTTP access/request `TraceLayer`, request-id/audit middleware, metrics exporter, or request store. Its explicit logs cover startup/config, scanner/store failures, and directory refresh/failure/counts; none include an incoming URI, query, headers, body, IP, or position. Mongo has only `events` and `cursor`. The unused `tower-http` `trace` feature was removed because its default HTTP span would record the URI. At dependency TRACE, Axum may emit peer IP/connection timing but no current level logs incoming URI/query/path/header/body; external ingress logging is outside this repo and must independently obey the no-position-log deployment rule.
   - **Scale:** the prior ~100 compressed bytes/provider budget reached 5,000,000 bytes (4.77 MiB) at 50,000 providers and ~10 MB at 100,000, plus an O(n) phone scan. Paging removes both. `Directory` now stores an atomically swapped `Arc<Vec<BusinessRow>>`, so a request does not clone hundreds of thousands of rows before scanning.
 - **Directory naming join (`src/directory.rs`).** Two layers: operator-authoritative static seeds (`INDEXER_DIRECTORY` JSON `{addr:name}`), and optional admin-API enrichment (`ADMIN_API_BASE`/`ADMIN_API_TOKEN`) that periodically reads the admin `/v1/businesses` (public) + `/v1/issuer-applications` (admin-token) and joins signer addresses → business names on the shared `domain`. Reads **business identity only — never any role's PII Mongo**. Each admin request has a 10-second total timeout. A failed/invalid business read preserves both prior snapshots; after a successful business read, a failed applications read preserves the prior name map while the provider snapshot may advance.
@@ -3667,8 +3675,13 @@ and the phone does not rescan or remeasure the directory.
   nearby vets and groomers. It is not stored.” Do not restore any “never leaves this phone” copy, and do
   not reinsert “approximate” - the copy must describe what is actually sent. It is a test-pinned
   constant on both platforms (see the disclosure note in the indexer section above).
-- There is no chosen-coordinate/location-search UI, radius, map, Directions handoff, autocomplete,
+- There is no chosen-coordinate/location-search UI, radius, map, autocomplete,
   place hint, remote geocoder, viewport, bbox, region, or geohash surface. Results are a list.
+  **The Directions HANDOFF is NOT in that list - it exists, on nearby rows and on offline stored
+  rows.** It is a handoff to another app rather than a map, it carries the provider's public
+  destination and never the owner's origin, and the stored variant is labelled stored-not-current;
+  the live Provider contacts SEARCH scope still does not offer it. Full rules in "No map or
+  place-search surface" above - do not read this bullet as licence to remove the affordance again.
 - **The offline cache stores provider RECORDS, never the ranking** (captain's ruling 2026-07-30: "its
   purpose is only for UX, so that some cache results can be shown when the device is offline, keep the
   cache data to minimal, and minimal usage"). It is a fallback that stops the screen being blank, not a
@@ -3732,9 +3745,12 @@ Full decision record: `docs/MAP_RESEARCH.md`.
 An embedded map, a hosted place-search field and any paid location vendor were **declined** so that nothing
 has to be paid for, and this entry exists so the absence is not read as a gap to fill.
 What ships instead is what the sections here describe: on-device provider-name search, the `vet`/`groomer`
-kind filter, on-device distance, and a Directions handoff that leaves the app. iOS opens Apple Maps
-(`MKMapItem.openInMaps`); Android fires an `ACTION_VIEW` `geo:` chooser, so it reaches whichever installed
-app the owner picks, which need not be the OS's own maps app.
+kind filter, server-computed distance and ranking (the 2026-07-30 ruling moved both off the device), and a
+Directions handoff that leaves the app. iOS opens an `https://maps.apple.com/?daddr=` URL through
+SwiftUI's `openURL`; Android fires a bare `ACTION_VIEW` `geo:lat,lng?q=lat,lng` intent through the same
+`openExternal` helper every other contact channel uses, so it reaches the owner's default maps app - or a
+chooser when no default is set - and the `q=` term is what makes that app drop a marker rather than merely
+centre the map.
 Either way the map is another app's, it costs nothing, and it needs no key.
 
 Four things in that record are the reason not to re-run the survey.
@@ -3818,7 +3834,9 @@ seam is where that contract's `pinPage`/`listingPage` would be consumed.
 
 The following subsection records the prior implementation and its failure modes. It does **not** govern
 the current native path described above; specifically, the no-argument read, universal cache,
-chosen-coordinate UI, local distance/radius/sort, and Directions handoff have all been retired.
+chosen-coordinate UI, and local distance/radius/sort have all been retired. The Directions handoff was
+swept out with them and then RESTORED - it ships today on nearby and on offline stored rows, so read
+every Directions sentence below as history rather than as the current rule.
 
 The native holder apps consume the directory through a native mirror of the same no-argument
 `ProviderDirectory` contract. `@dogtag/ui` is TypeScript source-only and neither app embeds a JavaScript
@@ -4138,7 +4156,9 @@ four siblings apply, not fussiness. Android passes `onOpen(uri, false)` like eve
   `providerPosition` (`packages/ui/src/directory/providers.ts`), which re-checks validity rather than
   trusting the field. The current indexer nearest route excludes it before measuring, while paged
   name/contact search keeps it. The retired local sorter already treated it as `distanceKm: null`; do
-  not revive its old Directions gate now that the product has no map handoff.
+  not revive its old Directions gate, which keyed on a LOCALLY COMPUTED distance. The handoff itself
+  is back (see "No map or place-search surface" above), but it gates on the row's own published
+  `geo` being present and valid - never on a distance, which a stored or contact row does not have.
 - **THE HONEST PART: rows already at exactly `0,0` cannot be reinterpreted by code, ever.** `0,0` is both
   a legal coordinate and the value every blank location used to become, so nothing can distinguish a
   provider genuinely in the Gulf of Guinea from one with no address - and a guess would either plant a

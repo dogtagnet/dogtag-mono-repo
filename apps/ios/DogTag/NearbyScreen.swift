@@ -458,9 +458,13 @@ struct NearbyScreen: View {
                 tone: c.warning
             )
             // The contact row deliberately: it renders identity and contacts and makes no proximity
-            // claim, which is exactly what a remembered record can support.
+            // claim, which is exactly what a remembered record can support. It DOES offer Directions
+            // here (captain's ruling, 2026-07-30) - an owner with no signal is exactly who needs it,
+            // and the coordinate is part of the saved provider record rather than anything derived
+            // from the owner's position. `storedRecord` also carries the row's own
+            // stored-not-current note, so the offer stays honest.
             ForEach(providers.map { ContactRowEntry(provider: $0) }) { entry in
-                providerContactRow(entry.provider)
+                providerContactRow(entry.provider, storedRecord: true)
             }
         case .directoryEmpty:
             NearbyMessageCard(
@@ -616,13 +620,23 @@ struct NearbyScreen: View {
                 state: row.provider.bindingState,
                 domain: row.provider.domain ?? ""
             ))
+            providerDirectionsAction(row.provider)
             providerContactActions(row.provider)
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
     }
 
-    private func providerContactRow(_ provider: DirectoryProvider) -> some View {
+    /// The scope-neutral row: identity and contacts, and no proximity claim.
+    ///
+    /// `storedRecord` says this row came off the device's own saved copy rather than a live read. It
+    /// is what turns the Directions handoff on, and it is deliberately ONE flag doing both jobs - the
+    /// offer and its stored-not-current labelling arrive together, so the affordance cannot appear
+    /// without the sentence that qualifies it.
+    private func providerContactRow(
+        _ provider: DirectoryProvider,
+        storedRecord: Bool = false
+    ) -> some View {
         VStack(alignment: .leading, spacing: 11) {
             providerHeader(provider)
             providerServices(provider)
@@ -631,10 +645,66 @@ struct NearbyScreen: View {
                 domain: provider.domain ?? ""
             ))
 
+            if storedRecord {
+                providerDirectionsAction(provider, storedRecord: true)
+            }
             providerContactActions(provider)
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
+    }
+
+    /// Hands this provider's published destination to the OS maps app.
+    ///
+    /// Offered on nearby rows and on OFFLINE STORED rows (captain's ruling, 2026-07-30: an owner with
+    /// no signal is exactly who most needs directions, the cached coordinate is part of the provider
+    /// record rather than anything derived from the owner's position, and a handoff to another app
+    /// does not break the no-embedded-map promise).
+    ///
+    /// It is deliberately NOT on the Provider contacts SEARCH scope, which shares this row: that
+    /// list's own copy promises "This list sends no position and shows no map", and the captain's
+    /// ruling was about the offline case rather than that promise. `storedRecord` is what tells the
+    /// two apart, and `maestro/nearby_scope_separation.yaml` pins the separation from both sides.
+    ///
+    /// Deliberately its own view rather than a sixth entry in `providerContactActions`: a published
+    /// location is not a contact channel, and folding it in there would make it count toward the
+    /// `contact.hasAny` gate, so a location-only provider would stop rendering "No contact details
+    /// published." while still having published none.
+    ///
+    /// Absent when the provider published no usable location - never a dead button, and never a
+    /// fabricated destination. `NearbyDecision.directionsURL` owns that rule and carries the
+    /// origin-free guarantee; this view only renders what it returns.
+    @ViewBuilder
+    private func providerDirectionsAction(
+        _ provider: DirectoryProvider,
+        storedRecord: Bool = false
+    ) -> some View {
+        if let url = NearbyDecision.directionsURL(for: provider) {
+            VStack(alignment: .leading, spacing: 3) {
+                Button {
+                    openURL(url)
+                } label: {
+                    Label("Directions", systemImage: "arrow.triangle.turn.up.right.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .foregroundColor(c.accent)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(c.surfaceVariant))
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(storedRecord ? "" : "Open in your maps app")
+                // The offer must carry its own qualification: this destination is the one saved on
+                // this phone, not one just confirmed with the service. The list-level stored banner
+                // is above the fold once the owner has scrolled to a row. It is the note's only
+                // carrier on a stored row, sighted or not - repeating it as the button's own
+                // accessibility value made VoiceOver read the same sentence twice in a row.
+                if storedRecord {
+                    Text(NearbyDecision.storedDirectionsNote)
+                        .font(.system(size: 11))
+                        .foregroundColor(c.muted)
+                }
+            }
+        }
     }
 
     private func providerHeader(_ provider: DirectoryProvider) -> some View {

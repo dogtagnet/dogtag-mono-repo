@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
@@ -367,7 +368,7 @@ fun NearbyScreen(onBack: () -> Unit) {
                     actionError = if (openExternal(context, uri, dial)) {
                         null
                     } else {
-                        "No app could open this contact method."
+                        openFailureMessage(uri)
                     }
                 },
                 modifier = Modifier.weight(1f),
@@ -384,7 +385,7 @@ fun NearbyScreen(onBack: () -> Unit) {
                     actionError = if (openExternal(context, uri, dial)) {
                         null
                     } else {
-                        "No app could open this contact method."
+                        openFailureMessage(uri)
                     }
                 },
                 modifier = Modifier.weight(1f),
@@ -556,9 +557,13 @@ private fun NearbyResults(
                     )
                 }
                 // The contact row deliberately: it renders identity and contacts and makes no
-                // proximity claim, which is exactly what a remembered record can support.
+                // proximity claim, which is exactly what a remembered record can support. It DOES
+                // offer Directions here (captain's ruling, 2026-07-30) - an owner with no signal is
+                // exactly who needs it, and the coordinate is part of the saved provider record
+                // rather than anything derived from the owner's position. `storedRecord` also
+                // carries the row's own stored-not-current note, so the offer stays honest.
                 items(presentation.providers, key = { it.providerId }) { provider ->
-                    ContactProviderRow(provider, onOpen)
+                    ContactProviderRow(provider, onOpen, storedRecord = true)
                 }
                 item { Spacer(Modifier.height(16.dp)) }
             }
@@ -677,14 +682,24 @@ private fun NearbyProviderRow(
             )
         }
         ProviderBindingChip(row.provider)
+        ProviderDirectionsAction(row.provider, onOpen)
         ProviderContactActions(row.provider, onOpen)
     }
 }
 
+/**
+ * The scope-neutral row: identity and contacts, and no proximity claim.
+ *
+ * [storedRecord] says this row came off the device's own saved copy rather than a live read. It is
+ * what turns the Directions handoff on, and it is deliberately ONE flag doing both jobs - the offer
+ * and its stored-not-current labelling arrive together, so the affordance cannot appear without the
+ * sentence that qualifies it.
+ */
 @Composable
 private fun ContactProviderRow(
     provider: DirectoryProvider,
     onOpen: (Uri, Boolean) -> Unit,
+    storedRecord: Boolean = false,
 ) {
     val c = DogTagTheme.colors
     Column(
@@ -700,7 +715,49 @@ private fun ContactProviderRow(
             )
         }
         ProviderBindingChip(provider)
+        if (storedRecord) {
+            ProviderDirectionsAction(provider, onOpen, storedRecord = true)
+        }
         ProviderContactActions(provider, onOpen)
+    }
+}
+
+/**
+ * Hands this provider's published destination to whichever maps app resolves the `geo:` intent.
+ *
+ * Offered on nearby rows and on OFFLINE STORED rows (captain's ruling, 2026-07-30: an owner with no
+ * signal is exactly who most needs directions, the cached coordinate is part of the provider record
+ * rather than anything derived from the owner's position, and a handoff to another app does not
+ * break the no-embedded-map promise).
+ *
+ * It is deliberately NOT on the Provider contacts SEARCH scope, which shares [ContactProviderRow]:
+ * that list's own copy promises it sends no position and shows no map, and the captain's ruling was
+ * about the offline case rather than that promise. `storedRecord` is what tells the two apart, and
+ * `apps/ios/maestro/nearby_scope_separation.yaml` pins the separation from both sides.
+ *
+ * Deliberately its own composable rather than a sixth entry in [ProviderContactActions]: a published
+ * location is not a contact channel, and folding it in there would make it count toward the
+ * `contact.hasAny` gate, so a location-only provider would stop rendering "No contact details
+ * published." while still having published none.
+ *
+ * Absent when the provider published no usable location - never a dead button, and never a
+ * fabricated destination. [NearbyDecision.directionsUri] owns that rule and carries the origin-free
+ * guarantee; this composable only renders what it returns.
+ */
+@Composable
+private fun ProviderDirectionsAction(
+    provider: DirectoryProvider,
+    onOpen: (Uri, Boolean) -> Unit,
+    storedRecord: Boolean = false,
+) {
+    val uri = NearbyDecision.directionsUri(provider) ?: return
+    val subtitle = if (storedRecord) {
+        NearbyDecision.STORED_DIRECTIONS_NOTE
+    } else {
+        "Open in your maps app"
+    }
+    ContactAction(Icons.Filled.Directions, "Directions", subtitle) {
+        onOpen(Uri.parse(uri), false)
     }
 }
 
@@ -969,6 +1026,30 @@ private suspend fun loadDirectoryPage(
         DirectoryScope.Contacts -> directory.contacts(query)
     }
 }
+
+/**
+ * Names what could not be opened, because the maps handoff and a contact channel are not the same
+ * failure and a published location is not a contact method.
+ *
+ * This is also the one branch that is actually likely: `tel:`, `mailto:` and `https:` resolve on
+ * essentially any device, while one with no maps app installed resolves no `geo:` intent at all.
+ *
+ * The scheme is the discriminator because the `dial` flag cannot be one - website, Telegram,
+ * WhatsApp and email all pass `false` exactly as the handoff does. `geo:` is what
+ * [NearbyDecision.directionsUri] emits and nothing else on this screen produces: every other action
+ * builds `tel:`, `mailto:`, `https://wa.me/`, `https://t.me/`, or an operator-supplied website
+ * already gated to an `http(s)://` prefix. `NearbyDecisionTest` asserts that exact URI string, so a
+ * change of scheme there fails a test rather than silently misnaming this failure.
+ *
+ * Neither sentence blames the owner or claims the provider published no location: the location is
+ * published and fine, what is missing is an app to show it.
+ */
+private fun openFailureMessage(uri: Uri): String =
+    if (uri.scheme.equals("geo", ignoreCase = true)) {
+        "No app on this device can open a map."
+    } else {
+        "No app could open this contact method."
+    }
 
 private fun openExternal(context: Context, uri: Uri, dial: Boolean): Boolean {
     val action = if (dial) Intent.ACTION_DIAL else Intent.ACTION_VIEW

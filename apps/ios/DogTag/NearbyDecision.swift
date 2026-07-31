@@ -887,6 +887,45 @@ enum NearbyDecision {
         )
     }
 
+    /// What a Directions offer on an OFFLINE STORED row must say beside itself.
+    ///
+    /// The captain's 2026-07-30 ruling allowed the handoff on stored rows *and* required that the
+    /// stored-not-current labelling stay on them, so the offer is honest. This sentence is that
+    /// labelling at the point of the offer: the list-level stored banner scrolls away, and a bare
+    /// Directions button on a remembered row would otherwise read as a destination just confirmed
+    /// with the service. Pinned by a unit test on each platform and byte-identical to Android's
+    /// `NearbyDecision.STORED_DIRECTIONS_NOTE`, for the same reason `locationDisclosure` is.
+    static let storedDirectionsNote = "Saved on this phone - this address may be out of date."
+
+    /// The maps-app handoff for one provider: its PUBLISHED destination, and nothing else.
+    ///
+    /// This is a handoff, not a map. The owner leaves the app; the map belongs to whichever app the OS
+    /// opens, so it costs nothing and needs no key - the 2026-07-29 captain decision that declined an
+    /// embedded map and a hosted place search kept this affordance as the thing that ships instead.
+    ///
+    /// **The origin is never included, and that is the whole privacy property.** Apple Maps accepts a
+    /// source address as `saddr` beside the destination `daddr`; passing one would put the owner's own
+    /// position into a URL handed to another application, which is precisely the disclosure the
+    /// body-only nearest request exists to avoid. The destination is public directory data the phone
+    /// already holds, so handing it over discloses nothing about the owner - which is why this survives
+    /// the server-nearest pivot untouched: that ruling changed WHO RANKS, not whether a row can open a
+    /// map. A stored (offline) row may use this too, for the same reason.
+    ///
+    /// Returns `nil` when the provider published no location. Absence is `geo == nil` and ONLY that:
+    /// `(0, 0)` is a real coordinate off the coast of Ghana, so it is a destination like any other.
+    /// Mirrors Android `NearbyDecision.directionsUri`; keep the two in step by hand.
+    static func directionsURL(for provider: DirectoryProvider) -> URL? {
+        guard let geo = provider.geo, geo.isValid else { return nil }
+        return URL(string: "https://maps.apple.com/?daddr=\(coordinate(geo.lat)),\(coordinate(geo.lng))")
+    }
+
+    /// Fixed-point and locale-independent. `"\(Double)"` would emit `1e-05` near the meridian, which no
+    /// maps app parses, and a locale-aware formatter would emit `1,35` in a comma-decimal locale and
+    /// silently split the coordinate pair in two.
+    private static func coordinate(_ value: Double) -> String {
+        String(format: "%.6f", locale: nil, value)
+    }
+
     private static let kmPerMile = 1.609344
     private static let feetPerKm = 1000 / 0.3048
     private static let distanceUnavailable = "This provider's distance could not be measured."
