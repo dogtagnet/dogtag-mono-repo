@@ -9,9 +9,12 @@ import type { VerifyCredentialResp } from "../api/types";
 import {
   DEPLOYED_ADDRESSES,
   ZERO_ADDRESS,
+  compareLogPoints,
+  grantInForceAt,
   issuerDomainClaimOf,
   issuerRegistryOf,
   rootIssuedAtLog,
+  sortLogPoints,
   whitelistGrantHistory,
   type LogPoint,
   type WhitelistGrantEvent,
@@ -126,15 +129,17 @@ const GATES_VERDICT: Record<BenchCheckId, boolean> = {
   // Both of these are OBSERVATIONS ABOUT THE VERDICT'S OWN INPUTS rather than further tests of the
   // credential, so neither gates - and marking them advisory is not a hedge, it is the finding.
   //
-  // `registry-governs-issuer` asks whether the registry the whitelist row consulted is the one that
-  // actually gates the issuing contract. A `fail` there means the whitelist row's answer - pass OR
-  // fail - was about the wrong authority. It cannot gate, because a misconfiguration on OUR side is
+  // `registry-governs-issuer` asks whether the registry THIS CLIENT IS CONFIGURED WITH is the one
+  // that gates the issuing contract. A `fail` there no longer voids the whitelist rows - both read
+  // their authority off the clone the factory resolved - so what it reports is a fault in this
+  // client's own factory/registry pairing. It cannot gate, because a misconfiguration on OUR side is
   // not evidence about a credential; that is the same rule `FACTORY_ADDR` already follows.
   //
-  // `whitelisted-at-issuance` asks the question `isWhitelistedFor` cannot: was the signer authorised
-  // WHEN THE ROOT WAS ANCHORED. It does not gate because the verifier's formula does not fold it, and
-  // this module copies that formula rather than competing with it. The gap between the two rows is
-  // reported, never silently reconciled - see {@link whitelistedAtIssuanceCheck}.
+  // `whitelisted-at-issuance` asks the same historical question the verifier's pillar now asks, but
+  // reconstructs it INDEPENDENTLY from the same log. It does not gate because the verifier's formula
+  // does not fold it, and this module copies that formula rather than competing with it. Their
+  // agreeing is corroboration; a disagreement is reported, never silently reconciled - see
+  // {@link whitelistedAtIssuanceCheck}.
   "registry-governs-issuer": false,
   "whitelisted-at-issuance": false,
 };
@@ -930,18 +935,21 @@ function whitelistCheck(
 }
 
 /**
- * Is the registry the whitelist row consulted the one that actually gates this issuing contract?
+ * Is the registry THIS CLIENT is configured with the one that actually gates this issuing contract?
  *
  * `IssuerRegistry._wl` is a plain per-contract mapping and `DogTagIssuer.onlyWhitelisted` consults the
- * ONE registry stored in the clone's own `registry` slot. So a whitelist answer sourced from a
- * different `IssuerRegistry` instance is not a weaker answer to the right question - it is a confident
- * answer to a different one, in EITHER direction: a `true` from a foreign registry passes a signer this
- * clone never authorised, and a `false` from one refuses a signer it did.
+ * ONE registry stored in the clone's own `registry` slot. Both whitelist rows below therefore source
+ * their authority from that slot - off the clone the FACTORY resolved, never off this client's
+ * configuration - so a mis-paired configured registry no longer reaches either of their answers, and
+ * this row VOIDS NOTHING beside it. It used to: while the pillar read the configured registry, a
+ * `true` from a foreign instance passed a signer this clone never authorised. That is what moved.
  *
- * This is the only place in the bench where a green row above can be void, which is why it is stated as
- * its own row rather than folded into the whitelist finding. It does NOT gate: a registry/factory pair
- * misconfigured on this client says nothing about the credential, and refusing a credential over our own
- * configuration is the fail-closed mirror of the fail-open bug this surface exists to prevent.
+ * What it reports now is a fault in this CLIENT: its `registryAddr`/`factoryAddr` pair names a registry
+ * that governs none of the clones its factory deploys. Worth telling an operator, because everything
+ * else that reads `registryAddr` - a grant console, a whitelist viewer, an operator about to delist -
+ * is aimed at a contract that decides nothing here. It does NOT gate the verdict: a configuration fault
+ * on our side is not evidence about a credential, and refusing one over it is the fail-closed mirror of
+ * the fail-open bug this surface exists to prevent.
  *
  * For a clone resolved through a MATCHED pair this can only pass - `registry` is written once at
  * `initialize` from the factory's `immutable registry` and has no setter - so a failure here is
@@ -954,9 +962,10 @@ async function registryGovernsIssuerCheck(
   blockLine: EvidenceLine,
   verifierError: string | null,
 ): Promise<Omit<BenchCheck, "gatesVerdict">> {
-  const question = "Is the registry we asked about the signer the one that gates this issuing contract?";
+  const question =
+    "Is the registry this client is configured with the one that gates this issuing contract?";
   const askedLine: EvidenceLine = {
-    label: "Registry this client asked",
+    label: "Registry this client is configured with",
     value: registryAddr,
     source: "this client's own configuration (never the document)",
   };
@@ -1037,8 +1046,8 @@ async function registryGovernsIssuerCheck(
     question,
     outcome: agrees ? "pass" : "fail",
     finding: agrees
-      ? "The whitelist answer above came from the registry that actually gates this contract."
-      : "MISCONFIGURED: the whitelist answer above came from a registry that does NOT gate this contract, so it is about the wrong authority and neither its pass nor its fail means anything. This is a fault in this client's factory/registry pairing, not a claim about the credential.",
+      ? "This client is configured with the registry that actually gates this contract, so its factory/registry pair is matched."
+      : "MISCONFIGURED: this client is configured with a registry that does NOT gate this contract - its `registryAddr` and `factoryAddr` name different deployments. The whitelist rows above are UNAFFECTED, because both read the authority off the contract the factory resolved rather than off this configuration; what is wrong is every other surface aimed at the configured registry, such as a grant or delist made there. A fault in this client's pairing, not a claim about the credential.",
     evidence: [governingLine, askedLine, blockLine],
   };
 }
@@ -1046,21 +1055,27 @@ async function registryGovernsIssuerCheck(
 /**
  * Was that signer authorised AT THE MOMENT THIS ROOT WAS ANCHORED?
  *
- * `IssuerRegistry.isWhitelistedFor` - the read the verifier's mandatory pillar makes - answers only
- * about NOW. The contract states the rule that getter cannot express, in its own source:
+ * `IssuerRegistry.isWhitelistedFor` answers only about NOW, which is why the verifier's mandatory
+ * pillar stopped reading it. The contract states the rule that getter cannot express, in its own
+ * source:
  *
  *     /// @notice Admin mass-revoke for a compromised signer (delisting is forward-only - §13.3).
  *     ---  DogTagIssuer.sol:82, above `adminRevoke`
  *
  * `adminRevoke` exists precisely BECAUSE a delist does not retroactively invalidate what a signer
- * already anchored. So a later `delistFor` flips the pillar's answer to `false` on credentials whose
- * issuance was, and remains, genuine.
+ * already anchored. Read from the getter, a later `delistFor` refused every credential whose issuance
+ * was, and remains, genuine - an ordinary key rotation, a retirement, a lapsed licence, fleet-wide.
  *
  * That genuineness is not an assumption: `issue()` is `onlyWhitelisted`, it sets `issuedBy[r] =
  * msg.sender` in the same call, and `rootIssuer[r]` is write-once and writable only from inside a
  * clone's `issue()`. So for any root resolvable through the factory, "this signer was authorised at
- * issuance" is guaranteed by the WRITE path. Read from the logs, this row states that fact; the
- * pillar's current-state read cannot.
+ * issuance" is guaranteed by the WRITE path, and the registry's own log states it.
+ *
+ * The verifier now asks that same historical question, so this row is a SECOND, independent
+ * reconstruction of it from the same log rather than a correction of a current-state read. Agreement
+ * is corroboration; the day the verifier regresses to the getter, this row stays green beside a red
+ * gating one and says so in place, which is what makes it a regression detector rather than a
+ * restatement.
  *
  * ## The authority asked is the GOVERNING registry, never this client's configured one
  *
@@ -1259,26 +1274,31 @@ async function whitelistedAtIssuanceCheck(
     ),
   ];
 
-  // The state as of the anchoring point: the LAST event at or before it. `logIndex` is block-scoped
-  // and therefore comparable across contracts within one block, so a grant and an issuance landing in
-  // the same block are sequenced correctly rather than by an arbitrary tiebreak.
-  const priorEvents = history.filter((h) => compareLogPoints(h, issuedPoint) <= 0);
-  const asOf = priorEvents[priorEvents.length - 1];
-  const authorisedThen = asOf?.kind === "whitelisted";
+  // THE fold, and it is the VERIFIER'S OWN (`contracts.ts` `grantInForceAt`) rather than a second copy
+  // of the rule. A bench that re-implemented it could drift from the surface it reports on, and the
+  // divergence would be invisible: the two agreed only while the injected reader happened to hand back
+  // sorted logs. The state as of the anchoring point is the LAST event at or before it; `logIndex` is
+  // block-scoped and therefore comparable across contracts within one block, so a grant and an
+  // issuance landing in the same block are sequenced correctly rather than by an arbitrary tiebreak.
+  const authorisedThen = grantInForceAt(history, issuedPoint) === "authorized";
   const authorisedNow = response?.fragments.issuerWhitelisted;
 
-  if (!asOf) {
-    return {
-      id: "whitelisted-at-issuance",
-      question,
-      outcome: "fail",
-      finding:
-        "The registry that gates this contract recorded NO grant to this signer for this record type at or before the anchoring block. Nothing in the authority's own log authorises this issuance.",
-      evidence,
-    };
-  }
-
   if (!authorisedThen) {
+    // Re-derived ONLY to pick which refusal to print - never to decide one. "no grant was ever
+    // recorded" and "the grant was withdrawn before this root was anchored" are different facts with
+    // different remedies, and the shared fold answers `notAuthorized` to both.
+    const prior = sortLogPoints(history.filter((h) => compareLogPoints(h, issuedPoint) <= 0));
+    const asOf = prior[prior.length - 1];
+    if (!asOf) {
+      return {
+        id: "whitelisted-at-issuance",
+        question,
+        outcome: "fail",
+        finding:
+          "The registry that gates this contract recorded NO grant to this signer for this record type at or before the anchoring block. Nothing in the authority's own log authorises this issuance.",
+        evidence,
+      };
+    }
     return {
       id: "whitelisted-at-issuance",
       question,
@@ -1295,7 +1315,7 @@ async function whitelistedAtIssuanceCheck(
     outcome: "pass",
     finding:
       authorisedNow === false
-        ? "The signer WAS authorised when this root was anchored, and has since been delisted. Delisting is forward-only (DogTagIssuer.sol:82 - `adminRevoke` is the retroactive lever, and it was not used on this root), so the issuance remains genuine even though the gating whitelist row above reads its current-state answer as a failure."
+        ? "The governing registry's own log clears this signer at the anchoring block, and the gating whitelist row above refuses it anyway. The two ask the same historical question, so they should agree: either the verifier refused on a separate ground the operator supplied (an expected signer or clone that does not match the chain), or its formula has regressed to a current-state read - which delisting being forward-only (DogTagIssuer.sol:82 - `adminRevoke` is the retroactive lever, and it was not used on this root) makes the wrong question."
         : "The signer was authorised when this root was anchored.",
     evidence,
   };
@@ -1304,12 +1324,6 @@ async function whitelistedAtIssuanceCheck(
 /** `block/logIndex`, the ordering key rendered the way the evidence lines quote it. */
 function formatLogPoint(p: LogPoint): string {
   return `block ${p.blockNumber}, log ${p.logIndex}`;
-}
-
-/** Total order over log points. `logIndex` is block-scoped, so it only breaks ties WITHIN a block. */
-function compareLogPoints(a: LogPoint, b: LogPoint): number {
-  if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
-  return a.logIndex - b.logIndex;
 }
 
 /**

@@ -1301,13 +1301,22 @@ async fn verify_credential(
     // the one pillar that would have objected simply never ran.
     //
     // It now asks the chain who issued the root — `issuedBy`, set to `msg.sender` under
-    // `onlyWhitelisted` (`DogTagIssuer.sol:40,55`) — and checks THAT signer against THIS deployment's
-    // configured registry. Never an address named by the document, or the attacker supplies both sides
-    // of the question.
+    // `onlyWhitelisted` (`DogTagIssuer.sol:40,55`) — and asks whether THAT signer held the capability
+    // AT THE MOMENT it anchored this root. Never an address named by the document, or the attacker
+    // supplies both sides of the question.
+    //
+    // The authority is the GOVERNING registry — the address the resolved clone's own `registry()`
+    // answers — never this deployment's separately-configured `ISSUER_REGISTRY_ADDR`. `IssuerRegistry`
+    // `_wl` and its `Whitelisted`/`Delisted` events are per-CONTRACT, so a grant history read from any
+    // other instance is a confident answer about a different mapping: a merely mis-paired deployment
+    // would find no grant and print a definite refusal of a genuine credential, which is our own
+    // misconfiguration rendered as an accusation. It opens no trust surface — `registry` is written
+    // once in `initialize` from the factory's own immutable, on a clone THIS deployment's factory
+    // resolved, so it is as anchored as the clone itself.
     //
     // Tri-state, and only a definite `true` may contribute to a pass:
-    //   Some(true)  — resolved, and whitelisted for this record type
-    //   Some(false) — resolved, but not whitelisted (or not the expected signer): a real failure
+    //   Some(true)  — resolved, and authorised for this record type at the anchoring point
+    //   Some(false) — resolved, and it was not (or not the expected signer): a real failure
     //   None        — unresolvable: INDETERMINATE, and never a pass
     let rt_key = app::rt_key(&record_type);
     let want_signer = body

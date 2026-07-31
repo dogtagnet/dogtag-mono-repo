@@ -130,8 +130,9 @@ object RecordImporter {
         // Integrity and issuance together still accept a forged authority: the `issuer` block is
         // outside the Merkle root, so relabelling the issuer — or pointing `documentStore` at a
         // contract that returns true from `isValid` — passes both. This pillar resolves the issuing
-        // clone from the app's OWN factory, then asks THAT clone what record type it holds and who
-        // issued the root, and checks that signer against the app's own bundled registry.
+        // clone from the app's OWN factory, then asks THAT clone what record type it holds, who
+        // issued the root, and — off the clone's own `registry()`, never off the bundled registry —
+        // whether that signer was authorised at the block the root was anchored.
         val whitelist = RoaxRpc.issuerWhitelistPillar(
             rpcUrl, expectedChainId, issuerRegistry, issuerFactory,
             doc.documentStore, doc.merkleRoot, doc.recordType,

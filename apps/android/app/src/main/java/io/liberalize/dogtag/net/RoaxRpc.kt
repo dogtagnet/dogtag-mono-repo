@@ -303,9 +303,18 @@ object RoaxRpc {
      * An EMPTY prior history is [GrantAtIssuance.NotAuthorized], not [GrantAtIssuance.Undetermined]:
      * the registry answered and its own log records no grant, which is evidence about the credential
      * rather than about our ability to check. A log read that FAILED never reaches this function.
+     *
+     * The tie is broken EXPLICITLY on `>=`, taking the LAST of any events sharing one `(blockNumber,
+     * logIndex)`, because that is what Rust's `max_by_key` and the TS sort-then-last do. A conforming
+     * chain cannot produce such a pair - `logIndex` is unique within a block - so this only ever
+     * arises from a lying or buggy peer, where either answer is equally arbitrary; the point is that
+     * one rule mirrored four ways must not quietly be four rules. `maxByOrNull` would return the
+     * FIRST maximum, so the divergence would be invisible in every language's own tests.
      */
     internal fun grantInForceAt(history: List<GrantEvent>, anchoredAt: LogPoint): GrantAtIssuance {
-        val asOf = history.filter { it.at <= anchoredAt }.maxByOrNull { it.at }
+        val asOf = history
+            .filter { it.at <= anchoredAt }
+            .fold(null as GrantEvent?) { best, e -> if (best == null || e.at >= best.at) e else best }
         return if (asOf?.granted == true) GrantAtIssuance.Authorized else GrantAtIssuance.NotAuthorized
     }
 
@@ -481,9 +490,14 @@ object RoaxRpc {
      *
      * So the clone is resolved from the FACTORY in the app's own bundled `roax.json`
      * ([rootIssuer]) — never from the document. Then the record type comes from that clone's own
-     * `recordType()`, and the issuing signer from its `issuedBy`, checked against the app's own
-     * `IssuerRegistry`. An envelope naming a different clone, or a different record type, than the
-     * chain does is a definite [Result.Invalid], not merely unresolved.
+     * `recordType()`, and the issuing signer from its `issuedBy`. An envelope naming a different
+     * clone, or a different record type, than the chain does is a definite [Result.Invalid], not
+     * merely unresolved.
+     *
+     * WHICH AUTHORITY answers for that signer comes off the clone's own `registry()` too, never off
+     * the bundled `IssuerRegistry` — see [whitelistedAtIssuance]. [issuerRegistry] survives here only
+     * as a "is this bundle configured at all" precondition: an app shipped without one is missing the
+     * whole address set, so refusing to state a chain fact from it is the honest answer.
      *
      * [Result.Unknown] means the pillar did not resolve; a caller must treat that as indeterminate,
      * never as a pass. A read that FAILED and a slot the chain says is empty both land there, but they
@@ -974,12 +988,18 @@ object RoaxRpc {
         return LogPoint(block, index)
     }
 
-    /** Parse an `0x`-prefixed JSON-RPC quantity. `null` for anything unparseable, never 0. */
+    /**
+     * Parse an `0x`-prefixed JSON-RPC quantity. `null` for anything unparseable, never 0.
+     *
+     * The digit test is an explicit ASCII RANGE, never `Char.isDigit()`, which is Unicode-aware and
+     * admits Nd digits such as `٣` (U+0663) - `toLongOrNull(16)` then accepts them too via
+     * `Character.digit`. The Swift twin's `UInt64(_:radix:)` is ASCII-only and rejects them, so the
+     * loose test made the two platforms parse a hostile peer's log positions differently.
+     */
     private fun hexQuantity(hex: String): Long? {
         val h = hex.removePrefix("0x")
-        if (h.isEmpty() || h.length > 15 || !h.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) {
-            return null
-        }
+        val ascii = h.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+        if (h.isEmpty() || h.length > 15 || !ascii) return null
         return h.toLongOrNull(16)
     }
 

@@ -37,12 +37,14 @@ import {
  * of readers. Nothing here touches the network, so the catalogue runs identically in a unit test and in
  * the browser, and the page can render live outcomes beside the declared expectations.
  *
- * EVERY read is keyed on the contract it is put to - the six `DogTagIssuer`/factory getters on the
- * contract address, and the three registry reads (`isWhitelistedFor`, the grant log, and
- * `DogTagIssuer.registry()`) on the registry address. A fake that ignored which contract it was asked
- * about could not represent "the hostile contract answers `true` while the clone the factory named
- * answers `false`", and every forged-issuer scenario written against one would pass for the wrong
- * reason - the trap recorded against `MockChain` in `crates/dogtag-standard-rs/src/verify.rs`.
+ * EVERY read is keyed on the contract it is put to - the six `DogTagIssuer`/factory getters and the
+ * `RootIssued` log on the contract address, `DogTagIssuer.registry()` on the clone whose authority is
+ * being asked for, and the `Whitelisted`/`Delisted` grant log on the REGISTRY address it is read from.
+ * A fake that ignored which contract it was asked about could not represent "the hostile contract
+ * answers `true` while the clone the factory named answers `false`", nor "the grant is in the registry
+ * the clone names and only there", and every forged-issuer scenario written against one would pass for
+ * the wrong reason - the trap recorded against `MockChain` in
+ * `crates/dogtag-standard-rs/src/verify.rs`.
  *
  * That claim was once written as a blanket "ADDRESS-KEYED throughout" while `grants` in fact discarded
  * its registry argument, and the blanket wording is why the gap survived review: it read as a property
@@ -61,7 +63,13 @@ import {
  * answer and the gap is recorded in {@link BenchScenario.knownDefect}, which pins today's behaviour
  * separately. The suite asserts BOTH, plus that the two still differ - so the day the defect is fixed
  * the scenario goes red and whoever fixed it must delete the field, rather than the finding quietly
- * evaporating. {@link signerDelistedAfterIssuance} is the one place that fires today.
+ * evaporating.
+ *
+ * NO SCENARIO CARRIES A PIN TODAY, and `benchScenarios.test.ts` asserts that set is empty.
+ * {@link signerDelistedAfterIssuance} is the worked example of the whole mechanism: it pinned the
+ * forward-only delisting defect until the verdict formula moved, at which point the scenario went red
+ * and the pin had to be deleted rather than the finding evaporating. The machinery is kept for the
+ * next finding, not because one is outstanding.
  */
 
 // ── the scripted world ──────────────────────────────────────────────────────────────────────────

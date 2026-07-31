@@ -13,18 +13,25 @@ import { verifyCredentialOnchain, type IssuerChainReader } from "../wallet/verif
 export interface CredentialVerifyPanelProps {
   defaultSigner?: string;
   /**
-   * IssuerRegistry address for the whitelist pillar; defaults to the deployed ROAX registry.
+   * IssuerRegistry address, forwarded but DELIBERATELY IGNORED by the whitelist pillar.
    *
-   * A MATCHED PAIR with {@link CredentialVerifyPanelProps.factoryAddr} - override both or neither. A
-   * clone is gated by its OWN `registry()`, so pointing one axis at a different deployment leaves the
-   * pillar asking a registry about a signer resolved through a factory it does not govern, which
-   * answers indeterminate or falsely negative.
+   * A clone is gated by its OWN `registry()`, and `IssuerRegistry._wl` and its `Whitelisted`/
+   * `Delisted` events are per-CONTRACT - so only that instance's log can answer for this contract's
+   * issuances. The pillar therefore reads the authority off the clone the factory resolved. Honouring
+   * an override here would let a mis-paired client find no grant in a registry that governs nothing
+   * and print a definite refusal of a genuine credential: our own misconfiguration rendered as an
+   * accusation. See `verifyCredentialOnchain`'s `registryAddr` for the same note at the seam itself.
+   *
+   * Kept on the props because the value is still meaningful to OTHER surfaces - the bench's
+   * `registry-governs-issuer` row compares it against the governing one to diagnose a mis-paired
+   * factory/registry deployment - and it is passed through so this panel and that row see one value.
    */
   registryAddr?: string;
   /**
    * DogTagIssuerFactory address used to resolve the issuing clone from its write-once `rootIssuer[R]`
-   * index; defaults to the deployed ROAX factory. Matched pair with
-   * {@link CredentialVerifyPanelProps.registryAddr} - see there.
+   * index; defaults to the deployed ROAX factory. This one really is load-bearing: it is the anchor
+   * every on-chain read is made against, and unlike
+   * {@link CredentialVerifyPanelProps.registryAddr} it is never sourced from the document.
    */
   factoryAddr?: string;
   /** Public RPC URL override; defaults to the ROAX devrpc from the chain definition. */

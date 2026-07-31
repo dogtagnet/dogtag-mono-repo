@@ -658,14 +658,22 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         // `issuer` block simply never ran.
         //
         // It now asks the chain who issued the root - `issuedBy`, set to `msg.sender` under
-        // `onlyWhitelisted` - and checks THAT signer against THIS deployment's configured registry.
-        // Never an address named by the document, or the attacker supplies both sides of the question.
-        // The read is made against `issuer_addr`, which upstream already resolved through the factory's
-        // `rootIssuer`, so a hostile contract cannot answer on its own behalf either.
+        // `onlyWhitelisted` - and asks whether THAT signer held the capability AT THE MOMENT it
+        // anchored this root. Never an address named by the document, or the attacker supplies both
+        // sides of the question. Every read is made against the clone the factory's `rootIssuer`
+        // resolved, so a hostile contract cannot answer on its own behalf either.
+        //
+        // The authority is the GOVERNING registry - the address that clone's own `registry()` answers
+        // - never this deployment's separately-configured one. `IssuerRegistry._wl` and its
+        // `Whitelisted`/`Delisted` events are per-CONTRACT, so a grant history read from any other
+        // instance is a confident answer about a different mapping: a merely mis-paired deployment
+        // would find no grant and refuse a genuine credential, our own misconfiguration rendered as an
+        // accusation. `at_block` bounds that `registry()` call as well as both log reads, so the whole
+        // answer is the same snapshot the block anchor beside the verdict claims.
         //
         // Tri-state, and only a definite `true` may contribute to a pass:
-        //   Some(true)  - resolved, and whitelisted for this record type
-        //   Some(false) - resolved, but not whitelisted (or not the expected signer): a real failure
+        //   Some(true)  - resolved, and authorised for this record type at the anchoring point
+        //   Some(false) - resolved, and it was not (or not the expected signer): a real failure
         //   None        - unresolvable (this clone never issued this root): INDETERMINATE, never a pass
         async {
             // THREE states, not two. `noFactoryConfigured` means THIS VERIFIER never asked - our own

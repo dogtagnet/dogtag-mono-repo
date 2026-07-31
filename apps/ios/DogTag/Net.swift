@@ -298,8 +298,20 @@ enum RoaxRpc {
     /// An EMPTY prior history is `.notAuthorized`, not `.undetermined`: the registry answered and its
     /// own log records no grant, which is evidence about the credential rather than about our ability
     /// to check. A log read that FAILED never reaches this function.
+    ///
+    /// The tie is broken EXPLICITLY on `>=`, taking the LAST of any events sharing one `(blockNumber,
+    /// logIndex)`, because that is what Rust's `max_by_key` and the TS sort-then-last do. A conforming
+    /// chain cannot produce such a pair - `logIndex` is unique within a block - so this only ever
+    /// arises from a lying or buggy peer, where either answer is equally arbitrary; the point is that
+    /// one rule mirrored four ways must not quietly be four rules. `max(by:)` would return the FIRST
+    /// maximum, so the divergence would be invisible in every language's own tests.
     static func grantInForceAt(_ history: [GrantEvent], anchoredAt: LogPoint) -> GrantAtIssuance {
-        let asOf = history.filter { $0.at <= anchoredAt }.max { $0.at < $1.at }
+        let asOf = history
+            .filter { $0.at <= anchoredAt }
+            .reduce(nil as GrantEvent?) { best, e in
+                guard let best else { return e }
+                return e.at >= best.at ? e : best
+            }
         return asOf?.granted == true ? .authorized : .notAuthorized
     }
 
@@ -591,9 +603,14 @@ enum RoaxRpc {
     ///
     /// So the clone is resolved from the FACTORY in the app's own bundled `roax.json`
     /// (`rootIssuer`) - never from the document. Then the record type comes from that clone's own
-    /// `recordType()`, and the issuing signer from its `issuedBy`, checked against the app's own
-    /// `IssuerRegistry`. An envelope naming a different clone, or a different record type, than the
-    /// chain does is a definite `.invalid`, not merely unresolved.
+    /// `recordType()`, and the issuing signer from its `issuedBy`. An envelope naming a different
+    /// clone, or a different record type, than the chain does is a definite `.invalid`, not merely
+    /// unresolved.
+    ///
+    /// WHICH AUTHORITY answers for that signer comes off the clone's own `registry()` too, never off
+    /// the bundled `IssuerRegistry` - see `whitelistedAtIssuance`. `issuerRegistry` survives here only
+    /// as an "is this bundle configured at all" precondition: an app shipped without one is missing
+    /// the whole address set, so refusing to state a chain fact from it is the honest answer.
     ///
     /// `.unknown` means the pillar did not resolve; a caller must treat that as indeterminate, never
     /// as a pass. A read that FAILED and a slot the chain says is empty both land there, but they say

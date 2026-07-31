@@ -302,12 +302,14 @@ describe("a revoked credential presented as live", () => {
   });
 });
 
-describe("a whitelist answer from a registry that does not govern the issuer", () => {
-  it("is flagged by the registry row while the whitelist row it voids reads GREEN", async () => {
+describe("a client configured with a registry that does not govern the issuer", () => {
+  it("is flagged by the registry row while the whitelist row beside it correctly reads GREEN", async () => {
     const r = await runBenchScenario(foreignRegistry);
     expect(outcome(r, "registry-governs-issuer")).toBe("fail");
-    // The hazard, stated: the foreign registry lists this signer, so the pillar passes on an
-    // authority that governs nothing here. Without the row above, nothing on the page would say so.
+    // The pillar passes, and correctly: it asks the registry the CLONE names, which is the only
+    // authority whose `_wl` gated this contract's `issue()`, and that registry's log holds the grant.
+    // The row above reports the mis-pairing because it matters to every OTHER surface aimed at the
+    // configured registry - it no longer voids this one.
     expect(outcome(r, "issuer-whitelisted")).toBe("pass");
     const row = r.checks.find((c) => c.id === "registry-governs-issuer");
     expect(row?.finding).toContain("MISCONFIGURED");

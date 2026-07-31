@@ -6,17 +6,25 @@ import { keccak256, toBytes } from "viem";
  * E2E for the permissionless, direct-to-RPC credential verify panel (fm/dogtag-webverify-n3).
  *
  * Proves the decoupling: when the operator clicks "Verify credential", the browser reads the ROAX
- * chain DIRECTLY (viem `eth_call` over the public RPC) and classifies the credential itself - the
- * operator-gated `POST /verify/credential` relay is never called. We drive the REAL `Verify` page and
- * REAL `@dogtag/ui` `CredentialVerifyPanel`; only the on-chain `view` reads are mocked (by their
- * 4-byte selector) so the valid/revoked/whitelist verdicts render deterministically without a live
- * anchored credential. Integrity is the genuine offline `@dogtag/standard` recompute (real doc).
+ * chain DIRECTLY (viem `eth_call` and `eth_getLogs` over the public RPC) and classifies the credential
+ * itself - the operator-gated `POST /verify/credential` relay is never called. We drive the REAL
+ * `Verify` page and REAL `@dogtag/ui` `CredentialVerifyPanel`; only the chain reads are mocked (calls
+ * by their 4-byte selector, logs by their topic0 and the address they were put to) so the
+ * valid/revoked/authorised verdicts render deterministically without a live anchored credential.
+ * Integrity is the genuine offline `@dogtag/standard` recompute (real doc).
  *
  * The fake must ANCHOR THE CLONE THROUGH THE FACTORY, exactly as the shipped path does: the issuing
  * clone comes from `DogTagIssuerFactory.rootIssuer(root)`, and the record type from that clone's own
  * `recordType()`. A fake that only answered the per-clone reads would model the pre-audit world in
  * which the document's own `documentStore` gets to say whether it is valid - the forgery the
  * mandatory issuer-whitelist pillar exists to close.
+ *
+ * It must also model the pillar's HISTORICAL question rather than a current-state one. The pillar
+ * reads the clone's own `registry()`, locates that clone's `RootIssued` log for the root, folds the
+ * governing registry's `Whitelisted`/`Delisted` history at that point, and takes the last event at or
+ * before it - because delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the
+ * retroactive lever). So the scripted chain carries POSITIONED logs, and both directions of that rule
+ * are asserted below: delisted-after still verifies, delisted-before still refuses.
  */
 
 const OP_TOKEN_KEY = "vet.opToken";
@@ -30,7 +38,20 @@ const SEL = {
   isRevoked: "0x4294857f",
   issuedAt: "0x6240dded",
   issuedBy: "0xe0d272c0",
-  isWhitelistedFor: "0x779c3985",
+  // `DogTagIssuer.registry()` - the ONE authority whose grant log answers for this contract, read off
+  // the clone rather than off this client's configuration. Confirmed with `cast keccak "registry()"`.
+  registry: "0x7b103999",
+} as const;
+
+/**
+ * Event topic0s the pillar filters on. These are FULL 32-byte keccaks, not 4-byte selectors: a value
+ * derived at the wrong width matches no log at all, which reads exactly like "never granted" and would
+ * make every assertion below pass for the wrong reason. Confirmed with `cast keccak`.
+ */
+const TOPIC = {
+  rootIssued: "0xf8cd30a628b432a1200caf81085096c82a5f570da14360572b72d4e0ba57e6d7",
+  whitelisted: "0x0ed68b47399672cf072b19a599fa9f99cdc79a286bf59bc301ca44b94f589bce",
+  delisted: "0xf3af84db5dbf726f68c33f3ded733403e15667370ab38e8cb37fdc874835b00e",
 } as const;
 
 const ISSUER: IssuerMeta = {
@@ -41,6 +62,15 @@ const ISSUER: IssuerMeta = {
 };
 /** The address the chain reports as this root's originator - resolved, never typed by the operator. */
 const SIGNER = "0xabc0000000000000000000000000000000000abc";
+/**
+ * The `IssuerRegistry` the CLONE names, and therefore the only authority whose grant log answers for
+ * its issuances. Deliberately a value of its own rather than whatever this client is configured with:
+ * `IssuerRegistry._wl` and its events are per-CONTRACT, so the pillar reads this address off
+ * `DogTagIssuer.registry()`. The mock serves the grant log ONLY at this address, so a regression that
+ * asked the configured registry instead would read an empty log and refuse a genuine credential -
+ * which is the shape this spec has to be able to catch, not merely avoid.
+ */
+const GOVERNING_REGISTRY = "0x00000000000000000000000000000000000000ab";
 /**
  * What the issuing clone's own `recordType()` returns. DERIVED from the envelope's claim rather than
  * pinned, because the pillar compares the two: a hardcoded key that drifted from `ISSUER.recordType`
@@ -69,6 +99,18 @@ function validDoc(): WrappedDoc {
 const boolWord = (b: boolean) => "0x" + (b ? "1" : "0").padStart(64, "0");
 const uintWord = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
 const addressWord = (a: string) => "0x" + a.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+const quantity = (n: number) => "0x" + n.toString(16);
+
+/** Where a mined log sits. The pillar sequences on `(blockNumber, logIndex)` and nothing else. */
+interface LogPoint {
+  blockNumber: number;
+  logIndex: number;
+}
+
+/** One `whitelistFor`/`delistFor` call, as the governing registry's own log records it. */
+interface GrantEvent extends LogPoint {
+  kind: "whitelisted" | "delisted";
+}
 
 interface ChainState {
   /** DogTagIssuerFactory.rootIssuer(root) - the clone every other read below is made against. */
@@ -80,20 +122,54 @@ interface ChainState {
   isRevoked: boolean;
   /** DogTagIssuer.issuedBy(root) - the H-1 originator the whitelist pillar resolves for itself. */
   issuedBy: string;
-  isWhitelistedFor: boolean;
+  /** DogTagIssuer.registry() - the authority the grant log below is served at, and only there. */
+  registry: string;
+  /**
+   * Where `DogTagIssuer.RootIssued(root)` sits, or `null` when this clone emitted none.
+   *
+   * `issuedAt` is a unix TIMESTAMP and cannot be compared against a log's height, so the anchoring
+   * POINT is what the fold sequences the grant history against. Absent it, the pillar is indeterminate
+   * rather than a refusal - never a pass.
+   */
+  rootIssuedAt: LogPoint | null;
+  /** The governing registry's full grant history for `(recordType, issuedBy)`, in log order. */
+  grants: GrantEvent[];
 }
 
 /**
- * Intercept the ROAX public RPC and answer the verify reads by selector. Non-`eth_call` methods
- * (eth_chainId, wagmi bootstrap) are answered benignly so the app still boots, but an `eth_call` this
- * fake does not model is a hard FAILURE naming the selector - never a fabricated zero word. Returns a
+ * One `eth_getLogs` row, complete enough for viem's log formatter.
+ *
+ * `blockNumber` and `logIndex` are MANDATORY here, and that is not tidiness: viem treats a log missing
+ * either as PENDING and hands back `null`, which the shipped readers coalesce to block 0 / index 0
+ * (`l.blockNumber ?? 0n`). A grant silently positioned at the very start of the chain sorts before
+ * every anchoring, so an omitted field would flip a scenario to pass for a reason nobody wrote.
+ */
+function logRow(address: string, topics: string[], at: LogPoint, data = "0x") {
+  return {
+    address,
+    topics,
+    data,
+    blockNumber: quantity(at.blockNumber),
+    logIndex: quantity(at.logIndex),
+    transactionIndex: "0x0",
+    transactionHash: "0x" + "11".repeat(32),
+    blockHash: "0x" + "22".repeat(32),
+    removed: false,
+  };
+}
+
+/**
+ * Intercept the ROAX public RPC and answer the verify reads. `eth_call` dispatches on the 4-byte
+ * selector, `eth_getLogs` on `topics[0]` AND the address it was put to; remaining methods (eth_chainId,
+ * wagmi bootstrap) are answered benignly so the app still boots. An `eth_call` or an `eth_getLogs` this
+ * fake does not model is a hard FAILURE naming what was asked - never a fabricated answer. Returns a
  * mutable list of every URL the page requested, so the test can assert the operator relay was NOT hit.
  */
 async function mockRoaxRpc(page: Page, state: ChainState): Promise<string[]> {
   const requestedUrls: string[] = [];
   page.on("request", (r: Request) => requestedUrls.push(r.url()));
 
-  const answer = (id: unknown, result: string) => ({ jsonrpc: "2.0", id, result });
+  const answer = (id: unknown, result: unknown) => ({ jsonrpc: "2.0", id, result });
   const handleOne = (msg: { id?: unknown; method?: string; params?: unknown[] }) => {
     if (msg.method === "eth_chainId") return answer(msg.id, "0x87");
     if (msg.method === "eth_call") {
@@ -105,7 +181,7 @@ async function mockRoaxRpc(page: Page, state: ChainState): Promise<string[]> {
       if (sel === SEL.isRevoked) return answer(msg.id, boolWord(state.isRevoked));
       if (sel === SEL.issuedAt) return answer(msg.id, uintWord(state.issuedAt));
       if (sel === SEL.issuedBy) return answer(msg.id, addressWord(state.issuedBy));
-      if (sel === SEL.isWhitelistedFor) return answer(msg.id, boolWord(state.isWhitelistedFor));
+      if (sel === SEL.registry) return answer(msg.id, addressWord(state.registry));
       // NO SILENT DEFAULT. This used to answer any unmodelled read with a zero word, and that is
       // precisely how the mock went stale: when the shipped path grew the factory `rootIssuer`
       // lookup, the fake invented a zero address for it and the suite reported a plausible-but-wrong
@@ -119,8 +195,54 @@ async function mockRoaxRpc(page: Page, state: ChainState): Promise<string[]> {
           `invent an answer for it. (calldata: ${data})`,
       );
     }
-    // Non-`eth_call` methods are wagmi/viem bootstrap noise that the verify path never reads, so an
-    // empty word keeps the app booting; only the reads above decide a verdict.
+    if (msg.method === "eth_getLogs") {
+      const filter = (msg.params?.[0] ?? {}) as { address?: string; topics?: unknown[] };
+      const addr = String(filter.address ?? "").toLowerCase();
+      const t0 = String(Array.isArray(filter.topics?.[0]) ? "" : (filter.topics?.[0] ?? ""));
+      // Keyed on the ADDRESS as well as the topic. A fake that answered the grant history whichever
+      // contract was asked could not represent "the grant is in the registry the CLONE names, and only
+      // there" - so a regression that read this client's configured registry would still find the
+      // grant and this spec would go green while the shipped path asked the wrong authority. That is
+      // the `MockChain` fake-integrity trap AGENTS.md records, in Playwright form.
+      // The indexed arguments are echoed back from the filter rather than re-derived. viem passes its
+      // `args` to `parseEventLogs`, which DROPS any log whose decoded arguments do not match them - so
+      // a row carrying a topic this fake invented would be silently discarded and read as "no such
+      // log", i.e. the indeterminate/refusal branch, for a fixture that meant the opposite.
+      const echoed = (i: number, fallback: string) => {
+        const t = filter.topics?.[i];
+        return typeof t === "string" ? t : fallback;
+      };
+      if (t0 === TOPIC.rootIssued) {
+        if (addr !== state.rootIssuer.toLowerCase() || !state.rootIssuedAt) return answer(msg.id, []);
+        return answer(msg.id, [
+          logRow(
+            addr,
+            [t0, echoed(1, "0x" + "0".repeat(64)), addressWord(state.issuedBy)],
+            state.rootIssuedAt,
+            uintWord(state.issuedAt),
+          ),
+        ]);
+      }
+      if (t0 === TOPIC.whitelisted || t0 === TOPIC.delisted) {
+        if (addr !== state.registry.toLowerCase()) return answer(msg.id, []);
+        const kind = t0 === TOPIC.whitelisted ? "whitelisted" : "delisted";
+        const topics = [t0, echoed(1, state.recordType), echoed(2, addressWord(state.issuedBy))];
+        return answer(
+          msg.id,
+          state.grants.filter((g) => g.kind === kind).map((g) => logRow(addr, topics, g)),
+        );
+      }
+      // Same rule, same reason, for the log shape. An unmodelled topic answered with `[]` reads as
+      // "the registry recorded no grant", which is a DEFINITE refusal of the credential - an invented
+      // accusation rather than an invented pass, and no better for it.
+      throw new Error(
+        `verify-credential e2e: unmodelled eth_getLogs topic0 ${t0} at ${addr}. The verify path reads ` +
+          `a log this mock does not model - add it to TOPIC/ChainState instead of letting the fake ` +
+          `answer with an empty history.`,
+      );
+    }
+    // What is left is wagmi/viem bootstrap noise that the verify path never reads (the pillar's own
+    // reads are all `eth_call` or `eth_getLogs` above), so an empty word keeps the app booting.
     return answer(msg.id, "0x");
   };
 
@@ -177,10 +299,19 @@ test.beforeEach(async ({ page }) => {
   ]);
 });
 
+/** Where this root was anchored, and the two points the grant history is sequenced around it. */
+const ANCHORED_AT: LogPoint = { blockNumber: 500, logIndex: 2 };
+const GRANTED_BEFORE: GrantEvent = { kind: "whitelisted", blockNumber: 100, logIndex: 0 };
+const DELISTED_AFTER: GrantEvent = { kind: "delisted", blockNumber: 900, logIndex: 0 };
+
 /**
  * A genuinely anchored credential: the factory names the very clone the envelope claims, that clone
- * reports the record type the envelope claims, and its originator is whitelisted. Each test overrides
- * only the one fact it is about.
+ * reports the record type the envelope claims, and the registry that GOVERNS that clone recorded a
+ * grant to its originator before it anchored. Each test overrides only the one fact it is about.
+ *
+ * The grant is positioned strictly BEFORE the anchoring rather than merely present, because that is
+ * the whole question the pillar asks: it folds the governing registry's log at the anchoring point and
+ * takes the last event at or before it. A history with no position could not state this scenario.
  */
 function anchoredChain(over: Partial<ChainState> = {}): ChainState {
   return {
@@ -190,7 +321,9 @@ function anchoredChain(over: Partial<ChainState> = {}): ChainState {
     isValid: true,
     isRevoked: false,
     issuedBy: SIGNER,
-    isWhitelistedFor: true,
+    registry: GOVERNING_REGISTRY,
+    rootIssuedAt: ANCHORED_AT,
+    grants: [GRANTED_BEFORE],
     ...over,
   };
 }
@@ -239,7 +372,7 @@ test("valid credential: reads chain directly, renders Verdict pass / Valid, no o
   await expect(page.getByText("Valid", { exact: true })).toBeVisible();
   // The whitelist pillar is answered - not skipped - even though the operator typed no signer: it
   // resolved the originator from `issuedBy` itself. That self-resolution is what makes it mandatory.
-  await expect(pillar(page, "Issuer whitelist")).toHaveText(/Yes$/);
+  await expect(pillar(page, "Issuer authorised at issuance")).toHaveText(/Yes$/);
   await expect(page.getByText(new RegExp(`^${SIGNER}$`, "i"))).toBeVisible();
 
   // The claimed root the panel read on-chain equals the doc's signature root (and the recompute).
@@ -264,21 +397,77 @@ test("revoked credential: renders Verdict fail / Revoked", async ({ page }) => {
   await panelCard(page).screenshot({ path: "e2e-artifacts/verify-revoked.png" });
 });
 
-test("whitelist pillar gates the verdict: valid on-chain but non-whitelisted issuer fails", async ({
+test("whitelist pillar gates the verdict: valid on-chain but unauthorised issuer fails", async ({
   page,
 }) => {
-  const urls = await mockRoaxRpc(page, anchoredChain({ isWhitelistedFor: false }));
+  // The governing registry ANSWERED, and its own log holds no grant to this signer at or before the
+  // anchoring. That is evidence about the credential - an honest `issue()` cannot pass
+  // `onlyWhitelisted` in that state - so it is a definite refusal, not an indeterminate one. A read
+  // that could not be made would be the other case entirely, and is covered below.
+  const urls = await mockRoaxRpc(page, anchoredChain({ grants: [] }));
   await openVerifyAndSubmit(page, validDoc());
 
   // The record is valid on-chain, yet the credential fails: the address that actually issued this
-  // root is not whitelisted for the record type the clone reports. No operator input was needed to
-  // reach that verdict, which is the point - the pillar can no longer be left unrun.
+  // root held no grant for the record type the clone reports. No operator input was needed to reach
+  // that verdict, which is the point - the pillar can no longer be left unrun.
   await expect(page.getByText("Valid", { exact: true })).toBeVisible();
   await expect(page.getByText("Verdict: fail")).toBeVisible();
-  await expect(pillar(page, "Issuer whitelist")).toHaveText(/No$/);
+  await expect(pillar(page, "Issuer authorised at issuance")).toHaveText(/No$/);
 
   assertNoOperatorRelay(urls);
   await panelCard(page).screenshot({ path: "e2e-artifacts/verify-whitelist-fail.png" });
+});
+
+test("delisting is forward-only: a signer delisted AFTER the anchoring still verifies", async ({
+  page,
+}) => {
+  // `DogTagIssuer.sol:82` states the rule in the contract's own source and `adminRevoke` is the
+  // retroactive lever, so an ordinary key rotation, a retirement or a lapsed practice licence must not
+  // render every credential that signer ever anchored a forgery. This is the direction a current-state
+  // `isWhitelistedFor` read got wrong, on a rendered surface.
+  const urls = await mockRoaxRpc(page, anchoredChain({ grants: [GRANTED_BEFORE, DELISTED_AFTER] }));
+  await openVerifyAndSubmit(page, validDoc());
+
+  await expect(page.getByText("Verdict: pass")).toBeVisible();
+  await expect(pillar(page, "Issuer authorised at issuance")).toHaveText(/Yes$/);
+
+  assertNoOperatorRelay(urls);
+});
+
+test("delisting before the anchoring still refuses - the pair, not just the fix's direction", async ({
+  page,
+}) => {
+  // The mirror. A check that only ever cleared would satisfy the test above on its own, so both
+  // directions are asserted: the grant was withdrawn BEFORE this root was anchored, so the signer held
+  // no authority when it acted and the credential is refused.
+  const urls = await mockRoaxRpc(
+    page,
+    anchoredChain({
+      grants: [GRANTED_BEFORE, { kind: "delisted", blockNumber: 400, logIndex: 0 }],
+    }),
+  );
+  await openVerifyAndSubmit(page, validDoc());
+
+  await expect(page.getByText("Verdict: fail")).toBeVisible();
+  await expect(pillar(page, "Issuer authorised at issuance")).toHaveText(/No$/);
+
+  assertNoOperatorRelay(urls);
+});
+
+test("no anchoring event: the pillar is Unresolved, never a pass and never an accusation", async ({
+  page,
+}) => {
+  // `issuedAt` is a unix TIMESTAMP, so without the `RootIssued` log there is no point to sequence the
+  // grant history against. That is our inability to put the question - distinct from the registry
+  // answering with an empty log above, which IS evidence - so it must render as a failure to establish
+  // the claim rather than as either verdict about the credential.
+  const urls = await mockRoaxRpc(page, anchoredChain({ rootIssuedAt: null }));
+  await openVerifyAndSubmit(page, validDoc());
+
+  await expect(page.getByText("Verdict: fail")).toBeVisible();
+  await expect(pillar(page, "Issuer authorised at issuance")).toHaveText(/Unresolved$/);
+
+  assertNoOperatorRelay(urls);
 });
 
 test("unresolvable issuer renders Unresolved and fails closed, never a silent pass", async ({
@@ -292,7 +481,7 @@ test("unresolvable issuer renders Unresolved and fails closed, never a silent pa
 
   await expect(page.getByText("Verdict: fail")).toBeVisible();
   await expect(page.getByText("Not issued", { exact: true })).toBeVisible();
-  await expect(pillar(page, "Issuer whitelist")).toHaveText(/Unresolved$/);
+  await expect(pillar(page, "Issuer authorised at issuance")).toHaveText(/Unresolved$/);
 
   assertNoOperatorRelay(urls);
   await panelCard(page).screenshot({ path: "e2e-artifacts/verify-unresolved-issuer.png" });
