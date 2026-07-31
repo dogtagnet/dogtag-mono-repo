@@ -125,7 +125,8 @@
     "documentation": "A live-address table or runbook. Moves with the code.",
     "historical-ledger": "PRESERVE. The deployment record. AGENTS.md: do not rewrite historical records.",
     "pinned-fixture": "PRESERVE. Pinned to a block; the S-12 fork test REFUSES to run if it disagrees with the fork.",
-    "hermetic-fixture": "PRESERVE. A MemChain or mocked-network constant that resolves nothing live. Reusing a real address here is cosmetic."
+    "hermetic-fixture": "PRESERVE. A MemChain or mocked-network constant that resolves nothing live. Reusing a real address here is cosmetic.",
+    "inventory-manifest": "PRESERVE the generation-1 values. This file itself, which records WHAT MOVED and therefore holds every generation-1 address by design. S-14 fills each `generation2` beside its `generation1`; it never replaces one, or the record of what moved from where is lost."
   },
   "consumers": [
     {
@@ -270,6 +271,11 @@
       "path": "stacks/owner/web/src/lib/sampleDoc.ts",
       "class": "hermetic-fixture",
       "note": "A fixed sample credential pasted into the Receive page. Resolves nothing."
+    },
+    {
+      "path": "scripts/cutover-consumers.json",
+      "class": "inventory-manifest",
+      "note": "Declared rather than skipped. An implicit self-exemption is a silent hole in the one check that exists to find silent holes - and this entry was added only because the gate flagged its own manifest the moment it became tracked. Until then the check was passing because git grep cannot see an untracked file, which is a check passing by not running."
     }
   ],
   "_elidedDoc": [

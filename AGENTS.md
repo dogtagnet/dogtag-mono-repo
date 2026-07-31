@@ -1409,6 +1409,16 @@ real consumers vanish, and the prefix form invents three. Elided prose (`0xED202
 neither without reintroducing the false positives, so it is DECLARED in the manifest's
 `elidedReferences` and checked for presence instead.
 
+**`git grep` sees TRACKED files only, and that blinded this gate to its own manifest.**
+`scripts/cutover-consumers.json` holds every generation-1 address by design, so it is a file the gate
+must account for - but while it was untracked `git grep` could not see it and the gate reported a clean
+tree throughout. A check passing by not running, aimed at itself. It surfaced the instant the file was
+committed. The manifest now DECLARES itself (`inventory-manifest`) rather than being silently skipped,
+because an implicit self-exemption is a hole in the one check whose job is finding holes; and the gate
+separately scans the untracked-but-not-ignored set, since any file about to be committed is invisible
+to `git grep` for exactly as long as that matters. Generalize it: **never conclude "the tree is clean"
+from `git grep` alone while the thing you just wrote is still untracked.**
+
 **Write the gate in bash, never zsh.** zsh does not word-split an unquoted `"$var"`, so iterating a
 space-separated address list runs ONE iteration with the whole string as the pattern, every `git grep`
 misses, and the script reports a clean tree - a check that passes by not running. This bit during

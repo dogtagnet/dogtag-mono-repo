@@ -143,6 +143,15 @@ Both halves are mutation-proven: dropping `-i` makes seven real consumers vanish
 Elided prose references (`0xED20269E…`) can be matched by neither, since widening the pattern to catch them reintroduces the prefix false positives.
 They are **declared** in the manifest's `elidedReferences` and checked for presence instead, so a doc that narrates a moving address is not forgotten at cutover.
 
+**`git grep` sees TRACKED files only, and that blinded this gate to its own manifest.**
+`scripts/cutover-consumers.json` holds every generation-1 address by design - it is the record of what moved - so it is itself a file the gate must account for.
+While it was untracked, `git grep` could not see it and the gate reported a clean tree throughout: the check was passing by not running, which is precisely the defect it exists to catch, aimed at itself.
+It surfaced the moment the file was committed.
+
+The fix is two-part, and the second half is the general one.
+The manifest now **declares itself** under the `inventory-manifest` class rather than being silently skipped - an implicit self-exemption is a hole in the one check whose job is finding holes.
+And the gate separately scans the untracked-but-not-ignored set, because any file about to be committed is invisible to `git grep` for exactly as long as it matters.
+
 One more shell trap, because the checker would be worthless if it hit it: the repo's default shell is zsh, which does **not** word-split an unquoted `"$var"`.
 Iterating a space-separated address list that way runs one iteration with the whole string as the pattern, every `git grep` misses, and the script reports a clean tree - a check that passes by not running.
 `scripts/check-cutover-consumers.sh` is `#!/usr/bin/env bash` and uses explicit arrays regardless.

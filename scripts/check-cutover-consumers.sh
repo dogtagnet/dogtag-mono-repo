@@ -69,6 +69,26 @@ print("\n".join(c["path"] for c in m["consumers"]))
 
 : > /tmp/.cutover-found.$$
 fail=0
+
+# `git grep` searches TRACKED files only, so a file that is about to be committed is invisible to it.
+# That is not hypothetical: this manifest went undeclared while it was untracked and the gate reported
+# a clean tree the whole time - a check passing by not running, which is the defect this gate exists
+# to catch, aimed at itself. So scan the untracked-but-not-ignored set separately.
+untracked=$(git ls-files --others --exclude-standard)
+if [ -n "$untracked" ]; then
+  for i in "${!ADDRS[@]}"; do
+    while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      if grep -qI -i -- "${ADDRS[$i]}" "$f" 2>/dev/null; then
+        echo "::error:: UNTRACKED $f carries ${CONTRACTS[$i]}'s address."
+        echo "          git grep cannot see it, so committing it would add an undeclared consumer that"
+        echo "          this gate would then be blind to. Track and declare it, or remove it."
+        fail=1
+      fi
+    done <<< "$untracked"
+  done
+fi
+
 echo "Moving addresses (generation 1 -> generation 2), and what carries each:"
 echo
 for i in "${!ADDRS[@]}"; do
