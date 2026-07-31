@@ -258,46 +258,73 @@ check_lib "vet: every error read as a revert (the old is_ok semantics)" \
   vet-api \
   a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one \
   stacks/vet/api/src/chain.rs \
-  '    matches!(
-        e,
-        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(_))
-    )
-}
-
-/// Classify a generation probe. The probe'"'"'s VALUE is deliberately not part of this decision' \
+  '    match e {
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(p)) => {
+            p.code == EXECUTION_REVERTED_CODE || p.message.contains(EXECUTION_REVERTED_MESSAGE)
+        }
+        _ => false,
+    }' \
   '    let _ = e;
-    true
-}
-
-/// Classify a generation probe. The probe'"'"'s VALUE is deliberately not part of this decision'
+    true'
 
 check_lib "vet: no error read as a revert (the generation-1 refusal lost)" \
   vet-api \
-  only_a_node_error_response_identifies_generation_one \
+  only_an_execution_revert_identifies_generation_one \
   stacks/vet/api/src/chain.rs \
-  '    matches!(
-        e,
-        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(_))
-    )
-}
-
-/// Classify a generation probe. The probe'"'"'s VALUE is deliberately not part of this decision' \
+  '    match e {
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(p)) => {
+            p.code == EXECUTION_REVERTED_CODE || p.message.contains(EXECUTION_REVERTED_MESSAGE)
+        }
+        _ => false,
+    }' \
   '    let _ = e;
-    false
-}
-
-/// Classify a generation probe. The probe'"'"'s VALUE is deliberately not part of this decision'
+    false'
 
 check_lib "government: every error read as a revert (the old is_ok semantics)" \
   government-api \
   a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one \
   stacks/government/api/src/chain.rs \
+  '    match e {
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(p)) => {
+            p.code == EXECUTION_REVERTED_CODE || p.message.contains(EXECUTION_REVERTED_MESSAGE)
+        }
+        _ => false,
+    }' \
+  '    let _ = e;
+    true'
+
+# A NODE-LEVEL ERROR IS NOT A CONTRACT ANSWER. Widening back to "any JSON-RPC error response" reads a
+# rate limit or an internal error as a revert, which leaves an empty grant history standing as a
+# definite forgery verdict - on government's UNAUTHENTICATED POST /v1/verify.
+check_lib "vet: any node error read as a revert (not just an execution revert)" \
+  vet-api \
+  a_node_error_that_is_not_a_revert_is_undetermined_never_generation_one \
+  stacks/vet/api/src/chain.rs \
+  '    match e {
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(p)) => {
+            p.code == EXECUTION_REVERTED_CODE || p.message.contains(EXECUTION_REVERTED_MESSAGE)
+        }
+        _ => false,
+    }' \
   '    matches!(
         e,
         alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(_))
-    )' \
-  '    let _ = e;
-    true'
+    )'
+
+check_lib "government: any node error read as a revert (not just an execution revert)" \
+  government-api \
+  a_node_error_that_is_not_a_revert_is_undetermined_never_generation_one \
+  stacks/government/api/src/chain.rs \
+  '    match e {
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(p)) => {
+            p.code == EXECUTION_REVERTED_CODE || p.message.contains(EXECUTION_REVERTED_MESSAGE)
+        }
+        _ => false,
+    }' \
+  '    matches!(
+        e,
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(_))
+    )'
 
 # The FALL-THROUGH is the sharpest arm: on a transport failure the legacy getter would still answer,
 # and on a `ProviderRegistry` it answers a confident wrong `false` off the orthogonal VERIFY axis.

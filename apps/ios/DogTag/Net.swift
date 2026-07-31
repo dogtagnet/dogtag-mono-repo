@@ -869,10 +869,39 @@ enum RoaxRpc {
     /// `case .refused(let e), .unreachable(let e)`.
     enum CallResult {
         case success(String)
-        /// The node returned a JSON-RPC error for a request it processed - a revert.
+        /// The CONTRACT executed the call and reverted - see `isExecutionRevert`. The only failure
+        /// that is evidence about the contract.
         case refused(String)
-        /// No answer was obtained at all.
+        /// No contract answer was obtained: a transport failure, an unparseable body, or a JSON-RPC
+        /// error the node raised about ITSELF (a rate limit, an internal error).
         case unreachable(String)
+    }
+
+    /// The JSON-RPC error code geth returns for a call the EVM EXECUTED and reverted. Confirmed
+    /// against ROAX on 2026-07-31 with the exact production case: `isRecognizedIssuer` put to the
+    /// deployed generation-1 `IssuerRegistry` answers
+    /// `{"code":3,"message":"execution reverted","data":"0x"}`.
+    static let executionRevertedCode = 3
+
+    /// Did the CONTRACT execute this call and revert, or did the NODE fail on its own account?
+    ///
+    /// A JSON-RPC error member is not by itself evidence the contract did anything. `-32005` rate
+    /// limit, `-32603` internal error, `-32601` method not found and `-32002` resource unavailable are
+    /// the node speaking about ITSELF; reading one of those as generation 1 leaves an empty grant
+    /// history standing as a definite refusal, i.e. a forgery verdict against a genuine credential
+    /// produced by a call that never ran.
+    ///
+    /// Only an execution revert licenses that conclusion, and it is exactly the signal wanted: a
+    /// generation-1 `IssuerRegistry` has no `isRecognizedIssuer` and no fallback, so its dispatcher
+    /// reverts. The code is the typed discriminator; the canonical message is accepted alongside it
+    /// for clients that report the same revert under a different code (several spell it `-32000`),
+    /// without which the pillar would stop refusing every never-granted signer against such a peer.
+    ///
+    /// Mirrors Rust `answered_with_execution_revert`, Kotlin `RoaxRpc.isExecutionRevert` and viem's
+    /// `ExecutionRevertedError` (`code === 3 || /execution reverted/`, the same pair).
+    static func isExecutionRevert(code: Int, message: String) -> Bool {
+        code == executionRevertedCode
+            || message.range(of: "execution reverted", options: .caseInsensitive) != nil
     }
 
     private static func ethCall(
@@ -896,7 +925,13 @@ enum RoaxRpc {
             return .unreachable("bad rpc json")
         }
         if let err = o["error"] as? [String: Any] {
-            return .refused((err["message"] as? String) ?? "rpc error")
+            let message = (err["message"] as? String) ?? "rpc error"
+            // Carrying an `error` member is NOT enough to call this a contract answer - most of what
+            // arrives that way is the node speaking about itself. See `isExecutionRevert`.
+            let code = (err["code"] as? Int) ?? 0
+            return isExecutionRevert(code: code, message: message)
+                ? .refused(message)
+                : .unreachable(message)
         }
         let result = (o["result"] as? String) ?? ""
         return .success(result.hasPrefix("0x") ? String(result.dropFirst(2)) : result)

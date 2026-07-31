@@ -103,11 +103,49 @@ class GrantInForceAtTest {
     // Mirrors Swift `GrantAtIssuanceTests` case for case.
 
     @Test
-    fun onlyANodeErrorResponseIdentifiesGenerationOne() {
+    fun onlyAnExecutionRevertIdentifiesGenerationOne() {
         assertEquals(
             RoaxRpc.AuthorityGeneration.Legacy,
             RoaxRpc.generationFromProbe(RoaxRpc.CallResult.Err("execution reverted", answered = true)),
         )
+        // The typed discriminator: geth's execution-reverted code, confirmed against ROAX with the
+        // exact production case (`isRecognizedIssuer` on the deployed generation-1 IssuerRegistry).
+        assertEquals(true, RoaxRpc.isExecutionRevert(3, "execution reverted"))
+        // …and the message arm, for a client that reports the same revert under another code.
+        assertEquals(true, RoaxRpc.isExecutionRevert(-32000, "execution reverted"))
+    }
+
+    /**
+     * A NODE-LEVEL ERROR IS NOT A CONTRACT ANSWER. The first cut keyed `answered` on "a 200 carrying
+     * a JSON-RPC error member", which a rate limit satisfies - so one would have left an empty grant
+     * history standing as a definite refusal, i.e. a forgery verdict against a genuine credential
+     * produced by a call the contract never ran.
+     *
+     * Mirrors Swift `test_aNodeErrorThatIsNotARevertIsNotAContractAnswer` and the Rust
+     * `a_node_error_that_is_not_a_revert_is_undetermined_never_generation_one`.
+     */
+    @Test
+    fun aNodeErrorThatIsNotARevertIsNotAContractAnswer() {
+        val nodeErrors = listOf(
+            -32005 to "limit exceeded",
+            -32603 to "internal error",
+            -32601 to "the method does not exist/is not available",
+            -32002 to "resource unavailable",
+        )
+        for ((code, message) in nodeErrors) {
+            assertEquals(
+                "$code is the node speaking about itself, not the contract executing anything",
+                false,
+                RoaxRpc.isExecutionRevert(code, message),
+            )
+            assertEquals(
+                "$code must not license the generation-1 conclusion",
+                RoaxRpc.AuthorityGeneration.Undetermined,
+                RoaxRpc.generationFromProbe(
+                    RoaxRpc.CallResult.Err(message, answered = RoaxRpc.isExecutionRevert(code, message)),
+                ),
+            )
+        }
     }
 
     @Test

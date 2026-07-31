@@ -81,8 +81,40 @@ final class GrantAtIssuanceTests: XCTestCase {
     //
     // Mirrors Android's `GrantInForceAtTest` case for case.
 
-    func test_onlyANodeErrorResponseIdentifiesGenerationOne() {
+    func test_onlyAnExecutionRevertIdentifiesGenerationOne() {
         XCTAssertEqual(RoaxRpc.generationFromProbe(.refused("execution reverted")), .legacy)
+        // The typed discriminator: geth's execution-reverted code, confirmed against ROAX with the
+        // exact production case (`isRecognizedIssuer` on the deployed generation-1 IssuerRegistry).
+        XCTAssertTrue(RoaxRpc.isExecutionRevert(code: 3, message: "execution reverted"))
+        // …and the message arm, for a client that reports the same revert under another code.
+        XCTAssertTrue(RoaxRpc.isExecutionRevert(code: -32000, message: "execution reverted"))
+    }
+
+    /// A NODE-LEVEL ERROR IS NOT A CONTRACT ANSWER. The first cut raised `.refused` for any JSON-RPC
+    /// error member, which a rate limit satisfies - so one would have left an empty grant history
+    /// standing as a definite refusal, i.e. a forgery verdict against a genuine credential produced by
+    /// a call the contract never ran.
+    ///
+    /// Mirrors Android's `aNodeErrorThatIsNotARevertIsNotAContractAnswer` and the Rust
+    /// `a_node_error_that_is_not_a_revert_is_undetermined_never_generation_one`.
+    func test_aNodeErrorThatIsNotARevertIsNotAContractAnswer() {
+        let nodeErrors: [(Int, String)] = [
+            (-32005, "limit exceeded"),
+            (-32603, "internal error"),
+            (-32601, "the method does not exist/is not available"),
+            (-32002, "resource unavailable"),
+        ]
+        for (code, message) in nodeErrors {
+            XCTAssertFalse(
+                RoaxRpc.isExecutionRevert(code: code, message: message),
+                "\(code) is the node speaking about itself, not the contract executing anything")
+            let probe: RoaxRpc.CallResult =
+                RoaxRpc.isExecutionRevert(code: code, message: message)
+                ? .refused(message) : .unreachable(message)
+            XCTAssertEqual(
+                RoaxRpc.generationFromProbe(probe), .undetermined,
+                "\(code) must not license the generation-1 conclusion")
+        }
     }
 
     func test_aProbeThatAnswersIdentifiesTheSuccessor() {

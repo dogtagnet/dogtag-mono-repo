@@ -1,7 +1,8 @@
 import {
   BaseError,
-  ContractFunctionRevertedError,
   createPublicClient,
+  encodeFunctionData,
+  ExecutionRevertedError,
   keccak256,
   toBytes,
   type Abi,
@@ -663,26 +664,40 @@ export function grantInForceAt(
 export type AuthorityGeneration = "successor" | "legacy" | "undetermined";
 
 /**
- * Did the node EXECUTE this call and the contract refuse it, or did we simply fail to get an answer?
+ * Did the CONTRACT execute this call and revert, or did the NODE fail on its own account?
  *
- * Only an executed-and-refused call is evidence about the contract. viem folds a JSON-RPC revert
- * (`code: 3`, and the internal-error code it also treats as one) into a
- * `ContractFunctionRevertedError`, while a timeout, a dropped connection or a rate-limit response
- * surfaces as some other cause under `CallExecutionError` — so walking for that one class is the
- * typed discriminator here, rather than matching on a message string.
+ * `ExecutionRevertedError` is viem's revert-SPECIFIC class: `getNodeError` raises it for `code === 3`
+ * or a message matching `/execution reverted/`, which is exactly the pair the Rust and mobile ports
+ * key on. Everything else the node can say about ITSELF — `-32005` rate limit (`LimitExceededRpcError`),
+ * `-32603` internal error (`InternalRpcError`), `-32601`, `-32002` — and every transport failure keeps
+ * its own class, so this walk excludes them.
  *
- * `ContractFunctionZeroDataError` is deliberately NOT a refusal: it is an address with no code
- * answering empty, which establishes nothing about a vocabulary.
- *
- * DELIBERATE DIVERGENCE from the Rust ports, recorded rather than smoothed over: alloy's only typed
- * boundary is `RpcError::ErrorResp`, which covers EVERY node-returned error including a rate-limit
- * one, so a `-32005` still keeps a definite refusal there and does not here. Both are safe — neither
- * reads a transport failure as a revert — and this one is the stricter of the two, which is the same
- * posture this module already takes against mobile.
+ * DO NOT "align" this with `ContractFunctionRevertedError`, which is what it used to walk for and is
+ * NOT revert-specific: viem's `getContractError` folds BOTH `code === 3` AND `InternalRpcError.code`
+ * (`-32603`) into that class, so an internal error read as a revert. Verified empirically against the
+ * pinned viem rather than inferred — through `readContract` a `-32603` yields
+ * `ContractFunctionRevertedError`, while through `call` it yields `InternalRpcError`. That is why the
+ * probe below uses `call`: it is also the honest read for a value we discard.
  */
-function answeredWithRevert(e: unknown): boolean {
+export function answeredWithExecutionRevert(e: unknown): boolean {
   if (!(e instanceof BaseError)) return false;
-  return Boolean(e.walk((x) => x instanceof ContractFunctionRevertedError));
+  return Boolean(e.walk((x) => x instanceof ExecutionRevertedError));
+}
+
+/**
+ * What a probe that DID NOT throw establishes, from its returndata alone.
+ *
+ * A successful `eth_call` is only evidence of the successor if something actually answered. An address
+ * with NO CODE returns empty without reverting, which is neither a `ProviderRegistry` answering nor
+ * evidence of a generation-1 `IssuerRegistry` — the same case `readContract` used to surface as
+ * `ContractFunctionZeroDataError`. Reading it as `"successor"` would silently suppress the definite
+ * refusal for every never-granted signer whose configured authority address points at nothing.
+ *
+ * Split out from the I/O so it is pinned rather than inferred, mirroring how the Rust port keeps
+ * `generation_from_probe` beside its call.
+ */
+export function generationFromProbeData(data: string | undefined): AuthorityGeneration {
+  return data && data !== "0x" ? "successor" : "undetermined";
 }
 
 /**
@@ -712,16 +727,22 @@ export async function authorityGenerationOf(args: {
   blockNumber?: bigint;
 }): Promise<AuthorityGeneration> {
   try {
-    await roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
-      address: args.registryAddr as Address,
-      abi: PROVIDER_AUTHORITY_ABI,
-      functionName: "isRecognizedIssuer",
-      args: [args.issuerAddr as Address, args.signer as Address],
+    // A raw `call` rather than `readContract`, for two reasons that point the same way. The value is
+    // DISCARDED, so decoding it would be work done only to throw the result away; and `readContract`
+    // routes the failure through `getContractError`, which collapses an internal error into the same
+    // class as a revert - see {@link answeredWithExecutionRevert}.
+    const { data } = await roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).call({
+      to: args.registryAddr as Address,
+      data: encodeFunctionData({
+        abi: PROVIDER_AUTHORITY_ABI,
+        functionName: "isRecognizedIssuer",
+        args: [args.issuerAddr as Address, args.signer as Address],
+      }),
       blockNumber: args.blockNumber,
     });
-    return "successor";
+    return generationFromProbeData(data);
   } catch (e) {
-    return answeredWithRevert(e) ? "legacy" : "undetermined";
+    return answeredWithExecutionRevert(e) ? "legacy" : "undetermined";
   }
 }
 

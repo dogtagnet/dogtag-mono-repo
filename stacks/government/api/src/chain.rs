@@ -49,26 +49,46 @@ pub enum AuthorityGeneration {
     Undetermined,
 }
 
-/// Did the node ANSWER this call, or merely fail to deliver it?
+/// The JSON-RPC error code geth returns for a call the EVM EXECUTED and reverted. Confirmed against
+/// ROAX on 2026-07-31 with the exact production case — `isRecognizedIssuer` put to the deployed
+/// generation-1 `IssuerRegistry` answers `{"code":3,"message":"execution reverted","data":"0x"}`.
+const EXECUTION_REVERTED_CODE: i64 = 3;
+/// The canonical message, accepted ALONGSIDE the code for clients that report a revert under a
+/// different one (several spell it `-32000`). Without it a peer that does so would stop refusing every
+/// never-granted generation-1 signer, which is the pillar's main job. Narrow and exact rather than a
+/// guess across the error space — and note alloy's own `ErrorPayload::as_revert_data` keys on the
+/// looser `contains("revert")`.
+const EXECUTION_REVERTED_MESSAGE: &str = "execution reverted";
+
+/// Did the CONTRACT execute this call and revert, or did something else go wrong?
 ///
-/// Only an answer licenses a conclusion ABOUT THE CONTRACT. `RpcError::ErrorResp` is the node
-/// returning a JSON-RPC error for a request it processed, which is how a revert arrives — including
-/// the bare revert a contract produces for a selector it does not implement and has no fallback for.
-/// Every other error is our side failing to obtain an answer: `Transport` (timeout, connection reset,
-/// HTTP status), `DeserError`/`SerError`, `NullResp`, `LocalUsageError`, plus the contract layer's own
-/// `AbiError` (returndata that would not decode — what an address with no code produces) and the
-/// `UnknownFunction`/`UnknownSelector`/deployment variants.
+/// Only an execution revert is evidence ABOUT THE CONTRACT, and it is exactly the signal wanted here:
+/// a generation-1 `IssuerRegistry` has no `isRecognizedIssuer` and no fallback, so its dispatcher
+/// reverts.
 ///
-/// RESIDUAL, recorded rather than engineered around: `ErrorResp` also carries a node's rate-limit and
-/// internal-error responses, which are not reverts, so one of those still keeps a definite refusal.
-/// Narrowing further would mean guessing from an error code or a message string, and this is the only
-/// typed boundary alloy offers. It is strictly better than the `is_ok()` it replaces, which read
-/// EVERY failure — a dropped connection included — as a revert.
-fn answered_with_error(e: &alloy::contract::Error) -> bool {
-    matches!(
-        e,
-        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(_))
-    )
+/// Everything else says the contract did nothing. Some of it is obviously ours — `Transport` (timeout,
+/// reset connection, HTTP status), `DeserError`/`SerError`, `NullResp`, `LocalUsageError`, plus the
+/// contract layer's own `AbiError` (returndata that would not decode, which is what an address with no
+/// code produces) and the `UnknownFunction`/`UnknownSelector`/deployment variants. The part that is
+/// easy to get wrong is that an `ErrorResp` is NOT automatically a revert: `-32005` rate limit,
+/// `-32603` internal error, `-32601` method not found and `-32002` resource unavailable are the node
+/// speaking about ITSELF. Reading one of those as generation 1 leaves an empty grant history standing
+/// as a definite refusal — a forgery verdict against a genuine credential, produced by a call the
+/// contract never ran, on `POST /v1/verify`, which is UNAUTHENTICATED by design and where a rate-limit
+/// response is a realistic condition rather than a hypothetical one.
+///
+/// `ErrorPayload::as_revert_data` is deliberately NOT the discriminator: it requires revert DATA, and
+/// the revert this looks for is a bare dispatcher refusal that carries none (`"data":"0x"` above).
+///
+/// Mirrored by viem's `ExecutionRevertedError` on the web (`code === 3 || /execution reverted/`, the
+/// same pair) and by `isExecutionRevert` in both mobile clients.
+fn answered_with_execution_revert(e: &alloy::contract::Error) -> bool {
+    match e {
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(p)) => {
+            p.code == EXECUTION_REVERTED_CODE || p.message.contains(EXECUTION_REVERTED_MESSAGE)
+        }
+        _ => false,
+    }
 }
 
 /// Classify a generation probe. The probe's VALUE is deliberately not part of this decision — see the
@@ -76,7 +96,7 @@ fn answered_with_error(e: &alloy::contract::Error) -> bool {
 fn generation_from_probe<T>(r: &Result<T, alloy::contract::Error>) -> AuthorityGeneration {
     match r {
         Ok(_) => AuthorityGeneration::Successor,
-        Err(e) if answered_with_error(e) => AuthorityGeneration::Legacy,
+        Err(e) if answered_with_execution_revert(e) => AuthorityGeneration::Legacy,
         Err(_) => AuthorityGeneration::Undetermined,
     }
 }
@@ -1910,13 +1930,68 @@ mod tests {
         );
     }
 
+    /// A node-level error under a DIFFERENT code, so the message is the only thing identifying it.
+    /// Several clients spell an execution revert `-32000`; without this arm the pillar would stop
+    /// refusing every never-granted generation-1 signer against such a peer.
+    fn revert_error_under_another_code() -> alloy::contract::Error {
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(
+            alloy::rpc::json_rpc::ErrorPayload {
+                code: -32000,
+                message: "execution reverted".into(),
+                data: None,
+            },
+        ))
+    }
+
+    /// A node speaking about ITSELF, not about the call. `code` is the whole difference.
+    fn node_error(code: i64, message: &'static str) -> alloy::contract::Error {
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(
+            alloy::rpc::json_rpc::ErrorPayload {
+                code,
+                message: message.into(),
+                data: None,
+            },
+        ))
+    }
+
     #[test]
-    fn only_a_node_error_response_identifies_generation_one() {
-        assert!(answered_with_error(&revert_error()));
+    fn only_an_execution_revert_identifies_generation_one() {
+        assert!(answered_with_execution_revert(&revert_error()));
         assert_eq!(
             generation_from_probe::<()>(&Err(revert_error())),
             AuthorityGeneration::Legacy
         );
+        // The message arm, for a client that reports the same revert under another code.
+        assert!(answered_with_execution_revert(&revert_error_under_another_code()));
+        assert_eq!(
+            generation_from_probe::<()>(&Err(revert_error_under_another_code())),
+            AuthorityGeneration::Legacy
+        );
+    }
+
+    /// A NODE-LEVEL ERROR IS NOT A CONTRACT ANSWER, and this is the case the first cut got wrong:
+    /// classifying on `ErrorResp` alone read a rate limit as "the contract refused it", leaving an
+    /// empty grant history standing as a definite forgery verdict. On government's mirror of this
+    /// read that lands on the unauthenticated `POST /v1/verify`, where rate limiting is realistic
+    /// rather than hypothetical.
+    #[test]
+    fn a_node_error_that_is_not_a_revert_is_undetermined_never_generation_one() {
+        for (code, message) in [
+            (-32005i64, "limit exceeded"),
+            (-32603, "internal error"),
+            (-32601, "the method does not exist/is not available"),
+            (-32002, "resource unavailable"),
+        ] {
+            assert!(
+                !answered_with_execution_revert(&node_error(code, message)),
+                "{code} is the node speaking about itself, not the contract executing anything"
+            );
+            assert_eq!(
+                generation_from_probe::<()>(&Err(node_error(code, message))),
+                AuthorityGeneration::Undetermined,
+                "{code} must not license the generation-1 conclusion"
+            );
+        }
     }
 
     #[test]
@@ -1938,7 +2013,7 @@ mod tests {
         ];
         for e in &unreachable {
             assert!(
-                !answered_with_error(e),
+                !answered_with_execution_revert(e),
                 "{e:?} is not the node answering with an error"
             );
         }

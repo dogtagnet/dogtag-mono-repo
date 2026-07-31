@@ -937,12 +937,42 @@ object RoaxRpc {
     internal sealed class CallResult {
         data class Ok(val hex: String) : CallResult()
         /**
-         * @param answered true when the NODE returned a JSON-RPC error for a request it processed
-         *   (a revert). False - the default, since it is the safe reading - when we never obtained
-         *   an answer: a non-2xx HTTP status, a transport exception, unparseable JSON.
+         * @param answered true only when the CONTRACT executed the call and reverted - see
+         *   [isExecutionRevert]. False - the default, since it is the safe reading - for everything
+         *   else, including a JSON-RPC error the node raised about ITSELF: a non-2xx HTTP status, a
+         *   transport exception, unparseable JSON, a rate limit, an internal error.
          */
         data class Err(val reason: String, val answered: Boolean = false) : CallResult()
     }
+
+    /**
+     * The JSON-RPC error code geth returns for a call the EVM EXECUTED and reverted. Confirmed
+     * against ROAX on 2026-07-31 with the exact production case: `isRecognizedIssuer` put to the
+     * deployed generation-1 `IssuerRegistry` answers
+     * `{"code":3,"message":"execution reverted","data":"0x"}`.
+     */
+    internal const val EXECUTION_REVERTED_CODE = 3
+
+    /**
+     * Did the CONTRACT execute this call and revert, or did the NODE fail on its own account?
+     *
+     * A JSON-RPC error member is not by itself evidence the contract did anything. `-32005` rate
+     * limit, `-32603` internal error, `-32601` method not found and `-32002` resource unavailable are
+     * the node speaking about ITSELF; reading one of those as generation 1 leaves an empty grant
+     * history standing as a definite refusal, i.e. a forgery verdict against a genuine credential
+     * produced by a call that never ran.
+     *
+     * Only an execution revert licenses that conclusion, and it is exactly the signal wanted: a
+     * generation-1 `IssuerRegistry` has no `isRecognizedIssuer` and no fallback, so its dispatcher
+     * reverts. The code is the typed discriminator; the canonical message is accepted alongside it for
+     * clients that report the same revert under a different code (several spell it `-32000`), without
+     * which the pillar would stop refusing every never-granted signer against such a peer.
+     *
+     * Mirrors Rust `answered_with_execution_revert`, Swift `RoaxRpc.isExecutionRevert` and viem's
+     * `ExecutionRevertedError` (`code === 3 || /execution reverted/`, the same pair).
+     */
+    internal fun isExecutionRevert(code: Int, message: String): Boolean =
+        code == EXECUTION_REVERTED_CODE || message.contains("execution reverted", ignoreCase = true)
 
     /**
      * Which generation's vocabulary an authority contract speaks.
@@ -1030,9 +1060,13 @@ object RoaxRpc {
             if (!resp.ok) return CallResult.Err("rpc ${resp.code}")
             val o = JSONObject(resp.body)
             if (o.has("error")) {
+                val err = o.getJSONObject("error")
+                val message = err.optString("message", "rpc error")
+                // Carrying an `error` member is NOT enough to call this a contract answer - most of
+                // what arrives that way is the node speaking about itself. See [isExecutionRevert].
                 return CallResult.Err(
-                    o.getJSONObject("error").optString("message", "rpc error"),
-                    answered = true,
+                    message,
+                    answered = isExecutionRevert(err.optInt("code", 0), message),
                 )
             }
             CallResult.Ok(o.optString("result", "").removePrefix("0x"))
