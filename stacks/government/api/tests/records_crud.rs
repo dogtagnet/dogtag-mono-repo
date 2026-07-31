@@ -23,7 +23,6 @@ use tower::ServiceExt;
 const ISSUER_ADDR: &str = "0x1111111111111111111111111111111111111111";
 const REGISTRY_ADDR: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
 const API_TOKEN: &str = "test-gov-token";
-const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 
 fn demo_state() -> (AppState, MemChain) {
     let cfg = Config {

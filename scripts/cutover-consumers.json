@@ -1,0 +1,298 @@
+{
+  "_doc": [
+    "The S-13 client-repoint inventory: every tracked file carrying an address that MOVES in the",
+    "generation-1 -> generation-2 cutover, and what each one is.",
+    "",
+    "This file is DATA for scripts/check-cutover-consumers.sh, which fails when the tree and this",
+    "manifest disagree in either direction. It exists because the cutover's realistic failure mode is",
+    "not repointing the wrong address - it is repointing 30 of 35 files and shipping the other 5 still",
+    "aimed at generation 1, silently.",
+    "",
+    "Addresses are matched in FULL (40 hex digits) and CASE-INSENSITIVELY. Both halves are load-bearing;",
+    "see docs/CLIENT_REPOINT.md for the two ways an 8-hex case-sensitive grep gets this wrong.",
+    "",
+    "generation2 is null for every entry because nothing is deployed. S-13 repoints; S-14 deploys.",
+    "A placeholder here would be the invented data this fleet forbids."
+  ],
+  "chainId": 135,
+  "generation1Ledger": "contracts/deployments/roax.json",
+  "movingAddresses": [
+    {
+      "contract": "DogTagIssuerFactory",
+      "generation1": "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
+      "generation2": null,
+      "supersededBy": "CloneProvenanceRouter",
+      "repointStep": "C-9",
+      "note": [
+        "READ consumers repoint to the ROUTER, never to DogTagIssuerFactoryV2. The router answers",
+        "rootIssuer + isClone across BOTH generations, oldest-generation-first. Pointing a reader at",
+        "factory V2 strands all 19 historical roots at rootIssuer == 0, which is the exact failure the",
+        "router exists to prevent - and it fails silently, as an indeterminate issuer-whitelist pillar."
+      ]
+    },
+    {
+      "contract": "IssuerRegistry",
+      "generation1": "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",
+      "generation2": null,
+      "supersededBy": "ProviderRegistry",
+      "repointStep": "C-9",
+      "note": [
+        "Superseded as the authority core. Generation-1 clones keep reading the generation-1 registry",
+        "on-chain regardless - a clone pins its registry at initialize with no setter - so this is a",
+        "CONSUMER-side repoint only, and generation-1 issuance is unaffected until the C-12 freeze.",
+        "The mandatory issuer-whitelist pillar does not yet answer for a generation-2 root: see",
+        "docs/ISSUER_V2_OWNERSHIP.md section 8. That is a cutover blocker, not part of this slice."
+      ]
+    },
+    {
+      "contract": "VerificationRegistryConsent",
+      "generation1": "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
+      "generation2": null,
+      "supersededBy": "VerificationRegistryConsent V2",
+      "repointStep": "C-9",
+      "note": [
+        "Its issuerRegistry / sbt / rootIndex are all immutable, so replacing the authority core forces",
+        "this redeploy on its own. C-6 must migrate the VERIFY: relayer capabilities BEFORE any client",
+        "is repointed here: restrictToWhitelistedRelayers defaults true, so a client on V2 whose relayer",
+        "was not migrated gets !verify-wl on every verification."
+      ]
+    },
+    {
+      "contract": "ProtocolRegistry",
+      "generation1": "0xf5492A671E69b1A13f7Fd123C021830eB1ea8081",
+      "generation2": null,
+      "supersededBy": "ProtocolRegistryV2",
+      "repointStep": "C-8, then C-9",
+      "note": [
+        "The discovery anchor. Generation 2 publishes under the NEW discovery key dogtag-levelb/2; the",
+        "ARTIFACT key stays dogtag-levelb-artifacts/1 because the artifacts are byte-for-byte identical",
+        "and a second identity for them would be a falsehood. See docs/PROTOCOL_REGISTRY_V2.md."
+      ]
+    },
+    {
+      "contract": "IssuerDomainRegistry",
+      "generation1": "0xD3B121FEaCde93b95288912EAdbB10824550FdBF",
+      "generation2": null,
+      "supersededBy": "ServiceDomainResolver",
+      "repointStep": "C-7, then C-9",
+      "note": [
+        "Abandoning the deployed one is free: boundCloneCount() == 0 AND zero logs of any kind at head",
+        "303690 on 2026-07-30. Read the log count, not just the counter - setDomainAdmin appoints a key",
+        "without writing a binding, so only 'no logs' establishes nothing is stranded."
+      ]
+    },
+    {
+      "contract": "DogTagIssuerImpl",
+      "generation1": "0xe4aC139eB257C309Ec448C116A6F657Dab5590BA",
+      "generation2": null,
+      "supersededBy": "DogTagIssuerV2 implementation",
+      "repointStep": "C-3",
+      "note": [
+        "The clone implementation. DogTagIssuerFactoryV2 identifies it EXACTLY, by",
+        "impl.codehash == keccak256(type(DogTagIssuerV2).runtimeCode), so an ABI-shaped impostor is",
+        "refused at construction. Carried here because both mobile bundles and the ledger record it."
+      ]
+    }
+  ],
+  "_doNotMoveDoc": [
+    "Two live addresses are deliberately REUSED by generation 2 and must not appear in any repoint.",
+    "Listing them is the point: they look like they should move and they must not."
+  ],
+  "doNotMove": [
+    {
+      "contract": "DogTagSBTConsent",
+      "address": "0xBEbc45A838643D27004827b797b30A464b2b02c0",
+      "reason": [
+        "profileRoot is per-contract and write-once, so a new SBT has no root for any existing tag and",
+        "every existing tag would fail the R == profileRoot(dogTagId) binding. Reuse costs nothing:",
+        "minting gates on the SBT's own ISSUER_ROLE, not on the issuer registry, so it is independent",
+        "of the authority swap. C-10b must grant that role to the generation-2 issuing signers."
+      ]
+    },
+    {
+      "contract": "Groth16VerifierConsent",
+      "address": "0x1A9027986B859dc3879896B053deA78F636BE9b1",
+      "reason": [
+        "The circuit and the ceremony VK are frozen and unchanged by any of this work."
+      ]
+    }
+  ],
+  "_consumerClassDoc": {
+    "runtime-constant": "A compiled-in or bundled constant that resolves a live address. Repoint at C-9/C-10.",
+    "service-default": "A backend's hard-coded fallback for an env var. Repoint at C-9.",
+    "config-template": ".env.example - operator-facing template, read by nobody at runtime. Moves with the code per the captain's standing rule.",
+    "operational-script": "A demo/e2e shell script that drives the live chain. Repoint at C-9.",
+    "documentation": "A live-address table or runbook. Moves with the code.",
+    "historical-ledger": "PRESERVE. The deployment record. AGENTS.md: do not rewrite historical records.",
+    "pinned-fixture": "PRESERVE. Pinned to a block; the S-12 fork test REFUSES to run if it disagrees with the fork.",
+    "hermetic-fixture": "PRESERVE. A MemChain or mocked-network constant that resolves nothing live. Reusing a real address here is cosmetic."
+  },
+  "consumers": [
+    {
+      "path": "packages/ui/src/wallet/contracts.ts",
+      "class": "runtime-constant",
+      "note": "DEPLOYED_ADDRESSES - the web verifier, the tag-discovery scan and the admin bench read these as defaults."
+    },
+    {
+      "path": "apps/ios/DogTag/roax.json",
+      "class": "runtime-constant",
+      "note": "COMPILE-TIME bundle. Needs an app rebuild AND reinstall - the C-10 long pole."
+    },
+    {
+      "path": "apps/android/app/src/main/assets/roax.json",
+      "class": "runtime-constant",
+      "note": "COMPILE-TIME bundle. Needs an app rebuild AND reinstall - the C-10 long pole."
+    },
+    {
+      "path": "crates/dogtag-prover-rs/src/manifest.rs",
+      "class": "runtime-constant",
+      "note": "The signed-manifest mirror of the on-chain contract set. Generation 2 needs a second VersionDeployment keyed dogtag-levelb/2."
+    },
+    {
+      "path": "stacks/indexer/api/src/main.rs",
+      "class": "service-default",
+      "note": "INDEXER_GENERATIONS defaults. Must accept the generation-2 triple BEFORE generation 2 emits: the anti-spoof gate drops unrecognised emitters SILENTLY."
+    },
+    {
+      "path": "stacks/admin/api/src/main.rs",
+      "class": "service-default",
+      "note": "VERIFICATION_REGISTRY_ADDR fallback."
+    },
+    {
+      "path": "stacks/government/api/src/main.rs",
+      "class": "service-default",
+      "note": "VERIFICATION_REGISTRY_ADDR fallback."
+    },
+    {
+      "path": "stacks/vet/.env.example",
+      "class": "config-template"
+    },
+    {
+      "path": "stacks/groomer/.env.example",
+      "class": "config-template"
+    },
+    {
+      "path": "stacks/government/.env.example",
+      "class": "config-template"
+    },
+    {
+      "path": "stacks/admin/.env.example",
+      "class": "config-template"
+    },
+    {
+      "path": "stacks/indexer/.env.example",
+      "class": "config-template"
+    },
+    {
+      "path": "stacks/admin/web/.env.example",
+      "class": "config-template"
+    },
+    {
+      "path": "stacks/vet/web/.env.example",
+      "class": "config-template"
+    },
+    {
+      "path": "stacks/groomer/web/.env.example",
+      "class": "config-template"
+    },
+    {
+      "path": "scripts/e2e-roles.sh",
+      "class": "operational-script"
+    },
+    {
+      "path": "scripts/e2e-smoke.sh",
+      "class": "operational-script"
+    },
+    {
+      "path": "README.md",
+      "class": "documentation",
+      "note": "Live ROAX addresses table."
+    },
+    {
+      "path": "AGENTS.md",
+      "class": "documentation"
+    },
+    {
+      "path": "docs/DEPLOY.md",
+      "class": "documentation"
+    },
+    {
+      "path": "docs/DEPLOYMENT.md",
+      "class": "documentation"
+    },
+    {
+      "path": "docs/ARTIFACT_PIN_RUNBOOK.md",
+      "class": "documentation"
+    },
+    {
+      "path": "docs/PROTOCOL_REGISTRY_RUNBOOK.md",
+      "class": "documentation"
+    },
+    {
+      "path": "docs/SERVICE_DOMAIN_RESOLVER.md",
+      "class": "documentation"
+    },
+    {
+      "path": "contracts/deployments/roax.json",
+      "class": "historical-ledger",
+      "note": "S-14 ADDS generation-2 keys here. It must never rewrite a generation-1 key or a _legacy record."
+    },
+    {
+      "path": "contracts/rehearsal/fixtures/historical-roots.json",
+      "class": "pinned-fixture",
+      "note": "Re-derive with scripts/derive-cutover-inventory.sh at a new block; never hand-edit."
+    },
+    {
+      "path": "stacks/government/api/tests/flow_memchain.rs",
+      "class": "hermetic-fixture"
+    },
+    {
+      "path": "stacks/government/api/tests/share_qr.rs",
+      "class": "hermetic-fixture",
+      "note": "Carries VerificationRegistryConsent only. Its dead FACTORY constant was removed in S-13."
+    },
+    {
+      "path": "stacks/government/api/tests/verify_session.rs",
+      "class": "hermetic-fixture",
+      "note": "Carries VerificationRegistryConsent only. Its dead FACTORY constant was removed in S-13."
+    },
+    {
+      "path": "stacks/government/web/e2e/oversight.spec.ts",
+      "class": "hermetic-fixture",
+      "note": "Playwright spec with a mocked backend."
+    },
+    {
+      "path": "stacks/vet/web/e2e/traceability.spec.ts",
+      "class": "hermetic-fixture",
+      "note": "Playwright spec with a mocked backend."
+    },
+    {
+      "path": "stacks/owner/web/src/lib/sampleDoc.ts",
+      "class": "hermetic-fixture",
+      "note": "A fixed sample credential pasted into the Receive page. Resolves nothing."
+    }
+  ],
+  "_elidedDoc": [
+    "Files that reference a moving address ONLY in elided prose form (0xED20269E...), so a full-address",
+    "grep cannot see them. They still need a human edit at cutover. They are listed rather than matched",
+    "because widening the grep to 8-hex prefixes produces false positives - see docs/CLIENT_REPOINT.md."
+  ],
+  "elidedReferences": [
+    {
+      "path": "docs/ROLE_APPS.md",
+      "contract": "DogTagIssuerFactory"
+    },
+    {
+      "path": "docs/PROTOCOL_REGISTRY_V2.md",
+      "contract": "ProtocolRegistry"
+    },
+    {
+      "path": "AGENTS.md",
+      "contract": "DogTagIssuerFactory"
+    },
+    {
+      "path": "README.md",
+      "contract": "DogTagIssuerImpl"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # DogTag monorepo — root task runner (just is unavailable; GNU Make 3.81)
 .DEFAULT_GOAL := help
-.PHONY: help dev build test parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer test-consent-parity vendor-mobile-artifacts
+.PHONY: help dev build test parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer test-consent-parity vendor-mobile-artifacts check-cutover-consumers
 
 help: ## list targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -48,6 +48,9 @@ rehearse-cutover: ## S-12 registry cutover rehearsal on a ROAX FORK - deploys no
 
 rehearse-cutover-mutations: ## prove every cutover assertion can fail (NOT in `test`)
 	ROAX_FORK_RPC=$${ROAX_FORK_RPC:-https://devrpc.roax.net} scripts/rehearsal-mutations.sh
+
+check-cutover-consumers: ## S-13 client-repoint inventory gate (hermetic, no network)
+	scripts/check-cutover-consumers.sh
 
 deploy-contracts: ## deploy to ROAX (requires liveness precheck — see script/Deploy.s.sol)
 	cd contracts && forge script script/Deploy.s.sol --rpc-url $${ROAX_RPC:-https://devrpc.roax.net} --broadcast

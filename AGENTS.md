@@ -1385,6 +1385,66 @@ On a fork the only mutable surface is what the rehearsal itself deploys or does.
 file must also be listed in the harness's `TARGETS`, or `restore` silently leaves the tree mutated; that
 gap has already occurred once. Check the scrutinee, not just the diff.
 
+## An address inventory built with the obvious grep is wrong in BOTH directions (S-13)
+
+Full record: `docs/CLIENT_REPOINT.md`. The inventory is DATA in `scripts/cutover-consumers.json` and a
+gate in `scripts/check-cutover-consumers.sh` (`make check-cutover-consumers`), which fails when the tree
+and the manifest disagree in either direction. Do not re-derive the list by hand; run the gate.
+
+**`grep -rl "0xED20269E"` - the obvious inventory command - both MISSES real consumers and INVENTS
+non-consumers, and neither error is visible from reading its output.** The registry plan's own §9.6
+reports 17 tracked files for the factory; re-derived at the plan's own commit the figure is 22.
+
+- **Case.** Addresses are stored EIP-55-checksummed in some files and lowercased in others - the
+  indexer and the government tests lowercase. A case-sensitive grep for the checksummed form is blind
+  to every lowercased consumer. That is how the plan's list omitted `stacks/indexer/api/src/main.rs`,
+  the one service whose late repoint is *silent* (its anti-spoof gate drops unrecognised emitters with
+  no error, so the oversight feed merely looks quiet) - and the very file the plan's own §9.7 is about.
+- **Prefix.** An 8-hex prefix matches synthetic addresses that share it.
+  `packages/ui/test/provenance.test.ts` uses `0xED20269E1234567890abcdefABCDEF1234567890`, which is not
+  the factory. Truncating the gate's pattern to 8 hex pulls in three non-consumers.
+
+So match **full 40-hex, case-insensitively**. Both halves are mutation-proven: dropping `-i` makes seven
+real consumers vanish, and the prefix form invents three. Elided prose (`0xED20269E…`) is matchable by
+neither without reintroducing the false positives, so it is DECLARED in the manifest's
+`elidedReferences` and checked for presence instead.
+
+**Write the gate in bash, never zsh.** zsh does not word-split an unquoted `"$var"`, so iterating a
+space-separated address list runs ONE iteration with the whole string as the pattern, every `git grep`
+misses, and the script reports a clean tree - a check that passes by not running. This bit during
+development, and it is the same trap AGENTS.md already records for `swiftc $SRC`. Also use `LC_ALL=C`
+around every `sort`/`comm`: `comm` needs one collation on both inputs, and locale ordering puts
+`AGENTS.md` differently from codepoint ordering, which made the gate report every file as *both*
+undeclared and stale.
+
+**The factory address splits in two at generation 2, and the halves move in OPPOSITE directions.**
+A READER resolving the write-once `rootIssuer[R]` repoints to the `CloneProvenanceRouter` (which answers
+across both generations, oldest-first); pointing it at `DogTagIssuerFactoryV2` resolves every historical
+root to `address(0)`, surfacing as an indeterminate issuer-whitelist pillar rather than an error. A
+WRITER calling `predictIssuer`/`createIssuer` repoints to the factory, because the router deploys
+nothing. Both spellings live inside the admin stack alone: backend `FACTORY_ADDR` is a writer, web
+`VITE_DOGTAG_ISSUER_FACTORY_ADDR` is a reader. `INDEXER_GENERATIONS.factory` is a third case - an
+EMITTER allowlist, so it takes the factory, and it is an APPEND (the list keeps generation 1 forever)
+rather than a value swap.
+
+**`VITE_DOGTAG_ISSUER_FACTORY_ADDR` FALLS BACK to the SDK default when unset**
+(`packages/ui/src/wallet/verificationBench.ts`), so leaving it unset after a cutover does not disable
+the bench's anchor check - it silently keeps reading generation 1. Its neighbour
+`VITE_ISSUER_DOMAIN_REGISTRY_ADDR` has no fallback and fails closed. Adjacent lines, opposite failure
+modes; the fallback one is the one that can lie.
+
+**A source edit to a mobile bundle is NOT a repoint.** `apps/*/roax.json` are compile-time, so the
+repoint takes effect only after a rebuild AND a reinstall on each handset (C-10, the cutover's long
+pole). Nothing between the edited file and the installed build says which state you are in.
+
+**A recognized-but-undeployed version key is not an unknown one.** `manifest::deployment_status` returns
+`AwaitingDeployment` for `dogtag-levelb/2`, and `GET /protocol/manifest` answers 404 `version not yet
+deployed` naming the pending contracts rather than 404 `unknown version`. Both fail closed and serve
+nothing - only the DIAGNOSIS differs, because a typo is the caller's to fix while an undeployed key is
+fixed only by the cutover running. The record carries no address field at all, so it cannot decay into a
+placeholder. Note the generation-2 DISCOVERY key is not an ARTIFACT key: the artifacts are byte-for-byte
+generation 1's and keep `dogtag-levelb-artifacts/1`, so `artifact::resolve` fails closed on it too.
+
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 
 `contracts/src/CloneProvenanceRouter.sol`. Full rationale: `docs/CLONE_PROVENANCE_ROUTER.md`.

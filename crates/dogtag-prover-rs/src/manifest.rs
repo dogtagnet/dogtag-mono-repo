@@ -134,11 +134,74 @@ pub const LEVEL_B_ARTIFACT_RELEASE: ArtifactRelease = ArtifactRelease {
     min_app_version: "1.4.0", // M-4 PR4 app release floor (iOS + Android)
 };
 
+/// The generation-2 DISCOVERY key, published to `ProtocolRegistryV2` (`ProtocolVersionsV2.sol`).
+///
+/// Deliberately NOT in `artifact.rs` beside [`crate::artifact::LEVEL_B_V1`]: for generation 1 the
+/// discovery key and the artifact key are the same string, and for generation 2 they are NOT — the
+/// artifacts are byte-for-byte generation 1's, so they keep `dogtag-levelb-artifacts/1`. Filing this
+/// under the artifact registry would assert an artifact set that does not exist (R-5, the two axes).
+pub const LEVEL_B_V2_VERSION: &str = "dogtag-levelb/2";
+
+/// A version key this build RECOGNIZES but has no addresses for, because the contracts are built and
+/// not yet deployed. Carries what is missing and who fills it, and NO address field at all — a
+/// placeholder or a zero address here is exactly the invented data this fleet forbids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitingDeployment {
+    pub version: &'static str,
+    /// Who records the addresses, so the reader knows what has to happen rather than only that
+    /// something has not.
+    pub recorded_by: &'static str,
+    /// The contracts this version's record needs, in the order the cutover deploys them.
+    pub pending: &'static [&'static str],
+}
+
+/// `dogtag-levelb/2` — recognized, undeployed. See `docs/CLIENT_REPOINT.md`.
+pub const LEVEL_B_V2_AWAITING: AwaitingDeployment = AwaitingDeployment {
+    version: LEVEL_B_V2_VERSION,
+    recorded_by: "cutover steps C-1 through C-8 (registry plan S-14)",
+    pending: &[
+        "ProviderRegistry",
+        "DogTagIssuerV2 implementation",
+        "DogTagIssuerFactoryV2",
+        "CloneProvenanceRouter",
+        "VerificationRegistryConsent V2",
+        "ProtocolRegistryV2",
+    ],
+};
+
+/// Why a version has no [`VersionDeployment`]. The two absences are DIFFERENT and must not collapse.
+///
+/// `Unknown` is a typo, or a version this build does not serve.
+/// `AwaitingDeployment` is a key this build knows, whose contracts exist in `contracts/src` and have
+/// no address yet.
+///
+/// Collapsing them is the could-not-check-rendered-as-a-neighbour defect this repo closes everywhere
+/// else: an operator asking for `dogtag-levelb/2` mid-cutover and reading `unknown version` goes
+/// hunting a misspelling, when the real answer is that S-14 has not run. Both still fail closed and
+/// serve nothing — this changes the DIAGNOSIS, never the outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeploymentStatus {
+    Recorded(&'static VersionDeployment),
+    AwaitingDeployment(&'static AwaitingDeployment),
+    Unknown,
+}
+
+/// Classify a version key. Fail-closed in every arm: only `Recorded` can yield a manifest.
+pub fn deployment_status(version: &str) -> DeploymentStatus {
+    match version {
+        crate::artifact::LEVEL_B_V1 => DeploymentStatus::Recorded(&LEVEL_B_DEPLOYMENT),
+        LEVEL_B_V2_VERSION => DeploymentStatus::AwaitingDeployment(&LEVEL_B_V2_AWAITING),
+        _ => DeploymentStatus::Unknown,
+    }
+}
+
 /// The on-chain contract-set record for a known version key, or `None` for an unrecognized one
 /// (fail-closed — the serving path returns 404, never a guessed/empty manifest).
+///
+/// `None` for BOTH absences; use [`deployment_status`] where the two must be told apart.
 pub fn deployment_for(version: &str) -> Option<&'static VersionDeployment> {
-    match version {
-        crate::artifact::LEVEL_B_V1 => Some(&LEVEL_B_DEPLOYMENT),
+    match deployment_status(version) {
+        DeploymentStatus::Recorded(d) => Some(d),
         _ => None,
     }
 }
@@ -617,6 +680,61 @@ mod tests {
     }
 
     /// Leg 1: sign → serialize → deserialize → offline-verify PASSES.
+    /// S-13: a recognized-but-undeployed version is NOT reported as an unknown one.
+    ///
+    /// The two absences have unrelated remedies — a typo is the caller's to fix, an undeployed key is
+    /// only fixed by the cutover running — so collapsing them sends an operator hunting a misspelling
+    /// that does not exist. Mutation: make `deployment_status`'s `LEVEL_B_V2_VERSION` arm return
+    /// `Unknown` and this reddens.
+    #[test]
+    fn a_recognized_but_undeployed_version_is_distinguished_from_an_unknown_one() {
+        assert!(matches!(
+            deployment_status(crate::artifact::LEVEL_B_V1),
+            DeploymentStatus::Recorded(_)
+        ));
+        assert!(matches!(
+            deployment_status(LEVEL_B_V2_VERSION),
+            DeploymentStatus::AwaitingDeployment(_)
+        ));
+        assert_eq!(deployment_status("dogtag-levelb/9"), DeploymentStatus::Unknown);
+        assert_eq!(deployment_status(""), DeploymentStatus::Unknown);
+    }
+
+    /// ...and it still FAILS CLOSED. The point of the state is diagnosis, never permission: only a
+    /// `Recorded` version may yield a deployment or a manifest.
+    #[test]
+    fn an_undeployed_version_still_yields_no_deployment_and_no_manifest() {
+        assert!(deployment_for(LEVEL_B_V2_VERSION).is_none());
+        assert!(build(LEVEL_B_V2_VERSION).is_none());
+        assert!(artifact_release_for(LEVEL_B_V2_VERSION).is_none());
+    }
+
+    /// The awaiting record carries no address field at all, so it cannot become a placeholder that
+    /// looks real. It must, however, name what is missing and who fills it — an unset state that says
+    /// only "unset" is the thing this replaces.
+    #[test]
+    fn the_awaiting_record_names_what_is_pending_without_inventing_an_address() {
+        let a = &LEVEL_B_V2_AWAITING;
+        assert_eq!(a.version, "dogtag-levelb/2");
+        assert!(!a.recorded_by.is_empty());
+        // Every contract the generation-2 discovery record needs an address for.
+        assert!(a.pending.contains(&"CloneProvenanceRouter"));
+        assert!(a.pending.contains(&"ProviderRegistry"));
+        assert!(a.pending.contains(&"VerificationRegistryConsent V2"));
+        // The two deliberately-reused addresses are NOT pending — moving either is unrecoverable.
+        assert!(!a.pending.iter().any(|c| c.contains("SBT")));
+        assert!(!a.pending.iter().any(|c| c.contains("Verifier")));
+    }
+
+    /// Generation 2's DISCOVERY key is not an ARTIFACT key. The artifacts are byte-for-byte generation
+    /// 1's, so `dogtag-levelb/2` must never resolve one: a second artifact identity for identical bytes
+    /// would be a falsehood, and it would also swap the app-gate diagnostic away from `AppTooOld`.
+    #[test]
+    fn the_generation_2_discovery_key_is_not_an_artifact_key() {
+        assert!(crate::artifact::resolve(Some(LEVEL_B_V2_VERSION)).is_err());
+        assert_ne!(LEVEL_B_V2_VERSION, crate::artifact::LEVEL_B_V1);
+    }
+
     #[test]
     fn round_trip_sign_serve_verify() {
         let key = test_key();

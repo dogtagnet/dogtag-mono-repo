@@ -22,7 +22,6 @@ const ISSUER_ADDR: &str = "0x1111111111111111111111111111111111111111";
 const REGISTRY_ADDR: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
 const API_TOKEN: &str = "dogtag-gov-demo-token";
 const DEPLOYMENT_URL: &str = "http://192.168.1.20:44832";
-const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 
 fn demo_state() -> AppState {
     let cfg = Config {

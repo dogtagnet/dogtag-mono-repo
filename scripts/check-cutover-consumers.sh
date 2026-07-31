@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Check the S-13 client-repoint inventory: every tracked file carrying a MOVING address is declared in
+# scripts/cutover-consumers.json, and every declared file still carries one.
+#
+# WHY THIS EXISTS
+#
+# The cutover's realistic failure mode is not repointing the wrong address. It is repointing 30 of 35
+# files and shipping the other 5 still aimed at generation 1. Every one of those five fails SILENTLY:
+# the indexer's anti-spoof gate drops unrecognised emitters with no error (an oversight feed that looks
+# merely empty), and a reader still on the generation-1 factory resolves a generation-2 root to
+# address(0), which surfaces as an indeterminate issuer-whitelist pillar rather than as a failure.
+#
+# So the inventory is a CHECKED artifact rather than a list in a document. A hand-maintained list goes
+# stale the moment a file is added, and the staleness is invisible until the cutover.
+#
+# WHY BASH AND NOT ZSH
+#
+# The repo's default shell is zsh, which does NOT word-split an unquoted "$var". Iterating a
+# space-separated address list that way runs ONE iteration with the whole string as the pattern, every
+# git grep misses, and the script reports a clean tree. That is a check that passes by not running -
+# the same defect class this script exists to catch. bash word-splits, and the arrays below are
+# explicit regardless.
+#
+# WHY FULL ADDRESSES, CASE-INSENSITIVELY
+#
+# Both halves are load-bearing, and the registry plan's own inventory got both wrong:
+#
+#   case  - addresses are stored EIP-55-checksummed in some files and lowercased in others (the
+#           indexer lowercases). A case-sensitive grep for the checksummed form is blind to every
+#           lowercased consumer, which is how the plan's list omitted stacks/indexer/api/src/main.rs -
+#           the very file its own analysis of the silent-drop gate is about.
+#   full  - an 8-hex-prefix grep matches synthetic addresses that merely share a prefix.
+#           packages/ui/test/provenance.test.ts uses 0xED20269E1234567890abcdefABCDEF1234567890, which
+#           is not the factory at all.
+#
+# Elided prose references (0xED20269E...) cannot be matched either way without reintroducing the
+# prefix false positives, so they are DECLARED in the manifest and checked for presence instead.
+#
+# Usage: scripts/check-cutover-consumers.sh
+# Exit:  0 = tree and manifest agree; 1 = they disagree (each disagreement is named).
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+MANIFEST=scripts/cutover-consumers.json
+[ -f "$MANIFEST" ] || { echo "::error:: missing $MANIFEST"; exit 1; }
+
+python3 - "$MANIFEST" <<'PY' > /tmp/.cutover-addrs.$$ || { echo "::error:: $MANIFEST is not valid JSON"; exit 1; }
+import json, sys
+m = json.load(open(sys.argv[1]))
+for a in m["movingAddresses"]:
+    print(f'{a["contract"]}\t{a["generation1"]}')
+PY
+
+declare -a CONTRACTS=() ADDRS=()
+while IFS=$'\t' read -r contract addr; do
+  CONTRACTS+=("$contract"); ADDRS+=("$addr")
+done < /tmp/.cutover-addrs.$$
+rm -f /tmp/.cutover-addrs.$$
+
+# LC_ALL=C throughout: `comm` requires both inputs in the SAME collation, and the locale ordering of
+# `AGENTS.md` against `apps/...` differs from codepoint ordering. A collation mismatch makes comm
+# report every file as both undeclared AND stale - noisy here, but the same bug with a quieter input
+# would report a genuine miss as a matched pair and cancel out.
+python3 -c '
+import json
+m=json.load(open("scripts/cutover-consumers.json"))
+print("\n".join(c["path"] for c in m["consumers"]))
+' | LC_ALL=C sort -u > /tmp/.cutover-declared.$$
+
+: > /tmp/.cutover-found.$$
+fail=0
+echo "Moving addresses (generation 1 -> generation 2), and what carries each:"
+echo
+for i in "${!ADDRS[@]}"; do
+  addr="${ADDRS[$i]}"
+  # -I skips binaries; -i is the case fix; the pattern is the FULL 40-hex address.
+  hits=$(git grep -lI -i -- "$addr" || true)
+  n=$(printf '%s' "$hits" | grep -c . || true)
+  printf '  %-30s %s  (%s files)\n' "${CONTRACTS[$i]}" "$addr" "$n"
+  printf '%s\n' "$hits" | grep . >> /tmp/.cutover-found.$$ || true
+done
+LC_ALL=C sort -u /tmp/.cutover-found.$$ -o /tmp/.cutover-found.$$
+
+echo
+undeclared=$(comm -23 /tmp/.cutover-found.$$ /tmp/.cutover-declared.$$ || true)
+if [ -n "$undeclared" ]; then
+  echo "::error:: file(s) carry a moving address but are NOT declared in $MANIFEST."
+  echo "          Each is a consumer that a cutover would silently leave on generation 1."
+  echo "          Add it with a class (see _consumerClassDoc) - do not delete this check."
+  printf '            %s\n' $undeclared
+  fail=1
+fi
+
+stale=$(comm -13 /tmp/.cutover-found.$$ /tmp/.cutover-declared.$$ || true)
+if [ -n "$stale" ]; then
+  echo "::error:: file(s) declared in $MANIFEST no longer carry any moving address."
+  echo "          Either they were repointed (drop the entry) or the manifest is stale."
+  printf '            %s\n' $stale
+  fail=1
+fi
+
+# Elided prose references: declared rather than matched, so verify each still says what it claims.
+while IFS=$'\t' read -r path contract; do
+  prefix=$(python3 -c '
+import json,sys
+m=json.load(open("scripts/cutover-consumers.json"))
+print(next(a["generation1"] for a in m["movingAddresses"] if a["contract"]==sys.argv[1])[:10])
+' "$contract")
+  if ! grep -qi -- "$prefix" "$path" 2>/dev/null; then
+    echo "::error:: $path is declared as an elided reference to $contract but no longer mentions $prefix"
+    fail=1
+  fi
+done < <(python3 -c '
+import json
+m=json.load(open("scripts/cutover-consumers.json"))
+for e in m["elidedReferences"]:
+    print(e["path"] + "\t" + e["contract"])
+')
+
+# A do-not-move address must never be listed as moving. Reusing the SBT and the consent verifier is
+# what keeps every existing tag verifiable; moving either is unrecoverable, so it is checked, not noted.
+while read -r contract addr; do
+  for a in "${ADDRS[@]}"; do
+    if [ "$(printf '%s' "$a" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$addr" | tr 'A-Z' 'a-z')" ]; then
+      echo "::error:: $contract ($addr) is declared do-not-move AND moving. Reusing it is load-bearing."
+      fail=1
+    fi
+  done
+done < <(python3 -c '
+import json
+m=json.load(open("scripts/cutover-consumers.json"))
+for d in m["doNotMove"]:
+    print(d["contract"], d["address"])
+')
+
+rm -f /tmp/.cutover-found.$$ /tmp/.cutover-declared.$$
+
+if [ "$fail" -eq 0 ]; then
+  echo "OK: the tree and $MANIFEST agree."
+  echo "    Generation-2 addresses are all null - S-13 repoints, S-14 deploys."
+fi
+exit "$fail"

@@ -101,9 +101,26 @@ pub async fn get_manifest(Query(q): Query<ManifestQuery>) -> impl IntoResponse {
                 .into_response();
         }
     };
-    match signed_manifest(&q.version, &key) {
-        Some(sm) => (StatusCode::OK, Json(sm)).into_response(),
-        None => (
+    if let Some(sm) = signed_manifest(&q.version, &key) {
+        return (StatusCode::OK, Json(sm)).into_response();
+    }
+    // Still 404 in both arms — there is genuinely no manifest either way, and neither is servable.
+    // What differs is the REASON, because the remedies are unrelated: a typo is fixed by the caller,
+    // while a recognized-but-undeployed key is fixed only by the cutover running. Reporting the second
+    // as "unknown version" sends an operator hunting a misspelling that does not exist.
+    match manifest::deployment_status(&q.version) {
+        manifest::DeploymentStatus::AwaitingDeployment(a) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "version not yet deployed",
+                "version": q.version,
+                "detail": "this build recognizes the version key but holds no addresses for it",
+                "recordedBy": a.recorded_by,
+                "pendingContracts": a.pending,
+            })),
+        )
+            .into_response(),
+        _ => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "unknown version", "version": q.version })),
         )
