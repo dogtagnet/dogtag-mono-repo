@@ -364,6 +364,24 @@ pub struct ClientPet {
     /// the shop can tell WHICH pet a verification was about. Not required — a client may have no tag.
     #[serde(rename = "dogTagId", default)]
     pub dog_tag_id: Option<String>,
+    /// OPTIONAL microchip code for THIS animal, as the shop recorded it.
+    ///
+    /// It exists so the tag↔pet link can be checked against evidence instead of against the
+    /// operator's memory: a credential carries the animal's microchip as a Merkle leaf,
+    /// so the two can be compared at the moment a tag is attached (see [`crate::microchip`]).
+    ///
+    /// `Option`, and ABSENT IS NORMAL — not a defect to chase and never a reason to refuse a link.
+    /// Many animals are not chipped at all (cats routinely are not, in Singapore and elsewhere), so a
+    /// `None` here is an ordinary state of an ordinary pet; it makes the cross-check unavailable, and
+    /// an unavailable check is reported as such rather than passed or failed.
+    ///
+    /// The CODE only. `standard` and `implantDate` are the issuer's attestation about a chip it saw;
+    /// a shop typing them into its own record would be manufacturing an attestation nobody made.
+    /// Stored as the operator entered it, trimmed — deliberately NOT format-validated, because
+    /// refusing a legacy pre-ISO code would push the operator into leaving the field blank, which
+    /// silently costs the check the field exists to enable.
+    #[serde(rename = "microchipCode", default)]
+    pub microchip_code: Option<String>,
 }
 
 /// A CUSTOMER of the shop: the owner's contact particulars plus their pets. This is business contact
@@ -820,7 +838,24 @@ pub trait Store: Send + Sync {
 
     // ---- imported client cache (import/pull) ----
     async fn upsert_client_cache(&self, dog_tag_id: String, doc: serde_json::Value);
-    async fn get_client_cache(&self, dog_tag_id: &str) -> Option<serde_json::Value>;
+    /// The held document for `dog_tag_id`, keeping "nothing is filed under this tag" and "the read
+    /// did not resolve" APART.
+    ///
+    /// Fallible for the same reason as [`Store::try_get_pet`]. The microchip cross-check
+    /// ([`crate::microchip`]) reads this cache to decide whether a tag may be attached to a pet, and
+    /// a collapsed driver fault would arrive there as "this shop holds no credential" — a *fact*
+    /// about the shop's records, rendered neutrally, when the truth is that the check could not be
+    /// performed. That is the could-not-check-as-a-neighbour defect this codebase refuses everywhere
+    /// else, so the guard gets the distinction and [`Store::get_client_cache`] is derived from it.
+    async fn try_get_client_cache(
+        &self,
+        dog_tag_id: &str,
+    ) -> Result<Option<serde_json::Value>, StoreReadError>;
+
+    /// [`Store::try_get_client_cache`] for readers with nothing to do with an unreadable store.
+    async fn get_client_cache(&self, dog_tag_id: &str) -> Option<serde_json::Value> {
+        self.try_get_client_cache(dog_tag_id).await.ok().flatten()
+    }
 
     // ---- appointment replica (Phase 7, §3.7) ----
     async fn get_appt(&self, id: &str) -> Option<ApptReplica>;
@@ -1070,6 +1105,26 @@ pub struct MemStore {
     /// one switch the booking read short-circuits first and the mint's 503 proves nothing about
     /// [`Store::put_appointment_share`] at all.
     fail_appointment_share_writes: Arc<std::sync::atomic::AtomicBool>,
+    /// FAULT INJECTION for the PET read. Default OFF; test-only, like the others here.
+    ///
+    /// Its own switch because the case worth testing is a pet read that fails while everything else
+    /// resolves: `update_pet` sources the tag it checks a new microchip against from this read, so a
+    /// collapse there would skip the guard entirely rather than refusing.
+    fail_pet_reads: Arc<std::sync::atomic::AtomicBool>,
+    /// FAULT INJECTION for the held-credential read. Default OFF; test-only, like the two above.
+    ///
+    /// Its own switch for the same reason theirs are separate: the microchip cross-check has to be
+    /// exercised in the case where the PET reads fine and only the credential lookup fails, which a
+    /// shared switch cannot express because the pet read short-circuits first.
+    fail_client_cache_reads: Arc<std::sync::atomic::AtomicBool>,
+    /// FAULT INJECTION for the tag→pets read. Default OFF; test-only, like the three above.
+    ///
+    /// Its own switch because it is the ONLY way to reach `import_pull`'s `Err` arm, which is where
+    /// this feature's two fallible reads point in OPPOSITE directions: that one fails OPEN (files the
+    /// credential and reports `couldNotRead`) while `update_pet`'s pet read refuses with 503. Without
+    /// a switch, a regression flipping the import arm to a refusal — or to a silent omission —
+    /// reddens nothing.
+    fail_find_pets_by_dog_tag_reads: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MemStore {
@@ -1086,6 +1141,24 @@ impl MemStore {
     /// Make every subsequent [`Store::put_appointment_share`] report a write failure. See the field.
     pub fn set_fail_appointment_share_writes(&self, on: bool) {
         self.fail_appointment_share_writes
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make every subsequent [`Store::try_get_pet`] report a read failure. See the field.
+    pub fn set_fail_pet_reads(&self, on: bool) {
+        self.fail_pet_reads
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make every subsequent [`Store::try_get_client_cache`] report a read failure. See the field.
+    pub fn set_fail_client_cache_reads(&self, on: bool) {
+        self.fail_client_cache_reads
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make every subsequent [`Store::try_find_pets_by_dog_tag`] report a read failure. See the field.
+    pub fn set_fail_find_pets_by_dog_tag_reads(&self, on: bool) {
+        self.fail_find_pets_by_dog_tag_reads
             .store(on, std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -1338,13 +1411,25 @@ impl Store for MemStore {
             .client_cache
             .insert(dog_tag_id, doc);
     }
-    async fn get_client_cache(&self, dog_tag_id: &str) -> Option<serde_json::Value> {
-        self.inner
+    async fn try_get_client_cache(
+        &self,
+        dog_tag_id: &str,
+    ) -> Result<Option<serde_json::Value>, StoreReadError> {
+        // Same shape as `try_get_appointment`: an in-memory map cannot fail on its own, so the error
+        // branch is reachable only by explicit fault injection. See `MemStore::fail_client_cache_reads`.
+        if self
+            .fail_client_cache_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreReadError("injected client cache read failure".to_string()));
+        }
+        Ok(self
+            .inner
             .read()
             .unwrap()
             .client_cache
             .get(dog_tag_id)
-            .cloned()
+            .cloned())
     }
 
     // ---- appointment replica ----
@@ -1482,6 +1567,13 @@ impl Store for MemStore {
     // An in-memory map cannot fail to be read, so both fallible reads are always `Ok` here. The
     // distinction they carry is real only for `MongoStore`.
     async fn try_get_pet(&self, pet_id: &str) -> Result<Option<PetRow>, StoreReadError> {
+        // Reachable only by explicit fault injection — see `MemStore::fail_pet_reads`.
+        if self
+            .fail_pet_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreReadError("injected pet read failure".to_string()));
+        }
         let g = self.inner.read().unwrap();
         Ok(g.clients
             .values()
@@ -1492,6 +1584,15 @@ impl Store for MemStore {
         &self,
         dog_tag_id: &str,
     ) -> Result<Vec<PetRow>, StoreReadError> {
+        // Reachable only by explicit fault injection — see `MemStore::fail_find_pets_by_dog_tag_reads`.
+        if self
+            .fail_find_pets_by_dog_tag_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreReadError(
+                "injected tag lookup read failure".to_string(),
+            ));
+        }
         let g = self.inner.read().unwrap();
         let mut out: Vec<PetRow> = g
             .clients

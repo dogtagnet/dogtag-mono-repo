@@ -490,15 +490,31 @@ impl Store for MongoStore {
             .upsert(true)
             .await;
     }
-    async fn get_client_cache(&self, dog_tag_id: &str) -> Option<serde_json::Value> {
+    async fn try_get_client_cache(
+        &self,
+        dog_tag_id: &str,
+    ) -> Result<Option<serde_json::Value>, StoreReadError> {
         let coll: Collection<Document> = self.db.collection("client_cache");
-        let d = coll
+        // The driver error is PROPAGATED, not `.ok()`-collapsed: the microchip cross-check turns an
+        // absent document into the neutral fact "this shop holds no credential for that tag", so a
+        // swallowed fault would state that about a store it never managed to read.
+        let Some(d) = coll
             .find_one(doc! { "dog_tag_id": dog_tag_id })
             .await
-            .ok()
-            .flatten()?;
-        d.get("doc")
-            .and_then(|b| mongodb::bson::from_bson(b.clone()).ok())
+            .map_err(|e| StoreReadError(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        // A row that is present but whose payload will not deserialize is NOT an absence either: the
+        // document is filed, we simply cannot read it back.
+        match d.get("doc") {
+            Some(b) => mongodb::bson::from_bson(b.clone())
+                .map(Some)
+                .map_err(|e| StoreReadError(e.to_string())),
+            None => Err(StoreReadError(
+                "client_cache row has no `doc` field".to_string(),
+            )),
+        }
     }
 
     // ---- appointment replica (Phase 7) ----

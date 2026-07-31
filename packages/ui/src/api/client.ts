@@ -27,6 +27,7 @@ import type {
   IssuerSignersResp,
   LoginResp,
   AdminLoginResp,
+  MicrochipCheck,
   PetCreateInput,
   PetCredentialsResp,
   PetListQuery,
@@ -288,9 +289,15 @@ export function createApiClient(opts: ApiClientOptions) {
     /**
      * LINK a DogTag to this pet — writes the SHOP's own note of which tag the pet holds. Mints
      * nothing and writes nothing on chain.
+     *
+     * The response ALWAYS carries `microchipCheck`, in every state, so an absent key can never
+     * be read as a check that passed. A mismatch is refused with 409 and the same structured verdict
+     * rides in the error body ({@link MicrochipCheck}).
      */
     linkPetDogTag: (id: string, dogTagId: string) =>
-      request<CrmPet>("POST", `/pets/${id}/dogtag`, { dogTagId }),
+      request<CrmPet & { microchipCheck: MicrochipCheck }>("POST", `/pets/${id}/dogtag`, {
+        dogTagId,
+      }),
     /**
      * UNLINK the DogTag from this pet. A LOCAL disassociation and nothing more: the credential stays
      * valid, stays on chain, and stays verifiable by everyone else. This is NOT revocation — see

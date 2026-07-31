@@ -9,13 +9,17 @@ import {
   Input,
   Label,
   useToast,
+  microchipCheckFromError,
+  microchipExplanation,
+  microchipHeadline,
+  microchipTone,
   type FragmentState,
   type ImportVerdict,
   type IssuerResolution,
   type IssuerStoreAgreement,
   type IssuerWhitelistState,
 } from "@dogtag/ui";
-import type { CrmPet } from "@dogtag/ui";
+import type { CrmPet, MicrochipCheck } from "@dogtag/ui";
 import { CheckCircle2, HelpCircle, PawPrint, ScanLine, XCircle } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -37,6 +41,11 @@ export function ImportFromUser() {
   const [recordRef, setRecordRef] = useState("");
   const [busy, setBusy] = useState(false);
   const [verdict, setVerdict] = useState<ImportVerdict | null>(null);
+  // The microchip cross-check, kept SEPARATE from the verdict on purpose. A credential can verify
+  // against every pillar and still describe a different animal to the one this shop has on file for
+  // that tag; those are different accusations with different remedies, and folding the second into
+  // `verdict.valid` would report a genuine credential as forged.
+  const [check, setCheck] = useState<MicrochipCheck | null>(null);
   const [accepted, setAccepted] = useState<boolean | null>(null);
 
   // Arriving from a pet's page (or its on-chain discovery panel) carries the pet across, so the
@@ -88,9 +97,11 @@ export function ImportFromUser() {
     setBusy(true);
     setVerdict(null);
     setAccepted(null);
+    setCheck(null);
     try {
       const r = await api.importPull({ userApiBase, userJwt, recordRef });
       setVerdict((r.verdict as ImportVerdict) ?? null);
+      setCheck(r.microchipCheck ?? null);
       setAccepted(r.imported);
       toast({
         title: r.imported ? `${kind} accepted` : "Not accepted",
@@ -106,7 +117,17 @@ export function ImportFromUser() {
         setVerdict((body as { verdict: ImportVerdict }).verdict);
         setAccepted(false);
       }
-      toast({ title: "Import failed", description: (err as Error).message, variant: "danger" });
+      // A microchip refusal carries the same structured object a success does, so it renders in the
+      // panel below rather than as a wall of text in a toast.
+      const refused = microchipCheckFromError(err);
+      setCheck(refused);
+      toast({
+        title: refused ? "Not accepted — microchip mismatch" : "Import failed",
+        description: refused
+          ? "The credential verified, but it describes a different animal to the pet holding that DogTag."
+          : (err as Error).message,
+        variant: "danger",
+      });
     } finally {
       setBusy(false);
     }
@@ -221,6 +242,7 @@ export function ImportFromUser() {
         </form>
 
         {verdict && <VerdictPanel verdict={verdict} accepted={accepted} />}
+        {check && <MicrochipPanel check={check} />}
       </CardContent>
     </Card>
   );
@@ -367,6 +389,36 @@ function Pillar({ label, state }: { label: string; state: FragmentState }) {
         <Icon className="h-3 w-3" />
         {state}
       </Badge>
+    </div>
+  );
+}
+
+/**
+ * The microchip cross-check, BESIDE the verification verdict and never folded into it.
+ *
+ * The verdict answers "is this credential genuine?"; this answers "does it describe the animal we
+ * have on file for that DogTag?". A credential can pass every pillar and still be about a different
+ * dog, and the remedies differ — one means refuse the document, the other means check which tag you
+ * typed. Merging them would report a real credential as forged.
+ *
+ * Every state renders, including "not compared", which is neither a pass nor a failure. The
+ * commonest reason for it is that the pet simply has no microchip on file, which is an ordinary fact
+ * about an ordinary animal and is shown neutrally.
+ */
+function MicrochipPanel({ check }: { check: MicrochipCheck }) {
+  const tone = microchipTone(check);
+  const style =
+    tone === "positive"
+      ? "border-success/40 bg-success/10"
+      : tone === "negative"
+        ? "border-danger/40 bg-danger/10"
+        : tone === "warning"
+          ? "border-warning/40 bg-warning/10"
+          : "border-border bg-surface-muted";
+  return (
+    <div className={`mt-4 space-y-1 rounded-md border p-3 text-sm ${style}`} data-testid="microchip-check">
+      <p className="font-semibold text-onSurface">{microchipHeadline(check)}</p>
+      <p className="text-muted">{microchipExplanation(check)}</p>
     </div>
   );
 }

@@ -175,6 +175,7 @@ function petDraft(seed?: ClientPetInput): PetDraft {
     dateOfBirth: seed?.dateOfBirth ?? "",
     notes: seed?.notes ?? "",
     dogTagId: seed?.dogTagId ?? "",
+    microchipCode: seed?.microchipCode ?? "",
   };
 }
 
@@ -230,6 +231,11 @@ export function ClientForm({
           dateOfBirth: p.dateOfBirth,
           notes: p.notes,
           dogTagId: p.dogTagId?.trim() ? p.dogTagId.trim() : null,
+          // MUST be carried, not merely offered. This payload REPLACES the owner's whole pet list,
+          // so a field the form omits is a field every client edit silently erases — and erasing a
+          // microchip does not fail loudly, it just quietly stops the cross-check firing on every
+          // future link. `petDraft` seeds it from the stored pet for the same reason.
+          microchipCode: p.microchipCode?.trim() ? p.microchipCode.trim() : null,
         })),
     };
     await run(() => onSubmit(body), {
@@ -364,6 +370,23 @@ export function ClientForm({
                       onChange={(e) => updatePet(p.key, { sex: e.target.value })}
                       placeholder="male / female"
                     />
+                  </div>
+                  {/*
+                    Optional, and the help text has to say so: beside a field used to cross-check a
+                    credential, silence reads as "required", and many animals genuinely have no chip.
+                  */}
+                  <div className="space-y-2">
+                    <Label htmlFor={`pet-microchip-${p.key}`}>Microchip</Label>
+                    <Input
+                      id={`pet-microchip-${p.key}`}
+                      value={p.microchipCode ?? ""}
+                      onChange={(e) => updatePet(p.key, { microchipCode: e.target.value })}
+                      placeholder="985141006580319"
+                      inputMode="numeric"
+                    />
+                    <p className="text-xs text-muted">
+                      Optional. Checked against the credential when a DogTag is linked.
+                    </p>
                   </div>
                 </div>
                 {pets.length > 1 && (

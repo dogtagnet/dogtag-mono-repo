@@ -253,6 +253,28 @@ export function PetFields({
             onChange={(e) => onChange({ dateOfBirth: e.target.value })}
           />
         </div>
+        {/*
+          The microchip DOES belong on this form, unlike the DogTag id above. It is a fact about the
+          animal that the owner or a previous vet already established, so typing it is data entry —
+          whereas attaching a credential is an act with consequences and keeps its own card.
+
+          Its help text has to say that leaving it blank is fine. Beside a field the portal uses to
+          cross-check a credential, silence reads as "we need this", and many animals genuinely have
+          no chip — cats routinely are not chipped here.
+        */}
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-microchip`}>Microchip</Label>
+          <Input
+            id={`${idPrefix}-microchip`}
+            value={value.microchipCode ?? ""}
+            onChange={(e) => onChange({ microchipCode: e.target.value })}
+            placeholder="985141006580319"
+            inputMode="numeric"
+          />
+          <p className="text-xs text-muted">
+            Optional. If recorded, it is checked against the credential when a DogTag is linked.
+          </p>
+        </div>
       </div>
       <div className="space-y-2">
         <Label htmlFor={`${idPrefix}-notes`}>Notes</Label>
