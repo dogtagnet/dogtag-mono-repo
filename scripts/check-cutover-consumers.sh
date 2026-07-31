@@ -79,18 +79,42 @@ if empty:
     print("empty section(s): " + ", ".join(empty) + " - the gate would check nothing", file=sys.stderr)
     print("Emptying a seeded set is the cheapest way to silence a check without a trace.", file=sys.stderr)
     raise SystemExit(1)
+# `semanticEquivalence` is the governing condition - an address may be repointed only when the
+# successor answers the same question for the same inputs. The manifest's own _doc asserts every entry
+# carries a verdict, so assert it here rather than leaving that an unchecked claim: an ABSENT key is an
+# error, exactly as for generation2, because absent is not the same as UNVERIFIED. UNVERIFIED is a
+# stated verdict; absent is nobody having asked.
+unjudged = [a["contract"] for a in m["movingAddresses"] if "semanticEquivalence" not in a]
+if unjudged:
+    print("movingAddresses entries with no `semanticEquivalence` verdict: " + ", ".join(unjudged),
+          file=sys.stderr)
+    print("Absent is not UNVERIFIED. Record what the successor answers, and under what caller context.",
+          file=sys.stderr)
+    raise SystemExit(1)
 PY
 
 python3 - "$MANIFEST" <<'PY' > /tmp/.cutover-addrs.$$ || { echo "::error:: $MANIFEST is not valid JSON"; exit 1; }
 import json, sys
 m = json.load(open(sys.argv[1]))
 for a in m["movingAddresses"]:
-    print(f'{a["contract"]}\t{a["generation1"]}')
+    # The verdict is TRUNCATED from the manifest's own string, never re-summarized here. A second
+    # wording in the script would be free to drift from the first, which is this gate's whole thesis.
+    verdict = " ".join(a["semanticEquivalence"].split())
+    if len(verdict) > 74:
+        verdict = verdict[:73] + "…"
+    # An address whose own supersededBy says BLOCKED must say so in the gate's OUTPUT, not only in the
+    # file. It is the one fact that decides whether S-14 may touch the address at all.
+    step = " ".join(str(a.get("repointStep", "")).split())
+    if "BLOCKED" in str(a.get("supersededBy", "")) or "BLOCKED" in step:
+        verdict = "BLOCKED - " + verdict
+        if len(verdict) > 74:
+            verdict = verdict[:73] + "…"
+    print(f'{a["contract"]}\t{a["generation1"]}\t{verdict}')
 PY
 
-declare -a CONTRACTS=() ADDRS=()
-while IFS=$'\t' read -r contract addr; do
-  CONTRACTS+=("$contract"); ADDRS+=("$addr")
+declare -a CONTRACTS=() ADDRS=() VERDICTS=()
+while IFS=$'\t' read -r contract addr verdict; do
+  CONTRACTS+=("$contract"); ADDRS+=("$addr"); VERDICTS+=("$verdict")
 done < /tmp/.cutover-addrs.$$
 rm -f /tmp/.cutover-addrs.$$
 
@@ -122,7 +146,8 @@ if [ -n "$untracked" ]; then
   done
 fi
 
-echo "Moving addresses (generation 1 -> generation 2), and what carries each:"
+echo "Moving addresses (generation 1 -> generation 2), what carries each, and whether the successor"
+echo "answers THE SAME QUESTION FOR THE SAME INPUTS - the governing condition for any repoint:"
 echo
 for i in "${!ADDRS[@]}"; do
   addr="${ADDRS[$i]}"
@@ -130,6 +155,9 @@ for i in "${!ADDRS[@]}"; do
   hits=$(git grep -lI -i -- "$addr" || true)
   n=$(printf '%s' "$hits" | grep -c . || true)
   printf '  %-30s %s  (%s files)\n' "${CONTRACTS[$i]}" "$addr" "$n"
+  # The verdict is what decides whether S-14 may touch this address at all, so it is printed here
+  # rather than left buried in the manifest - BLOCKED is the most consequential fact in the file.
+  printf '  %-30s   %s\n' "" "${VERDICTS[$i]}"
   printf '%s\n' "$hits" | grep . >> /tmp/.cutover-found.$$ || true
 done
 sort -u /tmp/.cutover-found.$$ -o /tmp/.cutover-found.$$

@@ -49,9 +49,9 @@ This is the harder one, and the reason the condition cannot be discharged by rea
 
 ## What is superseded, and what is cleared to move
 
-Six addresses are **superseded**, which is not the same as six being **cleared to repoint**.
-Five are cleared at their step; `IssuerRegistry` is blocked on a code change, on every axis.
-Run `scripts/check-cutover-consumers.sh` for the values and the per-address file counts.
+Six addresses are **superseded**, which is not the same as being **cleared to repoint**.
+Cleared means one thing only: the `semanticEquivalence` verdict is **VERIFIED**, so count that column rather than trusting a number written beside it - a plausible-looking count is what concealed two errors in the inventory this slice was written to replace.
+Run `scripts/check-cutover-consumers.sh` for the values, the per-address file counts, and each verdict as the manifest itself states it.
 
 | Contract | Superseded by | Step | Same question, same inputs? |
 |---|---|---|---|
@@ -62,7 +62,7 @@ Run `scripts/check-cutover-consumers.sh` for the values and the per-address file
 | `IssuerDomainRegistry` | `ServiceDomainResolver` | C-7, then C-9 | **UNVERIFIED** - `resolveDomain` is a different shape |
 | `DogTagIssuerImpl` | `DogTagIssuerV2` implementation | C-3 | **N/A** - no consumer calls it |
 
-Read that last column as scope on the whole slice: repointing is *recorded* for six addresses and *cleared* for two.
+Read that last column as scope on the whole slice: repointing is *recorded* for all six addresses, and *cleared* for exactly the two carrying a VERIFIED verdict - `DogTagIssuerFactory` and `ProtocolRegistry`.
 `ProtocolRegistry`'s verdict is structural rather than argued - the record is deliberately renamed (`getDiscoverySet`, 10 words against 8), so a generation-1 client cannot dispatch and misdecode it, while `getArtifactSet` keeps its selector precisely because that record is unchanged.
 `IssuerDomainRegistry`'s is unverified for a stated reason: `ServiceDomainResolver` deliberately has no `domainOf(address) returns (string)`, because an empty string was three different facts, so `resolveDomain`'s tuple is a code change in every consumer.
 
@@ -159,11 +159,18 @@ Both states are broken, differently, and only the migration closes either.
 `isWhitelistedFor` returns `false` where the honest answer is "this contract cannot answer that question for this caller" - a definite negative standing in for an unanswerable question, which is the same collapse this fleet keeps finding in application code, could-not-check rendered as failed.
 It is also why no caller could have detected it by observing behaviour: the call **succeeds** and returns a well-typed answer.
 
-**Stated coverage gap, not closed here.**
-`contracts/test/ProviderRegistry.t.sol` exercises `isWhitelistedFor` almost entirely under `vm.prank(address(serviceA))` / `vm.prank(address(serviceB))` (`:552`, `:588-592`, `:598`, `:841`, `:845`) - an attached service, which takes the **first** branch.
-The one unpranked case is `:836`, and it uses the VERIFY key.
-So the only case that runs at production's caller context is the one key shape that happens to be compatible, and the suite is silent exactly where it matters.
-That suite is deliberately testing the caller-scoped behaviour and is not rewritten in this slice.
+**The contract side is pinned. The consumer side is not, and that is the real gap.**
+
+`contracts/test/ProviderRegistry.t.sol` exercises `isWhitelistedFor` at **both** caller contexts.
+`vm.prank` affects only the *next* call, so the pranked attached-service cases - which take the first branch - are `:552`, `:588`, `:590`, `:592` and `:841`, while `:598`, `:836` and `:845` run **unpranked**, at production's zero-address caller.
+
+`:598` is precisely the case that matters: unpranked, keyed on `RECORD_TYPE`, asserting `false` - and `:599` immediately asserts `isRecognizedIssuer(service, signer)` is **true** for that same signer, directly beneath the inline comment stating the split-by-question migration rule.
+So the suite pins both halves: the legacy selector answers `false` at the caller context every real reader uses, and the successor selector answers `true`.
+An earlier revision of this section claimed the opposite, and overstating a coverage gap is the same failure as understating one, pointed the other way.
+
+The residual gap is one layer up: **nothing anywhere asserts what the consumers do when handed that `false`.**
+The mandatory issuer-whitelist pillar's outcome against `ProviderRegistry` is unpinned in every suite - no Rust or TypeScript test references `ProviderRegistry` at all, and `MemChain::is_whitelisted_for` is a flat `(registry, recordType, signer)` map lookup that cannot model the `msg.sender` branch, so the case is not merely unwritten but unrepresentable in the hermetic fakes without a new one.
+Closing it belongs with the `isRecognizedIssuer` migration, which is the change that gives those consumers something correct to assert against.
 
 ## The indexer is an append, not a swap - and it is the one that fails quietest
 

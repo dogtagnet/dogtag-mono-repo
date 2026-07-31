@@ -1475,10 +1475,13 @@ unblock is the `isRecognizedIssuer(service, signer)` migration in `docs/ISSUER_V
 leaving readers on generation 1 is not a fix either (indeterminate instead of false - both broken).
 Note the SHAPE: `isWhitelistedFor` returns `false` where the honest answer is "this contract cannot
 answer that for this caller" - could-not-check rendered as failed, in Solidity, which is why no caller
-could detect it by observing behaviour. Coverage gap, stated not closed:
-`contracts/test/ProviderRegistry.t.sol` exercises `isWhitelistedFor` almost entirely under
-`vm.prank(address(serviceA/B))` (first branch); the ONE unpranked case is `:836` and it uses the
-VERIFY key - so the only case at production's caller context is the one shape that happens to work.
+could detect it by observing behaviour. The CONTRACT side is pinned and the CONSUMER side is not:
+`contracts/test/ProviderRegistry.t.sol` covers both caller contexts (`vm.prank` affects only the NEXT
+call, so `:598`, `:836` and `:845` run unpranked), and `:598` is the exact case - unpranked, keyed on
+`RECORD_TYPE`, asserting false - with `:599` asserting `isRecognizedIssuer` TRUE for the same signer.
+The residual gap is one layer up: nothing asserts what the CONSUMERS do with that false, since no Rust
+or TS suite references `ProviderRegistry` and `MemChain::is_whitelisted_for` is a flat map lookup that
+cannot model the `msg.sender` branch at all.
 
 **The factory is the ONE moving address with no single target**, so the manifest's top-level
 `supersededBy` for it names the split rather than an address, and the three diverging consumers carry
