@@ -1,6 +1,5 @@
 import {
   Badge,
-  Button,
   Card,
   CardContent,
   CardDescription,
@@ -13,6 +12,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  CopyButton,
   addressChainRef,
   useToast,
   type ApiError,
@@ -23,7 +23,6 @@ import {
   ArrowRightLeft,
   CheckCircle2,
   Clock,
-  Copy,
   ExternalLink,
   Gavel,
   History,
@@ -631,29 +630,25 @@ function RunbookStep({ icon, text }: { icon: React.ReactNode; text: string }) {
  *
  * The external-link icon is part of that claim, so it appears only alongside a real link - an icon
  * promising "this opens the explorer" next to an inert value would reinstate the very impression the
- * withheld link removes. An address that cannot be looked up is exactly the one an operator needs to
- * paste somewhere and investigate, so it always carries a copy affordance - this row's own when
- * `withCopy` is set, otherwise `AddressRef`'s. Never both: one value with two copy buttons.
+ * withheld link removes.
+ *
+ * `withCopy` puts a copy control on the prominent authority rows in EVERY state, including the linked
+ * one where `AddressRef` renders none. It is the shared `CopyButton` rather than a hand-rolled
+ * `navigator.clipboard` call: that global is undefined in any non-secure context, and these portals are
+ * routinely served over plain `http://` on a LAN, so the old control was a silent no-op there - with no
+ * failure shown, which is this repo's could-not-tell-what-happened defect in a button. In the inert
+ * state `AddressRef` supplies its own unconditionally, so this row shows two; that is deliberate, and
+ * far cheaper than a state whose only route to the full value does nothing when clicked.
  */
 function AddrLink({ addr, withCopy }: { addr: string; withCopy?: boolean }) {
   const { href } = addressChainRef(addr);
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className="inline-flex items-center gap-1">
-        <AddressRef address={addr} copyable={!withCopy} testId="governance-address" />
+        <AddressRef address={addr} testId="governance-address" />
         {href && <ExternalLink className="h-3 w-3 text-primary" aria-hidden />}
       </span>
-      {withCopy && (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 w-6 p-0"
-          onClick={() => void navigator.clipboard?.writeText(addr)}
-          title="Copy address"
-        >
-          <Copy className="h-3.5 w-3.5" />
-        </Button>
-      )}
+      {withCopy && <CopyButton value={addr} label="address" />}
     </span>
   );
 }

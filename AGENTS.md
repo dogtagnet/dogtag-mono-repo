@@ -4821,9 +4821,35 @@ itself, so the elided characters are not in the DOM at all.
 Left as it was, the one fact that row exists to hand over - the address to go and investigate - was
 reachable only by hovering, which survives neither a screenshot, nor a touch device, nor a paste into
 an incident report.
-So `AddressRef`'s inert branch carries the shared `CopyButton`, and `AddressRef` takes `copyable` for
-the two callers that already render their own (`Governance`'s `AddrLink` with `withCopy`, the
-predicted-clone block in `Issuers`) - one value must have exactly one copy affordance, not two.
+So `AddressRef`'s inert branch carries the shared `CopyButton`, UNCONDITIONALLY - there is deliberately
+no prop to decline it.
+
+**The opt-out is the part worth remembering, because it looked like tidiness and was the same defect
+again.**
+`AddressRef` briefly took `copyable`, so the two callers already rendering their own control
+(`Governance`'s `AddrLink` with `withCopy`, the predicted-clone block in `Issuers`) would not show two
+buttons for one value.
+Both of those controls were `onClick={() => void navigator.clipboard?.writeText(x)}` - and
+`navigator.clipboard` is undefined in any NON-SECURE context, which is exactly the plain `http://` LAN
+origin these portals are routinely served from, where the `?.` makes the click a silent no-op with no
+failure shown.
+So in the one state whose entire point is that the value stays recoverable, the only route to it did
+nothing when clicked: hover was out (a tooltip survives no screenshot), the `href` does not exist on
+that branch, and `shortAddr` had already removed the elided characters from the DOM.
+An escape hatch a caller can decline is not an escape hatch - the guarantee has to belong to the
+component that knows the value was truncated and knows there is no link.
+Both hand-rolled controls are now the shared `CopyButton` (which falls back to the hidden-textarea
+`execCommand` path and renders a visible FAILED state), and where one still sits beside `AddressRef`
+the inert state shows two.
+**That duplication is deliberate**: a redundant button is a cosmetic wart, an unrecoverable value is
+the defect this section exists to remove.
+
+**Still hand-rolled, and NOT the same case - checked rather than assumed:** the `SecretRow` helpers in
+`Wizard.tsx` and `Businesses.tsx` and the `Row` component in `Issuers.tsx`.
+All three render `{value}` WHOLE and let CSS `truncate` clip it, so the full string is in the DOM and
+the dead button is not the only route to it - which is the condition that made the two above urgent.
+They are still silently-dead controls and worth converting, but that is a portal-wide follow-up rather
+than this section's defect (`Businesses.tsx` is not touched by this work at all).
 
 **`ChainValue`'s inert branch keys its treatment on `reason`, and that condition is the whole point.**
 That branch renders TWO different things. An ordinary identifier that simply has no explorer page - a
@@ -4911,6 +4937,15 @@ Assert the old text is present before replacing it; check the scrutinee, not jus
 `ChainValue` treatment reverted to always-plain (2 red) and pushed to always-struck-through (2 red) -
 BOTH directions, because a suite that only asserted the struck case would pass with the over-broad
 version that marks every ordinary identifier as broken; the inert copy button removed (2 red, one of
-them the page-level pin in `whitelistChainRefs.test.tsx`); the `copyable` opt-out ignored (1 red); and
-the copy button wired to the TRUNCATED form rather than the address (1 red), which is what keeps that
-case about the VALUE handed over rather than merely about a button existing.
+them the page-level pin in `whitelistChainRefs.test.tsx`); and the copy button wired to the TRUNCATED
+form rather than the address (1 red), which is what keeps that case about the VALUE handed over rather
+than merely about a button existing.
+
+**One more, for the opt-out removal**: swapping the inert branch's shared `CopyButton` for a
+`navigator.clipboard`-only control reddens exactly
+`still hands it over on a non-secure origin, where navigator.clipboard does not exist` and leaves every
+other case in that file green - which is the point, since a clipboard-only control passes every
+assertion about a button EXISTING and about WHAT it copies on a secure origin.
+That case must stub `navigator.clipboard` to `undefined` ITSELF rather than lean on the file's
+`beforeEach`, which installs a working one for the other cases; without the local override it never
+reaches the fallback and pins nothing.

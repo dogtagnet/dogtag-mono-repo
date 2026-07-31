@@ -11,10 +11,15 @@
 // So the value the copy button writes has to be asserted, not just the button's presence. A button
 // wired to the truncated form would satisfy "there is a copy affordance" and still lose the fact.
 //
-// The second half is the `copyable` opt-out. Two call sites already render their own copy control
-// (`Governance`'s `AddrLink` with `withCopy`, the predicted-clone block in `Issuers`), and one value
-// offering two copy buttons is its own confusion. Both directions are asserted, because a default that
-// silently won either way would make the prop meaningless.
+// The second half is that the affordance has to WORK where these portals actually run.
+// `navigator.clipboard` is undefined in any non-secure context, and the demo/LAN topology is plain
+// `http://`, so a control built on it alone is a silent no-op there - clicked, nothing copied, nothing
+// said. That is how an opt-out (`copyable={false}`, since removed) turned this guarantee into a
+// per-caller convention and then lost it: both callers that took the opt-out supplied exactly such a
+// control. The shared `CopyButton` is the one with the hidden-textarea `execCommand` fallback and a
+// visible FAILED state, so the non-secure case is asserted here rather than assumed - swap the inert
+// branch onto a clipboard-only control and that case goes red while every other assertion in this file
+// stays green.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -63,6 +68,7 @@ afterEach(() => {
   root.unmount();
   container.remove();
   vi.unstubAllGlobals();
+  delete (document as unknown as { execCommand?: unknown }).execCommand;
 });
 
 describe("AddressRef — an address that cannot be looked up", () => {
@@ -84,15 +90,40 @@ describe("AddressRef — an address that cannot be looked up", () => {
     expect(written).toEqual([BAD_ADDRESS]);
   });
 
-  it("adds no copy button when the caller already renders one", async () => {
-    await mount(
-      createElement(AddressRef, { address: BAD_ADDRESS, copyable: false, testId: "addr" }),
-    );
+  it("still hands it over on a non-secure origin, where navigator.clipboard does not exist", async () => {
+    // The plain `http://<lan-ip>` demo topology, reproduced: the global is simply absent. A control
+    // built on `navigator.clipboard?.writeText` copies nothing here and says nothing about it, which
+    // in the one state whose point is recoverability leaves no route to the value at all.
+    vi.stubGlobal("navigator", { ...navigator, clipboard: undefined });
+    const execCopied: string[] = [];
+    const execCommand = vi.fn(() => {
+      const ta = document.querySelector("textarea");
+      if (ta) execCopied.push((ta as HTMLTextAreaElement).value);
+      return true;
+    });
+    Object.defineProperty(document, "execCommand", { value: execCommand, configurable: true });
 
-    // `Governance`'s `AddrLink` with `withCopy` and the predicted-clone block in `Issuers` supply their
-    // own; a second one beside it is not a stronger affordance, it is an ambiguous one.
-    expect(copyButtons()).toHaveLength(0);
-    // Opting out of the copy button must not opt out of the state itself.
+    await mount(createElement(AddressRef, { address: BAD_ADDRESS, testId: "addr" }));
+
+    const buttons = copyButtons();
+    expect(buttons).toHaveLength(1);
+    buttons[0].click();
+    await settle();
+
+    // It fell back to the hidden-textarea path and carried the whole address through it...
+    expect(execCommand).toHaveBeenCalled();
+    expect(execCopied).toEqual([BAD_ADDRESS]);
+    // ...and reported success rather than sitting there looking functional.
+    expect(buttons[0].getAttribute("data-copy-state")).toBe("copied");
+  });
+
+  it("cannot be told not to offer one — the guarantee is the component's, not the caller's", async () => {
+    // There is no prop to decline it. An opt-out existed for one round and both callers that took it
+    // supplied a clipboard-only control, so the state that most needs a working route to its value had
+    // none. Where a caller renders its own control the inert state now shows two, deliberately.
+    await mount(createElement(AddressRef, { address: BAD_ADDRESS, testId: "addr" }));
+
+    expect(copyButtons()).toHaveLength(1);
     expect(container.querySelector('[data-testid="addr-inert"]')).not.toBeNull();
   });
 });

@@ -20,6 +20,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  CopyButton,
   addressChainRef,
   txChainRef,
   useToast,
@@ -340,18 +341,10 @@ function DeployDialog({
                 <AddressRef
                   address={predicted}
                   full
-                  copyable={false}
                   className="break-all text-sm"
                   testId="issuers-predicted"
                 />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void navigator.clipboard?.writeText(predicted)}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
+                <CopyButton value={predicted} label="predicted clone address" />
               </div>
             ) : predictError ? (
               <p className="mt-1 text-xs text-danger">{predictError}</p>
