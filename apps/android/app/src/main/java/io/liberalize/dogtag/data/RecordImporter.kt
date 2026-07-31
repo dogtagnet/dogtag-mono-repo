@@ -14,9 +14,12 @@ import uniffi.dogtag_standard.verifyIntegrity
  *   2. ISSUANCE (on-chain): `DogTagIssuer.isValid(merkleRoot)` over `issuer.documentStore` via ROAX RPC.
  *   3. ISSUER WHITELIST (on-chain): resolve the issuing clone from the app's OWN
  *      `DogTagIssuerFactory.rootIssuer(merkleRoot)`, then `recordType()` + `issuedBy(merkleRoot)` on
- *      THAT clone -> `IssuerRegistry.isWhitelistedFor` against the app's OWN bundled registry. This is
- *      what catches a forged `issuer` block, which sits outside the Merkle root and therefore passes
- *      pillars 1 and 2 unchanged.
+ *      THAT clone -> was that signer authorised for that record type AT THE BLOCK the root was
+ *      anchored, read from the grant log of the registry the CLONE names (`registry()`), never the
+ *      app's own bundled one. This is what catches a forged `issuer` block, which sits outside the
+ *      Merkle root and therefore passes pillars 1 and 2 unchanged. Delisting is forward-only
+ *      (`DogTagIssuer.sol:82`), so a signer rotated since issuance does not invalidate what it
+ *      anchored while it held the grant.
  *
  * Every pillar is tri-state and none may be skipped: a pillar that does not resolve yields an
  * indeterminate verdict, never a pass.

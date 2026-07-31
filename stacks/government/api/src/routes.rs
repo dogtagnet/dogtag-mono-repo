@@ -6,8 +6,11 @@
 //!                                         its Poseidon root R, anchor it on-chain (DogTagIssuer.issue)
 //!                                         when a signer + whitelisted clone are configured, persist.
 //!   POST /v1/verify                      VERIFIER: recompute a wrapped credential's integrity, read
-//!                                         DogTagIssuer.isValid(root) + IssuerRegistry.isWhitelistedFor
-//!                                         off ROAX, fold to a verdict, persist an audit record.
+//!                                         DogTagIssuer.isValid(root) off ROAX plus whether the
+//!                                         anchoring signer held the grant AT THAT BLOCK (from the
+//!                                         governing registry's own Whitelisted/Delisted log, not
+//!                                         isWhitelistedFor), fold to a verdict, persist an audit
+//!                                         record.
 //!   GET  /v1/records                     list issued credentials (off-chain DB surface).
 //!   GET  /v1/records/:root               get one issued credential by root.
 //!   POST /v1/records/:root/share         mint a one-time record-share QR token (owner's phone import).

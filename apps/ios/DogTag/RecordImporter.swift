@@ -3,8 +3,11 @@ import Foundation
 /// Implements the scan-to-import flow (impl §6.5). Fetch the wrapped doc with the Bearer JWT and run
 /// the verification pillars: INTEGRITY (offline Rust FFI `verifyIntegrity`), ISSUANCE (on-chain
 /// `DogTagIssuer.isValid` over ROAX RPC) and ISSUER WHITELIST (the app's own
-/// `DogTagIssuerFactory.rootIssuer` → that clone's `recordType()`/`issuedBy` → the app's own
-/// `IssuerRegistry`). Store the record under the matching pet, grouped by recordType.
+/// `DogTagIssuerFactory.rootIssuer` → that clone's `recordType()`/`issuedBy` → whether that signer
+/// held the grant AT THE ANCHORING BLOCK, read from the log of the registry the CLONE names
+/// (`registry()`), never the app's own bundled one; delisting is forward-only, so a since-rotated
+/// signer does not invalidate what it anchored). Store the record under the matching pet, grouped by
+/// recordType.
 ///
 /// Every pillar is tri-state and none may be skipped: a pillar that does not resolve yields an
 /// indeterminate verdict, never a pass.
