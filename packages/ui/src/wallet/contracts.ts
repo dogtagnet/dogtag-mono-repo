@@ -13,6 +13,15 @@ import { roax } from "./chain";
  * Deployed ROAX contract addresses (contracts/deployments/roax.json). Exposed as defaults; each
  * portal may override via `VITE_*` env. These are the addresses the whitelist viewer + the
  * issue-status on-chain poller read against.
+ *
+ * CUTOVER (registry plan S-13/S-14, `docs/CLIENT_REPOINT.md`): four of these MOVE to generation 2 —
+ * `IssuerRegistry` → `ProviderRegistry`, `DogTagIssuerFactory` → **`CloneProvenanceRouter`** (this
+ * module READS `rootIssuer`, so it takes the router, never `DogTagIssuerFactoryV2` — that would
+ * resolve every historical root to `address(0)` and surface as an indeterminate issuer-whitelist
+ * pillar rather than an error), `VerificationRegistryConsent` → its V2, and `DogTagSBT` here is
+ * already the reused `DogTagSBTConsent` and must NOT move. Because these are DEFAULTS, an unset
+ * `VITE_*` override after the cutover silently keeps reading generation 1 — so move the constants,
+ * do not rely on the env. `make check-cutover-consumers` is the gate.
  */
 export const DEPLOYED_ADDRESSES = {
   IssuerRegistry: "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",
