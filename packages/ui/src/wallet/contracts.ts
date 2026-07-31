@@ -1,4 +1,6 @@
 import {
+  BaseError,
+  ContractFunctionRevertedError,
   createPublicClient,
   keccak256,
   toBytes,
@@ -78,6 +80,32 @@ const ISSUER_REGISTRY_ABI = [
     inputs: [
       { name: "rt", type: "bytes32" },
       { name: "s", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const satisfies Abi;
+
+/**
+ * The generation-2 authority (`contracts/src/ProviderRegistry.sol`), declared for ONE purpose.
+ *
+ * `isRecognizedIssuer` is the one selector a generation-1 `IssuerRegistry` provably does NOT
+ * implement — that contract's entire external surface is `whitelistFor` / `delistFor` /
+ * `isWhitelistedFor`, and it has no fallback, so the call reverts there rather than answering. That
+ * makes it usable as a GENERATION DISCRIMINATOR, which is the only thing this module uses it for.
+ *
+ * Its BOOLEAN is never consumed. `isRecognizedIssuer` reads current storage
+ * (`_issuanceCapabilities[service][signer]`) with no block and no root, so it cannot answer "was this
+ * in force when that root was anchored" — using its value would revert the pillar to a current-state
+ * getter under a new name, which is the exact regression the forward-only rule removed.
+ */
+const PROVIDER_AUTHORITY_ABI = [
+  {
+    type: "function",
+    name: "isRecognizedIssuer",
+    stateMutability: "view",
+    inputs: [
+      { name: "service", type: "address" },
+      { name: "signer", type: "address" },
     ],
     outputs: [{ name: "", type: "bool" }],
   },
@@ -603,6 +631,15 @@ export type GrantAtIssuance = "authorized" | "notAuthorized" | "undetermined";
  * log records no grant, which is evidence about the credential rather than about our ability to check.
  * A log read that FAILED never reaches this function.
  *
+ * THAT EMPTY-HISTORY RULE HOLDS ONLY FOR A GENERATION-1 AUTHORITY, and this function cannot tell:
+ * `Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in
+ * `topic1`, so its reader is a record-type caller in the sense `docs/CLIENT_REPOINT.md` means, via
+ * logs rather than a getter. `ProviderRegistry` records grants as `IssuanceCapabilitySet(service,
+ * signer, allowed)` — different name, different `topic0`, different shape — so the filter matches
+ * NOTHING there and every genuine generation-2 credential would fold to a definite refusal. The
+ * caller must therefore establish the authority's generation before treating an empty history as an
+ * answer: see {@link authorityGenerationOf}.
+ *
  * Mirrors `dogtag_standard::verify::grant_in_force_at` (Rust), `RoaxRpc.grantInForceAt` (Kotlin) and
  * `RoaxRpc.grantInForceAt` (Swift).
  */
@@ -613,6 +650,79 @@ export function grantInForceAt(
   const prior = history.filter((e) => compareLogPoints(e, anchoredAt) <= 0);
   const asOf = sortLogPoints(prior)[prior.length - 1];
   return asOf?.kind === "whitelisted" ? "authorized" : "notAuthorized";
+}
+
+/**
+ * Which generation's vocabulary an authority contract speaks, as established by a probe.
+ *
+ * THREE outcomes, and the third is not a neighbour of the other two — the same shape the pillar's own
+ * verdict has, for the same reason. `"legacy"` is a conclusion ABOUT THE CONTRACT and licenses
+ * treating an empty grant history as a definite refusal; `"undetermined"` says the probe could not be
+ * put, which licenses nothing.
+ */
+export type AuthorityGeneration = "successor" | "legacy" | "undetermined";
+
+/**
+ * Did the node EXECUTE this call and the contract refuse it, or did we simply fail to get an answer?
+ *
+ * Only an executed-and-refused call is evidence about the contract. viem folds a JSON-RPC revert
+ * (`code: 3`, and the internal-error code it also treats as one) into a
+ * `ContractFunctionRevertedError`, while a timeout, a dropped connection or a rate-limit response
+ * surfaces as some other cause under `CallExecutionError` — so walking for that one class is the
+ * typed discriminator here, rather than matching on a message string.
+ *
+ * `ContractFunctionZeroDataError` is deliberately NOT a refusal: it is an address with no code
+ * answering empty, which establishes nothing about a vocabulary.
+ *
+ * DELIBERATE DIVERGENCE from the Rust ports, recorded rather than smoothed over: alloy's only typed
+ * boundary is `RpcError::ErrorResp`, which covers EVERY node-returned error including a rate-limit
+ * one, so a `-32005` still keeps a definite refusal there and does not here. Both are safe — neither
+ * reads a transport failure as a revert — and this one is the stricter of the two, which is the same
+ * posture this module already takes against mobile.
+ */
+function answeredWithRevert(e: unknown): boolean {
+  if (!(e instanceof BaseError)) return false;
+  return Boolean(e.walk((x) => x instanceof ContractFunctionRevertedError));
+}
+
+/**
+ * Probe an authority contract for the successor's surface, to decide whether an EMPTY grant history
+ * is an answer or a vocabulary mismatch.
+ *
+ * Scoped by its caller to the empty-history case ONLY, and that scoping is load-bearing: a NON-EMPTY
+ * history is itself proof this authority speaks generation 1, because those events came out of it.
+ * Only the empty case is ambiguous between "generation 1, never granted" and "generation 2, wrong
+ * vocabulary". So this costs one `eth_call` on the refusal path alone and cannot perturb any answer
+ * the forward-only rule already establishes.
+ *
+ * The probe's BOOLEAN is discarded — see {@link PROVIDER_AUTHORITY_ABI}. It identifies the GENERATION
+ * and nothing else. Answering the historical question against a generation-2 authority needs its
+ * `IssuanceCapabilitySet` log, which is a separate change (`docs/ISSUER_V2_OWNERSHIP.md` §8).
+ *
+ * Never throws: a probe that could not be put is `"undetermined"`, which the caller renders as an
+ * unresolved pillar rather than as a pass or an accusation.
+ */
+export async function authorityGenerationOf(args: {
+  registryAddr: string;
+  issuerAddr: string;
+  signer: string;
+  rpcUrl?: string;
+  defaultRpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
+}): Promise<AuthorityGeneration> {
+  try {
+    await roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
+      address: args.registryAddr as Address,
+      abi: PROVIDER_AUTHORITY_ABI,
+      functionName: "isRecognizedIssuer",
+      args: [args.issuerAddr as Address, args.signer as Address],
+      blockNumber: args.blockNumber,
+    });
+    return "successor";
+  } catch (e) {
+    return answeredWithRevert(e) ? "legacy" : "undetermined";
+  }
 }
 
 /**

@@ -88,6 +88,15 @@ class RoaxRpcSelectorTest {
         )
         // The registry the CLONE names - the only authority whose grant log answers for it.
         assertEquals("0x7b103999", RoaxRpc.functionSelector("registry()"))
+        // The generation discriminator. A WRONG selector here reverts on a real `ProviderRegistry`
+        // too, which the guard reads as "generation 1" - so it would silently restore the definite
+        // refusal against every genuine generation-2 credential, the exact defect the guard removes.
+        // Confirmed with `cast sig "isRecognizedIssuer(address,address)"`.
+        assertEquals("0x0b137974", RoaxRpc.IS_RECOGNIZED_ISSUER_SELECTOR)
+        assertEquals(
+            "0x0b137974",
+            RoaxRpc.functionSelector("isRecognizedIssuer(address,address)"),
+        )
     }
 
     /**

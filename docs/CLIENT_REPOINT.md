@@ -145,7 +145,8 @@ Seven sites: `stacks/vet/api/src/routes.rs:549`, `:658`, `:969`, `:1258`, `:1308
 **That enumeration counted GETTERS only, and it is therefore incomplete.**
 A record-type key also travels as a LOG TOPIC: `Whitelisted(bytes32 indexed recordType, address indexed signer)` puts it in `topic1`, so the mandatory pillar's grant-history read is a record-type caller too, and fails against the successor for the same reason - only more quietly, because no call reverts and no answer looks wrong.
 `ProviderRegistry` records grants as `IssuanceCapabilitySet(service, signer, allowed)`, a different name and `topic0`, so that filter matches nothing and the fold's empty-history rule renders the miss as a definite forgery verdict.
-Both backends now guard it; see `docs/ISSUER_V2_OWNERSHIP.md` §8 for the guard and for what remains open.
+All five surfaces now guard it - the two Rust backends, `packages/ui`, and both mobile clients; see `docs/ISSUER_V2_OWNERSHIP.md` §8 for the guard, for the revert-versus-undelivered-probe split it rests on, and for what remains open.
+It reached the two backends first while §8 already claimed the guarantee globally, so read any surviving "both backends" wording as the narrower, superseded statement.
 Generalize the lesson rather than the list: **an inventory built by grepping for a getter name cannot see a consumer that reads the same key from an event**, which is the third way this document's own enumeration method has been wrong - after case and after prefix.
 
 **Status after the `isRecognizedIssuer` migration.**

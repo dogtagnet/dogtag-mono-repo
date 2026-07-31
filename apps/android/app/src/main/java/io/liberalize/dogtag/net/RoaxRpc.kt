@@ -229,6 +229,15 @@ object RoaxRpc {
     internal val REGISTRY_SELECTOR = functionSelector("registry()")
 
     /**
+     * The generation-2 authority's `isRecognizedIssuer(address,address)`
+     * (`contracts/src/ProviderRegistry.sol`), used ONLY as a generation discriminator - it is the one
+     * selector a generation-1 `IssuerRegistry` provably does not implement. Its BOOLEAN is never
+     * consumed; see [generationFromProbe].
+     */
+    internal val IS_RECOGNIZED_ISSUER_SELECTOR =
+        functionSelector("isRecognizedIssuer(address,address)")
+
+    /**
      * Topics for the grant history the issuer-whitelist pillar folds. Both event arguments are
      * `indexed` on `IssuerRegistry`, so one filtered `eth_getLogs` per `(recordType, signer)` pair
      * reconstructs the whole history - and `whitelistFor`/`delistFor` emit unconditionally, so the
@@ -616,7 +625,23 @@ object RoaxRpc {
             val topic0 = log.optJSONArray("topics")?.optString(0, "")?.lowercase() ?: ""
             history.add(GrantEvent(at, topic0 == WHITELISTED_TOPIC.lowercase()))
         }
-        return grantInForceAt(history, anchoredAt)
+
+        // (4) An EMPTY history is a definite refusal ONLY if this authority speaks this vocabulary.
+        // Probed on the refusal path alone - a non-empty history is itself proof of generation 1 -
+        // so this costs nothing on the hot path. See [grantAtIssuance] and [generationFromProbe].
+        val generation = if (history.isEmpty()) {
+            generationFromProbe(
+                ethCall(
+                    rpcUrl,
+                    expectedChainId,
+                    governing,
+                    IS_RECOGNIZED_ISSUER_SELECTOR + padAddr(clone) + padAddr(signer),
+                ),
+            )
+        } else {
+            AuthorityGeneration.Legacy
+        }
+        return grantAtIssuance(history, anchoredAt, generation)
     }
 
     /** A 32-byte topic value, `0x`-prefixed and left-padded, from a hex word of any width. */
@@ -899,10 +924,87 @@ object RoaxRpc {
         return if (v > Int.MAX_VALUE) null else v.toInt()
     }
 
-    private sealed class CallResult {
+    /**
+     * The outcome of one `eth_call`.
+     *
+     * [Err.answered] splits the failure in two, and the split is load-bearing rather than
+     * bookkeeping: a node returning a JSON-RPC error for a request it PROCESSED is how a revert
+     * arrives, and a revert is evidence about the contract, while a timeout, a dropped connection or
+     * an HTTP status is no answer at all and is evidence about nothing. Every caller that draws a
+     * conclusion ABOUT A CONTRACT from a failed call has to know which it got - see
+     * [generationFromProbe].
+     */
+    internal sealed class CallResult {
         data class Ok(val hex: String) : CallResult()
-        data class Err(val reason: String) : CallResult()
+        /**
+         * @param answered true when the NODE returned a JSON-RPC error for a request it processed
+         *   (a revert). False - the default, since it is the safe reading - when we never obtained
+         *   an answer: a non-2xx HTTP status, a transport exception, unparseable JSON.
+         */
+        data class Err(val reason: String, val answered: Boolean = false) : CallResult()
     }
+
+    /**
+     * Which generation's vocabulary an authority contract speaks.
+     *
+     * THREE outcomes, and the third is not a neighbour of the other two. [Legacy] is a conclusion
+     * ABOUT THE CONTRACT and licenses treating an empty grant history as a definite refusal;
+     * [Undetermined] says the probe could not be put, which licenses nothing.
+     *
+     * Mirrors Rust `AuthorityGeneration` (`stacks/{vet,government}/api/src/chain.rs`), TS
+     * `AuthorityGeneration` (`packages/ui/src/wallet/contracts.ts`) and Swift
+     * `RoaxRpc.AuthorityGeneration`.
+     */
+    enum class AuthorityGeneration { Successor, Legacy, Undetermined }
+
+    /**
+     * Classify a generation probe against `isRecognizedIssuer` - the one selector a generation-1
+     * `IssuerRegistry` provably does not implement (its entire external surface is
+     * `whitelistFor`/`delistFor`/`isWhitelistedFor`, and it has no fallback, so the call reverts
+     * there rather than answering).
+     *
+     * The probe's VALUE is never consulted, here or by any caller: `isRecognizedIssuer` reads current
+     * storage with no block and no root, so using its boolean would revert the pillar to a
+     * current-state getter under a new name. It identifies the GENERATION and nothing else.
+     *
+     * ONLY A REVERT identifies generation 1. A probe that never arrived establishes nothing, and
+     * reading it as generation 1 hands an empty history back to the fold, which correctly folds it to
+     * a definite refusal - so one transient would become a forgery verdict against a genuine
+     * credential.
+     */
+    internal fun generationFromProbe(probe: CallResult): AuthorityGeneration = when (probe) {
+        is CallResult.Ok -> AuthorityGeneration.Successor
+        is CallResult.Err ->
+            if (probe.answered) AuthorityGeneration.Legacy else AuthorityGeneration.Undetermined
+    }
+
+    /**
+     * Fold a grant history against an anchoring point, given what the probe established about the
+     * authority that produced it.
+     *
+     * [grantInForceAt] alone treats an EMPTY history as a definite refusal, which is right for a
+     * generation-1 `IssuerRegistry`: an honest `issue()` cannot pass `onlyWhitelisted` in that state,
+     * so the emptiness is evidence about the credential. It is WRONG for the successor.
+     * `Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in
+     * `topic1`, so the history read is a record-type caller in the sense `docs/CLIENT_REPOINT.md`
+     * means - via logs rather than a getter - and `ProviderRegistry` records its grants as
+     * `IssuanceCapabilitySet(service, signer, allowed)` instead. That filter matches NOTHING there, so
+     * every genuine generation-2 credential arrives with an empty history.
+     *
+     * Scoped to the empty case, and that scoping is load-bearing: a NON-EMPTY history is itself proof
+     * the authority speaks generation 1, because those events came out of it. So the probe fires on
+     * the refusal path alone and cannot perturb any answer the forward-only rule established.
+     */
+    internal fun grantAtIssuance(
+        history: List<GrantEvent>,
+        anchoredAt: LogPoint,
+        generation: AuthorityGeneration,
+    ): GrantAtIssuance =
+        if (history.isEmpty() && generation != AuthorityGeneration.Legacy) {
+            GrantAtIssuance.Undetermined
+        } else {
+            grantInForceAt(history, anchoredAt)
+        }
 
     private suspend fun ethCall(
         rpcUrl: String,
@@ -923,9 +1025,16 @@ object RoaxRpc {
         }.toString()
         return try {
             val resp = guardedPostJson(rpcUrl, expectedChainId, payload)
+            // A non-2xx is the transport failing, not the node answering: a revert comes back as a
+            // 200 carrying a JSON-RPC `error` member.
             if (!resp.ok) return CallResult.Err("rpc ${resp.code}")
             val o = JSONObject(resp.body)
-            if (o.has("error")) return CallResult.Err(o.getJSONObject("error").optString("message", "rpc error"))
+            if (o.has("error")) {
+                return CallResult.Err(
+                    o.getJSONObject("error").optString("message", "rpc error"),
+                    answered = true,
+                )
+            }
             CallResult.Ok(o.optString("result", "").removePrefix("0x"))
         } catch (e: Exception) {
             CallResult.Err(e.message ?: "rpc unreachable")

@@ -435,10 +435,22 @@ That filter therefore matches NOTHING there, and the fold's empty-history rule -
 It reaches `POST /v1/verify`, which is unauthenticated.
 
 **What shipped, and what is still open.**
-Both Rust backends now guard that rule: an empty history is a definite refusal ONLY when the authority positively speaks generation 1, established by probing `isRecognizedIssuer` - a selector `IssuerRegistry` provably does not implement, since its entire external surface is `whitelistFor`/`delistFor`/`isWhitelistedFor` and it has no fallback.
+All five surfaces now guard that rule: an empty history is a definite refusal ONLY when the authority positively speaks generation 1, established by probing `isRecognizedIssuer` - a selector `IssuerRegistry` provably does not implement, since its entire external surface is `whitelistFor`/`delistFor`/`isWhitelistedFor` and it has no fallback.
 The probe's ANSWER is discarded; it identifies the generation and nothing else.
 It is scoped to the EMPTY case because a non-empty history is itself proof the authority speaks generation 1, so the extra call lands on the refusal path only and cannot perturb any answer #127 established.
 A generation-2 root now reports **could not determine**, never a forgery verdict.
+
+Read "all five" as a correction rather than as the original claim.
+It first shipped on the two Rust backends alone while this section already stated the guarantee globally - `packages/ui/src/wallet/contracts.ts` (`authorityGenerationOf`, consumed by `verifyCredential.ts`), Kotlin `RoaxRpc.grantAtIssuance` and Swift `RoaxRpc.grantAtIssuance` all still folded an empty history to a definite refusal.
+A claim ahead of its code is its own defect: the gap was set to surface at the C-9/C-10 client repoint, as a genuine credential refused as forged on the vet/groomer verify panel, the admin bench and both mobile importers, rather than at review.
+The SDK path needs no sixth change - `crates/dogtag-standard-rs/src/verify.rs` reaches the chain through vet's `ChainRpcAdapter`, which delegates to `whitelisted_at_issuance` and inherits the guard.
+
+**A REVERT and an UNDELIVERED PROBE are different facts, and only the first licenses the generation-1 conclusion.**
+The guard shipped on all three Rust sites as `.is_ok()` / `if let Ok(..)`, which reads a timeout, a reset connection or a rate-limit response as "the contract refused it" - could-not-check rendered as a definite answer, inside the guard built to remove exactly that.
+On the pillar a transport failure leaves the definite `NotAuthorized` standing, i.e. a forgery accusation from a read that never happened.
+In `issuance_capability` it is worse: the fall-through asks the LEGACY getter, which `ProviderRegistry` *does* implement and answers `false` for off the orthogonal VERIFY axis at a zero `msg.sender`, so a genuinely authorised generation-2 signer is refused with 403 "address not approved for this recordType yet".
+The typed discriminator is alloy's `RpcError::ErrorResp`; Kotlin and Swift mirror it as "HTTP 200 carrying a JSON-RPC `error` member", and the web uses viem's own `ContractFunctionRevertedError`, which is narrower (codes `3` and `-32603` only) and therefore stricter - a divergence recorded rather than forced into agreement, since both are safe in the direction that matters.
+`MemChain` is a different `ChainClient` and cannot reach the alloy code at all, so the classifier is extracted (`answered_with_error` / `generation_from_probe`) and pinned by `chain::tests`, while the MemChain cases pin the trait's contract; `scripts/verify-issuance-authority-mutations.sh` mutates the two separately.
 
 Still open, and it is what the cutover actually needs: **answering the historical question for generation 2 means decoding `IssuanceCapabilitySet`**, mirrored across all five surfaces above.
 That is not attempted here - `ProviderRegistry` has no deployed address, so a generation-2 event decoder could not be validated against anything, and the mirrored fold is #127-scale work (36 files, ~3,400 insertions).

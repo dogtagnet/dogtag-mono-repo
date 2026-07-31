@@ -248,6 +248,55 @@ async fn an_undeterminable_authority_is_not_reported_as_the_signers_fault() {
     );
 }
 
+/// A PROBE THAT COULD NOT BE DELIVERED MUST NOT FALL THROUGH TO THE LEGACY GETTER.
+///
+/// The sharpest arm of the split, and the one whose failure is a confident wrong answer rather than
+/// a lost one. Generation 2 is probed first because `ProviderRegistry` implements the LEGACY
+/// `isWhitelistedFor` selector too and, at a plain `eth_call`'s zero `msg.sender`, answers it off
+/// `_verifierCapabilities` — the orthogonal VERIFY axis — with a definite `false` about every
+/// genuine issuer signer. So a timeout, a reset connection or a rate-limit response on the successor
+/// probe must stop the read, not hand it to a getter that will answer wrongly and confidently.
+///
+/// The fixture is the only state where the defect is observable: an authority that IS generation 2
+/// and HAS granted this signer, whose successor probe cannot be delivered while its legacy selector
+/// is still there to answer. Falling through yields 403 "address not approved for this recordType
+/// yet" — an accusation drawn from a read that never happened, which is this repo's standing defect
+/// class reproduced inside the migration built to remove it.
+///
+/// What this pins is the trait's CONTRACT. The Alloy error classification itself is pinned by
+/// `chain::tests::a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one`;
+/// `MemChain` is a different `ChainClient` and cannot reach that code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undelivered_generation_probe_never_falls_through_to_the_legacy_getter() {
+    let (app, op, backend, mem) = boot().await;
+
+    mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
+    // Genuinely authorised on the successor's own axis...
+    mem.set_provider_capability(CLONE_OWN_REGISTRY, ISSUER, &backend, true, true);
+    // ...and the probe that would have established that cannot be delivered.
+    mem.set_provider_probe_unreachable(CLONE_OWN_REGISTRY);
+
+    assert_eq!(
+        mem.issuance_capability(ISSUER, &record_type_key("VACCINATION"), &backend)
+            .await
+            .unwrap(),
+        IssuanceCapability::Undetermined,
+        "a transport failure establishes nothing about the authority's vocabulary",
+    );
+
+    let (s, b) = prepare(&app, &op, "5").await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_GATEWAY,
+        "our inability to reach the authority is ours, not the signer's: {b}"
+    );
+    assert_ne!(
+        s,
+        StatusCode::FORBIDDEN,
+        "falling through to the legacy getter would accuse a genuinely authorised signer: {b}"
+    );
+}
+
 /// The operator console's issuance matrix. `whitelisted` was a bare bool defaulting to `false` on any
 /// read failure — an RPC blip rendered as "this signer is not approved".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

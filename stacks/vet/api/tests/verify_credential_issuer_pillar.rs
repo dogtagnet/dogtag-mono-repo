@@ -639,6 +639,57 @@ async fn an_empty_history_on_a_generation_one_registry_is_still_a_definite_refus
     assert_eq!(b["verdict"], false, "{b}");
 }
 
+/// A PROBE THAT COULD NOT BE DELIVERED MUST NOT LEAVE THE REFUSAL STANDING.
+///
+/// The generation guard turns on a probe, and a probe has THREE outcomes rather than two: it
+/// answered (generation 2), the node executed it and the contract refused it (generation 1), or it
+/// never arrived. Only the second is evidence about the contract. Reading a timeout, a reset
+/// connection or a rate-limit response as "generation 1" hands the empty history straight back to
+/// `grant_in_force_at`, which correctly folds it to a definite refusal — so one transient becomes a
+/// forgery verdict against a genuine credential, on a read that never happened.
+///
+/// That is the same could-not-check-rendered-as-a-definite-answer this whole pillar exists to refuse,
+/// reproduced inside the guard built to refuse it. On government's mirror of this read the route is
+/// UNAUTHENTICATED.
+///
+/// This pins the trait's CONTRACT. The Alloy error classification is pinned separately by
+/// `chain::tests::a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one`, because
+/// `MemChain` is a different `ChainClient` and cannot reach that code at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undelivered_generation_probe_is_undetermined_not_a_forgery_verdict() {
+    let (app, op, backend, mem) = boot().await;
+    let (_id, root, doc) = issue_doc(&app, &op, "51").await;
+    mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
+
+    // An authority with an empty grant history — exactly the state the guard is scoped to — whose
+    // generation probe cannot be delivered. Its vocabulary is therefore unestablished.
+    mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
+    mem.set_grant_history(
+        CLONE_OWN_REGISTRY,
+        &record_type_key("VACCINATION"),
+        &backend,
+        vec![],
+    );
+    mem.set_provider_probe_unreachable(CLONE_OWN_REGISTRY);
+
+    let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
+    assert_eq!(
+        b["fragments"]["issuerWhitelistState"], "unresolved",
+        "a probe that never arrived establishes nothing: {b}"
+    );
+    assert_ne!(
+        b["fragments"]["issuerWhitelistState"], "failed",
+        "must never accuse a credential over a read that did not happen: {b}"
+    );
+    assert_ne!(b["status"], "issuer_not_whitelisted", "{b}");
+    assert!(
+        b["fragments"]["issuerWhitelisted"].is_null(),
+        "indeterminate is null, not false: {b}"
+    );
+    // Unresolved has never permitted a pass, and this must not have loosened that.
+    assert_eq!(b["verdict"], false, "{b}");
+}
+
 /// "We never asked" must be visible, and must not be spelled the same way as "we asked and it passed".
 ///
 /// This is the deployment-misconfiguration state: no factory configured, so the pillar CANNOT be

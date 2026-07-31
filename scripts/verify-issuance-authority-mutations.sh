@@ -82,6 +82,32 @@ check() {
   restore
 }
 
+# check_lib <label> <package> <test-name> <file> <old> <new>
+#
+# The same gate against a UNIT test inside `src`. Needed because the Alloy error classification has no
+# integration-test seam at all: `MemChain` is a different `ChainClient` and cannot reach that code, so
+# the only hermetic pin for it is `chain::tests`. Do not "simplify" these into `check` — `--test <name>`
+# addresses an integration target and would silently match nothing.
+check_lib() {
+  local label="$1" pkg="$2" name="$3" file="$4" old="$5" new="$6"
+  echo "== $label"
+  if ! apply "$file" "$old" "$new"; then
+    FAIL=$((FAIL + 1)); restore; return
+  fi
+  if ! cargo check -p "$pkg" --tests >/dev/null 2>&1; then
+    echo "  !! INERT: this mutation does not compile, so its red is a build failure, not evidence"
+    FAIL=$((FAIL + 1)); restore; return
+  fi
+  if cargo test -p "$pkg" --lib "$name" >/dev/null 2>&1; then
+    echo "  !! STAYED GREEN — $name does not pin this"
+    FAIL=$((FAIL + 1))
+  else
+    echo "  ok: $name went red"
+    PASS=$((PASS + 1))
+  fi
+  restore
+}
+
 # ---------------------------------------------------------------------------------------------
 # (1) the authority must come off the clone, not off the configured registry
 # ---------------------------------------------------------------------------------------------
@@ -176,7 +202,10 @@ check "vet: generation guard dropped (gen-2 accused of forgery)" \
   vet-api verify_credential_issuer_pillar \
   a_generation_two_authority_is_undetermined_not_a_forgery_verdict \
   stacks/vet/api/src/chain.rs \
-  '        if history.is_empty() && g.provider_registries.contains(&governing) {
+  '        if history.is_empty()
+            && (g.provider_registries.contains(&governing)
+                || g.unreachable_probe_registries.contains(&governing))
+        {
             return Ok(GrantAtIssuance::Undetermined);
         }' \
   '        // mutation: guard removed'
@@ -185,14 +214,20 @@ check "vet: generation guard made unconditional (gen-1 refusal softened)" \
   vet-api verify_credential_issuer_pillar \
   an_empty_history_on_a_generation_one_registry_is_still_a_definite_refusal \
   stacks/vet/api/src/chain.rs \
-  '        if history.is_empty() && g.provider_registries.contains(&governing) {' \
+  '        if history.is_empty()
+            && (g.provider_registries.contains(&governing)
+                || g.unreachable_probe_registries.contains(&governing))
+        {' \
   '        if history.is_empty() {'
 
 check "government: generation guard dropped (gen-2 accused of forgery)" \
   government-api flow_memchain \
   a_generation_two_authority_is_undetermined_not_a_forgery_verdict \
   stacks/government/api/src/chain.rs \
-  '        if history.is_empty() && g.provider_registries.contains(&governing) {
+  '        if history.is_empty()
+            && (g.provider_registries.contains(&governing)
+                || g.unreachable_probe_registries.contains(&governing))
+        {
             return Ok(GrantAtIssuance::Undetermined);
         }' \
   '        // mutation: guard removed'
@@ -201,8 +236,95 @@ check "government: generation guard made unconditional (gen-1 refusal softened)"
   government-api flow_memchain \
   an_empty_history_on_a_generation_one_registry_is_still_a_definite_refusal \
   stacks/government/api/src/chain.rs \
-  '        if history.is_empty() && g.provider_registries.contains(&governing) {' \
+  '        if history.is_empty()
+            && (g.provider_registries.contains(&governing)
+                || g.unreachable_probe_registries.contains(&governing))
+        {' \
   '        if history.is_empty() {'
+
+# ---------------------------------------------------------------------------------------------
+# (6) a REVERT and an UNDELIVERED PROBE are different facts
+#
+# The guard above turns on a probe, and a probe has THREE outcomes, not two. Reading a transport
+# failure as "the contract refused it" is this repo's standing defect class - could-not-check rendered
+# as a definite answer - reproduced inside the guard built to remove it.
+#
+# The first two mutations here revert the classifier to the `is_ok()` it replaced, and go through
+# `check_lib` because nothing else can reach that code: `MemChain` is a different `ChainClient`, so its
+# tests pin the trait's CONTRACT and never this classification. The remaining four mutate the fakes,
+# which is what pins the contract half.
+# ---------------------------------------------------------------------------------------------
+check_lib "vet: every error read as a revert (the old is_ok semantics)" \
+  vet-api \
+  a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one \
+  stacks/vet/api/src/chain.rs \
+  '    matches!(
+        e,
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(_))
+    )
+}
+
+/// Classify a generation probe. The probe'"'"'s VALUE is deliberately not part of this decision' \
+  '    let _ = e;
+    true
+}
+
+/// Classify a generation probe. The probe'"'"'s VALUE is deliberately not part of this decision'
+
+check_lib "vet: no error read as a revert (the generation-1 refusal lost)" \
+  vet-api \
+  only_a_node_error_response_identifies_generation_one \
+  stacks/vet/api/src/chain.rs \
+  '    matches!(
+        e,
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(_))
+    )
+}
+
+/// Classify a generation probe. The probe'"'"'s VALUE is deliberately not part of this decision' \
+  '    let _ = e;
+    false
+}
+
+/// Classify a generation probe. The probe'"'"'s VALUE is deliberately not part of this decision'
+
+check_lib "government: every error read as a revert (the old is_ok semantics)" \
+  government-api \
+  a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one \
+  stacks/government/api/src/chain.rs \
+  '    matches!(
+        e,
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(_))
+    )' \
+  '    let _ = e;
+    true'
+
+# The FALL-THROUGH is the sharpest arm: on a transport failure the legacy getter would still answer,
+# and on a `ProviderRegistry` it answers a confident wrong `false` off the orthogonal VERIFY axis.
+check "vet: undelivered probe falls through to the legacy getter" \
+  vet-api issuance_authority_migration \
+  an_undelivered_generation_probe_never_falls_through_to_the_legacy_getter \
+  stacks/vet/api/src/chain.rs \
+  '        if g.unreachable_probe_registries.contains(&governing) {
+            return Ok(IssuanceCapability::Undetermined);
+        }' \
+  '        // mutation: fall through on an undelivered probe'
+
+check "vet: undelivered probe leaves the pillar refusal standing" \
+  vet-api verify_credential_issuer_pillar \
+  an_undelivered_generation_probe_is_undetermined_not_a_forgery_verdict \
+  stacks/vet/api/src/chain.rs \
+  '            && (g.provider_registries.contains(&governing)
+                || g.unreachable_probe_registries.contains(&governing))' \
+  '            && g.provider_registries.contains(&governing)'
+
+check "government: undelivered probe leaves the pillar refusal standing" \
+  government-api flow_memchain \
+  an_undelivered_generation_probe_is_undetermined_not_a_forgery_verdict \
+  stacks/government/api/src/chain.rs \
+  '            && (g.provider_registries.contains(&governing)
+                || g.unreachable_probe_registries.contains(&governing))' \
+  '            && g.provider_registries.contains(&governing)'
 
 echo
 echo "mutations reddening their named test: $PASS"

@@ -91,4 +91,86 @@ class GrantInForceAtTest {
         assertEquals(GrantAtIssuance.NotAuthorized, RoaxRpc.grantInForceAt(events, anchored))
         assertEquals(GrantAtIssuance.NotAuthorized, RoaxRpc.grantInForceAt(events.reversed(), anchored))
     }
+
+    // ---- the generation guard on the empty-history refusal --------------------------------------
+    //
+    // The fold above answers a definite `NotAuthorized` for an empty history, which is right for a
+    // generation-1 `IssuerRegistry` and WRONG for its successor: `Whitelisted(bytes32 indexed
+    // recordType, address indexed signer)` puts the record-type key in `topic1`, and
+    // `ProviderRegistry` records `IssuanceCapabilitySet(service, signer, allowed)` instead, so that
+    // filter matches nothing there and every genuine generation-2 credential arrives empty.
+    //
+    // Mirrors Swift `GrantAtIssuanceTests` case for case.
+
+    @Test
+    fun onlyANodeErrorResponseIdentifiesGenerationOne() {
+        assertEquals(
+            RoaxRpc.AuthorityGeneration.Legacy,
+            RoaxRpc.generationFromProbe(RoaxRpc.CallResult.Err("execution reverted", answered = true)),
+        )
+    }
+
+    @Test
+    fun aProbeThatAnswersIdentifiesTheSuccessor() {
+        assertEquals(
+            RoaxRpc.AuthorityGeneration.Successor,
+            RoaxRpc.generationFromProbe(RoaxRpc.CallResult.Ok("0x01")),
+        )
+    }
+
+    /**
+     * A probe that never arrived establishes NOTHING. Reading it as generation 1 hands the empty
+     * history back to the fold, which correctly refuses it - so one timeout becomes a forgery verdict
+     * against a genuine credential. `answered` defaults to false precisely because that is the safe
+     * reading.
+     */
+    @Test
+    fun aProbeThatCouldNotBeDeliveredIsUndeterminedNeverGenerationOne() {
+        assertEquals(
+            RoaxRpc.AuthorityGeneration.Undetermined,
+            RoaxRpc.generationFromProbe(RoaxRpc.CallResult.Err("rpc 503")),
+        )
+        assertEquals(
+            RoaxRpc.AuthorityGeneration.Undetermined,
+            RoaxRpc.generationFromProbe(RoaxRpc.CallResult.Err("timeout", answered = false)),
+        )
+    }
+
+    @Test
+    fun anEmptyHistoryIsARefusalOnlyWhenTheAuthorityAnsweredThatItIsGenerationOne() {
+        assertEquals(
+            GrantAtIssuance.NotAuthorized,
+            RoaxRpc.grantAtIssuance(emptyList(), anchored, RoaxRpc.AuthorityGeneration.Legacy),
+        )
+        assertEquals(
+            GrantAtIssuance.Undetermined,
+            RoaxRpc.grantAtIssuance(emptyList(), anchored, RoaxRpc.AuthorityGeneration.Successor),
+        )
+        assertEquals(
+            GrantAtIssuance.Undetermined,
+            RoaxRpc.grantAtIssuance(emptyList(), anchored, RoaxRpc.AuthorityGeneration.Undetermined),
+        )
+    }
+
+    /**
+     * The guard is scoped to the EMPTY case, and that scoping is load-bearing: a NON-EMPTY history is
+     * itself proof the authority speaks generation 1, because those events came out of it. So no
+     * generation may perturb an answer the forward-only rule already established - including the
+     * delisted-AFTER pass, which is the one #127 exists to protect.
+     */
+    @Test
+    fun aNonEmptyHistoryIsUnaffectedByWhateverTheProbeSaid() {
+        val delistedAfter = listOf(granted(100), delisted(700))
+        val delistedBefore = listOf(granted(100), delisted(199))
+        for (g in RoaxRpc.AuthorityGeneration.values()) {
+            assertEquals(
+                GrantAtIssuance.Authorized,
+                RoaxRpc.grantAtIssuance(delistedAfter, anchored, g),
+            )
+            assertEquals(
+                GrantAtIssuance.NotAuthorized,
+                RoaxRpc.grantAtIssuance(delistedBefore, anchored, g),
+            )
+        }
+    }
 }

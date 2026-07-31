@@ -71,6 +71,67 @@ final class GrantAtIssuanceTests: XCTestCase {
         XCTAssertEqual(RoaxRpc.grantInForceAt(events.reversed(), anchoredAt: anchored), .notAuthorized)
     }
 
+    // MARK: - the generation guard on the empty-history refusal
+    //
+    // The fold above answers a definite `.notAuthorized` for an empty history, which is right for a
+    // generation-1 `IssuerRegistry` and WRONG for its successor: `Whitelisted(bytes32 indexed
+    // recordType, address indexed signer)` puts the record-type key in `topic1`, and
+    // `ProviderRegistry` records `IssuanceCapabilitySet(service, signer, allowed)` instead, so that
+    // filter matches nothing there and every genuine generation-2 credential arrives empty.
+    //
+    // Mirrors Android's `GrantInForceAtTest` case for case.
+
+    func test_onlyANodeErrorResponseIdentifiesGenerationOne() {
+        XCTAssertEqual(RoaxRpc.generationFromProbe(.refused("execution reverted")), .legacy)
+    }
+
+    func test_aProbeThatAnswersIdentifiesTheSuccessor() {
+        XCTAssertEqual(RoaxRpc.generationFromProbe(.success("0x01")), .successor)
+    }
+
+    /// A probe that never arrived establishes NOTHING. Reading it as generation 1 hands the empty
+    /// history back to the fold, which correctly refuses it - so one timeout becomes a forgery verdict
+    /// against a genuine credential.
+    func test_aProbeThatCouldNotBeDeliveredIsUndeterminedNeverGenerationOne() {
+        XCTAssertEqual(RoaxRpc.generationFromProbe(.unreachable("rpc 503")), .undetermined)
+        XCTAssertEqual(RoaxRpc.generationFromProbe(.unreachable("bad rpc json")), .undetermined)
+    }
+
+    func test_anEmptyHistoryIsARefusalOnlyWhenTheAuthorityAnsweredThatItIsGenerationOne() {
+        XCTAssertEqual(
+            RoaxRpc.grantAtIssuance([], anchoredAt: anchored, generation: .legacy), .notAuthorized)
+        XCTAssertEqual(
+            RoaxRpc.grantAtIssuance([], anchoredAt: anchored, generation: .successor), .undetermined)
+        XCTAssertEqual(
+            RoaxRpc.grantAtIssuance([], anchoredAt: anchored, generation: .undetermined), .undetermined)
+    }
+
+    /// The guard is scoped to the EMPTY case, and that scoping is load-bearing: a NON-EMPTY history is
+    /// itself proof the authority speaks generation 1, because those events came out of it. So no
+    /// generation may perturb an answer the forward-only rule already established - including the
+    /// delisted-AFTER pass, which is the one that rule exists to protect.
+    func test_aNonEmptyHistoryIsUnaffectedByWhateverTheProbeSaid() {
+        let delistedAfter = [granted(100), delisted(700)]
+        let delistedBefore = [granted(100), delisted(199)]
+        for g in [RoaxRpc.AuthorityGeneration.legacy, .successor, .undetermined] {
+            XCTAssertEqual(
+                RoaxRpc.grantAtIssuance(delistedAfter, anchoredAt: anchored, generation: g),
+                .authorized)
+            XCTAssertEqual(
+                RoaxRpc.grantAtIssuance(delistedBefore, anchoredAt: anchored, generation: g),
+                .notAuthorized)
+        }
+    }
+
+    /// The generation discriminator's selector. A WRONG value reverts on a real `ProviderRegistry`
+    /// too, which the guard reads as "generation 1" - silently restoring the definite refusal against
+    /// every genuine generation-2 credential, the exact defect the guard removes. Confirmed with
+    /// `cast sig "isRecognizedIssuer(address,address)"`, and byte-identical to the value Android's
+    /// `RoaxRpcSelectorTest` pins.
+    func test_theGenerationProbeSelectorMatchesItsCanonicalSignature() {
+        XCTAssertEqual(RoaxRpc.isRecognizedIssuerSelector, "0x0b137974")
+    }
+
     // MARK: - the derived topic values
 
     /// Independently confirmed with `cast keccak`, and byte-identical to the values Android's

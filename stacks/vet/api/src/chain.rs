@@ -19,6 +19,60 @@ use dogtag_standard::public_signals::level_b as PB;
 // every Rust surface that asks it shares ONE definition rather than three that can drift.
 pub use dogtag_standard::verify::{grant_in_force_at, GrantAtIssuance, GrantEvent, LogPoint};
 
+/// What a generation-discriminating probe established about an authority contract.
+///
+/// THREE outcomes, and the third is not a neighbour of the other two — the same shape the pillar's
+/// own verdict has, for the same reason. Collapsing [`AuthorityGeneration::Undetermined`] into
+/// [`AuthorityGeneration::Legacy`] is this repo's standing defect class (could-not-check rendered as
+/// a definite answer) reproduced inside the very read that exists to remove it.
+///
+/// Mirrored in `stacks/government/api/src/chain.rs`; keep the two in step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorityGeneration {
+    /// The successor's selector ANSWERED, so this authority speaks generation 2
+    /// (`contracts/src/ProviderRegistry.sol`).
+    Successor,
+    /// The node EXECUTED the call and the contract refused it — no such selector, and
+    /// `IssuerRegistry` has no fallback. Evidence that this authority does NOT implement the
+    /// successor's surface, i.e. that it is generation 1.
+    Legacy,
+    /// No answer was obtained at all. Evidence about NOTHING, and in particular not evidence of
+    /// generation 1.
+    Undetermined,
+}
+
+/// Did the node ANSWER this call, or merely fail to deliver it?
+///
+/// Only an answer licenses a conclusion ABOUT THE CONTRACT. `RpcError::ErrorResp` is the node
+/// returning a JSON-RPC error for a request it processed, which is how a revert arrives — including
+/// the bare revert a contract produces for a selector it does not implement and has no fallback for.
+/// Every other error is our side failing to obtain an answer: `Transport` (timeout, connection reset,
+/// HTTP status), `DeserError`/`SerError`, `NullResp`, `LocalUsageError`, plus the contract layer's own
+/// `AbiError` (returndata that would not decode — what an address with no code produces) and the
+/// `UnknownFunction`/`UnknownSelector`/deployment variants.
+///
+/// RESIDUAL, recorded rather than engineered around: `ErrorResp` also carries a node's rate-limit and
+/// internal-error responses, which are not reverts, so one of those still keeps a definite refusal.
+/// Narrowing further would mean guessing from an error code or a message string, and this is the only
+/// typed boundary alloy offers. It is strictly better than the `is_ok()` it replaces, which read
+/// EVERY failure — a dropped connection included — as a revert.
+fn answered_with_error(e: &alloy::contract::Error) -> bool {
+    matches!(
+        e,
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(_))
+    )
+}
+
+/// Classify a generation probe. The probe's VALUE is deliberately not part of this decision — see the
+/// `isRecognizedIssuer` note on [`ChainClient::whitelisted_at_issuance`].
+fn generation_from_probe<T>(r: &Result<T, alloy::contract::Error>) -> AuthorityGeneration {
+    match r {
+        Ok(_) => AuthorityGeneration::Successor,
+        Err(e) if answered_with_error(e) => AuthorityGeneration::Legacy,
+        Err(_) => AuthorityGeneration::Undetermined,
+    }
+}
+
 /// Where a mined log sits, as the ordering key the fold compares.
 ///
 /// `None` for a log carrying no position. Callers must treat that as UNDETERMINED rather than
@@ -549,10 +603,23 @@ struct MemChainInner {
     /// narrow rung from the wide one could not model a superseded clone — which is precisely the case
     /// that catches a preflight built on the wrong rung.
     provider_capabilities: HashMap<(String, String, String), (bool, bool)>,
-    /// Registries that answer NEITHER vocabulary: a contract at that address that is not an
-    /// `IssuerRegistry` and not a `ProviderRegistry`, or one that cannot be reached. Its answer is
-    /// "could not determine", which must never render as either verdict.
+    /// Registries that ANSWER neither vocabulary: a contract at that address that is not an
+    /// `IssuerRegistry` and not a `ProviderRegistry`, so both selectors revert. The node executed
+    /// both calls; what it established is that this build knows neither of the contract's languages.
     unanswerable_registries: HashSet<String>,
+    /// Registries whose GENERATION PROBE cannot be delivered, while their other reads still answer.
+    ///
+    /// Distinct from [`MemChainInner::unanswerable_registries`] and the distinction is the whole
+    /// point: that one is the node ANSWERING (a revert), this one is the node not answering at all
+    /// (a timeout, a reset connection, a rate-limit response). Only the first is evidence about the
+    /// contract. A fake that could not tell them apart could not fail the test that matters, because
+    /// the defect is precisely a transport failure being read as a revert.
+    ///
+    /// Modelled per registry rather than as a global "the chain is down" because that global state
+    /// is not where the bug lives: with everything unreachable every read is undetermined anyway.
+    /// The observable case is one probe failing while the LEGACY selector on the same
+    /// `ProviderRegistry` still answers — which is what makes the fall-through reachable.
+    unreachable_probe_registries: HashSet<String>,
     /// Monotone synthetic log position. Every emulated event — a registry grant, an anchoring — takes
     /// the next one, so CALL ORDER IS LOG ORDER: a test expresses "delisted after issuance" by
     /// delisting after it issued, and "before" by delisting before. Without an ordering this fake
@@ -792,8 +859,8 @@ impl MemChain {
             (recognized, can_issue),
         );
     }
-    /// Declare `registry` unable to answer EITHER vocabulary — an address that is neither an
-    /// `IssuerRegistry` nor a `ProviderRegistry`, or one that cannot be reached at all.
+    /// Declare `registry` unable to ANSWER either vocabulary — an address that is neither an
+    /// `IssuerRegistry` nor a `ProviderRegistry`, so both selectors revert.
     ///
     /// Fault injection, default-off, for the same reason `set_grant_history` exists: "could not
     /// determine" is a required state that the honest path cannot reach, and a state that cannot be
@@ -803,6 +870,26 @@ impl MemChain {
             .lock()
             .unwrap()
             .unanswerable_registries
+            .insert(registry.to_lowercase());
+    }
+    /// Declare that this authority's GENERATION PROBE cannot be delivered, while its other reads
+    /// still answer — a timeout, a reset connection, a rate-limit response.
+    ///
+    /// Deliberately NOT the same state as [`MemChain::set_registry_unanswerable`], and keeping the
+    /// two apart is the point rather than a nicety: that one is the node ANSWERING (a revert, which
+    /// really is evidence the contract does not implement the selector), this one is no answer at
+    /// all. A fake with a single "the authority did not respond" flag agrees with either
+    /// implementation and so cannot fail the test that matters.
+    ///
+    /// Compose it with [`MemChain::set_provider_capability`] to reach the only case where the defect
+    /// is observable: a generation-2 authority whose successor probe fails in transit while its
+    /// LEGACY `isWhitelistedFor` selector — which `ProviderRegistry` really does implement — is still
+    /// there to answer a confident, wrong-axis `false`.
+    pub fn set_provider_probe_unreachable(&self, registry: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .unreachable_probe_registries
             .insert(registry.to_lowercase());
     }
     /// Decode an issue(bytes32)/revoke(bytes32) calldata into (is_issue, root_hex).
@@ -934,6 +1021,14 @@ impl ChainClient for MemChain {
         // Generation 2 is probed FIRST, exactly as the Alloy implementation does, and for the reason
         // recorded there: a `ProviderRegistry` answers the legacy selector too, so asking it first
         // would take a confident wrong `false` off the orthogonal VERIFY axis.
+        //
+        // A probe that could not be DELIVERED stops here rather than falling through, because the
+        // legacy read below would still answer. That is the whole transient case: on a real
+        // `ProviderRegistry` it answers off `_verifierCapabilities` at a zero `msg.sender`, so
+        // falling through converts one timeout into a definite refusal of a genuine issuer signer.
+        if g.unreachable_probe_registries.contains(&governing) {
+            return Ok(IssuanceCapability::Undetermined);
+        }
         if g.provider_registries.contains(&governing) {
             let (_recognized, can_issue) = g
                 .provider_capabilities
@@ -994,8 +1089,14 @@ impl ChainClient for MemChain {
             ))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        // See the Alloy implementation for why the probe is scoped to the EMPTY case.
-        if history.is_empty() && g.provider_registries.contains(&governing) {
+        // See the Alloy implementation for why the probe is scoped to the EMPTY case — and for why a
+        // probe that could not be DELIVERED must land here too. Leaving the refusal standing on an
+        // undelivered probe is the same defect the guard exists to remove, reached through an error
+        // path instead of a vocabulary mismatch.
+        if history.is_empty()
+            && (g.provider_registries.contains(&governing)
+                || g.unreachable_probe_registries.contains(&governing))
+        {
             return Ok(GrantAtIssuance::Undetermined);
         }
         Ok(grant_in_force_at(history, anchored_at))
@@ -1397,16 +1498,39 @@ impl ChainClient for AlloyChain {
         // `canIssue`, NOT `isRecognizedIssuer`: `DogTagIssuerV2.issue` is gated by
         // `onlyIssuanceCapable`, which is `registry.canIssue(address(this), msg.sender)`. A preflight
         // on the wider rung would pass where the write reverts.
-        if let Ok(r) = IProviderAuthority::new(governing, provider.clone())
+        //
+        // ONLY A REVERT licenses falling through to (3), and that is the sharpest thing in this
+        // function. A transport failure — a timeout, a reset connection, a rate-limit response —
+        // establishes nothing about which vocabulary this authority speaks, and falling through on
+        // one asks the LEGACY selector, which `ProviderRegistry` DOES implement: at a plain
+        // `eth_call`'s zero `msg.sender` it answers off `_verifierCapabilities`, a confident `false`
+        // about every genuine generation-2 issuer signer, which the caller renders as HTTP 403 "not
+        // approved for this recordType yet". That is could-not-check rendered as a definite answer,
+        // reproduced inside the migration built to remove it.
+        let probe = IProviderAuthority::new(governing, provider.clone())
             .canIssue(parse_addr(issuer_addr), parse_addr(signer))
             .call()
-            .await
-        {
-            return Ok(if r._0 {
-                IssuanceCapability::Authorized
-            } else {
-                IssuanceCapability::NotAuthorized
-            });
+            .await;
+        match probe {
+            Ok(r) => {
+                return Ok(if r._0 {
+                    IssuanceCapability::Authorized
+                } else {
+                    IssuanceCapability::NotAuthorized
+                })
+            }
+            // Classified rather than collapsed. Note there is deliberately no value fallback here:
+            // an `Ok` is already handled above, so this arm cannot invent a boolean — and a fallback
+            // would have to invent `false`, i.e. a definite refusal, on a path reached only by a
+            // failure.
+            Err(e) => match generation_from_probe::<()>(&Err(e)) {
+                // The node executed the call and the contract refused it. Generation 1 — ask its
+                // vocabulary at (3).
+                AuthorityGeneration::Legacy => {}
+                AuthorityGeneration::Successor | AuthorityGeneration::Undetermined => {
+                    return Ok(IssuanceCapability::Undetermined)
+                }
+            },
         }
 
         // (3) GENERATION 1. A revert here too means the authority answered in no vocabulary this
@@ -1526,14 +1650,22 @@ impl ChainClient for AlloyChain {
         // It is used ONLY to identify the generation. Answering the historical question against a
         // generation-2 authority needs its `IssuanceCapabilitySet` log, which is a separate change:
         // see `docs/ISSUER_V2_OWNERSHIP.md` §8.
-        if history.is_empty()
-            && IProviderAuthority::new(governing, provider)
+        //
+        // And only a REVERT may leave the refusal standing. A probe that could not be delivered
+        // establishes nothing, so treating its failure as "generation 1" would let one dropped
+        // connection turn a genuine generation-2 credential into a forgery verdict — on the
+        // UNAUTHENTICATED `POST /v1/verify` in government's mirror of this read.
+        if history.is_empty() {
+            let probe = IProviderAuthority::new(governing, provider)
                 .isRecognizedIssuer(parse_addr(issuer_addr), parse_addr(signer))
                 .call()
-                .await
-                .is_ok()
-        {
-            return Ok(GrantAtIssuance::Undetermined);
+                .await;
+            match generation_from_probe(&probe) {
+                AuthorityGeneration::Successor | AuthorityGeneration::Undetermined => {
+                    return Ok(GrantAtIssuance::Undetermined)
+                }
+                AuthorityGeneration::Legacy => {}
+            }
         }
         Ok(grant_in_force_at(&history, anchored_at))
     }
@@ -1891,5 +2023,75 @@ mod tests {
         let k = record_type_key("boarding_intake");
         assert_eq!(k.len(), 66);
         assert_ne!(k, record_type_key(""));
+    }
+
+    // ---- the generation probe's error classification -----------------------------------------
+    //
+    // THE tests that pin the transport/revert split, and the only ones that can. `MemChain` cannot
+    // reach the Alloy implementation at all — it is a different `ChainClient` — so the MemChain
+    // cases elsewhere pin the trait's CONTRACT (that `Undetermined` reaches the caller) and not this
+    // classification. The decision is extracted into `generation_from_probe` precisely so it has a
+    // seam a hermetic test can hold.
+
+    fn revert_error() -> alloy::contract::Error {
+        // How a node reports a call it EXECUTED and the contract refused: a JSON-RPC error response.
+        // This is what a generation-1 `IssuerRegistry` produces for `isRecognizedIssuer` — it does
+        // not implement the selector and has no fallback.
+        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(
+            alloy::rpc::json_rpc::ErrorPayload {
+                code: 3,
+                message: "execution reverted".into(),
+                data: None,
+            },
+        ))
+    }
+
+    #[test]
+    fn a_probe_that_answers_identifies_the_successor() {
+        assert_eq!(
+            generation_from_probe::<()>(&Ok(())),
+            AuthorityGeneration::Successor
+        );
+    }
+
+    #[test]
+    fn only_a_node_error_response_identifies_generation_one() {
+        assert!(answered_with_error(&revert_error()));
+        assert_eq!(
+            generation_from_probe::<()>(&Err(revert_error())),
+            AuthorityGeneration::Legacy
+        );
+    }
+
+    #[test]
+    fn a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one() {
+        // Each of these is our side failing to obtain an answer. None is evidence about which
+        // vocabulary the authority speaks, so none may license the generation-1 conclusion — which
+        // in `whitelisted_at_issuance` leaves an empty history standing as a forgery verdict, and in
+        // `issuance_capability` falls through to a getter `ProviderRegistry` answers `false` for.
+        let unreachable: Vec<alloy::contract::Error> = vec![
+            alloy::contract::Error::TransportError(alloy::transports::RpcError::Transport(
+                alloy::transports::TransportErrorKind::BackendGone,
+            )),
+            alloy::contract::Error::TransportError(alloy::transports::RpcError::NullResp),
+            alloy::contract::Error::TransportError(
+                alloy::transports::RpcError::UnsupportedFeature("eth_call"),
+            ),
+            // Returndata that would not decode — what an address with no code answers.
+            alloy::contract::Error::ContractNotDeployed,
+            alloy::contract::Error::UnknownFunction("isRecognizedIssuer".to_string()),
+        ];
+        for e in &unreachable {
+            assert!(
+                !answered_with_error(e),
+                "{e:?} is not the node answering with an error"
+            );
+        }
+        for e in unreachable {
+            assert_eq!(
+                generation_from_probe::<()>(&Err(e)),
+                AuthorityGeneration::Undetermined
+            );
+        }
     }
 }

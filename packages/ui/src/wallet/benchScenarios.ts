@@ -6,7 +6,7 @@ import { wrapDocument } from "@dogtag/standard/wrap";
 // browser-safe on the same terms as `wrap`.
 import { TypeTag, type IssuerMeta, type WrappedDoc } from "@dogtag/standard/types";
 import { DEPLOYED_ADDRESSES, recordTypeKey, sortLogPoints, ZERO_ADDRESS } from "./contracts";
-import type { LogPoint, WhitelistGrantEvent } from "./contracts";
+import type { AuthorityGeneration, LogPoint, WhitelistGrantEvent } from "./contracts";
 import type { IssuerChainReader } from "./verifyCredential";
 import {
   runVerificationBench,
@@ -156,6 +156,17 @@ interface ChainScript {
   rootIssuedLogs?: Record<string, LogPoint>;
   /** `(registry, recordTypeKey, signer)` -> that REGISTRY's own grant log, oldest first. */
   grants?: Record<string, WhitelistGrantEvent[]>;
+  /**
+   * registry -> which generation's vocabulary that authority speaks, as the successor probe would
+   * establish it.
+   *
+   * ABSENT MEANS `"legacy"`, and that default is stated here rather than left to fall through: every
+   * scenario in this catalogue models a generation-1 chain, so an authority whose grant log is empty
+   * really has answered, and its emptiness really is evidence about the credential. Making the
+   * default "undetermined" instead would silently convert every scripted refusal into an unresolved
+   * pillar - the catalogue would still be green while asserting nothing.
+   */
+  authorityGenerations?: Record<string, AuthorityGeneration>;
   /** Every read throws with this message - the wrong-chain / unreachable-endpoint case. */
   allReadsFail?: string;
 }
@@ -249,6 +260,14 @@ function readersFor(script: ChainScript): ScenarioReaders {
         guard();
         return sortLogPoints(script.grants?.[k3(registryAddr, key, signer)] ?? []);
       },
+      // The live probe never throws - a read it could not put is `"undetermined"` - so neither does
+      // this. `allReadsFail` is still honoured, because the wrong-chain scenario's whole point is
+      // that NO address-bound read reaches a peer reporting the wrong chain: that must show up as an
+      // unestablished generation, not as a scripted `"legacy"` the fake invented.
+      async authorityGeneration(registryAddr) {
+        if (script.allReadsFail) return "undetermined";
+        return script.authorityGenerations?.[registryAddr.toLowerCase()] ?? "legacy";
+      },
     },
     authorityReader: {
       async registryOf(cloneAddr) {
@@ -269,6 +288,13 @@ function readersFor(script: ChainScript): ScenarioReaders {
         // Sorted here rather than trusted from the fixture, exactly as the live reader sorts what
         // `eth_getLogs` returns - so a scenario cannot accidentally rely on declaration order.
         return sortLogPoints(script.grants?.[k3(registryAddr, key, signer)] ?? []);
+      },
+      // Reads the SAME script map the verifier's reader above does, so the gating row and this
+      // advisory one cannot be shown different chains. Keyed on the registry for the same reason
+      // `grants` is: this is a property of one authority instance.
+      async authorityGeneration(registryAddr) {
+        if (script.allReadsFail) return "undetermined";
+        return script.authorityGenerations?.[registryAddr.toLowerCase()] ?? "legacy";
       },
     },
   };

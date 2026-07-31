@@ -28,6 +28,7 @@ import {
   type IssuerAuthorityReader,
 } from "../src/wallet/verificationBench";
 import type {
+  AuthorityGeneration,
   LogPoint,
   UnpositionedLog,
   WhitelistGrantEvent,
@@ -55,6 +56,8 @@ const TODAY = "2023-11-14";
 /** Where the genuine baseline anchors its root, and where the signer's grant was recorded. */
 const ISSUED_AT_LOG = { blockNumber: 900_000n, logIndex: 4 };
 const GRANTED_AT_LOG = { blockNumber: 800_000n, logIndex: 1 };
+/** A governing authority that speaks the generation-2 vocabulary and records no `Whitelisted` at all. */
+const GENERATION_TWO_REGISTRY = "0x00000000000000000000000000000000000002e2";
 
 const ISSUER: IssuerMeta = {
   name: "Seaport Animal Hospital",
@@ -150,6 +153,7 @@ const asRecord = (d: WrappedDoc | Record<string, unknown>) => d as unknown as Re
 type FailableRead =
   | keyof IssuerChainReader
   | "benchIssuerRegistry"
+  | "benchAuthorityGeneration"
   | "rootIssuedLog"
   | "whitelistHistory";
 
@@ -178,6 +182,12 @@ interface ChainCfg {
    * `UNPOSITIONED_LOG` == a log that came back with no position and so cannot be ordered.
    */
   grants?: Record<string, WhitelistGrantEvent[] | UnpositionedLog>;
+  /**
+   * registry -> which generation's vocabulary the successor probe establishes. Absent == `"legacy"`,
+   * the generation every fixture here models, so an empty grant log is a real answer rather than a
+   * vocabulary mismatch.
+   */
+  authorityGenerations?: Record<string, AuthorityGeneration>;
   /** Read kinds forced to fail, modelling a transient RPC error. */
   failing?: Set<FailableRead>;
 }
@@ -276,6 +286,14 @@ function fakeReader(cfg: ChainCfg): IssuerChainReader {
       fail("grantHistory");
       return cfg.grants?.[k3(registry, key, signer)] ?? [];
     },
+    // Defaults to `"legacy"` - the generation every fixture in this suite models - so an empty grant
+    // log stays a real answer about the credential. Stated rather than omitted: the live probe never
+    // throws, so a fake that omitted it would reject instead, and every scripted refusal in this file
+    // would quietly become "could not run".
+    async authorityGeneration(registry) {
+      fail("authorityGeneration");
+      return cfg.authorityGenerations?.[registry.toLowerCase()] ?? "legacy";
+    },
   };
 }
 
@@ -295,6 +313,15 @@ function fakeGrantHistoryReader(cfg: ChainCfg): GrantHistoryReader {
     async rootIssuedAt(cloneAddr, root) {
       if (cfg.failing?.has("rootIssuedLog")) throw new Error("RootIssued log read failed");
       return cfg.rootIssuedLogs?.[k(cloneAddr, root)] ?? null;
+    },
+    // Keyed on its OWN failure switch, distinct from the verifier reader's `authorityGeneration`
+    // for the same reason `benchIssuerRegistry` is distinct from `issuerRegistry`: one key could not
+    // fail this row's probe without ALSO failing the verifier's, which rejects the whole run - so
+    // this row would come back `could-not-run` for a completely different reason and the test would
+    // pass while pinning nothing.
+    async authorityGeneration(registryAddr) {
+      if (cfg.failing?.has("benchAuthorityGeneration")) throw new Error("generation probe failed");
+      return cfg.authorityGenerations?.[registryAddr.toLowerCase()] ?? "legacy";
     },
     // Keyed on the REGISTRY as well as the pair, so a read against a contract that never recorded
     // the grant comes back empty - the fake cannot answer for an authority it was not asked about.
@@ -603,6 +630,68 @@ describe("the grant history is read from the GOVERNING registry", () => {
     expect(row.outcome).toBe("fail");
     expect(row.outcome).not.toBe("could-not-run");
     expect(row.finding).toContain("NO grant");
+  });
+
+  // THIS ROW FOLDS THE HISTORY ITSELF, so it needs the generation guard in its own right.
+  //
+  // `runVerificationBench` copies the gating `issuer-whitelisted` row's verdict from the verifier, but
+  // `whitelisted-at-issuance` re-reads the log through a SEPARATE `GrantHistoryReader` and folds it
+  // here. Guarding only the verifier left the accusation intact one row down: gating row "unresolved",
+  // advisory row "recorded NO grant" - which is what a reader takes as the reason the credential is
+  // bad. Two implementations of one rule, and only one of them was fixed.
+  it("does not accuse a generation-2 authority whose grant log it cannot match", async () => {
+    const doc = validDoc();
+    const r = await bench(doc, {
+      ...genuineChain(doc),
+      // `ProviderRegistry` records `IssuanceCapabilitySet(service, signer, allowed)`, so the
+      // `Whitelisted`/`Delisted` filter matches nothing REGARDLESS of whether this signer is
+      // authorised. The empty log is evidence about the query, not about the credential.
+      grants: {},
+      authorityGenerations: { [GENERATION_TWO_REGISTRY.toLowerCase()]: "successor" },
+      issuerRegistries: { [CLONE.toLowerCase()]: GENERATION_TWO_REGISTRY },
+    });
+    const row = check(r, "whitelisted-at-issuance");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.outcome).not.toBe("fail");
+    expect(row.couldNotRunReason).toContain("IssuanceCapabilitySet");
+    // The probe is in the evidence log: this row's answer turns on it, and a report citing a fold
+    // whose governing premise never appears is not evidence.
+    expect(r.reads.some((x) => x.method === "authorityGeneration")).toBe(true);
+  });
+
+  it("could-not-run - never fail - when the generation probe could not be put", async () => {
+    // Only a REVERT establishes generation 1. A probe that never arrived establishes nothing, and
+    // reading it as generation 1 would hand the empty log straight back to the definite refusal.
+    const doc = validDoc();
+    const r = await bench(doc, {
+      ...genuineChain(doc),
+      grants: {},
+      failing: new Set(["benchAuthorityGeneration"] as const),
+    });
+    const row = check(r, "whitelisted-at-issuance");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.outcome).not.toBe("fail");
+  });
+
+  it("still refuses when the log is non-empty but every grant POSTDATES the anchoring", async () => {
+    // The scoping test. A NON-EMPTY history is itself proof the authority speaks generation 1 -
+    // those events came out of it - so this case is unambiguous and must keep its definite refusal
+    // whatever a probe would have said. Scoping the guard on "no event at or before the anchoring"
+    // instead of on `history.length` would silently swallow this one.
+    const doc = validDoc();
+    const r = await bench(doc, {
+      ...genuineChain(doc),
+      grants: {
+        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]: [
+          { kind: "whitelisted", blockNumber: ISSUED_AT_LOG.blockNumber + 50n, logIndex: 0 },
+        ],
+      },
+      authorityGenerations: { [DEPLOYED_ADDRESSES.IssuerRegistry.toLowerCase()]: "successor" },
+    });
+    const row = check(r, "whitelisted-at-issuance");
+    expect(row.outcome).toBe("fail");
+    // …and the probe must not even have been consulted on this path.
+    expect(r.reads.some((x) => x.method === "authorityGeneration")).toBe(false);
   });
 
   it("could-not-run - never fail - when the governing registry could not be READ", async () => {
