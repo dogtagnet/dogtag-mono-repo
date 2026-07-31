@@ -1617,7 +1617,9 @@ Say "deployed, unwired" rather than "the cutover is done": everything from C-6 o
 
 **`RehearseCutover.s.sol` cannot perform a live cutover, and that is deliberate rather than a gap.**
 It requires `block.number == pinnedBlock`, which a live chain can never satisfy - that guard is what carries the rehearsal's safety, so it must not be relaxed.
-`contracts/script/ExecuteCutover.s.sol` is the live counterpart and refuses the pinned block, so neither can be pointed at the other's endpoint.
+`contracts/script/ExecuteCutover.s.sol` is the live counterpart and refuses that same pinned block, so it cannot run on the rehearsal fork.
+Read that guard precisely, because it is NOT symmetric: it refuses the pinned block only, and deliberately still permits a fork at the CURRENT head - which is how the simulate-versus-broadcast behaviour below gets measured.
+Nothing in either script establishes that an endpoint is live, so which URL gets passed remains the operator's responsibility.
 Both call the same `CutoverSequence.cN_*` functions with the same arguments in the same order, which is the ONLY reason the S-12 rehearsal and its mutation harness are evidence about the live transactions.
 A live driver that re-derived the constructor arguments - in Solidity, or by hand-encoding `cast send --create` - would be a second definition free to drift by one argument with both looking correct.
 

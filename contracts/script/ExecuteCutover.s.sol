@@ -69,10 +69,13 @@ contract ExecuteCutover is Script {
     function run() external {
         require(block.chainid == 135, "ExecuteCutover expects the ROAX chain id (135)");
 
-        // The inverse of the rehearsal's guard. `RehearseCutover` requires the pinned block; this
-        // driver refuses it, so the two can never be pointed at each other's endpoint. A fork taken at
-        // the CURRENT head is deliberately still allowed - that is how the simulate-versus-broadcast
-        // behaviour is measured before anything is sent live.
+        // The inverse of the rehearsal's guard, and it is NOT symmetric - do not read it as one.
+        // `RehearseCutover` requires the pinned block, so it can never reach a live endpoint. This
+        // driver refuses only THAT block, which stops it running on the rehearsal fork; it does NOT
+        // stop it running on a fork generally, and must not, because a fork taken at the CURRENT head
+        // is how the simulate-versus-broadcast behaviour is measured before anything is sent live.
+        // So this guard protects the rehearsal's fixtures, not the operator: nothing here establishes
+        // that the endpoint is live, and the operator remains responsible for which URL they pass.
         uint256 pinnedBlock =
             vm.parseJsonUint(vm.readFile("rehearsal/fixtures/historical-roots.json"), ".pinnedBlock");
         require(

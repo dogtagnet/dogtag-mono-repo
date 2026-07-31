@@ -5,7 +5,7 @@ Slice S-12 of the provider-registry plan (`dogtag-regplan-p3`).
 **Nothing in this slice was deployed live.**
 The whole sequence was executed against `anvil --fork-url https://devrpc.roax.net` pinned at block **304000**, chain 135.
 
-> **S-14 has since executed this sequence live on ROAX** (2026-08-01, captain-authorised, testnet only), through `contracts/script/ExecuteCutover.s.sol` - which calls the same `CutoverSequence` functions this rehearsal asserts, and which refuses the pinned block above so the two drivers can never be pointed at each other's endpoint.
+> **S-14 has since executed this sequence live on ROAX** (2026-08-01, captain-authorised, testnet only), through `contracts/script/ExecuteCutover.s.sol` - which calls the same `CutoverSequence` functions this rehearsal asserts, and which refuses the pinned block above so it cannot run on the rehearsal fork (it still permits a fork at the current head, deliberately).
 > The addresses, transaction hashes and blocks are in `contracts/deployments/roax.json` under `_s14_cutover`; the operational notes are in `AGENTS.md`.
 > S-14 deployed and appended only: the clients were **not** repointed (C-9/C-10) and C-6, C-7, C-10b, C-11, C-12 and the rest of C-2 were **not** performed, so §4's remaining steps all still stand.
 > The statement above remains true of **this** slice - it records the rehearsal, not the live run.
