@@ -123,9 +123,13 @@ enum RecordImporter {
     /// only make a verdict stricter, never looser, so it composes with whatever that mapping decides -
     /// including a stricter future mapping (e.g. once an unresolved chain read stops yielding VALID).
     ///
-    /// - `.valid`   the issuing signer is authorized: the verdict stands as-is.
-    /// - `.invalid` resolved, and that signer may NOT issue this record type: a real authenticity
-    ///              failure, so INVALID.
+    /// - `.valid`   the issuing signer HELD the capability when it anchored this root: the verdict
+    ///              stands as-is. Whether it still holds it today is deliberately not asked -
+    ///              delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the retroactive
+    ///              lever), so a current-state read would refuse every credential a rotated signer
+    ///              ever issued.
+    /// - `.invalid` resolved, and the governing registry's own log shows no grant in force at that
+    ///              moment: a real authenticity failure, so INVALID.
     /// - `.unknown` the pillar did not resolve. An unanswered check is never a passed check, so a
     ///              would-be VALID degrades to UNVERIFIED; anything already worse stands.
     static func foldIssuerWhitelist(_ verdict: String, _ pillar: RoaxRpc.Result) -> String {
@@ -154,7 +158,7 @@ enum IssuerWhitelist {
         case .valid:
             return (verdict, reason)
         case .invalid:
-            return ("INVALID", "the address that issued this record is not authorised to issue this record type")
+            return ("INVALID", "the address that issued this record was not authorised to issue this record type when it did")
         case let .unknown(r):
             guard verdict == "VALID" else { return (verdict, reason) }
             return ("UNVERIFIED", "could not establish who issued this record (\(r))")

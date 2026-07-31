@@ -62,4 +62,44 @@ class RoaxRpcSelectorTest {
         assertEquals("0xe0095e0e", RoaxRpc.functionSelector("domainOf(address)"))
         assertEquals("0x06fdde03", RoaxRpc.functionSelector("name()"))
     }
+
+    /**
+     * The grant-history reads the issuer-whitelist pillar now folds.
+     *
+     * A LOG TOPIC is the FULL 32-byte keccak of the event signature, not a 4-byte call selector, and
+     * that difference fails in the worst possible direction: a topic derived with the wrong width
+     * matches no log at all, which is indistinguishable from "this pair was never granted" and would
+     * turn every genuine credential into a definite refusal. So the two derivations are separate
+     * functions and both are pinned. Values independently confirmed with `cast keccak`.
+     */
+    @Test
+    fun theGrantHistoryTopicsMatchTheirCanonicalEventSignatures() {
+        assertEquals(
+            "0xf8cd30a628b432a1200caf81085096c82a5f570da14360572b72d4e0ba57e6d7",
+            RoaxRpc.eventTopic("RootIssued(bytes32,address,uint256)"),
+        )
+        assertEquals(
+            "0x0ed68b47399672cf072b19a599fa9f99cdc79a286bf59bc301ca44b94f589bce",
+            RoaxRpc.eventTopic("Whitelisted(bytes32,address)"),
+        )
+        assertEquals(
+            "0xf3af84db5dbf726f68c33f3ded733403e15667370ab38e8cb37fdc874835b00e",
+            RoaxRpc.eventTopic("Delisted(bytes32,address)"),
+        )
+        // The registry the CLONE names - the only authority whose grant log answers for it.
+        assertEquals("0x7b103999", RoaxRpc.functionSelector("registry()"))
+    }
+
+    /**
+     * A topic is 32 bytes and a selector is 4. Stated as its own assertion because the failure mode of
+     * confusing them is silent: the shorter value simply matches nothing.
+     */
+    @Test
+    fun anEventTopicIsTheWholeHashNotTheFourByteSelector() {
+        val sig = "Whitelisted(bytes32,address)"
+        assertEquals(66, RoaxRpc.eventTopic(sig).length)
+        assertEquals(10, RoaxRpc.functionSelector(sig).length)
+        assertNotEquals(RoaxRpc.eventTopic(sig), RoaxRpc.functionSelector(sig))
+        assertEquals(RoaxRpc.functionSelector(sig), RoaxRpc.eventTopic(sig).take(10))
+    }
 }

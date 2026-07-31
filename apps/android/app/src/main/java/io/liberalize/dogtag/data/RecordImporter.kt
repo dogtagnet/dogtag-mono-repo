@@ -184,9 +184,12 @@ object RecordImporter {
      * only make a verdict stricter, never looser, so it composes with whatever that mapping decides —
      * including a stricter future mapping (e.g. once an unresolved chain read stops yielding VALID).
      *
-     * - [RoaxRpc.Result.Valid]   the issuing signer is authorized: the verdict stands as-is.
-     * - [RoaxRpc.Result.Invalid] resolved, and that signer may NOT issue this record type: a real
-     *   authenticity failure, so INVALID.
+     * - [RoaxRpc.Result.Valid]   the issuing signer HELD the capability when it anchored this root:
+     *   the verdict stands as-is. Whether it still holds it today is deliberately not asked -
+     *   delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the retroactive lever), so
+     *   a current-state read would refuse every credential a rotated signer ever issued.
+     * - [RoaxRpc.Result.Invalid] resolved, and the governing registry's own log shows no grant in
+     *   force at that moment: a real authenticity failure, so INVALID.
      * - [RoaxRpc.Result.Unknown] the pillar did not resolve. An unanswered check is never a passed
      *   check, so a would-be VALID degrades to UNVERIFIED; anything already worse stands.
      */
@@ -219,7 +222,7 @@ object IssuerWhitelist {
         when (pillar) {
             is RoaxRpc.Result.Valid -> verdict to reason
             is RoaxRpc.Result.Invalid ->
-                "INVALID" to "the address that issued this record is not authorised to issue this record type"
+                "INVALID" to "the address that issued this record was not authorised to issue this record type when it did"
             is RoaxRpc.Result.Unknown ->
                 if (verdict == "VALID") {
                     "UNVERIFIED" to "could not establish who issued this record (${pillar.reason})"

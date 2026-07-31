@@ -562,7 +562,7 @@ export type GrantAtIssuance = "authorized" | "notAuthorized" | "undetermined";
  * A log read that FAILED never reaches this function.
  *
  * Mirrors `dogtag_standard::verify::grant_in_force_at` (Rust), `RoaxRpc.grantInForceAt` (Kotlin) and
- * `Net.grantInForceAt` (Swift).
+ * `RoaxRpc.grantInForceAt` (Swift).
  */
 export function grantInForceAt(
   history: readonly WhitelistGrantEvent[],
