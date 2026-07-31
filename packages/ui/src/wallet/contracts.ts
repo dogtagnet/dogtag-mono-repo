@@ -92,6 +92,55 @@ const DOGTAG_ISSUER_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "bytes32" }],
   },
+  {
+    // public `IssuerRegistry registry` getter - the registry whose `isWhitelistedFor` this clone's
+    // own `onlyWhitelisted` modifier consults (`DogTagIssuer.sol:40`). Written once at `initialize`
+    // from the factory's immutable `registry`, and there is no setter: it is THE authority that
+    // gates writes to this contract, and the only registry whose answer about its signers means
+    // anything.
+    type: "function",
+    name: "registry",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+] as const satisfies Abi;
+
+/**
+ * `IssuerRegistry`'s two grant-lifecycle events, both indexed on exactly the pair a whitelist question
+ * is asked about - so the full grant history for one `(recordType, signer)` is one filtered
+ * `eth_getLogs`, with no scan and no per-log decode of irrelevant entries.
+ */
+const ISSUER_REGISTRY_EVENT_ABI = [
+  {
+    type: "event",
+    name: "Whitelisted",
+    inputs: [
+      { name: "recordType", type: "bytes32", indexed: true },
+      { name: "signer", type: "address", indexed: true },
+    ],
+  },
+  {
+    type: "event",
+    name: "Delisted",
+    inputs: [
+      { name: "recordType", type: "bytes32", indexed: true },
+      { name: "signer", type: "address", indexed: true },
+    ],
+  },
+] as const satisfies Abi;
+
+/** `DogTagIssuer.RootIssued`, indexed on the root - the anchoring event, and so the issuance BLOCK. */
+const ROOT_ISSUED_EVENT_ABI = [
+  {
+    type: "event",
+    name: "RootIssued",
+    inputs: [
+      { name: "root", type: "bytes32", indexed: true },
+      { name: "by", type: "address", indexed: true },
+      { name: "ts", type: "uint256", indexed: false },
+    ],
+  },
 ] as const satisfies Abi;
 
 const DOGTAG_ISSUER_FACTORY_ABI = [
@@ -358,6 +407,140 @@ export async function recordTypeOf(args: {
     functionName: "recordType",
     blockNumber: args.blockNumber,
   }) as Promise<string>;
+}
+
+/**
+ * Reads DogTagIssuer.registry() - the registry that actually gates writes to this clone.
+ *
+ * Verification asks a registry of the CLIENT'S choosing whether the resolved signer is whitelisted.
+ * That question is only meaningful if the registry asked is the one the clone's own `onlyWhitelisted`
+ * consults: `_wl` is a plain per-contract mapping, so a DIFFERENT `IssuerRegistry` instance answers
+ * about its own grants and knows nothing about this clone's. Comparing the two is the only way to tell
+ * "this signer is authorised" from "some other registry happens to list this address".
+ *
+ * `registry` is set once in `initialize` from the factory's own `immutable registry` and has no setter,
+ * so for a clone resolved through a matched factory/registry pair this always agrees - which is exactly
+ * why a disagreement means the CONFIGURATION is wrong, not the credential.
+ */
+export async function issuerRegistryOf(args: {
+  issuerAddr: string;
+  rpcUrl?: string;
+  defaultRpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
+}): Promise<string> {
+  return roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
+    address: args.issuerAddr as Address,
+    abi: DOGTAG_ISSUER_ABI,
+    functionName: "registry",
+    blockNumber: args.blockNumber,
+  }) as Promise<string>;
+}
+
+/** A point in a log stream. Ordered by `(blockNumber, logIndex)`; `logIndex` is block-scoped and
+ * therefore comparable ACROSS contracts within one block, which is what lets a registry grant and a
+ * clone's issuance in the same block be sequenced against each other at all. */
+export interface LogPoint {
+  blockNumber: bigint;
+  logIndex: number;
+}
+
+/** One `whitelistFor`/`delistFor` call, as observed in the log. */
+export interface WhitelistGrantEvent extends LogPoint {
+  kind: "whitelisted" | "delisted";
+}
+
+/**
+ * The full grant/revocation history for one `(recordType, signer)` pair, oldest first.
+ *
+ * Read from LOGS rather than from `isWhitelistedFor`, because the getter answers only about NOW and
+ * the question worth asking about an already-anchored credential is about THEN. `DogTagIssuer.sol:82`
+ * states the rule the getter cannot express - "delisting is forward-only" - and `adminRevoke` exists
+ * precisely because a delist does NOT retroactively invalidate what the signer already anchored.
+ *
+ * An empty array is a real answer ("no grant was ever recorded for this pair"); a read that FAILS
+ * throws, so a caller can keep it apart from "the log could not be reached". Folding those two is the
+ * fail-open shape this whole surface exists to refuse.
+ */
+export async function whitelistGrantHistory(args: {
+  registryAddr: string;
+  recordTypeKey: string;
+  signer: string;
+  rpcUrl?: string;
+  defaultRpcUrl?: string;
+  fromBlock?: bigint;
+  /** Upper bound; omitted reads to `latest`. Pin it to the report's block for a reproducible answer. */
+  toBlock?: bigint;
+}): Promise<WhitelistGrantEvent[]> {
+  const client = roaxPublicClient(args.rpcUrl, args.defaultRpcUrl);
+  const range = {
+    address: args.registryAddr as Address,
+    fromBlock: args.fromBlock ?? 0n,
+    ...(args.toBlock === undefined ? {} : { toBlock: args.toBlock }),
+    args: {
+      recordType: args.recordTypeKey as `0x${string}`,
+      signer: args.signer as Address,
+    },
+  } as const;
+  const [granted, revoked] = await Promise.all([
+    client.getLogs({ ...range, event: ISSUER_REGISTRY_EVENT_ABI[0] }),
+    client.getLogs({ ...range, event: ISSUER_REGISTRY_EVENT_ABI[1] }),
+  ]);
+  const events: WhitelistGrantEvent[] = [
+    ...granted.map((l) => ({
+      kind: "whitelisted" as const,
+      blockNumber: l.blockNumber ?? 0n,
+      logIndex: l.logIndex ?? 0,
+    })),
+    ...revoked.map((l) => ({
+      kind: "delisted" as const,
+      blockNumber: l.blockNumber ?? 0n,
+      logIndex: l.logIndex ?? 0,
+    })),
+  ];
+  return sortLogPoints(events);
+}
+
+/** Oldest first. Exported so the pure ordering rule has one definition and one set of tests. */
+export function sortLogPoints<T extends LogPoint>(events: T[]): T[] {
+  return [...events].sort((a, b) =>
+    a.blockNumber === b.blockNumber
+      ? a.logIndex - b.logIndex
+      : a.blockNumber < b.blockNumber
+        ? -1
+        : 1,
+  );
+}
+
+/**
+ * Where this root was anchored, as a `(blockNumber, logIndex)` point - or `null` when this clone
+ * emitted no `RootIssued` for it.
+ *
+ * `issuedAt` is a unix TIMESTAMP, which cannot be compared against a log's height without a
+ * timestamp->block search. The anchoring event carries the height directly, so one filtered
+ * `eth_getLogs` answers "when, in log order, was this anchored?" exactly and cheaply.
+ */
+export async function rootIssuedAtLog(args: {
+  issuerAddr: string;
+  root: string;
+  rpcUrl?: string;
+  defaultRpcUrl?: string;
+  fromBlock?: bigint;
+  toBlock?: bigint;
+}): Promise<LogPoint | null> {
+  const logs = await roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).getLogs({
+    address: args.issuerAddr as Address,
+    event: ROOT_ISSUED_EVENT_ABI[0],
+    args: { root: args.root as `0x${string}` },
+    fromBlock: args.fromBlock ?? 0n,
+    ...(args.toBlock === undefined ? {} : { toBlock: args.toBlock }),
+  });
+  // Write-once `issuedAt` makes a second RootIssued for one root impossible on an honest clone; take
+  // the FIRST regardless, so a clone that somehow emitted twice cannot move the anchoring later.
+  const first = sortLogPoints(
+    logs.map((l) => ({ blockNumber: l.blockNumber ?? 0n, logIndex: l.logIndex ?? 0 })),
+  )[0];
+  return first ?? null;
 }
 
 /**

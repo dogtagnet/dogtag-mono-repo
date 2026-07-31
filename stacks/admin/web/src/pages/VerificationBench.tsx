@@ -1,5 +1,6 @@
 import {
   BENCH_MUTATIONS,
+  BENCH_SCENARIOS,
   Badge,
   Button,
   Card,
@@ -10,15 +11,26 @@ import {
   Input,
   Label,
   docFromShareResponse,
+  runBenchScenario,
   runVerificationBench,
   useRoaxRpcPreference,
   useToast,
   type BenchCheck,
+  type BenchCheckId,
   type BenchMutation,
   type BenchReport,
+  type BenchScenario,
   type CheckOutcome,
 } from "@dogtag/ui";
-import { AlertTriangle, CheckCircle2, FlaskConical, HelpCircle, Upload, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  FlaskConical,
+  HelpCircle,
+  ShieldAlert,
+  Upload,
+  XCircle,
+} from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { env } from "../lib/env";
 
@@ -201,6 +213,191 @@ function MutationCard({
   );
 }
 
+/**
+ * Rows whose real outcome the scenario did NOT predict.
+ *
+ * Compared against what the scenario predicts TODAY - `knownDefect.observed` where the implementation
+ * is known to be wrong, otherwise the correct `expected`. Comparing a documented defect against the
+ * correct answer would flag it as a surprise on every run, which is the opposite of the point: the
+ * defect is already reported, in red, immediately above.
+ */
+function unexpectedRows(scenario: BenchScenario, report: BenchReport): BenchCheckId[] {
+  const predicted = scenario.knownDefect?.observed ?? scenario.expected;
+  return report.checks.filter((c) => predicted[c.id] !== c.outcome).map((c) => c.id);
+}
+
+/** What one scenario actually did, beside what it declared it should do. */
+interface ScenarioRun {
+  report: BenchReport;
+  /** Checks whose real outcome differs from the declared expectation. Empty is the normal case. */
+  unexpected: BenchCheckId[];
+}
+
+/**
+ * One fraudulent record from the catalogue, run against its own scripted chain.
+ *
+ * The declared expectation and the ACTUAL outcome are rendered side by side, and a mismatch between
+ * them is called out rather than smoothed over: an attack catalogue whose expectations were quietly
+ * reconciled with whatever the code prints would certify itself.
+ */
+function ScenarioCard({
+  scenario,
+  run,
+  onRun,
+  busy,
+}: {
+  scenario: BenchScenario;
+  run: ScenarioRun | undefined;
+  onRun: (s: BenchScenario) => void;
+  busy: boolean;
+}) {
+  const refused = scenario.refusedBy;
+  return (
+    <div className="rounded-lg border border-border p-4" data-testid={`scenario-${scenario.id}`}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="max-w-2xl">
+          <p className="text-sm font-medium text-onSurface">{scenario.title}</p>
+          <p className="mt-0.5 text-xs text-muted">{scenario.tells}</p>
+        </div>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => onRun(scenario)}>
+          Run it
+        </Button>
+      </div>
+
+      <p className="mt-3 text-xs text-muted">
+        {scenario.mustVerify ? (
+          <>
+            <span className="font-semibold text-onSurface">Must VERIFY: </span>
+            this record is genuine and the verifier is required not to refuse it.
+          </>
+        ) : (
+          <>
+            <span className="font-semibold text-onSurface">Must be refused by: </span>
+            {refused.length > 0 ? (
+              <span className="font-mono">{refused.join(", ")}</span>
+            ) : (
+              <span className="text-warning">
+                no single check - see the note below for what should happen instead
+              </span>
+            )}
+          </>
+        )}
+      </p>
+
+      {/* The finding, rendered as loudly as it reads. A documented defect is the most valuable thing
+          this page can tell an operator, so it is never hidden behind a disclosure triangle - and it
+          names the CORRECT verdict beside the one the code produces, because "this is wrong" without
+          "here is what it should be" leaves the reader to derive the remedy. */}
+      {scenario.knownDefect && (
+        <div
+          className="mt-3 flex items-start gap-2 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs"
+          data-testid={`defect-${scenario.id}`}
+        >
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+          <div className="text-onSurface">
+            <p>
+              <span className="font-semibold">Known defect in the verifier: </span>
+              {scenario.knownDefect.statement}
+            </p>
+            <p className="mt-1.5 font-mono">
+              correct verdict:{" "}
+              {scenario.expectedVerdict === null ? "none" : String(scenario.expectedVerdict)} &middot;
+              produced today: {String(scenario.knownDefect.observedVerdict)}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {run && (
+        <div className="mt-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-muted">Actual verdict:</span>
+            <Badge
+              variant={
+                run.report.verdict === null ? "neutral" : run.report.verdict ? "success" : "danger"
+              }
+              data-testid={`scenario-verdict-${scenario.id}`}
+            >
+              {run.report.verdict === null ? "no verdict" : run.report.verdict ? "valid" : "not valid"}
+            </Badge>
+            {run.unexpected.length === 0 ? (
+              // Say WHICH prediction was matched. "Matched the declared expectation" under a red
+              // defect banner reads as though the defect were the intended behaviour.
+              <span className="text-muted">
+                {scenario.knownDefect
+                  ? "reproduced the documented defect above, check for check"
+                  : "matched the declared expectation for every check"}
+              </span>
+            ) : (
+              <span className="text-danger" data-testid={`scenario-unexpected-${scenario.id}`}>
+                DIVERGED from the declared expectation: {run.unexpected.join(", ")}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {run.report.checks.map((c) => (
+              <span
+                key={c.id}
+                className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${
+                  c.outcome === "pass"
+                    ? "bg-success/15 text-success"
+                    : c.outcome === "fail"
+                      ? "bg-danger/15 text-danger"
+                      : "bg-surface-muted text-muted"
+                }`}
+                title={c.finding}
+              >
+                {c.id}: {c.outcome}
+                {/* Colour alone cannot say which rows the verdict folds in, and on this card the
+                    whole point of some scenarios is that a red GATING row sits beside a green
+                    ADVISORY one. Unmarked, that reads as nine-green-one-red rather than as the
+                    asymmetry it is. */}
+                {!c.gatesVerdict && <span className="ml-0.5 opacity-70">&dagger;</span>}
+              </span>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted">
+            &dagger; reported beside the verifier&apos;s verdict, not folded into it.
+          </p>
+
+          {/* A failing row's FINDING, in the open. It was previously reachable only by hovering the
+              chip, which hides the one sentence saying what actually went wrong. */}
+          {run.report.checks.some((c) => c.outcome === "fail") && (
+            <ul className="space-y-1 text-xs text-muted" data-testid={`findings-${scenario.id}`}>
+              {run.report.checks
+                .filter((c) => c.outcome === "fail")
+                .map((c) => (
+                  <li key={c.id}>
+                    <span className="font-mono text-danger">{c.id}</span>
+                    {!c.gatesVerdict && <span className="text-muted"> (advisory)</span>} -{" "}
+                    {c.finding}
+                  </li>
+                ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {scenario.blindSpots.length > 0 && (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs text-muted">
+            What does NOT object to this ({scenario.blindSpots.length})
+          </summary>
+          <ul className="mt-2 space-y-1.5 text-xs text-muted">
+            {scenario.blindSpots.map((b) => (
+              <li key={b.id}>
+                <span className="font-mono text-onSurface">{b.id}</span> - {b.why}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {scenario.notes && <p className="mt-2 text-xs text-muted">{scenario.notes}</p>}
+    </div>
+  );
+}
+
 export function VerificationBench() {
   const { toast } = useToast();
   const rpc = useRoaxRpcPreference(env.roaxRpc);
@@ -210,6 +407,53 @@ export function VerificationBench() {
   const [report, setReport] = useState<BenchReport | null>(null);
   const [applied, setApplied] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [runs, setRuns] = useState<Record<string, ScenarioRun>>({});
+
+  /**
+   * Run one catalogue scenario. It carries its own scripted chain, so this makes NO network call and
+   * cannot be perturbed by whatever the live chain happens to hold - which is the only way a case like
+   * "the signer was delisted after it issued" can be exercised at all.
+   */
+  async function runScenario(s: BenchScenario) {
+    setBusy(true);
+    try {
+      const report = await runBenchScenario(s);
+      setRuns((prev) => ({ ...prev, [s.id]: { report, unexpected: unexpectedRows(s, report) } }));
+    } catch (e) {
+      toast({
+        title: `Scenario "${s.title}" could not run`,
+        description: e instanceof Error ? e.message : String(e),
+        variant: "danger",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runAllScenarios() {
+    setBusy(true);
+    try {
+      // Committed per scenario, and the failure is caught INSIDE the loop, deliberately. Accumulating
+      // into a local and setting it once meant a single throwing `build()` - and `build()` does throw,
+      // on a fixture that lost its tamperable leaf or a malformed salt - discarded every result that
+      // had already succeeded AND abandoned every scenario after it, leaving nothing but a toast. A
+      // catalogue that reports nothing when one card breaks is the opposite of what this page is for.
+      for (const s of BENCH_SCENARIOS) {
+        try {
+          const report = await runBenchScenario(s);
+          setRuns((prev) => ({ ...prev, [s.id]: { report, unexpected: unexpectedRows(s, report) } }));
+        } catch (e) {
+          toast({
+            title: `Scenario "${s.title}" could not run`,
+            description: e instanceof Error ? e.message : String(e),
+            variant: "danger",
+          });
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function runOn(docText: string, note?: string) {
     let parsed: Record<string, unknown>;
@@ -479,6 +723,49 @@ export function VerificationBench() {
           )}
           {BENCH_MUTATIONS.map((m) => (
             <MutationCard key={m.id} mutation={m} onApply={applyMutation} disabled={busy || !raw.trim()} />
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>The attack catalogue</CardTitle>
+          <CardDescription>
+            Complete fraudulent records, each with its own scripted chain, run through the same
+            verification path as everything above. Unlike the buttons in the previous card these need no
+            loaded record and make no network call: they exercise chain states a live chain cannot be
+            asked to produce - a signer delisted after it issued, a contract the factory never
+            deployed vouching for a root, a registry that does not govern the clone. Each declares WHICH
+            check must refuse it, and a run that diverges from that declaration is called out in red.
+            <br />
+            <br />
+            Two rows are unwired here BY CONSTRUCTION and are not a finding about any scenario: no
+            scenario configures an <span className="font-mono">IssuerDomainRegistry</span>, so{" "}
+            <span className="font-mono">issuer-domain-claim</span> and{" "}
+            <span className="font-mono">issuer-domain-dns</span> report &ldquo;could not run&rdquo;
+            throughout. The issuer-domain axis is orthogonal to every fraud modelled below; load a real
+            record above to exercise it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={() => void runAllScenarios()} disabled={busy} data-testid="run-catalogue">
+              {busy ? "Running..." : "Run the whole catalogue"}
+            </Button>
+            <p className="text-xs text-muted">
+              {BENCH_SCENARIOS.length} scenarios, including one honest control - without it a
+              catalogue of nothing but frauds would look perfect against a verifier that refused
+              everything.
+            </p>
+          </div>
+          {BENCH_SCENARIOS.map((s) => (
+            <ScenarioCard
+              key={s.id}
+              scenario={s}
+              run={runs[s.id]}
+              onRun={(x) => void runScenario(x)}
+              busy={busy}
+            />
           ))}
         </CardContent>
       </Card>
