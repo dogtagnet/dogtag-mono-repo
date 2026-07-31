@@ -12,7 +12,8 @@ import {
   PROVIDER_CONTACT_CHANNELS,
   blankContactFields,
   contactRequestFields,
-  explorerTxUrl,
+  TxRef,
+  txExplorerHref,
   locationRequestFields,
   parseLocationInput,
   useToast,
@@ -366,16 +367,17 @@ export function Wizard() {
               {whitelistTxs.length === 0 ? (
                 <span className="text-sm text-muted">No tx hashes returned (already whitelisted?).</span>
               ) : (
+                // Linked only when the hash can actually be looked up; anything else renders inert
+                // with the reason rather than as an anchor to nowhere. The empty-list case above
+                // already stated itself, which is why only this branch changed.
                 whitelistTxs.map((tx) => (
-                  <a
+                  <TxRef
                     key={tx}
-                    href={explorerTxUrl(tx)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="break-all font-mono text-sm text-primary hover:underline"
-                  >
-                    {tx}
-                  </a>
+                    event={{ txHash: tx }}
+                    href={txExplorerHref({ txHash: tx })}
+                    full
+                    testId="wizard-tx"
+                  />
                 ))
               )}
             </div>

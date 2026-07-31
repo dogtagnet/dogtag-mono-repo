@@ -6,7 +6,6 @@ import {
   CardHeader,
   CardTitle,
   Spinner,
-  explorerAddressUrl,
   useToast,
   type ActivityEvent,
   type ActivityStats,
@@ -33,6 +32,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../app/AppContext";
 import { absoluteTime, eventMeta, relativeTime } from "../lib/activity";
+import { AddressRef } from "../components/ChainRef";
 import { shortAddr } from "../lib/format";
 
 const RECENT_LIMIT = 8;
@@ -288,14 +288,7 @@ function AuthorityRow({
       <div className="min-w-0">
         <div className="text-sm font-medium text-onSurface">{label}</div>
         {holder ? (
-          <a
-            href={explorerAddressUrl(holder)}
-            target="_blank"
-            rel="noreferrer"
-            className="font-mono text-xs text-primary hover:underline"
-          >
-            {shortAddr(holder)}
-          </a>
+          <AddressRef address={holder} testId="dashboard-authority-holder" />
         ) : holderIsHostedFallback && role.heldByHosted ? (
           <span className="text-xs text-muted">hosted operator key</span>
         ) : (

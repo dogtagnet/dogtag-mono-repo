@@ -78,6 +78,51 @@ export function addressExplorerHref(addr?: string | null): string | null {
 }
 
 /**
+ * Why a value carries no explorer link. Single-sourced because the ONE thing worse than an
+ * unexplained missing link is six consoles explaining it six different ways: an operator comparing
+ * two admin pages must not have to work out whether they mean the same thing.
+ */
+export const NOT_AN_ADDRESS_REASON =
+  "not a well-formed 20-byte address, so it has no explorer page";
+export const NOT_A_TX_HASH_REASON =
+  "not a well-formed 32-byte transaction hash, so it addresses no transaction on any chain";
+
+/** A value's explorer link plus, when there is none, the reason - the pair every caller needs. */
+export interface ChainRef {
+  /** The explorer URL, or `null` when this value cannot be looked up. */
+  href: string | null;
+  /**
+   * Why there is no link, or `null` when there is a link OR when the value is simply absent.
+   *
+   * Absent is deliberately reason-free: nothing was claimed, so there is nothing to explain, and the
+   * caller renders its own "—"/"not recorded" copy. A reason is only ever attached to a value that IS
+   * present and cannot be resolved - the state that would otherwise read as an oversight.
+   */
+  reason: string | null;
+}
+
+/**
+ * Resolve an address into the link-or-reason pair, so the three states (absent / linkable /
+ * present-but-unusable) are decided in one place rather than re-derived per page.
+ */
+export function addressChainRef(addr?: string | null): ChainRef {
+  const href = addressExplorerHref(addr);
+  if (href) return { href, reason: null };
+  return { href: null, reason: addr ? NOT_AN_ADDRESS_REASON : null };
+}
+
+/**
+ * The same resolution for a transaction. Deliberately symmetric with `addressChainRef`: a caller that
+ * renders both kinds (a governance result row shows a deploy tx OR a target address) must not have to
+ * reach for two differently-shaped answers and hand-write the reason for one of them.
+ */
+export function txChainRef(ev: { txHash?: string | null; txUrl?: string | null }): ChainRef {
+  const href = txExplorerHref(ev);
+  if (href) return { href, reason: null };
+  return { href: null, reason: ev.txHash ? NOT_A_TX_HASH_REASON : null };
+}
+
+/**
  * Middle-truncate a long hex value for a dense table cell. The full value always stays reachable via
  * the copy affordance, never only via a `title` tooltip (tooltips do not survive a screenshot, a
  * touch device, or a copy/paste into an incident report).

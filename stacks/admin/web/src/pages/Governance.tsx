@@ -13,7 +13,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  explorerAddressUrl,
+  addressChainRef,
   useToast,
   type ApiError,
   type AuthoritySlot,
@@ -38,7 +38,7 @@ import {
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useApp } from "../app/AppContext";
 import { absoluteTime } from "../lib/activity";
-import { shortAddr } from "../lib/format";
+import { AddressRef } from "../components/ChainRef";
 import {
   countdown,
   FORMER_DEPLOYER_EOA,
@@ -626,20 +626,22 @@ function RunbookStep({ icon, text }: { icon: React.ReactNode; text: string }) {
 // Shared bits.
 // ---------------------------------------------------------------------------------------------------
 
-/** A short, explorer-linked address, with an optional copy button. */
+/**
+ * A short address with an optional copy button, explorer-linked ONLY when it can be looked up.
+ *
+ * The external-link icon is part of that claim, so it appears only alongside a real link - an icon
+ * promising "this opens the explorer" next to an inert value would reinstate the very impression the
+ * withheld link removes. The copy button stays on every state: an address that cannot be looked up is
+ * exactly the one an operator needs to paste somewhere and investigate.
+ */
 function AddrLink({ addr, withCopy }: { addr: string; withCopy?: boolean }) {
+  const { href } = addressChainRef(addr);
   return (
     <span className="inline-flex items-center gap-1.5">
-      <a
-        href={explorerAddressUrl(addr)}
-        target="_blank"
-        rel="noreferrer"
-        className="inline-flex items-center gap-1 font-mono text-xs text-primary hover:underline"
-        title={addr}
-      >
-        {shortAddr(addr)}
-        <ExternalLink className="h-3 w-3" />
-      </a>
+      <span className="inline-flex items-center gap-1">
+        <AddressRef address={addr} testId="governance-address" />
+        {href && <ExternalLink className="h-3 w-3 text-primary" aria-hidden />}
+      </span>
       {withCopy && (
         <Button
           size="sm"

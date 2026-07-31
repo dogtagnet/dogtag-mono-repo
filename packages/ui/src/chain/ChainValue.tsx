@@ -9,6 +9,7 @@ import {
   isOpaqueIdentifier,
   shortHex,
   shortValue,
+  NOT_A_TX_HASH_REASON,
   type ChainProvenance,
 } from "./provenance";
 
@@ -154,6 +155,16 @@ export interface ChainValueProps {
    * unlabelled hex - the label prop stays required.
    */
   labelHidden?: boolean;
+  /**
+   * WHY this value carries no explorer link, shown on the inert value's hover text.
+   *
+   * Withholding a link is a claim in itself - the reader is being told this value cannot be looked
+   * up - and a claim with no stated reason is indistinguishable from a page that simply forgot to
+   * link it. `TxRef` has always explained its inert branch; this brings the same to every other
+   * identifier, so "not chain-addressable" and "we could not tell" never render as the same silence.
+   * Ignored when `href` is set: a linked value is not withholding anything.
+   */
+  reason?: string | null;
   className?: string;
   testId?: string;
 }
@@ -172,6 +183,7 @@ export function ChainValue({
   stacked = false,
   full = false,
   labelHidden = false,
+  reason,
   className,
   testId,
 }: ChainValueProps) {
@@ -215,7 +227,12 @@ export function ChainValue({
             {shown}
           </a>
         ) : (
-          <span className={cn("font-mono text-onSurface", valueClass)} title={value}>
+          <span
+            className={cn("font-mono text-onSurface", valueClass)}
+            title={reason ? `${value} — ${reason}` : value}
+            data-testid={testId ? `${testId}-inert` : undefined}
+            data-reason={reason ?? undefined}
+          >
             {shown}
           </span>
         )}
@@ -341,11 +358,7 @@ export function TxRef({ event, href, full = false, className, testId = "chain-tx
             "font-mono text-xs text-muted line-through decoration-warning/60",
             valueClass,
           )}
-          title={
-            synthetic
-              ? `${hash} — not a well-formed 32-byte transaction hash, so it addresses no transaction on any chain`
-              : hash
-          }
+          title={synthetic ? `${hash} — ${NOT_A_TX_HASH_REASON}` : hash}
           data-testid={`${testId}-inert`}
         >
           {shown}

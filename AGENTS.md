@@ -4769,3 +4769,141 @@ rm DogTag/consent_final.zkey DogTag/consent.graph
 
 The host-less `DogTagTests` target lists sources INDIVIDUALLY and must stay Foundation-only (no FFI), so
 adding a file there means checking its whole import closure.
+
+## An explorer link is a CLAIM, and the admin portal made it unconditionally
+
+PR #88 established the rule for the government/vet audit tables and built the shared helpers in
+`packages/ui/src/chain/`; `Activity.tsx` followed.
+Every OTHER admin page still wrote `href={explorerTxUrl(x)}` / `href={explorerAddressUrl(x)}` directly,
+so the anchor was emitted whether or not anything existed to look up.
+A dead link is worse than no link: its presence reads as evidence, and an operator will not click every
+one to find out - so a missing value was being rendered as a real one, in the interface layer.
+
+**The inventory was NINE sites across SIX pages, not the two that were obvious.**
+Recorded so nobody re-runs the hunt: `IssuerApplications.tsx` (approval txs), `Whitelist.tsx` (row
+address AND executed-disposition tx), `Governance.tsx` (`AddrLink`), `Dashboard.tsx` (authority
+holder), `Issuers.tsx` (predicted clone, the `Row` `link` prop, `AddrLink`), `Wizard.tsx` (approval
+txs).
+`grep -rn "explorerTxUrl\|explorerAddressUrl" stacks/admin/web/src` finds them all; it now returns only
+doc-comment mentions.
+Four of the nine were already guarded on TRUTHINESS (`predicted ?`, `holder ?`, `whitelistTxs.length`,
+`link === "tx"`), which is why they read as safe: a truthiness guard proves a value is PRESENT and says
+nothing about whether it can be looked up, and those are the two different questions here.
+
+**The empty-list case is the same defect reached by OMISSION, and it is the more dangerous half.**
+`IssuerApplications` rendered `txs[id]?.length ? (...) : null`, so an approval that broadcast NOTHING
+looked exactly like a clean one - no dead link to notice, just a silent gap.
+Do not "fix" a site by hiding the link when the value is empty; that IS this bug.
+The three states must each be stated: linked / not on chain / present-but-unusable.
+Only "no approval ran in this session" may be silent, because nothing was claimed.
+
+**One address treatment, in `stacks/admin/web/src/components/ChainRef.tsx`.**
+`AddressRef` is the single admin implementation, and `Activity.tsx`'s `ActorCell` was migrated onto it
+too - it was first to get the rule right and would otherwise have been a second copy to drift from.
+Its inert form is struck through in amber, matching the shared `TxRef`, because the two make the same
+claim and colour alone leaves the state legible only to someone who already knows the linked form is
+blue (this repo's rule: a finding reachable only by hovering is not reported).
+Transactions go through the shared `TxRef` directly.
+`addressChainRef`/`txChainRef` in `packages/ui/src/chain/provenance.ts` return the `{href, reason}` pair
+so six pages cannot invent six explanations; a reason is attached ONLY to a value that is present and
+unusable, never to an absent one.
+
+**The positive side still claims SHAPE only.**
+`MemChain` mints `0x{:064x}`, a well-formed hash for a transaction that was never broadcast, so it reads
+as chain-addressable - correct by design, and why the badge says "chain-addressable" and never "exists".
+Do not add simulated-transaction detection here.
+
+### The admin portal now has a unit suite, and the root `test` script had to be widened for it
+
+`stacks/admin/web` was `tsc --noEmit && vite build` only - a typecheck, which proves the pages compile
+and nothing about what they render.
+`href={explorerTxUrl(tx)}` is well-typed for any string, so the defect typechecked perfectly for its
+whole life.
+`packages/ui`'s own tests for `txExplorerHref`/`addressChainRef` were green throughout too, for the
+plain reason that the pages never called them - which is exactly why the pin has to render the page.
+`test/*.test.tsx` mounts the real components (the real `<Whitelist />` under the real `AppProvider`,
+with only `fetch` substituted), following `packages/ui/test/rpcSettingsVerdict.test.ts`: `createRoot`
+plus real macrotask turns, never `act()`.
+
+**Root `pnpm test` filtered `"./packages/**"`, so a suite added under `stacks/` would never have run.**
+It is now `pnpm -r --filter "./packages/**" --filter @dogtag/admin-web test`.
+Name any further package explicitly and NEVER broaden to `pnpm -r test`: several stacks carry Playwright
+specs that drive live portals and anchor real records on chain (see the run-by-hand warning above).
+Verify a new filter actually picks the package up - `Scope: N of 9 workspace projects` plus the
+`<pkg> test:` prefixes in the output - rather than assuming, since a filter that matches nothing exits 0.
+
+**Verified by mutation, four of them, each reddening its own named test**: the unconditional address
+anchor (2 red), the unconditional executed-tx anchor (2 red), the silent empty-list collapse (1 red),
+and the unconditional approval-tx anchor (2 red).
+One of those four silently FAILED to apply on the first attempt because the replacement string no longer
+matched the source, and the suite stayed green - which reads identically to an unpinned claim.
+Assert the old text is present before replacing it; check the scrutinee, not just the diff.
+
+## An explorer link is a CLAIM, and the admin portal made it unconditionally
+
+PR #88 established the rule for the government/vet audit tables and built the shared helpers in
+`packages/ui/src/chain/`; `Activity.tsx` followed.
+Every OTHER admin page still wrote `href={explorerTxUrl(x)}` / `href={explorerAddressUrl(x)}` directly,
+so the anchor was emitted whether or not anything existed to look up.
+A dead link is worse than no link: its presence reads as evidence, and an operator will not click every
+one to find out - so a missing value was being rendered as a real one, in the interface layer.
+
+**The inventory was NINE sites across SIX pages, not the two that were obvious.**
+Recorded so nobody re-runs the hunt: `IssuerApplications.tsx` (approval txs), `Whitelist.tsx` (row
+address AND executed-disposition tx), `Governance.tsx` (`AddrLink`), `Dashboard.tsx` (authority
+holder), `Issuers.tsx` (predicted clone, the `Row` `link` prop, `AddrLink`), `Wizard.tsx` (approval
+txs).
+`grep -rn "explorerTxUrl\|explorerAddressUrl" stacks/admin/web/src` finds them all; it now returns only
+doc-comment mentions.
+Four of the nine were already guarded on TRUTHINESS (`predicted ?`, `holder ?`, `whitelistTxs.length`,
+`link === "tx"`), which is why they read as safe: a truthiness guard proves a value is PRESENT and says
+nothing about whether it can be looked up, and those are the two different questions here.
+
+**The empty-list case is the same defect reached by OMISSION, and it is the more dangerous half.**
+`IssuerApplications` rendered `txs[id]?.length ? (...) : null`, so an approval that broadcast NOTHING
+looked exactly like a clean one - no dead link to notice, just a silent gap.
+Do not "fix" a site by hiding the link when the value is empty; that IS this bug.
+The three states must each be stated: linked / not on chain / present-but-unusable.
+Only "no approval ran in this session" may be silent, because nothing was claimed.
+
+**One address treatment, in `stacks/admin/web/src/components/ChainRef.tsx`.**
+`AddressRef` is the single admin implementation, and `Activity.tsx`'s `ActorCell` was migrated onto it
+too - it was first to get the rule right and would otherwise have been a second copy to drift from.
+Its inert form is struck through in amber, matching the shared `TxRef`, because the two make the same
+claim and colour alone leaves the state legible only to someone who already knows the linked form is
+blue (this repo's rule: a finding reachable only by hovering is not reported).
+Transactions go through the shared `TxRef` directly.
+`addressChainRef`/`txChainRef` in `packages/ui/src/chain/provenance.ts` return the `{href, reason}` pair
+so six pages cannot invent six explanations; a reason is attached ONLY to a value that is present and
+unusable, never to an absent one.
+
+**The positive side still claims SHAPE only.**
+`MemChain` mints `0x{:064x}`, a well-formed hash for a transaction that was never broadcast, so it reads
+as chain-addressable - correct by design, and why the badge says "chain-addressable" and never "exists".
+Do not add simulated-transaction detection here.
+
+### The admin portal now has a unit suite, and the root `test` script had to be widened for it
+
+`stacks/admin/web` was `tsc --noEmit && vite build` only - a typecheck, which proves the pages compile
+and nothing about what they render.
+`href={explorerTxUrl(tx)}` is well-typed for any string, so the defect typechecked perfectly for its
+whole life.
+`packages/ui`'s own tests for `txExplorerHref`/`addressChainRef` were green throughout too, for the
+plain reason that the pages never called them - which is exactly why the pin has to render the page.
+`test/*.test.tsx` mounts the real components (the real `<Whitelist />` under the real `AppProvider`,
+with only `fetch` substituted), following `packages/ui/test/rpcSettingsVerdict.test.ts`: `createRoot`
+plus real macrotask turns, never `act()`.
+
+**Root `pnpm test` filtered `"./packages/**"`, so a suite added under `stacks/` would never have run.**
+It is now `pnpm -r --filter "./packages/**" --filter @dogtag/admin-web test`.
+Name any further package explicitly and NEVER broaden to `pnpm -r test`: several stacks carry Playwright
+specs that drive live portals and anchor real records on chain (see the run-by-hand warning above).
+Verify a new filter actually picks the package up - `Scope: N of 9 workspace projects` plus the
+`<pkg> test:` prefixes in the output - rather than assuming, since a filter that matches nothing exits 0.
+
+**Verified by mutation, four of them, each reddening its own named test**: the unconditional address
+anchor (2 red), the unconditional executed-tx anchor (2 red), the silent empty-list collapse (1 red),
+and the unconditional approval-tx anchor (2 red).
+One of those four silently FAILED to apply on the first attempt because the replacement string no longer
+matched the source, and the suite stayed green - which reads identically to an unpinned claim.
+Assert the old text is present before replacing it; check the scrutinee, not just the diff.
