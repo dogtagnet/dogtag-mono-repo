@@ -116,15 +116,20 @@ async fn government_verifies_a_vet_issued_credential() {
         VACC_CLONE,
         &government_api::app::record_type_key("VACCINATION"),
     );
-    chain
-        .issue(VACC_CLONE, &root)
-        .await
-        .expect("vet anchors root");
+    // The whitelist grant lands BEFORE the anchoring, which is the only order the real chain can
+    // produce: `issue()` is `onlyWhitelisted`, so an unwhitelisted signer's anchoring reverts. The
+    // pillar now asks whether the signer held the capability AT the anchoring point, so the order is
+    // load-bearing rather than incidental — seeded the other way round this models a chain state the
+    // protocol forbids, and the verifier correctly refuses it.
     chain.whitelist(
         REGISTRY,
         &government_api::app::record_type_key("VACCINATION"),
         VET_SIGNER,
     );
+    chain
+        .issue(VACC_CLONE, &root)
+        .await
+        .expect("vet anchors root");
 
     // 2) GOVERNMENT role: a SEPARATE stack, sharing only the chain, verifies the vet's credential.
     let gov = government_stack(chain);

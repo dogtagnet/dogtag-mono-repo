@@ -4,9 +4,9 @@ use axum::{http::StatusCode, Json};
 use serde_json::{json, Value};
 
 use dogtag_standard::verify::{
-    verify as sdk_verify, AdapterError, DnsAdapter, FragmentState, IssuerAnchor, IssuerResolution,
-    IssuerStoreAgreement, IssuerWhitelistState, RegistryAdapter, RpcAdapter, Verdict, VerifyMode,
-    VerifyOpts,
+    verify as sdk_verify, AdapterError, DnsAdapter, FragmentState, GrantAtIssuance, IssuerAnchor,
+    IssuerResolution, IssuerStoreAgreement, IssuerWhitelistState, RegistryAdapter, RpcAdapter,
+    Verdict, VerifyMode, VerifyOpts,
 };
 use dogtag_standard::wrap::WrappedDoc;
 
@@ -233,18 +233,30 @@ impl RpcAdapter for ChainRpcAdapter<'_> {
         self.blocking(async move { st.chain.issuer_record_type(&issuer_addr).await })
     }
 
-    /// The registry address is this deployment's own, for the same reason the factory's is.
-    fn is_whitelisted_for(
+    /// The authority is read off the RESOLVED clone rather than from this deployment's config, and
+    /// that is not a loosening: `registry` is written once in `initialize` from the factory's own
+    /// `immutable registry`, and the clone came from the factory this deployment configured, so the
+    /// address is as anchored as the clone itself. It is also the only instance whose `_wl` mapping
+    /// gated this contract's `issue()` — asking our separately-configured `ISSUER_REGISTRY_ADDR`
+    /// would, on a mis-paired deployment, find no grant and print a definite refusal of a genuine
+    /// credential, which is our own misconfiguration rendered as an accusation.
+    fn whitelisted_at_issuance(
         &self,
+        issuer_addr: &str,
         record_type_key: &str,
         signer: &str,
-    ) -> Result<bool, AdapterError> {
+        merkle_root: &str,
+    ) -> Result<GrantAtIssuance, AdapterError> {
         let st = self.st.clone();
-        let registry = st.cfg.issuer_registry_addr.clone();
-        let (record_type_key, signer) = (record_type_key.to_string(), signer.to_string());
+        let (issuer_addr, record_type_key, signer, merkle_root) = (
+            issuer_addr.to_string(),
+            record_type_key.to_string(),
+            signer.to_string(),
+            merkle_root.to_string(),
+        );
         self.blocking(async move {
             st.chain
-                .is_whitelisted_for(&registry, &record_type_key, &signer)
+                .whitelisted_at_issuance(&issuer_addr, &record_type_key, &signer, &merkle_root)
                 .await
         })
     }

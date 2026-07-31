@@ -4,7 +4,12 @@
 // to the operator-gated vet-api handler it replaces, using the SAME reads the mobile apps do.
 import { TypeTag, wrapDocument, type IssuerMeta, type WrappedDoc } from "@dogtag/standard";
 import { describe, expect, it } from "vitest";
-import { DEPLOYED_ADDRESSES, recordTypeKey } from "../src/wallet/contracts";
+import {
+  DEPLOYED_ADDRESSES,
+  recordTypeKey,
+  type LogPoint,
+  type WhitelistGrantEvent,
+} from "../src/wallet/contracts";
 import {
   verifyCredentialOnchain,
   type IssuerChainReader,
@@ -17,6 +22,12 @@ const ISSUER: IssuerMeta = {
   recordType: "VACCINATION",
 };
 const SIGNER = "0xabc0000000000000000000000000000000000abc";
+/**
+ * The registry the CLONE names - `DogTagIssuer.registry()`, the only authority whose `_wl` log can
+ * answer for that contract's issuances. Deliberately NOT `DEPLOYED_ADDRESSES.IssuerRegistry`: the
+ * pillar must ask this one, so a fake that used the configured address could not tell the two apart.
+ */
+const GOVERNING_REGISTRY = "0x00000000000000000000000000000000005e6157";
 const NOW = 1_700_000_000;
 
 /** A wrapped doc with dogTagId == "42"; deterministic salts so the root is stable across runs. */
@@ -57,12 +68,22 @@ interface ReaderCfg {
   isRevoked?: boolean;
   /** `issuedBy(root)`; the zero address models a clone that never issued this root. */
   issuedBy?: string;
-  isWhitelistedFor?: boolean;
+  /** The clone's own `registry()` - the authority whose grant log answers for its issuances. */
+  issuerRegistry?: string;
+  /** Where the clone's `RootIssued` for this root sits; `null` models a contract that emitted none. */
+  rootIssuedAt?: LogPoint | null;
+  /** The governing registry's grant log for this pair. An EMPTY array is a real answer. */
+  grantHistory?: WhitelistGrantEvent[];
 }
+
+/** The honest ordering: granted, then the root anchored, and never withdrawn. */
+const GRANTED: LogPoint = { blockNumber: 100n, logIndex: 0 };
+const ANCHORED: LogPoint = { blockNumber: 200n, logIndex: 3 };
 
 /**
  * Defaults describe a GENUINE credential: the factory names the clone the document claims, that clone
- * declares the document's record type, it issued the root, and that signer is whitelisted.
+ * declares the document's record type, it issued the root, and its governing registry's log shows the
+ * signer holding that capability at the anchoring point.
  */
 function fakeReader(cfg: ReaderCfg) {
   const calls = {
@@ -72,7 +93,9 @@ function fakeReader(cfg: ReaderCfg) {
     isValid: [] as Array<[string, string]>,
     isRevoked: [] as Array<[string, string]>,
     issuedBy: [] as Array<[string, string]>,
-    isWhitelistedFor: [] as Array<[string, string, string]>,
+    issuerRegistry: [] as string[],
+    rootIssuedAt: [] as Array<[string, string]>,
+    grantHistory: [] as Array<[string, string, string]>,
   };
   const reader: IssuerChainReader = {
     async rootIssuer(factory, root) {
@@ -99,9 +122,17 @@ function fakeReader(cfg: ReaderCfg) {
       calls.issuedBy.push([addr, root]);
       return cfg.issuedBy ?? SIGNER;
     },
-    async isWhitelistedFor(registry, key, signer) {
-      calls.isWhitelistedFor.push([registry, key, signer]);
-      return cfg.isWhitelistedFor ?? true;
+    async issuerRegistry(addr) {
+      calls.issuerRegistry.push(addr);
+      return cfg.issuerRegistry ?? GOVERNING_REGISTRY;
+    },
+    async rootIssuedAt(addr, root) {
+      calls.rootIssuedAt.push([addr, root]);
+      return cfg.rootIssuedAt === undefined ? ANCHORED : cfg.rootIssuedAt;
+    },
+    async grantHistory(registry, key, signer) {
+      calls.grantHistory.push([registry, key, signer]);
+      return cfg.grantHistory ?? [{ kind: "whitelisted", ...GRANTED }];
     },
   };
   return { reader, calls };
@@ -169,19 +200,86 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       issuedAt: 1_699_000_000n,
       isValid: true,
       isRevoked: false,
-      isWhitelistedFor: false,
+      // The governing registry's log records no grant to this signer for this record type, ever.
+      grantHistory: [],
     });
     const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.status).toBe("valid"); // on-chain state is valid…
-    expect(r.verdict).toBe(false); // …but a non-whitelisted issuer signer fails the verdict.
+    expect(r.verdict).toBe(false); // …but an unauthorised issuer signer fails the verdict.
     expect(r.signerAddr).toBe(SIGNER);
     expect(r.fragments.issuerWhitelisted).toBe(false);
-    // whitelist read uses the deployed IssuerRegistry, the record-type key the CHAIN reported, and
-    // the CHAIN-resolved signer — never anything supplied by the caller or the document.
-    expect(calls.isWhitelistedFor).toEqual([
-      [DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER],
-    ]);
+    // The grant history is read from the GOVERNING registry - the one the CLONE names - with the
+    // record-type key the CHAIN reported and the CHAIN-resolved signer. Never anything supplied by
+    // the caller or the document, and never this client's own configured registry.
+    expect(calls.grantHistory).toEqual([[GOVERNING_REGISTRY, VACCINATION_KEY, SIGNER]]);
+    expect(calls.grantHistory[0][0]).not.toBe(DEPLOYED_ADDRESSES.IssuerRegistry);
+  });
+
+  it("delisting is FORWARD-ONLY: after the anchoring it verifies, before it does not", async () => {
+    const doc = validDoc();
+    const granted = { kind: "whitelisted", ...GRANTED } as const;
+
+    // Delisted AFTER the anchoring - a key rotation. The credential stays genuine.
+    const after = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      now: NOW,
+      reader: fakeReader({
+        issuedAt: 1_699_000_000n,
+        isValid: true,
+        grantHistory: [
+          granted,
+          { kind: "delisted", blockNumber: ANCHORED.blockNumber + 500n, logIndex: 0 },
+        ],
+      }).reader,
+    });
+    expect(after.fragments.issuerWhitelisted).toBe(true);
+    expect(after.verdict).toBe(true);
+
+    // Delisted BEFORE it - an anchoring `onlyWhitelisted` could not have permitted.
+    const before = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      now: NOW,
+      reader: fakeReader({
+        issuedAt: 1_699_000_000n,
+        isValid: true,
+        grantHistory: [
+          granted,
+          { kind: "delisted", blockNumber: ANCHORED.blockNumber - 1n, logIndex: 0 },
+        ],
+      }).reader,
+    });
+    expect(before.fragments.issuerWhitelisted).toBe(false);
+    expect(before.verdict).toBe(false);
+  });
+
+  it("could-not-determine is neither a pass nor an accusation", async () => {
+    const doc = validDoc();
+    // (a) the clone names no governing registry - there is no authority whose log could answer.
+    const noAuthority = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      now: NOW,
+      reader: fakeReader({ issuedAt: 1_699_000_000n, isValid: true, issuerRegistry: ZERO_ADDR })
+        .reader,
+    });
+    expect(noAuthority.fragments.issuerWhitelisted).toBeNull();
+    expect(noAuthority.verdict).toBe(false);
+
+    // (b) the contract emitted no anchoring event - there is no moment to ask the history about.
+    const noAnchoring = fakeReader({
+      issuedAt: 1_699_000_000n,
+      isValid: true,
+      rootIssuedAt: null,
+    });
+    const unanchored = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      now: NOW,
+      reader: noAnchoring.reader,
+    });
+    expect(unanchored.fragments.issuerWhitelisted).toBeNull();
+    expect(unanchored.verdict).toBe(false);
+    // And the grant log is not even consulted: there is nothing to sequence it against.
+    expect(noAnchoring.calls.grantHistory).toEqual([]);
   });
 
   it("resolves the signer from the chain, so the pillar runs with no operator input at all", async () => {
@@ -210,7 +308,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(r.verdict).toBe(false); // …and therefore NOT a pass.
     expect(r.signerAddr).toBeNull();
     // Never ask the registry whether the zero address is whitelisted: that answers the wrong question.
-    expect(calls.isWhitelistedFor).toEqual([]);
+    expect(calls.grantHistory).toEqual([]);
   });
 
   // The forgery this pillar exists for: point `issuer.documentStore` at a contract you control that
@@ -237,7 +335,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     // Every read went to the resolved clone, and the hostile contract was never consulted.
     expect(r.issuerAddr).toBe(ISSUER.documentStore);
     expect(calls.isValid[0]?.[0]).toBe(ISSUER.documentStore);
-    expect(calls.isWhitelistedFor).toEqual([]);
+    expect(calls.grantHistory).toEqual([]);
   });
 
   it("a root no factory clone ever issued is indeterminate, and no reads are made", async () => {
@@ -271,7 +369,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
 
     expect(r.fragments.issuerWhitelisted).toBe(false);
     expect(r.verdict).toBe(false);
-    expect(calls.isWhitelistedFor).toEqual([]);
+    expect(calls.grantHistory).toEqual([]);
   });
 
   it("a clone reporting no record type leaves the pillar indeterminate, not passed", async () => {
@@ -285,16 +383,12 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
 
     expect(r.fragments.issuerWhitelisted).toBeNull();
     expect(r.verdict).toBe(false);
-    expect(calls.isWhitelistedFor).toEqual([]);
+    expect(calls.grantHistory).toEqual([]);
   });
 
   it("an explicit expected signer only tightens the pillar - a mismatch fails it", async () => {
     const doc = validDoc();
-    const { reader } = fakeReader({
-      issuedAt: 1_699_000_000n,
-      isValid: true,
-      isWhitelistedFor: true,
-    });
+    const { reader } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
     const r = await verifyCredentialOnchain({
       wrappedDoc: asRecord(doc),
       signerAddr: "0x00000000000000000000000000000000000000ff",
@@ -371,7 +465,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(r.verdict).toBe(false);
     expect(calls.isValid).toEqual([]);
     expect(calls.issuedBy).toEqual([]);
-    expect(calls.isWhitelistedFor).toEqual([]);
+    expect(calls.grantHistory).toEqual([]);
   });
 
   it("fails closed: an RPC read error rejects rather than resolving as valid", async () => {
@@ -395,8 +489,14 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       async issuedBy() {
         return SIGNER;
       },
-      async isWhitelistedFor() {
-        return true;
+      async issuerRegistry() {
+        return GOVERNING_REGISTRY;
+      },
+      async rootIssuedAt() {
+        return ANCHORED;
+      },
+      async grantHistory() {
+        return [{ kind: "whitelisted" as const, ...GRANTED }];
       },
     };
     await expect(

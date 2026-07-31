@@ -535,6 +535,44 @@ export function sortLogPoints<T extends LogPoint>(events: T[]): T[] {
   );
 }
 
+/** Total order over log points. `logIndex` is block-scoped, so it only breaks ties WITHIN a block. */
+export function compareLogPoints(a: LogPoint, b: LogPoint): number {
+  if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
+  return a.logIndex - b.logIndex;
+}
+
+/**
+ * Did the signer hold the capability AT THE MOMENT this root was anchored?
+ *
+ * `"authorized"` / `"notAuthorized"` are answers ABOUT the credential; `"undetermined"` says the
+ * question could not be put. Only the first may contribute to a pass, only the second may refuse,
+ * and the third must never be rendered as either.
+ */
+export type GrantAtIssuance = "authorized" | "notAuthorized" | "undetermined";
+
+/**
+ * Fold one `(recordType, signer)` grant history against the point a root was anchored.
+ *
+ * THE definition of the rule for the web, shared by the verifier and the bench so the surface that
+ * decides and the surface that reports cannot drift. The state as of the anchoring point is the LAST
+ * event at or before it.
+ *
+ * An EMPTY prior history is `"notAuthorized"`, not `"undetermined"`: the registry answered and its own
+ * log records no grant, which is evidence about the credential rather than about our ability to check.
+ * A log read that FAILED never reaches this function.
+ *
+ * Mirrors `dogtag_standard::verify::grant_in_force_at` (Rust), `RoaxRpc.grantInForceAt` (Kotlin) and
+ * `Net.grantInForceAt` (Swift).
+ */
+export function grantInForceAt(
+  history: readonly WhitelistGrantEvent[],
+  anchoredAt: LogPoint,
+): GrantAtIssuance {
+  const prior = history.filter((e) => compareLogPoints(e, anchoredAt) <= 0);
+  const asOf = sortLogPoints(prior)[prior.length - 1];
+  return asOf?.kind === "whitelisted" ? "authorized" : "notAuthorized";
+}
+
 /**
  * Where this root was anchored, as a `(blockNumber, logIndex)` point - or `null` when this clone
  * emitted no `RootIssued` for it.

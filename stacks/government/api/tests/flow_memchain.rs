@@ -168,6 +168,18 @@ impl ChainClient for LiveLikeChain {
             .is_whitelisted_for(registry_addr, record_type, signer, at_block)
             .await
     }
+    async fn whitelisted_at_issuance(
+        &self,
+        issuer_addr: &str,
+        record_type: &str,
+        signer: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<government_api::chain::GrantAtIssuance, government_api::chain::ChainError> {
+        self.0
+            .whitelisted_at_issuance(issuer_addr, record_type, signer, root, at_block)
+            .await
+    }
     async fn issue(
         &self,
         issuer_addr: &str,
@@ -999,9 +1011,14 @@ async fn a_record_type_relabel_is_refused_by_the_clones_own_record_type() {
     );
 }
 
-/// A signer that DID issue the root but is not whitelisted for that record type is a resolved `false`,
-/// not an indeterminate — and equally must not pass. (Whitelists can be revoked after issuance; the
-/// authority is the registry now, not at mint time.)
+/// A signer that DID issue the root but whose grant the governing registry never recorded is a
+/// resolved `false`, not an indeterminate — and equally must not pass.
+///
+/// The parenthetical this comment used to carry ("the authority is the registry NOW, not at mint
+/// time") was the defect stated as a rule. It is the opposite of the standing ruling: delisting is
+/// forward-only (`DogTagIssuer.sol:82`), and `adminRevoke` exists because `delistFor` does not reach
+/// backwards. What still fails here is the genuinely unauthorised case — the registry answered, and
+/// its own log holds no grant at or before the anchoring.
 #[tokio::test]
 async fn a_resolved_but_unwhitelisted_issuer_fails_the_verdict() {
     let cfg = Config {
@@ -1021,9 +1038,12 @@ async fn a_resolved_but_unwhitelisted_issuer_fails_the_verdict() {
         api_token: Some(API_TOKEN.into()),
     };
     // Identical to `demo_state()` except the signer is NEVER whitelisted for TRAVEL_CLEARANCE. The
-    // clone still declares its record type, so the pillar resolves all the way to the registry and the
-    // `false` below is the whitelist answering, not an unresolved read.
-    let chain = MemChain::new().with_factory(FACTORY);
+    // clone still declares its record type AND names its governing registry, so the pillar resolves
+    // all the way to that registry's grant log and the `false` below is the log answering with
+    // nothing, not a read that could not be made. Without `with_registry` the fake would have no
+    // authority to name — a real clone always does — and the answer would degrade to `unresolved`,
+    // which is a different claim and not the one this test is about.
+    let chain = MemChain::new().with_factory(FACTORY).with_registry(REGISTRY_ADDR);
     chain.set_record_type(
         ISSUER_ADDR,
         &government_api::app::record_type_key(TRAVEL_CLEARANCE),
@@ -1058,6 +1078,82 @@ async fn a_resolved_but_unwhitelisted_issuer_fails_the_verdict() {
     assert_eq!(v["fragments"]["issuerWhitelisted"], false, "{v}");
     assert!(v["signerAddr"].is_string(), "signer resolved: {v}");
     assert_eq!(v["verdict"], false, "{v}");
+}
+
+/// DELISTING IS FORWARD-ONLY, at the government verify route. Both directions.
+///
+/// The authority's own verifier is the surface where this matters most: it is what a border officer
+/// reads, and an ordinary key rotation at the issuing practice must not turn every travel document
+/// that practice ever issued into a forgery. `DogTagIssuer.sol:82` states the rule in the contract's
+/// own source and `adminRevoke` is the retroactive lever, which was not used on this root.
+///
+/// Mutation: point this handler's arm back at `is_whitelisted_for` -> the AFTER half goes red.
+#[tokio::test]
+async fn a_signer_delisted_after_issuance_still_verifies_and_before_issuance_does_not() {
+    use government_api::chain::{GrantEvent, LogPoint};
+    let (state, chain) = demo_state();
+    let rt = government_api::app::record_type_key(TRAVEL_CLEARANCE);
+    let signer = chain.signer_address().expect("demo signer");
+
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "77", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+    let doc = issued["wrappedDoc"].clone();
+    let root = doc["signature"]["merkleRoot"].as_str().unwrap().to_string();
+
+    let verify = |doc: Value| {
+        let state = state.clone();
+        async move { call(&state, "POST", "/v1/verify", json!({ "wrapped_doc": doc })).await }
+    };
+
+    // Control: authorised, and it verifies.
+    let (_, v) = verify(doc.clone()).await;
+    assert_eq!(v["verdict"], true, "control: {v}");
+    assert_eq!(v["fragments"]["issuerWhitelistState"], "passed", "{v}");
+
+    // (a) DELISTED AFTER the anchoring — a key rotation at the issuing authority.
+    chain.delist(REGISTRY_ADDR, &rt, &signer);
+    let (_, v) = verify(doc.clone()).await;
+    assert_eq!(
+        v["verdict"], true,
+        "delisting is forward-only, so a genuine travel document must still verify: {v}"
+    );
+    assert_eq!(v["fragments"]["issuerWhitelistState"], "passed", "{v}");
+
+    // (b) DELISTED BEFORE it. `issue()` is `onlyWhitelisted`, so this anchoring cannot have happened
+    // as the document describes. Seeded rather than driven: the honest path cannot reach this state.
+    let anchored = chain
+        .root_issued_at(ISSUER_ADDR, &root)
+        .expect("anchoring point");
+    chain.set_grant_history(
+        REGISTRY_ADDR,
+        &rt,
+        &signer,
+        vec![
+            GrantEvent {
+                at: LogPoint {
+                    block_number: anchored.block_number - 2,
+                    log_index: 0,
+                },
+                granted: true,
+            },
+            GrantEvent {
+                at: LogPoint {
+                    block_number: anchored.block_number - 1,
+                    log_index: 0,
+                },
+                granted: false,
+            },
+        ],
+    );
+    let (_, v) = verify(doc).await;
+    assert_eq!(v["verdict"], false, "{v}");
+    assert_eq!(v["fragments"]["issuerWhitelistState"], "failed", "{v}");
 }
 
 /// AUDIT FINDING (2026-07-27): the receipt QR encoded `https://gov.example/r/<id>` — NXDOMAIN — because

@@ -340,6 +340,13 @@ export interface VerifyCredentialResp {
     onchain: boolean;
     issued: boolean;
     revoked: boolean;
+    /**
+     * Was the on-chain originator authorised for this record type AT THE MOMENT this root was
+     * anchored? Reconstructed from the governing registry's `Whitelisted`/`Delisted` logs, NOT from
+     * `isWhitelistedFor` - delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the
+     * retroactive lever), so a current-state read refuses every credential a since-rotated signer
+     * ever issued.
+     */
     issuerWhitelisted?: boolean | null;
     /**
      * Why `issuerWhitelisted` is what it is. A caller MUST be able to tell "not evaluated because this
@@ -364,16 +371,19 @@ export interface VerifyCredentialResp {
     /**
      * What became of the caller's expected-signer assertion. It may only ever TIGHTEN: `differs` and
      * `unanchoredNotWhitelisted` are definite failures folded into the pillar, while
-     * `unanchoredUnconfirmed` (no clone resolved, but the asserted address is whitelisted for the
-     * claimed record type) deliberately promotes nothing - being whitelisted does not show that
-     * address issued THIS root.
+     * `unanchoredUnconfirmed` (no clone resolved, but the asserted address DID hold the grant at the
+     * anchoring point) deliberately promotes nothing - holding it does not show that address issued
+     * THIS root. `unanchoredUnresolved` is its own state rather than a fold into the previous one:
+     * both promote nothing, but one says "checked, and it held the capability" and the other says
+     * "the grant history could not be sequenced at all".
      */
     expectedSignerState?:
       | "notAsserted"
       | "matched"
       | "differs"
       | "unanchoredNotWhitelisted"
-      | "unanchoredUnconfirmed";
+      | "unanchoredUnconfirmed"
+      | "unanchoredUnresolved";
   };
 }
 export interface VerifySessionStartReq {

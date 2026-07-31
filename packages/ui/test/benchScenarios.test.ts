@@ -90,10 +90,11 @@ describe("every scenario declares a complete, self-consistent expectation", () =
     }
   });
 
-  it("declares a known defect for exactly the case the implementation gets wrong", () => {
-    expect(BENCH_SCENARIOS.filter((s) => s.knownDefect).map((s) => s.id)).toEqual([
-      "signer-delisted-after-issuance",
-    ]);
+  it("declares a known defect only where one still reproduces", () => {
+    // EMPTY today: the delisting defect this field was introduced for has been fixed, so its pin was
+    // deleted rather than left to report a bug that no longer exists. The machinery below stays,
+    // because the next finding the catalogue turns up will need exactly it.
+    expect(BENCH_SCENARIOS.filter((s) => s.knownDefect).map((s) => s.id)).toEqual([]);
     for (const s of BENCH_SCENARIOS) {
       if (!s.knownDefect) continue;
       // A defect that does not actually differ from the expectation is not a defect - it is a stale
@@ -240,55 +241,51 @@ describe("delisting AFTER the issuance block - the finding", () => {
     ).toBe("pass");
   });
 
-  it("DOES NOT - the implementation refuses it, and that gap is the documented defect", async () => {
-    // The report, not an endorsement. It pins what the code does today so the defect cannot be lost,
-    // while the expectation above goes on stating the right answer.
-    const defect = signerDelistedAfterIssuance.knownDefect;
-    expect(defect, "the defect must be declared as data, not only in prose").toBeTruthy();
+  it("AND DOES - the defect is fixed, so no pin remains to excuse a refusal", async () => {
+    // This assertion used to say the opposite: it pinned the refusal as `knownDefect` so the finding
+    // could not be lost while the fix was out of scope. The fix landed, so the pin is gone and the
+    // requirement stands on its own - which is exactly the transition the pin existed to force.
+    expect(
+      signerDelistedAfterIssuance.knownDefect,
+      "the defect no longer reproduces; a lingering pin would report a fixed bug forever",
+    ).toBeUndefined();
     const r = await runBenchScenario(signerDelistedAfterIssuance);
-    expect(outcome(r, "issuer-whitelisted")).toBe("fail");
-    expect(r.verdict, "a genuine credential is rendered as a forgery by a key rotation").toBe(false);
-    expect(r.verdict).not.toBe(signerDelistedAfterIssuance.expectedVerdict);
-    expect(defect?.observedVerdict).toBe(false);
+    expect(outcome(r, "issuer-whitelisted")).toBe("pass");
+    expect(r.verdict, "a key rotation must not render a genuine credential a forgery").toBe(true);
+    expect(r.verdict).toBe(signerDelistedAfterIssuance.expectedVerdict);
   });
 
-  it("states the contradicted ruling by name, with its source in the contract", async () => {
-    // The defect statement is what a reviewer reads first. It has to name the rule it contradicts and
-    // where that rule is written down, or the finding degrades into "a test is red for some reason".
-    const statement = signerDelistedAfterIssuance.knownDefect?.statement ?? "";
-    expect(statement).toContain("FORWARD-ONLY");
-    expect(statement).toContain("DogTagIssuer.sol:82");
-    expect(statement).toContain("adminRevoke");
-    expect(statement).toContain("correct verdict is `true`");
-  });
-
-  it("renders the contradiction legibly: one row gates and fails, the other is advisory and passes", async () => {
-    // The reason the two rows are separate. An operator seeing a single red "issuer whitelisted" row
-    // would read "forgery"; seeing it beside a green historical row, marked advisory, they can read
-    // what is actually true - the signer's status changed after a genuine issuance.
+  it("both whitelist rows clear it, and the historical one cites the rule that makes it so", async () => {
+    // The two rows are still separate, and still answer for different parties: the gating one is the
+    // VERIFIER's own answer, the advisory one the bench's INDEPENDENT reconstruction from the same
+    // log. Their agreeing is corroboration - and the day the verifier regresses to a current-state
+    // read, the gating row turns red beside a green historical one and says so in place.
     const r = await runBenchScenario(signerDelistedAfterIssuance);
     const gating = r.checks.find((c) => c.id === "issuer-whitelisted");
     const historical = r.checks.find((c) => c.id === "whitelisted-at-issuance");
     expect(gating?.gatesVerdict).toBe(true);
-    expect(gating?.outcome).toBe("fail");
+    expect(gating?.outcome).toBe("pass");
     expect(historical?.gatesVerdict).toBe(false);
     expect(historical?.outcome).toBe("pass");
-    // The row must cite the rule and its source, not merely report "pass" - an operator staring at a
-    // red gating row needs to be told, in place, why the green one beside it outranks their instinct.
-    expect(historical?.finding).toContain("forward-only");
-    expect(historical?.finding).toContain("DogTagIssuer.sol:82");
-    expect(historical?.finding).toContain("adminRevoke");
+    // The rule and its source stay on the row, not only in a commit message: an operator who knows
+    // the signer is delisted today needs to be told, in place, why that does not matter here.
+    expect(gating?.finding).toContain("forward-only");
+    expect(gating?.finding).toContain("DogTagIssuer.sol:82");
   });
 
   it("distinguishes the two delisting cases - the check is not simply reading the current state", async () => {
-    // Both scenarios present a signer that is delisted NOW. If `whitelisted-at-issuance` were reading
-    // the same getter as the pillar, both would fail identically and the row would be decorative.
+    // THE test for the whole change. Both scenarios present a signer that is delisted NOW. A verdict
+    // formula reading the current getter would refuse them identically; reading the grant history at
+    // the anchoring point separates them - and it must separate them on BOTH rows, because both now
+    // ask the historical question.
     const after = await runBenchScenario(signerDelistedAfterIssuance);
     const before = await runBenchScenario(signerDelistedBeforeIssuance);
-    expect(outcome(after, "issuer-whitelisted")).toBe(outcome(before, "issuer-whitelisted"));
-    expect(outcome(after, "whitelisted-at-issuance")).not.toBe(
-      outcome(before, "whitelisted-at-issuance"),
-    );
+    expect(outcome(after, "issuer-whitelisted")).toBe("pass");
+    expect(outcome(before, "issuer-whitelisted")).toBe("fail");
+    expect(outcome(after, "whitelisted-at-issuance")).toBe("pass");
+    expect(outcome(before, "whitelisted-at-issuance")).toBe("fail");
+    expect(after.verdict).toBe(true);
+    expect(before.verdict).toBe(false);
   });
 });
 
@@ -347,10 +344,14 @@ describe("a whitelist answer from a registry that does not govern the issuer", (
       await w.grantHistoryReader.grants(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER),
       "a grant log read against a registry that never recorded it must come back empty",
     ).toEqual([]);
-    // The current-state getter is keyed the same way, for the same reason.
+    // The VERIFIER's own reader is keyed the same way and reads the same map, so the gating row and
+    // the advisory row cannot be shown different chains - and a wrong-authority read finds nothing on
+    // that side too.
     const honest = genuineCredential.build();
-    expect(await honest.reader.isWhitelistedFor(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)).toBe(true);
-    expect(await honest.reader.isWhitelistedFor(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER)).toBe(false);
+    expect(
+      await honest.reader.grantHistory(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER),
+    ).not.toEqual([]);
+    expect(await honest.reader.grantHistory(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER)).toEqual([]);
   });
 
   it("does NOT convert this client's own misconfiguration into an accusation", async () => {
@@ -485,14 +486,16 @@ describe("the genuine control", () => {
     expect(frauds, "no fraud scenarios were actually examined").toBeGreaterThan(4);
   });
 
-  it("distinguishes the delisted-after DEFECT from the control, even though the record is genuine", async () => {
-    // The complement of the exclusion above. `delisted-after` SHOULD be indistinguishable from the
-    // control - both are genuine credentials - and the fact that it is not, in the run, is the defect.
+  it("runs delisted-after INDISTINGUISHABLY from the control - both are genuine credentials", async () => {
+    // The complement of the exclusion above, and the assertion that flipped when the defect was fixed.
+    // It used to say the two DIFFER, pinning the refusal; a genuine credential whose signer was later
+    // rotated is a genuine credential, so every row and the verdict must now match the control exactly.
+    // Nothing about the delisting is visible in the report, because nothing about it is wrong.
     const control = await runBenchScenario(genuineCredential);
-    const defective = await runBenchScenario(signerDelistedAfterIssuance);
+    const rotated = await runBenchScenario(signerDelistedAfterIssuance);
     expect(signerDelistedAfterIssuance.expected).toEqual(outcomes(control));
-    expect(outcomes(defective)).not.toEqual(outcomes(control));
-    expect(defective.verdict).not.toBe(control.verdict);
+    expect(outcomes(rotated)).toEqual(outcomes(control));
+    expect(rotated.verdict).toBe(control.verdict);
   });
 });
 

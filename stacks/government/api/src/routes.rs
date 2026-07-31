@@ -37,6 +37,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::{self, AppState};
+use crate::chain::GrantAtIssuance;
 use crate::store::{CredentialStatus, IssuedCredential, VerificationRecord, VerifySession};
 
 /// The "not configured" address. An address field left at zero means the deployment cannot make the
@@ -697,18 +698,41 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
             if !chain_rt_key.eq_ignore_ascii_case(&rt_key) {
                 return Ok::<_, crate::chain::ChainError>((Some(signer), Some(false)));
             }
-            let whitelisted = st
+            // ...and about the moment this root was ANCHORED, not about now. Delisting is
+            // forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the retroactive lever), so
+            // `isWhitelistedFor` - a CURRENT-state getter - refuses every credential a since-rotated,
+            // retired or lapsed signer ever issued, fleet-wide, while the protocol says each one is
+            // genuine. The answer is reconstructed from the governing registry's own
+            // `Whitelisted`/`Delisted` logs, so any verifier with an RPC reproduces it independently.
+            //
+            // `Undetermined` (the reads succeeded but there was no anchoring point or authority to
+            // sequence against) becomes `None`: indeterminate, never a pass and never an accusation.
+            let authorised_then = match st
                 .chain
-                .is_whitelisted_for(&st.cfg.issuer_registry_addr, &chain_rt_key, &signer, at_block)
-                .await?;
+                .whitelisted_at_issuance(&clone, &chain_rt_key, &signer, &claimed_root, at_block)
+                .await?
+            {
+                GrantAtIssuance::Authorized => Some(true),
+                GrantAtIssuance::NotAuthorized => Some(false),
+                GrantAtIssuance::Undetermined => None,
+            };
             // An explicitly expected signer only ever makes the pillar STRICTER - it can tighten, never
             // enable. Supplying one is now an assertion, not the thing that switches the check on.
+            // A mismatch is a DEFINITE failure even when the historical question was unanswerable,
+            // which is what keeps "tighten" from quietly becoming "tighten, unless we could not check".
             let matches_expected = body
                 .signer_addr
                 .as_deref()
                 .map(|want| want.trim().eq_ignore_ascii_case(&signer))
                 .unwrap_or(true);
-            Ok((Some(signer), Some(whitelisted && matches_expected)))
+            Ok((
+                Some(signer),
+                if matches_expected {
+                    authorised_then
+                } else {
+                    Some(false)
+                },
+            ))
         },
         //     The DID only carries a domain, so a name-only relabel slips past it. The clone's own
         //     `name()` was written by the factory's `onlyOwner` `createIssuer` at KYC time, which makes

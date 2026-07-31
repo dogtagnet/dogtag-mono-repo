@@ -40,6 +40,7 @@ use serde_json::{json, Value};
 
 use crate::app::{self, AppState};
 use crate::auth::{self, ShareClaims};
+use crate::chain::GrantAtIssuance;
 use crate::microchip::{MicrochipCheck, NotComparable as MicrochipNotComparable};
 use crate::store::{ApptReplica, Record, RecordStatus, VerifySession};
 
@@ -1345,24 +1346,31 @@ async fn verify_credential(
                             (Some(signer), Some(false))
                         }
                         Ok(Some(chain_rt_key)) => {
-                            let whitelisted = match st
+                            // ...and about the moment this root was ANCHORED, not about now.
+                            // Delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the
+                            // retroactive lever), so `isWhitelistedFor` — a current-state getter —
+                            // refuses every credential a since-rotated, retired or lapsed signer ever
+                            // issued, fleet-wide, while the protocol says each one is genuine. The
+                            // answer is reconstructed from the governing registry's own
+                            // `Whitelisted`/`Delisted` logs, so any verifier with an RPC reproduces it.
+                            match st
                                 .chain
-                                .is_whitelisted_for(
-                                    &st.cfg.issuer_registry_addr,
-                                    &chain_rt_key,
-                                    &signer,
-                                )
+                                .whitelisted_at_issuance(clone, &chain_rt_key, &signer, &claimed_root)
                                 .await
                             {
-                                Ok(v) => v,
+                                Ok(GrantAtIssuance::Authorized) => (Some(signer), Some(true)),
+                                Ok(GrantAtIssuance::NotAuthorized) => (Some(signer), Some(false)),
+                                // The reads succeeded but there was no anchoring point or authority
+                                // to sequence against: INDETERMINATE. Not a pass, and not an
+                                // accusation either.
+                                Ok(GrantAtIssuance::Undetermined) => (Some(signer), None),
                                 Err(e) => {
                                     return err(
                                         StatusCode::BAD_GATEWAY,
-                                        &format!("on-chain whitelist read failed: {e}"),
+                                        &format!("on-chain grant-history read failed: {e}"),
                                     )
                                 }
-                            };
-                            (Some(signer), Some(whitelisted))
+                            }
                         }
                     }
                 }
@@ -1385,28 +1393,41 @@ async fn verify_credential(
     // hole — an unresolved pillar stays unresolved no matter how agreeable the assertion is.
     //
     //   matched / differs        — the chain named the originator, so the claim is decidable.
-    //   unanchoredNotWhitelisted — no originator to compare against, but the asserted address is not
-    //                              whitelisted at all for the CLAIMED record type: a definite failure.
-    //                              Sourcing that record type from the document is sound ONLY because
-    //                              this branch can never yield a pass — a caller who names a type
-    //                              their signer happens to hold gains nothing by it.
-    //   unanchoredUnconfirmed    — as above but the address IS whitelisted, which still does not show
-    //                              it issued THIS root. Nothing is promoted.
+    //   unanchoredNotWhitelisted — no originator to compare against, but the asserted address held no
+    //                              grant for the CLAIMED record type at the anchoring point recorded
+    //                              by the contract the DOCUMENT names: a definite failure. Sourcing
+    //                              both the record type and that contract from the document is sound
+    //                              ONLY because this branch can never yield a pass — an attacker
+    //                              controlling either can merely AVOID the failure, which the
+    //                              promotes-nothing rule already grants them.
+    //   unanchoredUnconfirmed    — as above but the address DID hold the grant then, which still does
+    //                              not show it issued THIS root. Nothing is promoted.
+    //   unanchoredUnresolved     — the grant history could not be sequenced at all (no anchoring event
+    //                              on the named contract, or it names no authority). Its OWN state
+    //                              rather than a fold into `unanchoredUnconfirmed`: both promote
+    //                              nothing, but one says "checked, and it held the capability" and the
+    //                              other says "we could not check", and only the second is a reason to
+    //                              go look at the endpoint.
+    //
+    // This asks the HISTORICAL question for the same reason the resolved branch does. A current-state
+    // read here would turn an ordinary key rotation into a definite refusal on precisely the
+    // factory-less deployments where this assertion is the last check standing.
     let expected_signer_state = match (resolved_signer.as_deref(), want_signer) {
         (_, None) => "notAsserted",
         (Some(actual), Some(want)) if want.eq_ignore_ascii_case(actual) => "matched",
         (Some(_), Some(_)) => "differs",
         (None, Some(want)) => match st
             .chain
-            .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, want)
+            .whitelisted_at_issuance(&issuer_addr, &rt_key, want, &claimed_root)
             .await
         {
-            Ok(true) => "unanchoredUnconfirmed",
-            Ok(false) => "unanchoredNotWhitelisted",
+            Ok(GrantAtIssuance::Authorized) => "unanchoredUnconfirmed",
+            Ok(GrantAtIssuance::NotAuthorized) => "unanchoredNotWhitelisted",
+            Ok(GrantAtIssuance::Undetermined) => "unanchoredUnresolved",
             Err(e) => {
                 return err(
                     StatusCode::BAD_GATEWAY,
-                    &format!("on-chain whitelist read failed: {e}"),
+                    &format!("on-chain grant-history read failed: {e}"),
                 )
             }
         },
@@ -1514,8 +1535,9 @@ async fn verify_credential(
             //   "notAsserted" | "matched" | "differs" | "notEvaluated"
             "expectedIssuerState": expected_clone_state,
             //   "notAsserted" | "matched" | "differs"
-            //   | "unanchoredNotWhitelisted"  — definite failure, folded into the pillar
-            //   | "unanchoredUnconfirmed"     — whitelisted, but never promotes the pillar
+            //   | "unanchoredNotWhitelisted"  — held no grant then; definite failure, folded in
+            //   | "unanchoredUnconfirmed"     — held the grant then, but never promotes the pillar
+            //   | "unanchoredUnresolved"      — the grant history could not be sequenced at all
             "expectedSignerState": expected_signer_state,
         },
     }))

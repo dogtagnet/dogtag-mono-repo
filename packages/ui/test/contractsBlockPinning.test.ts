@@ -41,6 +41,7 @@ let seq = 0;
 const url = () => `http://pin-${++seq}.invalid`;
 
 const lastCall = () => readContract.mock.calls.at(-1)?.[0] as unknown as Record<string, unknown>;
+const lastLogQuery = () => getLogs.mock.calls.at(-1)?.[0] as unknown as Record<string, unknown>;
 
 beforeEach(() => readContract.mockClear());
 
@@ -175,7 +176,7 @@ describe("sortLogPoints", () => {
 });
 
 describe("roaxIssuerChainReader", () => {
-  it("pins every read it makes to the block the bench gave it", async () => {
+  it("pins every eth_call it makes to the block the bench gave it", async () => {
     const reader = roaxIssuerChainReader(url(), AT);
     await reader.rootIssuer(ADDR, ROOT);
     expect(lastCall()?.blockNumber).toBe(AT);
@@ -183,7 +184,29 @@ describe("roaxIssuerChainReader", () => {
     expect(lastCall()?.blockNumber).toBe(AT);
     await reader.recordType(ADDR);
     expect(lastCall()?.blockNumber).toBe(AT);
-    await reader.isWhitelistedFor(ADDR, ROOT, ADDR);
+    await reader.issuerRegistry(ADDR);
     expect(lastCall()?.blockNumber).toBe(AT);
+  });
+
+  it("bounds its LOG reads by the same block, so the pillar is one snapshot", async () => {
+    // The pillar's answer is a fold over these two, so an unbounded log read would let a grant landing
+    // mid-verification change a verdict printed under an earlier block - the anchor beside it would
+    // then be a claim about reads that did not all happen there.
+    getLogs.mockClear();
+    const reader = roaxIssuerChainReader(url(), AT);
+    await reader.rootIssuedAt(ADDR, ROOT);
+    expect(lastLogQuery()?.toBlock, "the anchoring log read dropped toBlock").toBe(AT);
+    await reader.grantHistory(ADDR, ROOT, ADDR);
+    // Whitelisted and Delisted are two queries; BOTH must carry the bound.
+    for (const call of getLogs.mock.calls.slice(-2)) {
+      expect((call[0] as Record<string, unknown>)?.toBlock).toBe(AT);
+    }
+  });
+
+  it("reads to latest when the head could not be pinned", async () => {
+    getLogs.mockClear();
+    const reader = roaxIssuerChainReader(url(), undefined);
+    await reader.rootIssuedAt(ADDR, ROOT);
+    expect(lastLogQuery()).not.toHaveProperty("toBlock");
   });
 });

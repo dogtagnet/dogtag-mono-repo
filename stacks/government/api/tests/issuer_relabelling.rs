@@ -860,6 +860,22 @@ impl ChainClient for PinRecordingChain {
             .is_whitelisted_for(registry_addr, record_type, signer, at_block)
             .await
     }
+    async fn whitelisted_at_issuance(
+        &self,
+        issuer_addr: &str,
+        record_type: &str,
+        signer: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<government_api::chain::GrantAtIssuance, government_api::chain::ChainError> {
+        // Recorded like every other verdict-deciding read: this one resolves the pillar, so if it
+        // ever stopped carrying the anchor the block printed beside the verdict would be a claim
+        // about reads that did not all happen at that height.
+        self.record("whitelistedAtIssuance", at_block);
+        self.inner
+            .whitelisted_at_issuance(issuer_addr, record_type, signer, root, at_block)
+            .await
+    }
     async fn issue(
         &self,
         issuer_addr: &str,
@@ -935,10 +951,15 @@ async fn every_on_chain_read_in_a_verification_is_pinned_to_the_reported_block()
             "`{what}` was not pinned to the reported anchor {anchor}; reads were {reads:?}"
         );
     }
-    // The two that decide the verdict are the ones this test exists for.
+    // The two that decide the verdict are the ones this test exists for. The pillar's read is the
+    // HISTORICAL one - the current-state `isWhitelistedFor` no longer decides anything here, so
+    // naming it would pin an anchor on a read the verdict does not rest on.
     let names: Vec<&str> = reads.iter().map(|(w, _)| *w).collect();
     assert!(names.contains(&"isValid"), "reads were {reads:?}");
-    assert!(names.contains(&"isWhitelistedFor"), "reads were {reads:?}");
+    assert!(
+        names.contains(&"whitelistedAtIssuance"),
+        "reads were {reads:?}"
+    );
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -1109,10 +1130,11 @@ async fn memchain_records_that_every_read_used_the_reported_anchor() {
             "`{what}` was not pinned to the reported anchor {anchor}; reads were {reads:?}"
         );
     }
-    // The two that DECIDE the verdict are the ones this test exists for.
+    // The two that DECIDE the verdict are the ones this test exists for. The pillar's read is the
+    // HISTORICAL one - the current-state `isWhitelistedFor` no longer decides anything here.
     assert!(reads.contains_key("isValid"), "reads were {reads:?}");
     assert!(
-        reads.contains_key("isWhitelistedFor"),
+        reads.contains_key("whitelistedAtIssuance"),
         "reads were {reads:?}"
     );
 }

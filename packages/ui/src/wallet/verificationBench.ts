@@ -223,10 +223,14 @@ export function recordingReader(inner: IssuerChainReader): {
     contract: string,
     args: string[],
     run: () => Promise<T>,
+    // How to render the answer for the evidence log. The default `String(v)` is right for an address,
+    // a hash or a boolean and WRONG for the two log reads - an object stringifies to
+    // `[object Object]` and an array of them to a comma salad, so those pass their own formatter.
+    format: (v: T) => string = (v) => String(v),
   ): Promise<T> {
     try {
       const value = await run();
-      reads.push({ method, contract, args, outcome: "ok", value: String(value) });
+      reads.push({ method, contract, args, outcome: "ok", value: format(value) });
       return value;
     } catch (e) {
       reads.push({
@@ -247,9 +251,29 @@ export function recordingReader(inner: IssuerChainReader): {
     isValid: (addr, root) => record("isValid", addr, [root], () => inner.isValid(addr, root)),
     isRevoked: (addr, root) => record("isRevoked", addr, [root], () => inner.isRevoked(addr, root)),
     issuedBy: (addr, root) => record("issuedBy", addr, [root], () => inner.issuedBy(addr, root)),
-    isWhitelistedFor: (registry, key, signer) =>
-      record("isWhitelistedFor", registry, [key, signer], () =>
-        inner.isWhitelistedFor(registry, key, signer),
+    issuerRegistry: (addr) =>
+      record("issuerRegistry", addr, [], () => inner.issuerRegistry(addr)),
+    // The two LOG reads the pillar now rests on. Recorded like every other read so the page can show
+    // which authority's log was consulted and where the anchoring sat - the pillar's answer is a fold
+    // over these two, and without them in the log its verdict would be unexplainable.
+    rootIssuedAt: (addr, root) =>
+      record(
+        "rootIssuedLog",
+        addr,
+        [root],
+        () => inner.rootIssuedAt(addr, root),
+        (p) => (p ? formatLogPoint(p) : "(no RootIssued log for this root)"),
+      ),
+    grantHistory: (registry, key, signer) =>
+      record(
+        "whitelistHistory",
+        registry,
+        [key, signer],
+        () => inner.grantHistory(registry, key, signer),
+        (h) =>
+          h.length
+            ? h.map((e) => `${e.kind}@${formatLogPoint(e)}`).join(", ")
+            : "(no grant was ever recorded for this pair)",
       ),
   };
   return { reader, reads };
@@ -822,20 +846,29 @@ function whitelistCheck(
   blockLine: EvidenceLine,
   verifierError: string | null,
 ): Omit<BenchCheck, "gatesVerdict"> {
-  const question = "Was the signer that issued this whitelisted for this record type?";
+  const question =
+    "Was the signer that issued this authorised for this record type when it anchored the root?";
   const signerRead = lastRead(reads, "issuedBy");
   const rtRead = lastRead(reads, "recordType");
-  const wlRead = lastRead(reads, "isWhitelistedFor");
+  const wlRead = lastRead(reads, "whitelistHistory");
 
   // The registry line is emitted only when the registry was ACTUALLY consulted. Stating "Registry
   // asked" unconditionally cited a read that, on every unresolved-clone path, was never made.
+  //
+  // `registryAddr` is this CLIENT'S configured one and is named only in the not-consulted line, as
+  // context for the operator. The verifier asks the GOVERNING registry (off the clone's own
+  // `registry()`), which is what the cited read carries when there is one.
   const evidence: EvidenceLine[] = [
     wlRead
-      ? readEvidence("Registry answer", wlRead, "IssuerRegistry.isWhitelistedFor(recordTypeKey, signer)")
+      ? readEvidence(
+          "Grant history",
+          wlRead,
+          "IssuerRegistry.Whitelisted/Delisted(recordType, signer)",
+        )
       : {
           label: "Registry",
-          value: `not consulted (${registryAddr})`,
-          source: "no isWhitelistedFor read was made - see the reason below",
+          value: `not consulted (this client is configured with ${registryAddr})`,
+          source: "no grant-history read was made - see the reason below",
         },
   ];
   if (signerRead) {
@@ -843,6 +876,10 @@ function whitelistCheck(
   }
   if (rtRead) {
     evidence.push(readEvidence("Record type the contract declares", rtRead, "DogTagIssuer.recordType()"));
+  }
+  const anchorRead = lastRead(reads, "rootIssuedLog");
+  if (anchorRead) {
+    evidence.push(readEvidence("Anchored at", anchorRead, "DogTagIssuer.RootIssued(root)"));
   }
   evidence.push(blockLine);
 
@@ -855,7 +892,8 @@ function whitelistCheck(
         id: "issuer-whitelisted",
         question,
         outcome: "pass",
-        finding: "The signer the chain says issued this root is whitelisted for the record type that contract declares.",
+        finding:
+          "The governing registry's own log shows the signer holding this record type's capability at the block this root was anchored. Whether it still holds it today is a separate question, and deliberately not this one: delisting is forward-only (DogTagIssuer.sol:82).",
         evidence,
       };
     }
@@ -865,7 +903,7 @@ function whitelistCheck(
         question,
         outcome: "fail",
         finding:
-          "The signer is NOT authorised for this record type - or the document misrepresents the issuing contract or the record type.",
+          "The signer held NO grant for this record type when this root was anchored - or the document misrepresents the issuing contract or the record type. An honest `issue()` cannot pass `onlyWhitelisted` in that state.",
         evidence,
       };
     }
@@ -873,7 +911,7 @@ function whitelistCheck(
       id: "issuer-whitelisted",
       question,
       outcome: "could-not-run",
-      finding: "The authorising signer could not be established.",
+      finding: "The authorising signer, or the moment it acted, could not be established.",
       couldNotRunReason: whitelistUnresolvedReason(reads),
       evidence,
     };
@@ -1307,6 +1345,16 @@ function whitelistUnresolvedReason(reads: ChainRead[]): string {
   const signer = lastRead(reads, "issuedBy");
   if (signer?.outcome === "ok" && isZeroAddr(signer.value)) {
     return "The contract the factory named never issued this root, so it names no originating signer.";
+  }
+  // The two ways the HISTORICAL question becomes unputtable once the signer IS known. Both are
+  // statements about our ability to check, never about the credential.
+  const governing = lastRead(reads, "issuerRegistry");
+  if (governing?.outcome === "ok" && isZeroAddr(governing.value)) {
+    return "The issuing contract names no governing registry, which an initialized clone never does, so there is no authority whose grant log could be asked.";
+  }
+  const anchoring = lastRead(reads, "rootIssuedLog");
+  if (anchoring?.outcome === "ok" && !anchoring.value?.startsWith("block ")) {
+    return "The issuing contract emitted no anchoring event for this root, so there is no moment to ask the grant history about.";
   }
   return "The issuing signer could not be resolved from the chain.";
 }
