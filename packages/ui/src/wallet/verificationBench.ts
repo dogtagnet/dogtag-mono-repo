@@ -15,8 +15,10 @@ import {
   issuerRegistryOf,
   rootIssuedAtLog,
   sortLogPoints,
+  UNPOSITIONED_LOG,
   whitelistGrantHistory,
   type LogPoint,
+  type UnpositionedLog,
   type WhitelistGrantEvent,
 } from "./contracts";
 import {
@@ -261,13 +263,22 @@ export function recordingReader(inner: IssuerChainReader): {
     // The two LOG reads the pillar now rests on. Recorded like every other read so the page can show
     // which authority's log was consulted and where the anchoring sat - the pillar's answer is a fold
     // over these two, and without them in the log its verdict would be unexplainable.
+    // Each formatter names the unpositioned case in its OWN words rather than letting it fall through
+    // to a count or a default: this log IS the bench's evidence, so rendering "no RootIssued log" or
+    // "no grant was ever recorded" for a log we simply could not place would be a false evidence line
+    // about what was read - the one thing this surface must never print.
     rootIssuedAt: (addr, root) =>
       record(
         "rootIssuedLog",
         addr,
         [root],
         () => inner.rootIssuedAt(addr, root),
-        (p) => (p ? formatLogPoint(p) : "(no RootIssued log for this root)"),
+        (p) =>
+          p === UNPOSITIONED_LOG
+            ? "(a RootIssued log was returned with no block/logIndex - position unknown)"
+            : p
+              ? formatLogPoint(p)
+              : "(no RootIssued log for this root)",
       ),
     grantHistory: (registry, key, signer) =>
       record(
@@ -276,9 +287,11 @@ export function recordingReader(inner: IssuerChainReader): {
         [key, signer],
         () => inner.grantHistory(registry, key, signer),
         (h) =>
-          h.length
-            ? h.map((e) => `${e.kind}@${formatLogPoint(e)}`).join(", ")
-            : "(no grant was ever recorded for this pair)",
+          h === UNPOSITIONED_LOG
+            ? "(a grant log was returned with no block/logIndex - position unknown)"
+            : h.length
+              ? h.map((e) => `${e.kind}@${formatLogPoint(e)}`).join(", ")
+              : "(no grant was ever recorded for this pair)",
       ),
   };
   return { reader, reads };
@@ -307,10 +320,20 @@ export interface IssuerAuthorityReader {
  * server ports - to serve a read none of them makes.
  */
 export interface GrantHistoryReader {
-  /** Where `root` was anchored on `cloneAddr`, or `null` when that clone emitted no `RootIssued`. */
-  rootIssuedAt(cloneAddr: string, root: string): Promise<LogPoint | null>;
   /**
-   * Every `whitelistFor`/`delistFor` for this pair, oldest first. `[]` means none was ever recorded.
+   * Where `root` was anchored on `cloneAddr`, or `null` when that clone emitted no `RootIssued`, or
+   * {@link UNPOSITIONED_LOG} when it emitted one the node gave no position. The last two are separate
+   * facts - the chain said nothing, versus we could not read where it spoke - and this row reports
+   * them apart.
+   */
+  rootIssuedAt(
+    cloneAddr: string,
+    root: string,
+  ): Promise<LogPoint | null | UnpositionedLog>;
+  /**
+   * Every `whitelistFor`/`delistFor` for this pair, oldest first. `[]` means none was ever recorded,
+   * and {@link UNPOSITIONED_LOG} means one came back with no position, so the history cannot be
+   * ordered against the anchoring point at all.
    *
    * `registryAddr` is the GOVERNING registry - the address `DogTagIssuer.registry()` answered - never
    * whatever this client is configured with. An implementation that ignored it would answer about a
@@ -320,7 +343,7 @@ export interface GrantHistoryReader {
     registryAddr: string,
     recordTypeKey: string,
     signer: string,
-  ): Promise<WhitelistGrantEvent[]>;
+  ): Promise<WhitelistGrantEvent[] | UnpositionedLog>;
 }
 
 export interface BenchInput
@@ -1200,7 +1223,7 @@ async function whitelistedAtIssuanceCheck(
       }),
   };
 
-  let issuedPoint: LogPoint | null;
+  let issuedPoint: LogPoint | null | UnpositionedLog;
   try {
     issuedPoint = await reader.rootIssuedAt(clone, claimedRoot);
     reads.push({
@@ -1208,7 +1231,12 @@ async function whitelistedAtIssuanceCheck(
       contract: clone,
       args: [claimedRoot],
       outcome: "ok",
-      value: issuedPoint ? formatLogPoint(issuedPoint) : "(no RootIssued log for this root)",
+      value:
+        issuedPoint === UNPOSITIONED_LOG
+          ? "(a RootIssued log was returned with no block/logIndex - position unknown)"
+          : issuedPoint
+            ? formatLogPoint(issuedPoint)
+            : "(no RootIssued log for this root)",
     });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
@@ -1216,6 +1244,16 @@ async function whitelistedAtIssuanceCheck(
     return unavailable(
       "The block this root was anchored at could not be established.",
       `The log read \`RootIssued\` against ${clone} failed: ${error}`,
+    );
+  }
+  // Deliberately BEFORE the `!issuedPoint` branch and never folded into it: this contract DID emit an
+  // anchoring event, so saying it emitted none would be a false statement about the chain rather than
+  // an honest report of what we could read.
+  if (issuedPoint === UNPOSITIONED_LOG) {
+    return unavailable(
+      "The anchoring event came back without a position, so the moment of issuance could not be established.",
+      "The node returned a `RootIssued` log for this root with no `blockNumber`/`logIndex` - viem's shape for a log it considers pending. A point that cannot be ordered cannot be compared against the grant history, and answering anyway would be a verdict drawn from a reading we do not have: placed at the start of the chain it refuses a genuine credential, skipped in favour of a later sibling it moves the anchoring forward past a delisting.",
+      [lastReadEvidence(reads, "rootIssuedLog", "DogTagIssuer.RootIssued(root)", "Anchoring event")],
     );
   }
   if (!issuedPoint) {
@@ -1232,7 +1270,7 @@ async function whitelistedAtIssuanceCheck(
     "DogTagIssuer.registry()",
   );
 
-  let history: WhitelistGrantEvent[];
+  let history: WhitelistGrantEvent[] | UnpositionedLog;
   try {
     history = await reader.grants(governing, recordTypeKeyOnChain, signer);
     reads.push({
@@ -1240,9 +1278,12 @@ async function whitelistedAtIssuanceCheck(
       contract: governing,
       args: [recordTypeKeyOnChain, signer],
       outcome: "ok",
-      value: history.length
-        ? history.map((h) => `${h.kind}@${formatLogPoint(h)}`).join(", ")
-        : "(no grant was ever recorded for this pair)",
+      value:
+        history === UNPOSITIONED_LOG
+          ? "(a grant log was returned with no block/logIndex - position unknown)"
+          : history.length
+            ? history.map((h) => `${h.kind}@${formatLogPoint(h)}`).join(", ")
+            : "(no grant was ever recorded for this pair)",
     });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
@@ -1273,6 +1314,17 @@ async function whitelistedAtIssuanceCheck(
       "Grant history",
     ),
   ];
+
+  // The registry ANSWERED, so this is not the read-failed case above - but a grant with no position
+  // cannot be sequenced against the anchoring point, and an unorderable history is not an empty one.
+  // Reporting it as a refusal would accuse the credential of what our own reading could not settle.
+  if (history === UNPOSITIONED_LOG) {
+    return unavailable(
+      "The grant history came back unorderable, so it could not be compared against the anchoring point.",
+      "At least one `Whitelisted`/`Delisted` log for this pair carried no `blockNumber`/`logIndex` - viem's shape for a log it considers pending. The fold takes the LAST event at or before the anchoring point, so an event that cannot be placed can change the answer: positioned at the start of the chain a delisting sorts before every issuance, and dropped it stops refusing one. Neither is a reading we have.",
+      evidence,
+    );
+  }
 
   // THE fold, and it is the VERIFIER'S OWN (`contracts.ts` `grantInForceAt`) rather than a second copy
   // of the rule. A bench that re-implemented it could drift from the surface it reports on, and the

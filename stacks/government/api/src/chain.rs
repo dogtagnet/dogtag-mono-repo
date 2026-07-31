@@ -733,6 +733,22 @@ impl ChainClient for AlloyChain {
 
         // Every log read shares the verdict's own upper bound, so the answer is the same snapshot the
         // block anchor beside it claims. `latest` when the caller pinned nothing.
+        //
+        // COST, STATED RATHER THAN HIDDEN. The lower end is genesis, and `POST /v1/verify` is
+        // UNAUTHENTICATED by design — so an anonymous, trivially looped caller now costs the operator
+        // TWO address- and topic-filtered genesis-to-head log scans against our own node per request,
+        // growing with chain length. (Both are filtered: the anchoring read to this clone and one
+        // `RootIssued` topic, the grant read to the governing registry and the `Whitelisted`/`Delisted`
+        // pair. It is not an unfiltered full scan.) vet-api's `POST /verify/credential` has the same
+        // shape but is operator-gated, so its exposure is lower.
+        //
+        // It is deliberately NOT bounded here, and a `from_block` floor is the WRONG mechanical fix:
+        // any floor above the true deployment height silently hides an early `Whitelisted`, and a
+        // missing grant is not a soft failure — the fold reads it as a definite refusal of a genuine
+        // credential, which is precisely the fail-closed accusation this pillar exists to remove.
+        // Trading correctness for cost is the wrong direction on the one surface that decides
+        // authenticity. The sanctioned close is a CONFIGURED floor anchored to the factory's own
+        // deployment block, which this deployment does not carry today — a design, not a tweak.
         let bounded = |f: Filter| match at_block {
             Some(b) => f.from_block(0u64).to_block(b),
             None => f.from_block(0u64),

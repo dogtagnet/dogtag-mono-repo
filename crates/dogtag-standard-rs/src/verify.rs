@@ -482,8 +482,15 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
     // ── The issuer-whitelist pillar — MANDATORY, and SELF-RESOLVING ───────────────────────────
     //
     // It asks the chain WHO issued the root (`issuedBy`, set to `msg.sender` under `onlyWhitelisted`,
-    // `DogTagIssuer.sol:40,55`) and checks THAT signer against THIS verifier's registry. Never an
-    // address the document names, or the attacker supplies both sides of the question.
+    // `DogTagIssuer.sol:40,55`) and whether THAT signer held the capability AT THE MOMENT it anchored
+    // this root — never whether it holds it now, because delisting is forward-only. Never an address
+    // the document names either, or the attacker supplies both sides of the question.
+    //
+    // The authority is the GOVERNING registry, the one the resolved clone's own `registry()` answers,
+    // so [`RpcAdapter::whitelisted_at_issuance`] takes NO registry address — the same invariant
+    // [`RpcAdapter::root_issuer`] has for the factory. A grant history read from any other instance
+    // answers about a different contract's `_wl` mapping, and a merely mis-paired deployment would
+    // find no grant and refuse a genuine credential: our own misconfiguration as an accusation.
     //
     // Only a definite `Passed` may contribute to a pass; see [`IssuerWhitelistState::permits_pass`].
     let claimed_rt_key = record_type_key(&doc.issuer.record_type);

@@ -140,9 +140,10 @@ interface ChainState {
  * One `eth_getLogs` row, complete enough for viem's log formatter.
  *
  * `blockNumber` and `logIndex` are MANDATORY here, and that is not tidiness: viem treats a log missing
- * either as PENDING and hands back `null`, which the shipped readers coalesce to block 0 / index 0
- * (`l.blockNumber ?? 0n`). A grant silently positioned at the very start of the chain sorts before
- * every anchoring, so an omitted field would flip a scenario to pass for a reason nobody wrote.
+ * either as PENDING and hands back `null`, which the shipped readers now report as `UNPOSITIONED_LOG`
+ * - a log whose place in the sequence is unknown cannot be folded, so the whole pillar answers
+ * indeterminate. An omitted field would therefore leave `issuerWhitelisted` null and fail a scenario
+ * for a reason nobody wrote, rather than exercising the case it names.
  */
 function logRow(address: string, topics: string[], at: LogPoint, data = "0x") {
   return {

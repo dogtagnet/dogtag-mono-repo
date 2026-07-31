@@ -474,6 +474,38 @@ export interface WhitelistGrantEvent extends LogPoint {
 }
 
 /**
+ * The node returned a log carrying no `(blockNumber, logIndex)` - viem's shape for a log it considers
+ * PENDING, where both fields are `null`.
+ *
+ * Its own answer, and neither of its neighbours: distinct from "the log said nothing" (an empty
+ * history, a root with no anchoring event) and from "the read failed" (a rejected promise). A log
+ * whose place in the sequence is unknown cannot be ordered, so the fold that consumes it cannot be
+ * run - and both ways of running it anyway are wrong. Placing it at `(0n, 0)` puts a grant at the
+ * very start of the chain, which sorts before every anchoring and can turn a delisted-before into an
+ * authorised; dropping it removes an event that could have been the delisting, which does the same.
+ * Either is could-not-check rendered as a verdict, which is exactly what this pillar refuses.
+ *
+ * Mirrors `log_point` (Rust, `stacks/{vet,government}/api/src/chain.rs`), `RoaxRpc.logPoint` (Kotlin)
+ * and `RoaxRpc.logPoint` (Swift), each of which answers `Undetermined` for the same case.
+ *
+ * A SYMBOL rather than a string: a string sentinel is truthy AND carries a `.length`, so a consumer
+ * written as `if (history.length)` would read it as a non-empty history. A symbol has no such member,
+ * so every present and future consumer has to name the case for the module to typecheck.
+ */
+export const UNPOSITIONED_LOG: unique symbol = Symbol("dogtag.unpositionedLog");
+export type UnpositionedLog = typeof UNPOSITIONED_LOG;
+
+/** The ordering key of a mined log, or `null` when the node gave it no position. */
+function logPoint(l: {
+  blockNumber?: bigint | null;
+  logIndex?: number | null;
+}): LogPoint | null {
+  return l.blockNumber == null || l.logIndex == null
+    ? null
+    : { blockNumber: l.blockNumber, logIndex: l.logIndex };
+}
+
+/**
  * The full grant/revocation history for one `(recordType, signer)` pair, oldest first.
  *
  * Read from LOGS rather than from `isWhitelistedFor`, because the getter answers only about NOW and
@@ -481,9 +513,11 @@ export interface WhitelistGrantEvent extends LogPoint {
  * states the rule the getter cannot express - "delisting is forward-only" - and `adminRevoke` exists
  * precisely because a delist does NOT retroactively invalidate what the signer already anchored.
  *
- * An empty array is a real answer ("no grant was ever recorded for this pair"); a read that FAILS
- * throws, so a caller can keep it apart from "the log could not be reached". Folding those two is the
- * fail-open shape this whole surface exists to refuse.
+ * THREE outcomes, and no two of them may be folded together - that folding is the fail-open shape this
+ * whole surface exists to refuse. An empty array is a real answer ("no grant was ever recorded for this
+ * pair"); a read that FAILS throws; and a log the node gave no position resolves to
+ * {@link UNPOSITIONED_LOG}, because a grant that cannot be sequenced cannot be folded and answering
+ * anyway - at genesis, or by dropping it - could turn a delisted-before into an authorised.
  */
 export async function whitelistGrantHistory(args: {
   registryAddr: string;
@@ -494,7 +528,7 @@ export async function whitelistGrantHistory(args: {
   fromBlock?: bigint;
   /** Upper bound; omitted reads to `latest`. Pin it to the report's block for a reproducible answer. */
   toBlock?: bigint;
-}): Promise<WhitelistGrantEvent[]> {
+}): Promise<WhitelistGrantEvent[] | UnpositionedLog> {
   const client = roaxPublicClient(args.rpcUrl, args.defaultRpcUrl);
   const range = {
     address: args.registryAddr as Address,
@@ -509,18 +543,17 @@ export async function whitelistGrantHistory(args: {
     client.getLogs({ ...range, event: ISSUER_REGISTRY_EVENT_ABI[0] }),
     client.getLogs({ ...range, event: ISSUER_REGISTRY_EVENT_ABI[1] }),
   ]);
-  const events: WhitelistGrantEvent[] = [
-    ...granted.map((l) => ({
-      kind: "whitelisted" as const,
-      blockNumber: l.blockNumber ?? 0n,
-      logIndex: l.logIndex ?? 0,
-    })),
-    ...revoked.map((l) => ({
-      kind: "delisted" as const,
-      blockNumber: l.blockNumber ?? 0n,
-      logIndex: l.logIndex ?? 0,
-    })),
-  ];
+  const events: WhitelistGrantEvent[] = [];
+  for (const [kind, logs] of [
+    ["whitelisted", granted],
+    ["delisted", revoked],
+  ] as const) {
+    for (const l of logs) {
+      const at = logPoint(l);
+      if (!at) return UNPOSITIONED_LOG;
+      events.push({ kind, ...at });
+    }
+  }
   return sortLogPoints(events);
 }
 
@@ -580,6 +613,12 @@ export function grantInForceAt(
  * `issuedAt` is a unix TIMESTAMP, which cannot be compared against a log's height without a
  * timestamp->block search. The anchoring event carries the height directly, so one filtered
  * `eth_getLogs` answers "when, in log order, was this anchored?" exactly and cheaply.
+ *
+ * A log the node gave no position resolves to {@link UNPOSITIONED_LOG} rather than being placed or
+ * skipped, and that is NOT the same fact as `null`: "this contract emitted no anchoring event" is a
+ * statement about the chain, while an unpositioned log is one we could not read. Skipping it would let
+ * a later positioned sibling become the anchoring point, moving it FORWARD - and an anchoring moved
+ * forward past a delisting is a false pass, the direction this pillar must never fail in.
  */
 export async function rootIssuedAtLog(args: {
   issuerAddr: string;
@@ -588,7 +627,7 @@ export async function rootIssuedAtLog(args: {
   defaultRpcUrl?: string;
   fromBlock?: bigint;
   toBlock?: bigint;
-}): Promise<LogPoint | null> {
+}): Promise<LogPoint | null | UnpositionedLog> {
   const logs = await roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).getLogs({
     address: args.issuerAddr as Address,
     event: ROOT_ISSUED_EVENT_ABI[0],
@@ -598,10 +637,13 @@ export async function rootIssuedAtLog(args: {
   });
   // Write-once `issuedAt` makes a second RootIssued for one root impossible on an honest clone; take
   // the FIRST regardless, so a clone that somehow emitted twice cannot move the anchoring later.
-  const first = sortLogPoints(
-    logs.map((l) => ({ blockNumber: l.blockNumber ?? 0n, logIndex: l.logIndex ?? 0 })),
-  )[0];
-  return first ?? null;
+  const points: LogPoint[] = [];
+  for (const l of logs) {
+    const at = logPoint(l);
+    if (!at) return UNPOSITIONED_LOG;
+    points.push(at);
+  }
+  return sortLogPoints(points)[0] ?? null;
 }
 
 /**

@@ -13,7 +13,7 @@
 // ONE thing off a genuine baseline.
 import { TypeTag, wrapDocument, type IssuerMeta, type WrappedDoc } from "@dogtag/standard";
 import { describe, expect, it } from "vitest";
-import { DEPLOYED_ADDRESSES, recordTypeKey } from "../src/wallet/contracts";
+import { DEPLOYED_ADDRESSES, recordTypeKey, UNPOSITIONED_LOG } from "../src/wallet/contracts";
 import type { IssuerChainReader } from "../src/wallet/verifyCredential";
 import {
   docFromShareResponse,
@@ -27,7 +27,11 @@ import {
   type GrantHistoryReader,
   type IssuerAuthorityReader,
 } from "../src/wallet/verificationBench";
-import type { LogPoint, WhitelistGrantEvent } from "../src/wallet/contracts";
+import type {
+  LogPoint,
+  UnpositionedLog,
+  WhitelistGrantEvent,
+} from "../src/wallet/contracts";
 import {
   BENCH_MUTATIONS,
   expireValidityWindow,
@@ -164,10 +168,16 @@ interface ChainCfg {
   recordTypes?: Record<string, string>;
   /** contract -> the registry its own `onlyWhitelisted` consults. Absent == the zero address. */
   issuerRegistries?: Record<string, string>;
-  /** (contract|root) -> where `RootIssued` was emitted. Absent == no anchoring log. */
-  rootIssuedLogs?: Record<string, LogPoint>;
-  /** ("registry|key|signer") -> that REGISTRY's grant log, oldest first. Absent == none recorded. */
-  grants?: Record<string, WhitelistGrantEvent[]>;
+  /**
+   * (contract|root) -> where `RootIssued` was emitted. Absent == no anchoring log, and
+   * `UNPOSITIONED_LOG` == one the node returned with no `(blockNumber, logIndex)`.
+   */
+  rootIssuedLogs?: Record<string, LogPoint | UnpositionedLog>;
+  /**
+   * ("registry|key|signer") -> that REGISTRY's grant log, oldest first. Absent == none recorded, and
+   * `UNPOSITIONED_LOG` == a log that came back with no position and so cannot be ordered.
+   */
+  grants?: Record<string, WhitelistGrantEvent[] | UnpositionedLog>;
   /** Read kinds forced to fail, modelling a transient RPC error. */
   failing?: Set<FailableRead>;
 }
@@ -608,6 +618,52 @@ describe("the grant history is read from the GOVERNING registry", () => {
     // ...and it must say why substituting the configured registry is not an option, or the next
     // reader "helpfully" wires one in and reintroduces the accusation.
     expect(row.couldNotRunReason).toContain("configured registry");
+  });
+
+  it("could-not-run - never fail - when the ANCHORING log came back with no position", async () => {
+    // Its own row, and deliberately NOT the "emitted no anchoring event" one: this contract DID emit
+    // one, so that wording would be a false statement about the chain. A point that cannot be ordered
+    // cannot be compared against the grant history at all.
+    const doc = validDoc();
+    const cfg = genuineChain(doc);
+    const r = await bench(doc, {
+      ...cfg,
+      rootIssuedLogs: { [k(CLONE, doc.signature.merkleRoot)]: UNPOSITIONED_LOG },
+    });
+    const row = check(r, "whitelisted-at-issuance");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.outcome).not.toBe("fail");
+    expect(row.finding).toContain("without a position");
+    // `blockNumber` appears only in the unpositioned reasons, so this is what keeps the row from
+    // being satisfied by the sibling "emitted no anchoring event" wording.
+    expect(row.couldNotRunReason).toContain("blockNumber");
+    expect(row.finding).not.toContain("emitted no anchoring event");
+    // The evidence log must say the position was unknown rather than print a false "no log" line.
+    expect(r.reads.find((x) => x.method === "rootIssuedLog")?.value).toContain("position unknown");
+  });
+
+  it("could-not-run - never fail - when a GRANT log came back with no position", async () => {
+    // The registry ANSWERED, so this is not the read-failed case; but an unorderable history is not an
+    // empty one, and the empty case above is a definite refusal. Collapsing the two would accuse a
+    // credential of what our own reading could not settle.
+    const doc = validDoc();
+    const cfg = genuineChain(doc);
+    const r = await bench(doc, {
+      ...cfg,
+      grants: {
+        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]: UNPOSITIONED_LOG,
+      },
+    });
+    const row = check(r, "whitelisted-at-issuance");
+    expect(row.outcome).toBe("could-not-run");
+    expect(row.outcome).not.toBe("fail");
+    expect(row.finding).toContain("unorderable");
+    expect(row.couldNotRunReason).toContain("blockNumber");
+    // ...and NOT the empty-history refusal one line above, which is a definite `fail`.
+    expect(row.finding).not.toContain("NO grant");
+    expect(r.reads.find((x) => x.method === "whitelistHistory")?.value).toContain(
+      "position unknown",
+    );
   });
 
   it("could-not-run - never fail - when the clone names NO governing registry", async () => {

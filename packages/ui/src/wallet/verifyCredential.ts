@@ -17,10 +17,12 @@ import {
   recordTypeOf,
   rootIssuedAtLog,
   rootIssuerOf,
+  UNPOSITIONED_LOG,
   whitelistGrantHistory,
   ZERO_ADDRESS,
   ZERO_BYTES32,
   type LogPoint,
+  type UnpositionedLog,
   type WhitelistGrantEvent,
 } from "./contracts";
 
@@ -74,18 +76,27 @@ export interface IssuerChainReader {
    * DogTagIssuer.RootIssued(root) - where this root was anchored, as a `(blockNumber, logIndex)`
    * point, or `null` when this contract emitted no such event. `issuedAt` is a unix TIMESTAMP and
    * cannot be compared against a log's height without a timestamp->block search.
+   *
+   * {@link UNPOSITIONED_LOG} when the node returned an anchoring log it gave no position - a third
+   * outcome, never folded into either neighbour: `null` says the chain emitted nothing, while this
+   * says we could not read where it emitted.
    */
-  rootIssuedAt(issuerAddr: string, root: string): Promise<LogPoint | null>;
+  rootIssuedAt(
+    issuerAddr: string,
+    root: string,
+  ): Promise<LogPoint | null | UnpositionedLog>;
   /**
    * IssuerRegistry.Whitelisted/Delisted(recordTypeKey, signer) - the full grant history for one pair,
    * oldest first. An empty array is a real answer ("no grant was ever recorded"); a read that FAILS
-   * rejects, so the caller keeps that apart from "the log could not be reached".
+   * rejects, so the caller keeps that apart from "the log could not be reached"; and
+   * {@link UNPOSITIONED_LOG} is the third, when some grant carried no position and so cannot be
+   * sequenced against the anchoring point.
    */
   grantHistory(
     registryAddr: string,
     recordTypeKey: string,
     signer: string,
-  ): Promise<WhitelistGrantEvent[]>;
+  ): Promise<WhitelistGrantEvent[] | UnpositionedLog>;
 }
 
 /**
@@ -279,7 +290,8 @@ export async function verifyCredentialOnchain(
   //   false - resolved, and it did not (or the envelope misrepresents the issuing clone / record
   //           type, or the caller's expected signer differs): a real authenticity failure
   //   null  - unresolvable (no factory clone ever issued this root, the clone names no issuer or no
-  //           authority, or the anchoring event could not be located): INDETERMINATE, and an
+  //           authority, the anchoring event could not be located, or a log came back with no
+  //           position and so could not be ordered): INDETERMINATE, and an
   //           unanswered check is never a passed check
   let issuerWhitelisted: boolean | null = null;
   let resolvedSigner: string | null = null;
@@ -317,16 +329,23 @@ export async function verifyCredentialOnchain(
           governing && governing.toLowerCase() !== ZERO_ADDRESS
             ? await reader.rootIssuedAt(resolvedClone, claimedRoot)
             : null;
-        if (anchoredAt) {
+        if (anchoredAt && anchoredAt !== UNPOSITIONED_LOG) {
           const history = await reader.grantHistory(
             governing,
             chainRecordTypeKey,
             resolvedSigner,
           );
-          issuerWhitelisted = grantInForceAt(history, anchoredAt) === "authorized";
+          // A grant the node gave no position cannot be sequenced against the anchoring point, so the
+          // fold cannot be run at all - and running it anyway, in either of the two available ways,
+          // is a wrong answer rather than a rough one. Undetermined, exactly as the Rust, Kotlin and
+          // Swift ports answer for the same log.
+          if (history !== UNPOSITIONED_LOG) {
+            issuerWhitelisted = grantInForceAt(history, anchoredAt) === "authorized";
+          }
         }
-        // else: no authority to ask, or no anchoring event to sequence against. `issuerWhitelisted`
-        // stays `null` - never a pass, and never an accusation drawn from a question we could not put.
+        // else: no authority to ask, no anchoring event to sequence against, or an anchoring log whose
+        // position the node withheld. `issuerWhitelisted` stays `null` - never a pass, and never an
+        // accusation drawn from a question we could not put.
         if (expectedSigner && expectedSigner.toLowerCase() !== resolvedSigner.toLowerCase()) {
           issuerWhitelisted = false;
         }

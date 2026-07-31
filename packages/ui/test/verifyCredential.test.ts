@@ -7,7 +7,9 @@ import { describe, expect, it } from "vitest";
 import {
   DEPLOYED_ADDRESSES,
   recordTypeKey,
+  UNPOSITIONED_LOG,
   type LogPoint,
+  type UnpositionedLog,
   type WhitelistGrantEvent,
 } from "../src/wallet/contracts";
 import {
@@ -70,10 +72,16 @@ interface ReaderCfg {
   issuedBy?: string;
   /** The clone's own `registry()` - the authority whose grant log answers for its issuances. */
   issuerRegistry?: string;
-  /** Where the clone's `RootIssued` for this root sits; `null` models a contract that emitted none. */
-  rootIssuedAt?: LogPoint | null;
-  /** The governing registry's grant log for this pair. An EMPTY array is a real answer. */
-  grantHistory?: WhitelistGrantEvent[];
+  /**
+   * Where the clone's `RootIssued` for this root sits; `null` models a contract that emitted none, and
+   * `UNPOSITIONED_LOG` one that emitted a log the node gave no `(blockNumber, logIndex)`.
+   */
+  rootIssuedAt?: LogPoint | null | UnpositionedLog;
+  /**
+   * The governing registry's grant log for this pair. An EMPTY array is a real answer;
+   * `UNPOSITIONED_LOG` models a grant the node returned with no position, which cannot be ordered.
+   */
+  grantHistory?: WhitelistGrantEvent[] | UnpositionedLog;
 }
 
 /** The honest ordering: granted, then the root anchored, and never withdrawn. */
@@ -280,6 +288,49 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(unanchored.verdict).toBe(false);
     // And the grant log is not even consulted: there is nothing to sequence it against.
     expect(noAnchoring.calls.grantHistory).toEqual([]);
+  });
+
+  /**
+   * The two unpositioned-log cases, deliberately SEPARATE tests rather than one.
+   *
+   * The grant-history arm is only reachable once the anchoring arm has returned a real point, so a
+   * single combined case would still pass with either guard deleted - which is exactly the shape that
+   * let the original coercion survive review.
+   */
+  it("an anchoring log with no position is undetermined, never placed at genesis", async () => {
+    const doc = validDoc();
+    const { reader, calls } = fakeReader({
+      issuedAt: 1_699_000_000n,
+      isValid: true,
+      // The node returned a `RootIssued` it considers PENDING: no blockNumber, no logIndex. Coercing
+      // it to `(0n, 0)` would anchor this root before every grant and refuse a genuine credential;
+      // skipping it would let a later sibling move the anchoring past a delisting. Neither is a
+      // reading we have, so the pillar reports it could not run.
+      rootIssuedAt: UNPOSITIONED_LOG,
+    });
+    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+
+    expect(r.fragments.issuerWhitelisted).toBeNull();
+    expect(r.verdict).toBe(false);
+    // Nothing to sequence against, so the grant log is not consulted at all.
+    expect(calls.grantHistory).toEqual([]);
+  });
+
+  it("a grant log with no position is undetermined, and is NOT read as an empty history", async () => {
+    const doc = validDoc();
+    const { reader } = fakeReader({
+      issuedAt: 1_699_000_000n,
+      isValid: true,
+      grantHistory: UNPOSITIONED_LOG,
+    });
+    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+
+    // `null`, NOT the `false` an empty history earns above: the registry's log could not be ordered,
+    // which is a fact about our reading rather than evidence about the credential. The three outcomes
+    // stay apart - definite refusal, undetermined, and a read that threw.
+    expect(r.fragments.issuerWhitelisted).toBeNull();
+    expect(r.verdict).toBe(false);
+    expect(r.status).toBe("valid"); // the on-chain state is untouched by an unreadable grant log
   });
 
   it("resolves the signer from the chain, so the pillar runs with no operator input at all", async () => {
