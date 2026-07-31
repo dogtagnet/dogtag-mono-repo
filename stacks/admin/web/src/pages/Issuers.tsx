@@ -20,8 +20,9 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  explorerAddressUrl,
-  explorerTxUrl,
+  CopyButton,
+  addressChainRef,
+  txChainRef,
   useToast,
   type CreateIssuerResp,
   type GovernanceAuthorityResp,
@@ -30,7 +31,7 @@ import {
 import { CheckCircle2, Copy, Factory, Plus, Send, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
-import { shortAddr } from "../lib/format";
+import { AddressRef } from "../components/ChainRef";
 
 /**
  * Issuers / Factory (plan §3.3, PR-C). Deploy new `DogTagIssuer` clones from the
@@ -337,22 +338,13 @@ function DeployDialog({
             </div>
             {predicted ? (
               <div className="mt-1 flex items-center gap-2">
-                <a
-                  href={explorerAddressUrl(predicted)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="break-all font-mono text-sm text-primary hover:underline"
-                >
-                  {predicted}
-                </a>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void navigator.clipboard?.writeText(predicted)}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
+                <AddressRef
+                  address={predicted}
+                  full
+                  className="break-all text-sm"
+                  testId="issuers-predicted"
+                />
+                <CopyButton value={predicted} label="predicted clone address" />
               </div>
             ) : predictError ? (
               <p className="mt-1 text-xs text-danger">{predictError}</p>
@@ -430,7 +422,16 @@ function Row({
   link?: "tx" | "address";
   mono?: boolean;
 }) {
-  const href = link === "tx" ? explorerTxUrl(value) : link === "address" ? explorerAddressUrl(value) : null;
+  // A row is linked only when the value can actually be looked up. `link` says what KIND of thing this
+  // is, never that a link is due: it used to be read as the latter, so a `Deploy tx` row offered an
+  // explorer anchor for whatever string the backend returned. A row with no `link` kind is plain text
+  // and claims nothing (`Calldata`, `Authority`), which is why its reason stays null.
+  const { href, reason } =
+    link === "tx"
+      ? txChainRef({ txHash: value })
+      : link === "address"
+        ? addressChainRef(value)
+        : { href: null, reason: null };
   return (
     <div className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
       <div className="min-w-0">
@@ -445,7 +446,18 @@ function Row({
             {value}
           </a>
         ) : (
-          <div className={`truncate ${mono ? "font-mono text-xs" : ""}`}>{value}</div>
+          <div
+            className={`truncate ${mono ? "font-mono text-xs" : ""}`}
+            title={reason ? `${value} — ${reason}` : undefined}
+            data-reason={reason ?? undefined}
+          >
+            {value}
+          </div>
+        )}
+        {reason && (
+          <div className="text-[10px] text-warning" data-testid="issuers-row-unlinkable">
+            {reason}
+          </div>
         )}
       </div>
       <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard?.writeText(value)}>
@@ -455,16 +467,7 @@ function Row({
   );
 }
 
-/** A short, explorer-linked address. */
+/** A short address, explorer-linked only when it can be looked up. */
 function AddrLink({ addr }: { addr: string }) {
-  return (
-    <a
-      href={explorerAddressUrl(addr)}
-      target="_blank"
-      rel="noreferrer"
-      className="font-mono text-xs text-primary hover:underline"
-    >
-      {shortAddr(addr)}
-    </a>
-  );
+  return <AddressRef address={addr} testId="issuers-address" />;
 }

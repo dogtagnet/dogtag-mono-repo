@@ -21,8 +21,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  explorerAddressUrl,
-  explorerTxUrl,
+  TxRef,
+  txExplorerHref,
   useToast,
   type GovernanceDisposition,
   type IssuerApplicationListItem,
@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
+import { AddressRef } from "../components/ChainRef";
 import { shortAddr } from "../lib/format";
 import { isWhitelistedFor, whitelistConfigured } from "../lib/whitelist";
 
@@ -229,14 +230,7 @@ export function Whitelist() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <a
-                        href={explorerAddressUrl(e.address)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-mono text-xs text-primary hover:underline"
-                      >
-                        {shortAddr(e.address)}
-                      </a>
+                      <AddressRef address={e.address} testId="whitelist-address" />
                     </TableCell>
                     <TableCell>
                       <Badge variant={e.derived ? "success" : "neutral"}>
@@ -447,29 +441,51 @@ function DispositionList({ result }: { result: RowResult }) {
   );
 }
 
-function DispositionRow({ label, d }: { label: string; d: GovernanceDisposition }) {
+/**
+ * One dispatched governance action, in the three states a write can actually be in.
+ *
+ * This row is the durable inline trail - the toast that summarises a dispatch disappears, this does
+ * not - so it is where an operator comes back to ask "did that land?". It used to answer by rendering
+ * `explorerTxUrl(d.txHash)` unconditionally on the executed branch, which is a link offered for a
+ * value nobody checked could be looked up.
+ *
+ *  - **executed, hash usable** - a transaction was broadcast and its hash is a well-formed 32-byte
+ *    value: linked, via the shared `TxRef` the audit tables use.
+ *  - **proposed** - NOT on chain, and this is a real outcome rather than a missing value: the hosted
+ *    key does not hold the authority, so calldata was returned for the governance signer to execute
+ *    out-of-band and nothing was broadcast. Said in words, with no link, because "no link" alone is
+ *    indistinguishable from a page that forgot one. It states only this action's own outcome; the
+ *    dispatch-level verdict across every action stays with `summarize`/`dispatchOutcome`.
+ *  - **executed, hash unusable** - the backend says it broadcast but handed back nothing that can be
+ *    looked up. That contradiction is surfaced rather than resolved in either direction: we may not
+ *    claim it landed (we cannot check) nor that it did not (the backend says it did).
+ */
+export function DispositionRow({ label, d }: { label: string; d: GovernanceDisposition }) {
   if (d.disposition === "executed") {
+    const href = txExplorerHref({ txHash: d.txHash });
     return (
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5" data-testid="disposition-executed">
         <Badge variant="success">
           <CheckCircle2 className="h-3 w-3" /> {label}
         </Badge>
-        <a
-          href={explorerTxUrl(d.txHash)}
-          target="_blank"
-          rel="noreferrer"
-          className="font-mono text-primary hover:underline"
-        >
-          {d.txHash.slice(0, 12)}…
-        </a>
+        <TxRef event={{ txHash: d.txHash }} href={href} testId="disposition-tx" />
+        {!href && (
+          <span className="text-warning" data-testid="disposition-tx-unverifiable">
+            reported as executed, but no usable transaction hash came back — nothing here can be
+            checked on the explorer
+          </span>
+        )}
       </div>
     );
   }
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-1.5" data-testid="disposition-proposed">
       <Badge variant="warning">
         <Send className="h-3 w-3" /> {label} · proposed
       </Badge>
+      <span className="text-muted" data-testid="disposition-not-broadcast">
+        not broadcast — no transaction exists to link
+      </span>
       <span className="text-muted">
         holder{" "}
         <span className="font-mono">{d.holder ? shortAddr(d.holder) : "unknown"}</span>

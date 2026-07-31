@@ -14,7 +14,8 @@ import {
   Input,
   Label,
   Spinner,
-  explorerTxUrl,
+  TxRef,
+  txExplorerHref,
   useToast,
   DEMO_ISSUER_APPLICATION_GROOMER,
   DEMO_ISSUER_APPLICATION_VET,
@@ -242,21 +243,7 @@ export function IssuerApplications() {
                 </p>
               )}
 
-              {txs[a.applicationId]?.length ? (
-                <div className="flex flex-wrap gap-2">
-                  {txs[a.applicationId]!.map((tx) => (
-                    <a
-                      key={tx}
-                      href={explorerTxUrl(tx)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-mono text-xs text-primary hover:underline"
-                    >
-                      {tx.slice(0, 10)}…
-                    </a>
-                  ))}
-                </div>
-              ) : null}
+              <ApprovalTxList txs={txs[a.applicationId]} />
 
               <DnsTraceRow app={a} />
 
@@ -292,6 +279,42 @@ export function IssuerApplications() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * The `whitelistFor` transactions an approval reported, in the three states an approval can leave.
+ *
+ * Approving whitelists EACH (address, recordType) pair on chain, so this list is the operator's only
+ * receipt that the grant actually reached the registry. It used to link every hash to the explorer
+ * unconditionally - and, worse, rendered NOTHING when the backend came back with an empty list, so
+ * "approved but not one transaction was sent" was indistinguishable from a clean approval. That is the
+ * missing value rendered as the real one, arrived at by omission rather than by a bad link.
+ *
+ *  - **not run here** (`undefined`) - no approval happened in this session, so there is nothing to
+ *    report and nothing is rendered. The only state that may be silent, because nothing was claimed.
+ *  - **approved, nothing broadcast** (`[]`) - said in words. `Wizard.tsx` already told operators this;
+ *    this page did not.
+ *  - **transactions returned** - each rendered through the shared `TxRef`, which links a well-formed
+ *    32-byte hash and renders anything else inert with the reason rather than as a link to nowhere.
+ */
+export function ApprovalTxList({ txs }: { txs?: string[] }) {
+  if (!txs) return null;
+  if (txs.length === 0) {
+    return (
+      <p className="text-xs text-warning" data-testid="approval-no-txs">
+        No <code>whitelistFor</code> transactions were returned — nothing reached the chain for this
+        approval. The addresses may already have been whitelisted; confirm on the Whitelist page
+        before treating this issuer as live.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-wrap gap-2" data-testid="approval-txs">
+      {txs.map((tx) => (
+        <TxRef key={tx} event={{ txHash: tx }} href={txExplorerHref({ txHash: tx })} testId="approval-tx" />
+      ))}
+    </div>
   );
 }
 

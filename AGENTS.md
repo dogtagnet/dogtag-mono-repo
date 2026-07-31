@@ -4797,3 +4797,183 @@ rm DogTag/consent_final.zkey DogTag/consent.graph
 
 The host-less `DogTagTests` target lists sources INDIVIDUALLY and must stay Foundation-only (no FFI), so
 adding a file there means checking its whole import closure.
+
+## An explorer link is a CLAIM, and the admin portal made it unconditionally
+
+**SCOPE: this section describes the rule and the ADMIN portal's migration onto it. It is not a
+statement that the fleet is done** - see the known-outstanding list at the end, which is every
+remaining `explorerAddressUrl`/`explorerTxUrl` site in the shared `packages/ui/src/domain` panels,
+verified line by line, and is queued separately.
+
+PR #88 established the rule for the government/vet audit tables and built the shared helpers in
+`packages/ui/src/chain/`; `Activity.tsx` followed.
+Every OTHER admin page still wrote `href={explorerTxUrl(x)}` / `href={explorerAddressUrl(x)}` directly,
+so the anchor was emitted whether or not anything existed to look up.
+A dead link is worse than no link: its presence reads as evidence, and an operator will not click every
+one to find out - so a missing value was being rendered as a real one, in the interface layer.
+
+**The inventory was NINE sites across SIX pages, not the two that were obvious.**
+Recorded so nobody re-runs the hunt: `IssuerApplications.tsx` (approval txs), `Whitelist.tsx` (row
+address AND executed-disposition tx), `Governance.tsx` (`AddrLink`), `Dashboard.tsx` (authority
+holder), `Issuers.tsx` (predicted clone, the `Row` `link` prop, `AddrLink`), `Wizard.tsx` (approval
+txs).
+`grep -rn "explorerTxUrl\|explorerAddressUrl" stacks/admin/web/src` finds them all; it now returns only
+doc-comment mentions.
+Four of the nine were already guarded on TRUTHINESS (`predicted ?`, `holder ?`, `whitelistTxs.length`,
+`link === "tx"`), which is why they read as safe: a truthiness guard proves a value is PRESENT and says
+nothing about whether it can be looked up, and those are the two different questions here.
+
+**The empty-list case is the same defect reached by OMISSION, and it is the more dangerous half.**
+`IssuerApplications` rendered `txs[id]?.length ? (...) : null`, so an approval that broadcast NOTHING
+looked exactly like a clean one - no dead link to notice, just a silent gap.
+Do not "fix" a site by hiding the link when the value is empty; that IS this bug.
+The three states must each be stated: linked / not on chain / present-but-unusable.
+Only "no approval ran in this session" may be silent, because nothing was claimed.
+
+**One address treatment, in `stacks/admin/web/src/components/ChainRef.tsx`.**
+`AddressRef` is the single admin implementation, and `Activity.tsx`'s `ActorCell` was migrated onto it
+too - it was first to get the rule right and would otherwise have been a second copy to drift from.
+Its inert form is struck through in amber, matching the shared `TxRef`, because the two make the same
+claim and colour alone leaves the state legible only to someone who already knows the linked form is
+blue (this repo's rule: a finding reachable only by hovering is not reported).
+Transactions go through the shared `TxRef` directly.
+`addressChainRef`/`txChainRef` in `packages/ui/src/chain/provenance.ts` return the `{href, reason}` pair
+so six pages cannot invent six explanations; a reason is attached ONLY to a value that is present and
+unusable, never to an absent one.
+
+**The same hovering rule governs the VALUE, not only its state, and it bites hardest exactly where the
+link was withheld.**
+The linked branch keeps the full address in its `href`, so a truncated anchor still lets the operator
+take the value away; the INERT branch has no such escape hatch, and `shortAddr` truncates the string
+itself, so the elided characters are not in the DOM at all.
+Left as it was, the one fact that row exists to hand over - the address to go and investigate - was
+reachable only by hovering, which survives neither a screenshot, nor a touch device, nor a paste into
+an incident report.
+So `AddressRef`'s inert branch carries the shared `CopyButton`, UNCONDITIONALLY - there is deliberately
+no prop to decline it.
+
+**The opt-out is the part worth remembering, because it looked like tidiness and was the same defect
+again.**
+`AddressRef` briefly took `copyable`, so the two callers already rendering their own control
+(`Governance`'s `AddrLink` with `withCopy`, the predicted-clone block in `Issuers`) would not show two
+buttons for one value.
+Both of those controls were `onClick={() => void navigator.clipboard?.writeText(x)}` - and
+`navigator.clipboard` is undefined in any NON-SECURE context, which is exactly the plain `http://` LAN
+origin these portals are routinely served from, where the `?.` makes the click a silent no-op with no
+failure shown.
+So in the one state whose entire point is that the value stays recoverable, the only route to it did
+nothing when clicked: hover was out (a tooltip survives no screenshot), the `href` does not exist on
+that branch, and `shortAddr` had already removed the elided characters from the DOM.
+An escape hatch a caller can decline is not an escape hatch - the guarantee has to belong to the
+component that knows the value was truncated and knows there is no link.
+Both hand-rolled controls are now the shared `CopyButton` (which falls back to the hidden-textarea
+`execCommand` path and renders a visible FAILED state), and where one still sits beside `AddressRef`
+the inert state shows two.
+**That duplication is deliberate**: a redundant button is a cosmetic wart, an unrecoverable value is
+the defect this section exists to remove.
+
+**Still hand-rolled, and NOT the same case - checked rather than assumed:** the `SecretRow` helpers in
+`Wizard.tsx` and `Businesses.tsx` and the `Row` component in `Issuers.tsx`.
+All three render `{value}` WHOLE and let CSS `truncate` clip it, so the full string is in the DOM and
+the dead button is not the only route to it - which is the condition that made the two above urgent.
+They are still silently-dead controls and worth converting, but that is a portal-wide follow-up rather
+than this section's defect (`Businesses.tsx` is not touched by this work at all).
+
+**`ChainValue`'s inert branch keys its treatment on `reason`, and that condition is the whole point.**
+That branch renders TWO different things. An ordinary identifier that simply has no explorer page - a
+credential root, a record-type key, a purpose key, a `dogTagId`, a nullifier - is fine and stays plain.
+A value we tried to resolve and could not is the same claim `TxRef` makes about an unusable hash, so it
+gets the same struck-through amber.
+Striking through every unlinked `ChainValue` would mark every ordinary identifier in the details column
+as broken, which is a worse regression than the invisible state it would fix - so the treatment must
+never key on the absence of `href`.
+Only `Activity.tsx` passes a `reason` today (from `addressChainRef(ev.contract)`); the government
+Oversight, vet Traceability and groomer tag-discovery consumers pass none and are unaffected.
+
+**The positive side still claims SHAPE only.**
+`MemChain` mints `0x{:064x}`, a well-formed hash for a transaction that was never broadcast, so it reads
+as chain-addressable - correct by design, and why the badge says "chain-addressable" and never "exists".
+Do not add simulated-transaction detection here.
+
+### KNOWN OUTSTANDING: the shared `packages/ui/src/domain` panels are NOT migrated
+
+The rule above is satisfied on the ADMIN portal only. The five shared components below serve the VET,
+GROOMER and OWNER portals and still emit their explorer anchors unconditionally, so the same defect is
+live on those surfaces. Verified present at this branch's head; a reader must not conclude from the
+section above that every portal is done.
+
+- `packages/ui/src/domain/StatusPanel.tsx:63`
+- `packages/ui/src/domain/StatusPanel.tsx:118`
+- `packages/ui/src/domain/VerifyFlow.tsx:228`
+- `packages/ui/src/domain/IssuanceStatusPanel.tsx:121`
+- `packages/ui/src/domain/CredentialVerifyPanel.tsx:203`
+- `packages/ui/src/domain/VerificationHistoryPanel.tsx:44`
+
+**`StatusPanel.tsx:63` is the worst of the six and deserves naming on its own**, because it is not an
+oversight that a guard was forgotten - it is `href={address ? explorerAddressUrl(address) : "#"}`, an
+anchor whose fallback goes deliberately NOWHERE. An anchor that goes nowhere is worse than no anchor:
+it is a link the operator can click, which reloads the page and tells them nothing, while its presence
+reads as evidence that there is something on chain to look at. That is precisely the defect this whole
+section is about, already written down and shipped as an intended fallback.
+
+Deliberately out of scope here (this change is the admin portal's migration) and queued separately. Fix
+them the same way - through `addressChainRef`/`txChainRef` and the shared `TxRef`/`ChainValue` - never
+by hiding the value when it cannot be linked, which is the same defect reached by omission.
+
+### The admin portal now has a unit suite, and registering it took TWO separate edits
+
+`stacks/admin/web` was `tsc --noEmit && vite build` only - a typecheck, which proves the pages compile
+and nothing about what they render.
+`href={explorerTxUrl(tx)}` is well-typed for any string, so the defect typechecked perfectly for its
+whole life.
+`packages/ui`'s own tests for `txExplorerHref`/`addressChainRef` were green throughout too, for the
+plain reason that the pages never called them - which is exactly why the pin has to render the page.
+`test/*.test.tsx` mounts the real components (the real `<Whitelist />` under the real `AppProvider`,
+with only `fetch` substituted), following `packages/ui/test/rpcSettingsVerdict.test.ts`: `createRoot`
+plus real macrotask turns, never `act()`.
+
+**A new TS suite has to be registered in TWO places, and getting only one is silent.**
+Root `pnpm test` filtered `"./packages/**"`, so a suite added under `stacks/` would never have run; it is
+now `pnpm -r --filter "./packages/**" --filter @dogtag/admin-web test`.
+But `.no-mistakes.yaml`'s `commands.test` does NOT invoke that script - it hardcodes its own
+`pnpm --filter <pkg> test` legs - so widening the root script alone leaves the GATE unchanged and the
+suite green everywhere except where it counts.
+Both were updated here, and the same pair applies to any future package.
+The precedent is in that file's own comments: `@dogtag/ui` was absent from the gate for exactly this
+reason, so its 468 tests "never ran in the gate at all".
+Name packages explicitly and NEVER broaden to `pnpm -r test`: several stacks carry Playwright specs that
+drive live portals and anchor real records on chain (see the run-by-hand warning above).
+Verify a new filter actually picks the package up - `Scope: N of 9 workspace projects` plus the
+`<pkg> test:` prefixes in the output - rather than assuming, since a filter that matches nothing exits 0.
+An added devDependency also moves `pnpm-lock.yaml`, and the pipeline's fresh worktree runs
+`--frozen-lockfile`, where a stale lockfile is a CODE finding rather than an environment one - so
+re-run that install before shipping.
+
+Unrelated but adjacent, and it costs a duplicated section every time someone rediscovers it:
+**`CLAUDE.md` is a SYMLINK to `AGENTS.md`**, so a script that "writes both" appends the same text twice
+and a `diff -q` between them reports success either way. Edit `AGENTS.md` and stop there.
+
+**Verified by mutation, four of them, each reddening its own named test**: the unconditional address
+anchor (2 red), the unconditional executed-tx anchor (2 red), the silent empty-list collapse (1 red),
+and the unconditional approval-tx anchor (2 red).
+One of those four silently FAILED to apply on the first attempt because the replacement string no longer
+matched the source, and the suite stayed green - which reads identically to an unpinned claim.
+Assert the old text is present before replacing it; check the scrutinee, not just the diff.
+
+**Five more, for the two affordances above** (`packages/ui/test/chainValueInert.test.ts`,
+`stacks/admin/web/test/addressRefCopy.test.tsx`), each likewise reddening its own named test: the
+`ChainValue` treatment reverted to always-plain (2 red) and pushed to always-struck-through (2 red) -
+BOTH directions, because a suite that only asserted the struck case would pass with the over-broad
+version that marks every ordinary identifier as broken; the inert copy button removed (2 red, one of
+them the page-level pin in `whitelistChainRefs.test.tsx`); and the copy button wired to the TRUNCATED
+form rather than the address (1 red), which is what keeps that case about the VALUE handed over rather
+than merely about a button existing.
+
+**One more, for the opt-out removal**: swapping the inert branch's shared `CopyButton` for a
+`navigator.clipboard`-only control reddens exactly
+`still hands it over on a non-secure origin, where navigator.clipboard does not exist` and leaves every
+other case in that file green - which is the point, since a clipboard-only control passes every
+assertion about a button EXISTING and about WHAT it copies on a secure origin.
+That case must stub `navigator.clipboard` to `undefined` ITSELF rather than lean on the file's
+`beforeEach`, which installs a working one for the other cases; without the local override it never
+reaches the fallback and pins nothing.

@@ -23,7 +23,7 @@ import {
   TableHeader,
   TableRow,
   TxRef,
-  addressExplorerHref,
+  addressChainRef,
   chainProvenance,
   emittingCloneName,
   emittingContractRole,
@@ -39,7 +39,7 @@ import { Activity as ActivityIcon, Filter, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useApp } from "../app/AppContext";
 import { eventMeta, EVENT_TYPES } from "../lib/activity";
-import { shortAddr } from "../lib/format";
+import { AddressRef } from "../components/ChainRef";
 
 const PAGE_SIZE = 100;
 
@@ -372,31 +372,33 @@ function FilterField({ label, children }: { label: string; children: ReactNode }
  * carry a synthetic row rendered a real-looking address link that leads nowhere. An unlinkable address
  * is still shown - the value is what the indexer reported and hiding it would lose an auditor a fact -
  * it simply is not dressed as something that resolves.
+ *
+ * That rule now lives in the shared `AddressRef`, which every other admin page was migrated onto: this
+ * cell was the FIRST to get it right and became, for a while, the only one, so keeping a second copy
+ * here would leave the portal with two implementations of one rule and no way to notice them drifting.
+ * The name is suppressed along with a missing address, since a business name floating above a bare
+ * dash reads as a row about that business rather than a row with nothing to identify.
  */
-function ActorCell({ address, name }: { address?: string | null; name?: string | null }) {
-  if (!address) return <span className="text-xs text-muted">-</span>;
-  const href = addressExplorerHref(address);
+function ActorCell({
+  address,
+  name,
+  testId,
+}: {
+  address?: string | null;
+  name?: string | null;
+  /**
+   * Distinct per COLUMN. This component renders both the actor and the issuer-clone cell, so a
+   * hardcoded id would put the clone's address under the actor's name - and, in the actor cell, the
+   * same id on two nested elements. Nothing renders differently today, but the first e2e written
+   * against this table would either throw on a strict-mode match or silently assert about the wrong
+   * column, which is the sort of wrong-but-passing check this page is otherwise careful to avoid.
+   */
+  testId: string;
+}) {
   return (
     <div className="flex flex-col">
-      {name && <span className="text-sm font-medium text-onSurface">{name}</span>}
-      {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noreferrer"
-          className="font-mono text-xs text-primary hover:underline"
-          title={address}
-        >
-          {shortAddr(address)}
-        </a>
-      ) : (
-        <span
-          className="font-mono text-xs text-muted"
-          title={`${address} - not a well-formed 20-byte address, so it has no explorer page`}
-        >
-          {shortAddr(address)}
-        </span>
-      )}
+      {name && address && <span className="text-sm font-medium text-onSurface">{name}</span>}
+      <AddressRef address={address} testId={testId} />
     </div>
   );
 }
@@ -404,7 +406,7 @@ function ActorCell({ address, name }: { address?: string | null; name?: string |
 function EventRow({ ev }: { ev: ActivityEvent }) {
   const meta = eventMeta(ev.type);
   const provenance = chainProvenance(ev);
-  const contractHref = addressExplorerHref(ev.contract);
+  const contract = addressChainRef(ev.contract);
   const emittedCloneName = emittingCloneName(ev);
   return (
     <TableRow
@@ -453,7 +455,8 @@ function EventRow({ ev }: { ev: ActivityEvent }) {
           <ChainValue
             label={emittingContractRole(ev.type)}
             value={ev.contract}
-            href={contractHref}
+            href={contract.href}
+            reason={contract.reason}
             head={8}
             stacked
             testId="activity-contract-value"
@@ -485,10 +488,10 @@ function EventRow({ ev }: { ev: ActivityEvent }) {
         </div>
       </TableCell>
       <TableCell data-testid="activity-actor">
-        <ActorCell address={ev.actor} name={ev.actorName} />
+        <ActorCell address={ev.actor} name={ev.actorName} testId="activity-actor-address" />
       </TableCell>
       <TableCell data-testid="activity-clone">
-        <ActorCell address={ev.clone} name={ev.cloneName} />
+        <ActorCell address={ev.clone} name={ev.cloneName} testId="activity-clone-address" />
       </TableCell>
     </TableRow>
   );
