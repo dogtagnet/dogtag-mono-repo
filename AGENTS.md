@@ -1604,6 +1604,45 @@ fixed only by the cutover running. The record carries no address field at all, s
 placeholder. Note the generation-2 DISCOVERY key is not an ARTIFACT key: the artifacts are byte-for-byte
 generation 1's and keep `dogtag-levelb-artifacts/1`, so `artifact::resolve` fails closed on it too.
 
+## The generation-2 contracts ARE DEPLOYED on ROAX, and nothing reads them yet (S-14)
+
+The eight-transaction on-chain cutover ran live on ROAX (chain 135) on 2026-08-01, captain-authorised, testnet only.
+Addresses, transaction hashes and blocks live in `contracts/deployments/roax.json` under `_s14_cutover` - do not transcribe them here, or this copy rots.
+The six new ledger keys are `ProviderRegistry`, `DogTagIssuerV2Impl`, `CloneProvenanceRouter`, `DogTagIssuerFactoryV2`, `VerificationRegistryConsentV2` and `ProtocolRegistryV2`.
+
+**Deployed is not wired, and the ledger key names are what keep those apart.**
+Client repointing is C-9/C-10 and did NOT happen, so `DogTagIssuerFactory`, `IssuerRegistry`, `VerificationRegistryConsent` and `ProtocolRegistry` remain the addresses every consumer reads.
+The generation-2 keys are recorded under DISTINCT names precisely so no consumer is repointed by a ledger edit - `scripts/demo-up.sh` resolves keys by name through `ledger_addr`, so reusing a generation-1 key would have silently repointed a running stack.
+Say "deployed, unwired" rather than "the cutover is done": everything from C-6 onward, and the rest of C-2, remains outstanding.
+
+**`RehearseCutover.s.sol` cannot perform a live cutover, and that is deliberate rather than a gap.**
+It requires `block.number == pinnedBlock`, which a live chain can never satisfy - that guard is what carries the rehearsal's safety, so it must not be relaxed.
+`contracts/script/ExecuteCutover.s.sol` is the live counterpart and refuses the pinned block, so neither can be pointed at the other's endpoint.
+Both call the same `CutoverSequence.cN_*` functions with the same arguments in the same order, which is the ONLY reason the S-12 rehearsal and its mutation harness are evidence about the live transactions.
+A live driver that re-derived the constructor arguments - in Solidity, or by hand-encoding `cast send --create` - would be a second definition free to drift by one argument with both looking correct.
+
+**`--skip-simulation` is NOT needed live, and using it would be strictly worse.**
+The §6 divergence that forced it on the S-12 fork was observed under `--unlocked`.
+With `--private-key`, simulation and broadcast attribute every CREATE to `governance@nonce` identically - confirmed against `cast compute-address` for the exact nonces BEFORE sending, which is a free check worth repeating on any future run.
+Keeping simulation ON is a safety property, not a cost: a failed precondition then broadcasts **nothing**, which was observed twice while proving the phase-2 guards refuse.
+Send with `--legacy` (every ROAX deploy does) and `--slow`, because C-3b's constructor behaviour-probes the router and C-4b needs C-3b's factory to exist - those are hard inter-transaction dependencies.
+
+**The driver is PHASED because C-4b is irreversible and its ordering must be read off the chain, not off a banner.**
+Phase 1 (C-1, C-3a, C-4, C-3b) is entirely abandonable; phase 2 (C-4b, C-2) cannot be undone by any transaction; phase 3 (C-5, C-8) is deployments again.
+Between them, verify by EFFECT: after C-4 `generationCount() == 1` with `generationAt(0)` the generation-1 factory - **not** `[factoryV2, factoryV1]`, which is the silent revocation bypass - and after C-4b `generationCount() == 2` with generation 1 still at index 0 and generation 2 at the TAIL.
+Both were checked live, and all 19 roots in `contracts/rehearsal/fixtures/historical-roots.json` were re-resolved at both points as `router.rootIssuer(r) == factoryV1.rootIssuer(r)`, non-zero, proving the append moved no existing answer.
+Phase 2 additionally re-reads the deployed router and factory as PRECONDITIONS - including `factoryV2.priorIndex() == router`, which is what stops a mistyped factory address being appended permanently - and requires `CUTOVER_CONFIRM_IRREVERSIBLE=true` stated aloud.
+
+**`ProtocolRegistryV2`'s `PUBLISH_TIMELOCK` is 3600 (the 1-hour floor) and it is IMMUTABLE.**
+The full reasoning is in the ledger's `_s14_cutover`; the part worth knowing here is that `docs/CUTOVER_REHEARSAL.md` §4 recommends the 2-day default in a mainnet-safety register, and **mainnet must use 2 days** - `DeployProtocolRegistryV2.s.sol` enforces exactly that unless a testnet deploy is stated.
+ROAX took the floor because its generation-1 registry deliberately ran `PUBLISH_TIMELOCK_SECS=0` so publication could be walked in one sitting, and a 2-day delay would block every discovery publish during testing.
+Redeploying C-8 is FREE today and only today: its stated rollback cost is repointing every client including two compile-time mobile bundles, and that cost is zero while no consumer carries the address.
+
+**C-12 was NOT performed, so `CloneProvenanceRouter`'s one open direction is live.**
+A later-generation root can still be re-anchored in an EARLIER generation, which oldest-first resolution then prefers.
+The next section explains why no contract can close it and why the generation-1 issuance freeze is the remedy.
+Nothing issues through generation 2 yet (C-11 is also outstanding), so nothing is exposed today - but do not read the deployment as having closed it.
+
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 
 `contracts/src/CloneProvenanceRouter.sol`. Full rationale: `docs/CLONE_PROVENANCE_ROUTER.md`.
