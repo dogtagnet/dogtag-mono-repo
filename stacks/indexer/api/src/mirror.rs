@@ -29,9 +29,14 @@
 //!
 //! # BOUNDED, AND IT FILLS RATHER THAN EVICTING
 //!
-//! The write surface is reachable by any principal the scope registry resolves, and scoped tokens
-//! are handed to third-party vet and groomer deployments - so an unbounded store here is permission
-//! for a stranger to exhaust the heap of the service that also serves the government oversight feed.
+//! The write surface is reachable by whoever holds the `MIRROR_INGEST_TOKEN` - and that token is
+//! PUBLIC BY CONSTRUCTION wherever a portal publishes, because vite inlines it into the shipped
+//! bundle as `VITE_CONTENT_MIRROR_TOKEN`. So the population that can fill this store is EVERY
+//! VISITOR TO EITHER PORTAL, which is strictly wider than the third-party deployments holding scope
+//! tokens that an earlier draft of this paragraph named. Read that as the caps mattering MORE since
+//! the write gate moved to a dedicated token, never less: narrowing what the token GRANTS did not
+//! narrow who HOLDS it, and these caps are now the only thing bounding public writes to the service
+//! that also serves the government oversight feed.
 //! [`MAX_CONTENT_BYTES`] bounds one object and bounds nothing about accumulation, so
 //! [`MAX_MIRROR_OBJECTS`] and [`MAX_MIRROR_TOTAL_BYTES`] bound the store. BOTH, because a million
 //! one-byte objects and a smaller set of 512 KiB ones are different exhaustion routes and neither

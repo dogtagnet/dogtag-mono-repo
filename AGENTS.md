@@ -5406,7 +5406,15 @@ CLOSED with a named 503 when `MIRROR_INGEST_TOKEN` is unset, never falling back 
 registry; and READS stay public and unauthenticated, because a content address is checked against
 the bytes it names so serving them confers nothing. Demo wires
 `dogtag-indexer-mirror-ingest-demo-token` beside the two well-known oversight tokens, deliberately
-separate. The load-bearing test is
+separate, and `scripts/demo-up.sh` now passes it plus `VITE_CONTENT_MIRROR_BASE` to BOTH portals -
+the DEMO only, since the shipped `.env.example` entries stay blank and fallback-free.
+**That wiring removes one blocker and not all of them, which is worth stating rather than leaving a
+reader to discover:** the provider self-service page short-circuits on `missingConfig` before it
+renders the publication form at all, and demo passes none of the four generation-2 addresses it
+needs (`VITE_PROVIDER_REGISTRY_ADDR`, `VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR`,
+`VITE_SERVICE_DOMAIN_RESOLVER_ADDR`, `VITE_PROVIDER_DIRECTORY_ADDR`), because pointing a portal at
+generation 2 is the C-9/C-10 repoint and is captain-gated. So the demo mirror is reachable and
+correctly tokened, and the demo publish FORM is still not rendered. The load-bearing test is
 `an_oversight_scope_token_is_refused_by_the_write_route`: without it the change reads as merely
 additive and a build accepting BOTH tokens would pass everything else.
 
@@ -5414,9 +5422,13 @@ additive and a build accepting BOTH tokens would pass everything else.
 and says nothing about accumulation, so `MAX_MIRROR_OBJECTS` (4,096) and `MAX_MIRROR_TOTAL_BYTES`
 (128 MiB) bound the store - both, because a million one-byte objects and a smaller set of 512 KiB
 ones are different exhaustion routes and neither cap bounds the other. This matters because the PUT
-is reachable by any principal the scope registry resolves, and scoped tokens are handed to
-third-party vet and groomer deployments: unbounded here is permission for a stranger to exhaust the
-heap of the service that also serves the government oversight feed. At either cap the ingest is
+is reachable by whoever holds `MIRROR_INGEST_TOKEN`, and that token is PUBLIC BY CONSTRUCTION
+wherever a portal publishes - vite inlines it into the shipped bundle - so the population that can
+fill the store is EVERY VISITOR TO EITHER PORTAL. That is strictly wider than the third-party
+deployments holding scope tokens an earlier draft named, so **the caps matter MORE since the write
+gate moved to a dedicated token, not less**: narrowing what the token grants did not narrow who
+holds it, and these caps are now the only thing bounding public writes to the service that also
+serves the government oversight feed. At either cap the ingest is
 refused with `IngestRejection::MirrorFull` naming the limit, and the route answers **507**, not 400 -
 the request is well formed and the store is full, and a 400 would send the publisher to re-check
 bytes that were never the problem.
