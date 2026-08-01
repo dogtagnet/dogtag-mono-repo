@@ -10,5 +10,16 @@ export const env = {
   dogtagIssuerAddr: import.meta.env.VITE_DOGTAG_ISSUER_ADDR ?? "",
   /** Shared issuer registry used by direct credential verification. */
   issuerRegistryAddr: import.meta.env.VITE_ISSUER_REGISTRY_ADDR ?? "",
+  /**
+   * The generation-2 registry set, for the provider self-service page. NO FALLBACK on any of them,
+   * deliberately: generation 2 is deployed but no client reads it yet (client repointing is
+   * C-9/C-10), so a baked default here would repoint this deployment by accident.
+   */
+  providerRegistryAddr: import.meta.env.VITE_PROVIDER_REGISTRY_ADDR ?? "",
+  issuerFactoryV2Addr: import.meta.env.VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR ?? "",
+  serviceDomainResolverAddr: import.meta.env.VITE_SERVICE_DOMAIN_RESOLVER_ADDR ?? "",
+  providerDirectoryAddr: import.meta.env.VITE_PROVIDER_DIRECTORY_ADDR ?? "",
+  /** This shop's own provider id, assigned by DogTag at approval. Opaque; never derived. */
+  providerId: import.meta.env.VITE_PROVIDER_ID ?? "",
   demoMode: import.meta.env.VITE_DEMO_MODE === "1" || import.meta.env.VITE_DEMO_MODE === "true",
 };

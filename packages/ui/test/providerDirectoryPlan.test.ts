@@ -188,6 +188,32 @@ describe("a half-filled or unusable location is refused, and publishes nothing",
   });
 });
 
+describe("the profile anchor carries every argument setProfileAnchor needs", () => {
+  it("never emits a zero schema or hash algorithm - the contract reverts BadProfileAnchor on either", async () => {
+    // These live in the STEP rather than at the call site so a second sender cannot invent different
+    // values for the same blob, which is how one document acquires two on-chain descriptions of what
+    // it is.
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "" },
+      reader(),
+      digest,
+    );
+    const anchor = plan.steps.find((s) => s.kind === "profileAnchor");
+    expect(anchor).toBeDefined();
+    if (anchor?.kind !== "profileAnchor") throw new Error("unreachable");
+    expect(anchor.schema).toBeGreaterThan(0);
+    expect(anchor.hashAlgorithm).toBeGreaterThan(0);
+    // keccak-256's multicodec code. Naming sha2-256 (0x12) here because it is the commoner constant
+    // would be a false statement about which function produced the digest, and a verifier that
+    // believed it would recompute the wrong hash and call a genuine blob altered.
+    expect(anchor.hashAlgorithm).toBe(0x1b);
+    // No contenthash while S-17 does not exist: publishing a location nothing serves would be a
+    // worse claim than publishing none.
+    expect(anchor.contenthash).toBe("0x");
+    expect(anchor.digest).toBe(digest(anchor.blob));
+  });
+});
+
 describe("the contact blob", () => {
   it("omits a blank channel rather than publishing an empty one", () => {
     const { blob, channelsPublished } = contactBlob(CONTACTS);

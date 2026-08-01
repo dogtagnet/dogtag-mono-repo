@@ -129,6 +129,13 @@ const CORE_ABI = [
   },
   {
     type: "function",
+    name: "repointService",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "serviceAddress", type: "address" }],
+    outputs: [],
+  },
+  {
+    type: "function",
     name: "PROVIDER_PERMISSION_RECORD",
     stateMutability: "view",
     inputs: [],
@@ -143,6 +150,17 @@ const FACTORY_ABI = [
     stateMutability: "view",
     inputs: [{ name: "", type: "address" }],
     outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "createIssuer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "providerId", type: "bytes20" },
+      { name: "recordType", type: "bytes32" },
+      { name: "cloneNonce", type: "uint96" },
+    ],
+    outputs: [{ name: "clone", type: "address" }],
   },
   {
     type: "function",
@@ -178,6 +196,30 @@ const DOMAIN_ABI = [
   },
   {
     type: "function",
+    name: "claimDomain",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "service", type: "address" },
+      { name: "domain", type: "string" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "declareNoDomain",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "service", type: "address" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "clearDomain",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "service", type: "address" }],
+    outputs: [],
+  },
+  {
+    type: "function",
     name: "canWriteDomain",
     stateMutability: "view",
     inputs: [
@@ -189,6 +231,33 @@ const DOMAIN_ABI = [
 ] as const;
 
 const DIRECTORY_ABI = [
+  {
+    type: "function",
+    name: "setProfileAnchor",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "providerId", type: "bytes20" },
+      { name: "digest", type: "bytes32" },
+      { name: "schema", type: "uint32" },
+      { name: "codec", type: "uint16" },
+      { name: "hashAlgorithm", type: "uint8" },
+      { name: "contenthash", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "publishPin",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "providerId", type: "bytes20" },
+      { name: "lat", type: "int32" },
+      { name: "lng", type: "int32" },
+      { name: "kind", type: "uint8" },
+      { name: "active", type: "bool" },
+    ],
+    outputs: [{ name: "locationNo", type: "uint16" }],
+  },
   {
     type: "function",
     name: "isLiveFor",

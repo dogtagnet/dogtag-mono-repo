@@ -38,6 +38,23 @@ import {
 /** `ProviderDirectory.COORDINATE_SCALE`. 1e6 is ~11cm, which is finer than a clinic pin needs. */
 export const COORDINATE_SCALE = 1_000_000;
 
+/**
+ * The anchor's self-description. `schema` and `hashAlgorithm` MUST be non-zero - the contract
+ * reverts `BadProfileAnchor` otherwise - so these are load-bearing values rather than filler.
+ *
+ * `hashAlgorithm` is the multicodec code for keccak-256 (0x1b), which is what {@link DigestFn} is
+ * given (viem's `keccak256`). Naming sha2-256 here because it is the commoner constant would be a
+ * false statement about which function produced the digest, and a verifier that believed it would
+ * recompute the wrong hash and report a genuine blob as altered.
+ *
+ * `codec` describes the CONTENTHASH, and there is no contenthash yet, so 0 (unspecified) is the
+ * honest value rather than a guess at what S-17 will serve.
+ */
+export const PROVIDER_CONTACT_SCHEMA = 1;
+export const MULTIHASH_KECCAK_256 = 0x1b;
+export const CONTENTHASH_CODEC_UNSPECIFIED = 0;
+export const EMPTY_CONTENTHASH = "0x" as const;
+
 export interface DirectoryPublicationRequest {
   providerId: HexWord;
   caller: Address;
@@ -67,6 +84,23 @@ export type DirectoryStep =
       /** The blob whose digest that is, so a caller can host it rather than re-deriving it. */
       blob: string;
       channelsPublished: number;
+      /**
+       * `setProfileAnchor`'s remaining arguments, carried HERE rather than filled in at the call
+       * site. `ProviderDirectory` reverts `BadProfileAnchor` on a zero `schema` or a zero
+       * `hashAlgorithm`, so these are not decoration - and a second call site would otherwise be
+       * free to invent different values for the same blob, which is how one document acquires two
+       * on-chain descriptions of what it is.
+       */
+      schema: number;
+      codec: number;
+      hashAlgorithm: number;
+      /**
+       * Where the blob can be fetched. EMPTY while S-17 (the content mirror) does not exist: the
+       * anchor's job is integrity, and publishing a location nothing serves would be a worse claim
+       * than publishing none. The contract permits an empty contenthash; only digest, schema and
+       * hashAlgorithm are required non-zero.
+       */
+      contenthash: HexWord;
     }
   | {
       kind: "pin";
@@ -215,7 +249,16 @@ export async function planDirectoryPublication(
   // ---- The steps ------------------------------------------------------------------------------
   const { blob, channelsPublished } = contactBlob(contacts);
   const steps: DirectoryStep[] = [
-    { kind: "profileAnchor", digest: digest(blob), blob, channelsPublished },
+    {
+      kind: "profileAnchor",
+      digest: digest(blob),
+      blob,
+      channelsPublished,
+      schema: PROVIDER_CONTACT_SCHEMA,
+      codec: CONTENTHASH_CODEC_UNSPECIFIED,
+      hashAlgorithm: MULTIHASH_KECCAK_256,
+      contenthash: EMPTY_CONTENTHASH,
+    },
   ];
 
   // The whole ruling, in one branch. `located` is the ONLY case that appends a pin - `absent` adds

@@ -83,16 +83,14 @@ mutate "attachment collapsed (deployed treated as attached)" \
 
 mutate "a placeholder pin emitted for an ABSENT location (the 0,0 bug)" \
   packages/ui/src/provider/directoryPlan.ts \
-  '  if (location.kind === "located") {
-    steps.push({
-      kind: "pin",
-      lat: toContractCoordinate(location.lat),
-      lng: toContractCoordinate(location.lng),' \
-  '  if (location.kind !== "invalid") {
-    steps.push({
-      kind: "pin",
-      lat: location.kind === "located" ? toContractCoordinate(location.lat) : 0,
-      lng: location.kind === "located" ? toContractCoordinate(location.lng) : 0,' \
+  '  if (location.kind === "located") {' \
+  '  if (location.kind !== "invalid") {' \
+  test/providerDirectoryPlan.test.ts
+
+mutate "a zero hashAlgorithm on the profile anchor (contract reverts BadProfileAnchor)" \
+  packages/ui/src/provider/directoryPlan.ts \
+  "export const MULTIHASH_KECCAK_256 = 0x1b;" \
+  "export const MULTIHASH_KECCAK_256 = 0;" \
   test/providerDirectoryPlan.test.ts
 
 mutate "coordinate truncated instead of rounded" \

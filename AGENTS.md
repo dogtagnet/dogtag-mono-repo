@@ -2046,10 +2046,31 @@ text stays the DNS record's own value.
 The provider-facing surface for the generation-2 set: deploy your own clone, choose which of your
 contracts is current, claim a domain, publish your listing.
 Engine in `packages/ui/src/provider/` (pure, reader-injected, three-state), renderer in
-`packages/ui/src/domain/ProviderSelfServicePanel.tsx`, page at `stacks/vet/web/src/pages/ProviderSelfService.tsx`
+`packages/ui/src/domain/ProviderSelfServicePanel.tsx`, the flows plus the SEND in
+`packages/ui/src/domain/ProviderSelfServiceFlows.tsx`, thin pages at `stacks/{vet,groomer}/web`
 (route `/provider`).
 No backend on this path at all - every write is a wallet transaction to a contract the provider owns,
 the same posture as the owner wallet and for the same reason.
+Each action is gated on the matching `can*` boolean from its own plan, so **`indeterminate` disables a
+button exactly as `refused` does**: could-not-check is not permission.
+
+**VET AND GROOMER GET DIFFERENT FLOWS, and the split is real rather than cosmetic.** A groomer
+VERIFIES and does not ISSUE - `BUSINESS_TYPE=groomer` mounts no issuance routes - so a groomer has no
+`DogTagIssuer` clone at all. Flows 1, 2 and 3 are each keyed BY a clone (deploy one, select one, claim
+a domain FOR one), so for a groomer they are INAPPLICABLE, not merely hidden; flow 4 is keyed by
+`providerId`, so it applies to every provider and a groomer appears in the directory exactly as a vet
+does. Hence `ProviderFlowCapabilities`: the caller states what it is and the component never guesses
+from a URL or a build flag. Mounting for vets alone would have left a groomer with no way to publish
+its contacts or location at all.
+
+**The anchor's `schema`/`codec`/`hashAlgorithm`/`contenthash` live in the PLAN STEP, not at the call
+site.** `ProviderDirectory` reverts `BadProfileAnchor` on a zero `schema` or `hashAlgorithm`, and a
+second sender filling them in itself would be free to invent different values for the same blob -
+one document with two on-chain descriptions of what it is. `hashAlgorithm` is keccak-256's multicodec
+`0x1b` because that is what the digest function actually is; naming sha2-256 (`0x12`) because it is the
+commoner constant would make a verifier recompute the wrong hash and call a genuine blob altered.
+`contenthash` is EMPTY while S-17 does not exist - publishing a location nothing serves is a worse
+claim than publishing none.
 
 **C-7 IS DONE: `ProviderDirectory` and `ServiceDomainResolver` are DEPLOYED on ROAX and UNWIRED.**
 Addresses, transaction hashes, blocks and the signer live in `contracts/deployments/roax.json` under
@@ -2104,15 +2125,20 @@ last time.
 flows plus every negative against the REAL core, router, both factory generations, real clones, the
 domain resolver and the directory - no doubles, because the claims are about how those compose. It is in
 `forge test`, which is NOT in the no-mistakes gate, so it is operator-invoked. The engine's 46 tests are
-in `packages/ui`, which IS in the gate. `scripts/verify-provider-selfservice-mutations.sh` is the
-repeatable mutation gate (9 mutations); it self-tests, reporting an unapplied mutation as INERT and
-exiting 1. One mutation was REJECTED from it for being behaviour-preserving - deleting the explicit
+in `packages/ui`, which IS in the gate. `scripts/verify-provider-selfservice-mutations.sh` (`make
+verify-provider-selfservice-mutations`) is the repeatable mutation gate (10 mutations); it self-tests,
+reporting an unapplied mutation as INERT and exiting 1. One mutation was REJECTED from it for being behaviour-preserving - deleting the explicit
 lowercase check in `validateDomain` leaves the charset rule below it refusing uppercase anyway, so only
 the message changed and calling that "unpinned" would have been the inert-mutation reading the harness
 exists to avoid.
 
-**Rendering a vet-portal page locally without a backend:** seed `localStorage["vet.opToken"]` with any
-string - the Layout gates on its presence, so no login round trip is needed - and build with
+**Both `.env.example` files carry the five vars BLANK on purpose.** Blank is not an oversight: the
+generation-2 set is deployed but unwired, and a value shipped in a template opts every deployment that
+copies it into reading generation 2 without anyone deciding to. The code has no fallback either, so a
+blank cannot fall through to a bundled constant.
+
+**Rendering a vet- or groomer-portal page locally without a backend:** seed
+`localStorage["vet.opToken"]` (or `"groomer.opToken"`) with any string - the Layout gates on its presence, so no login round trip is needed - and build with
 `VITE_VET_API_BASE` and `VITE_CENTRAL_API_BASE` set to an absolute dead host, which takes `/api` out of
 the picture entirely so `vite preview`'s `server.proxy` can never reach the captain's live backend.
 `vite preview` binds **IPv6-only**, so probe `http://[::1]:<port>` - a `127.0.0.1` curl reports a

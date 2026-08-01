@@ -434,6 +434,11 @@ export {
 
 // provider self-service (registry-plan S-15)
 export {
+  ProviderSelfServiceFlows,
+  type ProviderFlowCapabilities,
+  type ProviderSelfServiceFlowsProps,
+} from "./domain/ProviderSelfServiceFlows";
+export {
   CloneLifecycleCard,
   DeployPlanCard,
   DirectoryPublicationCard,
