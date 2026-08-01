@@ -25,7 +25,7 @@ cd "$(cd "$(dirname "$0")/.." && pwd)"
 export LC_ALL=C
 
 TS_TARGETS="packages/ui/src/mirror/contentAddress.ts packages/ui/src/mirror/resolveProfile.ts packages/ui/src/mirror/profileBlob.ts packages/ui/src/mirror/ProviderLogo.tsx packages/ui/src/provider/directoryPlan.ts packages/ui/src/domain/ProviderSelfServicePanel.tsx"
-RS_TARGETS="stacks/indexer/api/src/mirror.rs"
+RS_TARGETS="stacks/indexer/api/src/mirror.rs stacks/indexer/api/src/routes.rs"
 BACKUP=$(mktemp -d)
 for f in $TS_TARGETS $RS_TARGETS; do mkdir -p "$BACKUP/$(dirname "$f")"; cp "$f" "$BACKUP/$f"; done
 restore() { for f in $TS_TARGETS $RS_TARGETS; do cp "$BACKUP/$f" "$f"; done; }
@@ -267,6 +267,15 @@ mutate "an SVG logo admitted by the picker (a document that can carry script, in
   test/contentAddress.test.ts
 
 # ---- the mirror itself (Rust) ------------------------------------------------------------------
+# The write gate is a DEDICATED ingest token, not the oversight scope registry. Re-admitting
+# `authenticate` here is the original design error: it would put read authority over the event feed
+# back into the value the portals ship in a public browser bundle.
+mutate_rs "the oversight scope registry re-admitted on the write route (a read bearer in a public bundle)" \
+  stacks/indexer/api/src/routes.rs \
+  "    authorize_mirror_ingest(&st, &headers)?;" \
+  "    authenticate(&st, &headers)?;" \
+  "--test content_mirror"
+
 mutate_rs "the mirror accepts content at an address it does not hash to" \
   stacks/indexer/api/src/mirror.rs \
   "    let computed = content_address(bytes);

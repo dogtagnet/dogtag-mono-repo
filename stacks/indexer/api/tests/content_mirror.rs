@@ -29,7 +29,11 @@ use indexer_api::store::{MemStore, Store};
 const FACTORY: &str = "0x00000000000000000000000000000000000fac70";
 const REGISTRY: &str = "0x0000000000000000000000000000000000c0ce61";
 const VREG: &str = "0x0000000000000000000000000000000000c05e61";
+/// The oversight scope token. Kept BECAUSE it must now be REFUSED by the write route - the
+/// separation this file exists to prove is not provable without a token that used to work.
 const TOKEN: &str = "publisher";
+/// The dedicated content-ingest bearer, and the only thing `PUT /v1/content/:address` accepts.
+const INGEST_TOKEN: &str = "mirror-ingest";
 
 fn cfg() -> Config {
     Config {
@@ -44,6 +48,7 @@ fn cfg() -> Config {
         default_page_limit: 100,
         max_page_limit: 1000,
         explorer_base: "https://explorer.roax.net".into(),
+        mirror_ingest_token: Some(INGEST_TOKEN.into()),
     }
 }
 
@@ -128,7 +133,7 @@ async fn published_content_round_trips_under_its_own_address() {
     let bytes = png("the-provider-logo");
     let address = content_address(&bytes);
 
-    let (status, body) = put(&state, &address, bytes.clone(), "image/png", Some(TOKEN)).await;
+    let (status, body) = put(&state, &address, bytes.clone(), "image/png", Some(INGEST_TOKEN)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["address"], address);
 
@@ -151,7 +156,7 @@ async fn content_that_does_not_hash_to_its_address_is_refused_and_stores_nothing
     let impostor = png("a-different-logo-entirely");
     let address = content_address(&honest);
 
-    let (status, body) = put(&state, &address, impostor, "image/png", Some(TOKEN)).await;
+    let (status, body) = put(&state, &address, impostor, "image/png", Some(INGEST_TOKEN)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         body["error"].as_str().unwrap().contains("does not hash to the address"),
@@ -232,12 +237,12 @@ async fn svg_is_refused_however_correct_its_address_and_relabelling_does_not_get
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#.to_vec();
     let address = content_address(&svg);
 
-    let (status, body) = put(&state, &address, svg.clone(), "image/svg+xml", Some(TOKEN)).await;
+    let (status, body) = put(&state, &address, svg.clone(), "image/svg+xml", Some(INGEST_TOKEN)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
     // The sniff is what stops the allowlist being bypassed by a lie about the type. Without it the
     // declared type would be the only gate, and the declaration is provider-supplied.
-    let (status, body) = put(&state, &address, svg, "image/png", Some(TOKEN)).await;
+    let (status, body) = put(&state, &address, svg, "image/png", Some(INGEST_TOKEN)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(mirror.is_empty(), "neither attempt may store anything");
 }
@@ -254,7 +259,7 @@ async fn publishing_needs_a_token_while_reading_does_not() {
     let (status, _) = put(&state, &address, bytes.clone(), "image/png", Some("not-a-token")).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    let (status, _) = put(&state, &address, bytes, "image/png", Some(TOKEN)).await;
+    let (status, _) = put(&state, &address, bytes, "image/png", Some(INGEST_TOKEN)).await;
     assert_eq!(status, StatusCode::OK);
 
     // The read surface is public, like the rest of the provider directory: what it serves is a
@@ -269,7 +274,7 @@ async fn the_profile_blob_round_trips_as_json() {
     let blob = br#"{"schema":"dogtag/provider-profile/2","contact":{"phone":"+65 6123 4567"}}"#.to_vec();
     let address = content_address(&blob);
 
-    let (status, body) = put(&state, &address, blob.clone(), PROFILE_MEDIA_TYPE, Some(TOKEN)).await;
+    let (status, body) = put(&state, &address, blob.clone(), PROFILE_MEDIA_TYPE, Some(INGEST_TOKEN)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     let (status, media_type, served) = get(&state, &address).await;
@@ -286,7 +291,7 @@ async fn a_malformed_address_names_nothing_and_cannot_be_written_to() {
     let (status, _, _) = get(&state, "0xnot-an-address").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    let (status, body) = put(&state, "0x1234", bytes, "image/png", Some(TOKEN)).await;
+    let (status, body) = put(&state, "0x1234", bytes, "image/png", Some(INGEST_TOKEN)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
@@ -297,7 +302,7 @@ async fn the_served_response_forbids_content_type_sniffing() {
     let state = state(MemContentMirror::new());
     let bytes = png("some-logo");
     let address = content_address(&bytes);
-    put(&state, &address, bytes, "image/png", Some(TOKEN)).await;
+    put(&state, &address, bytes, "image/png", Some(INGEST_TOKEN)).await;
 
     let response = indexer_api::router(state.clone())
         .oneshot(
@@ -328,7 +333,7 @@ async fn a_full_mirror_answers_507_and_names_the_limit_rather_than_400() {
 
     let bytes = png("one-too-many");
     let address = content_address(&bytes);
-    let (status, body) = put(&state, &address, bytes, "image/png", Some(TOKEN)).await;
+    let (status, body) = put(&state, &address, bytes, "image/png", Some(INGEST_TOKEN)).await;
     assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
     let message = body["error"].as_str().unwrap_or_default();
     assert!(message.contains("full"), "the reason must name the real constraint: {message}");
@@ -353,6 +358,89 @@ async fn re_publishing_content_the_mirror_already_holds_is_admitted_at_the_cap()
     }
     let state = state(mirror);
 
-    let (status, _) = put(&state, &address, bytes, "image/png", Some(TOKEN)).await;
+    let (status, _) = put(&state, &address, bytes, "image/png", Some(INGEST_TOKEN)).await;
     assert_eq!(status, StatusCode::OK, "an already-held address is not growth");
+}
+
+// ---- the write gate is the DEDICATED ingest token, never the oversight scope registry ----------
+//
+// A secret that ships in a public bundle is not a secret; it is a capability grant to every visitor.
+// The provider portals hold this token in the browser, so the only question is what it grants, and
+// these cases pin the answer: publish content, and nothing else.
+
+#[tokio::test]
+async fn an_oversight_scope_token_is_refused_by_the_write_route() {
+    // THE case that decides whether the separation is real. Without it the change reads as merely
+    // additive, and a build that accepted BOTH tokens would pass every other test in this file
+    // while leaving the browser-shipped value an oversight read bearer over the whole feed.
+    let state = state(MemContentMirror::new());
+    let bytes = png("published-by-an-oversight-token");
+    let address = content_address(&bytes);
+
+    let (status, body) = put(&state, &address, bytes, "image/png", Some(TOKEN)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("read authority"),
+        "the refusal must say why an oversight token is not accepted here: {body}"
+    );
+
+    let (read, _, _) = get(&state, &address).await;
+    assert_eq!(read, StatusCode::NOT_FOUND, "a refused write may store nothing");
+}
+
+#[tokio::test]
+async fn writes_are_refused_outright_when_no_ingest_token_is_configured() {
+    // Fail closed. Never fall back to the scope registry, and never leave writes open: an open
+    // write surface on a public read endpoint is a free content host.
+    let mut cfg_without = cfg();
+    cfg_without.mirror_ingest_token = None;
+    let mut state = state(MemContentMirror::new());
+    state.cfg = Arc::new(cfg_without);
+
+    let bytes = png("nowhere-to-go");
+    let address = content_address(&bytes);
+    for token in [None, Some(TOKEN), Some(INGEST_TOKEN)] {
+        let (status, _) = put(&state, &address, bytes.clone(), "image/png", token).await;
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "an unconfigured mirror accepts nothing from anyone"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_wrong_or_absent_ingest_token_is_refused_and_the_right_one_is_accepted() {
+    let state = state(MemContentMirror::new());
+    let bytes = png("gated");
+    let address = content_address(&bytes);
+
+    let (missing, _) = put(&state, &address, bytes.clone(), "image/png", None).await;
+    assert_eq!(missing, StatusCode::UNAUTHORIZED);
+    let (wrong, _) = put(
+        &state,
+        &address,
+        bytes.clone(),
+        "image/png",
+        Some("mirror-ingest-but-not-quite"),
+    )
+    .await;
+    assert_eq!(wrong, StatusCode::UNAUTHORIZED);
+
+    let (ok, _) = put(&state, &address, bytes, "image/png", Some(INGEST_TOKEN)).await;
+    assert_eq!(ok, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn reads_stay_public_and_need_no_token_of_any_kind() {
+    // Only the WRITE gate moved. A content address is checked against the bytes it names, so
+    // serving them confers nothing and gating the read would buy no integrity.
+    let state = state(MemContentMirror::new());
+    let bytes = png("world-readable-by-design");
+    let address = content_address(&bytes);
+    put(&state, &address, bytes.clone(), "image/png", Some(INGEST_TOKEN)).await;
+
+    let (status, _, served) = get(&state, &address).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(served, bytes);
 }

@@ -30,6 +30,8 @@ use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
+use alloy::primitives::keccak256;
+
 use crate::app::{keccak_key, AppState};
 use crate::events::{EventType, Finality, IndexedEvent};
 use crate::mirror::{ContentRead, IngestRejection, MAX_CONTENT_BYTES};
@@ -86,6 +88,61 @@ fn authenticate<'a>(st: &'a AppState, headers: &HeaderMap) -> Result<&'a Princip
     st.scopes
         .resolve(&token)
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unknown or unauthorized token"))
+}
+
+/// Compare two tokens without leaking either through timing.
+///
+/// The DIGESTS are compared rather than the raw bytes, so neither the configured token's LENGTH nor
+/// any prefix of it is observable: a length check followed by a byte loop would answer faster for a
+/// wrong-length guess than for a same-length one, which is the shape a short-circuiting `==` has.
+/// Same rule the `.ics` calendar feed token holds, for the same reason.
+fn constant_time_token_eq(presented: &str, configured: &str) -> bool {
+    let (a, b) = (
+        keccak256(presented.as_bytes()),
+        keccak256(configured.as_bytes()),
+    );
+    let mut difference = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        difference |= x ^ y;
+    }
+    difference == 0
+}
+
+/// The gate on `PUT /v1/content/:address`, and DELIBERATELY NOT [`authenticate`].
+///
+/// **This is a REPLACEMENT of that gate on this one route, never an addition**, and the difference
+/// is the whole point. The scope registry a bearer resolves through also gates `/v1/status`,
+/// `/v1/events`, `/v1/stats` and `/v1/issuers`, so a token accepted here by `authenticate` is an
+/// oversight READ bearer - and the provider portals ship this value into a public browser bundle,
+/// where every visitor holds it. Accepting both would leave that bundle carrying read authority over
+/// an operator's own event feed, or over every issuer's if the token were unscoped.
+///
+/// FAILS CLOSED when no ingest token is configured. Falling back to the scope registry would restore
+/// exactly the coupling above, and leaving writes open would make a public read endpoint a free
+/// content host.
+fn authorize_mirror_ingest(st: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let configured = st
+        .cfg
+        .mirror_ingest_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "this mirror accepts no content: MIRROR_INGEST_TOKEN is not configured",
+            )
+        })?;
+    let presented =
+        bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing bearer token"))?;
+    if !constant_time_token_eq(&presented, configured) {
+        return Err(err(
+            StatusCode::UNAUTHORIZED,
+            "not the content-ingest token. Oversight scope tokens are deliberately refused here: \
+             they carry read authority this route must never accept",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -886,11 +943,24 @@ async fn content(
 
 /// `PUT /v1/content/:address` — publish bytes under their own content address.
 ///
-/// Bearer-gated by the ordinary scope registry: writing to the mirror is an operator action, and an
-/// open write surface on a public read endpoint is a free content host. Any recognised principal may
-/// publish, scoped or unscoped, because the address constrains what can be written far more tightly
-/// than a scope could — a caller can only ever store the one blob that hashes to the address it
-/// names, so it cannot overwrite, displace or shadow anybody else's content.
+/// Gated by the DEDICATED `MIRROR_INGEST_TOKEN` (see [`authorize_mirror_ingest`]), never by the
+/// oversight scope registry.
+///
+/// **A SECRET THAT SHIPS IN A PUBLIC BUNDLE IS NOT A SECRET; it is a capability grant to every
+/// visitor.** The provider portals hold this token in the browser, so the only question worth asking
+/// is what it grants, and the answer here is one thing: publish bytes that hash to their own
+/// address. It reads nothing.
+///
+/// **This route originally reused the ordinary scope registry, and that was MY OWN DESIGN ERROR.**
+/// The doc argued the open write surface was safe "because the address constrains what can be
+/// written far more tightly than a scope could" - true, and about WRITE safety only. It never asked
+/// what READ authority the same token carries, which is `/v1/status`, `/v1/events`, `/v1/stats` and
+/// `/v1/issuers`. Wiring the token into the portals then pushed it into a public browser bundle,
+/// which is where that omission bites.
+///
+/// The address constraint still holds and is still worth stating: a caller can only ever store the
+/// one blob that hashes to the address it names, so it cannot overwrite, displace or shadow anybody
+/// else's content. Accumulation is bounded separately by the mirror's own capacity caps.
 ///
 /// The ingest check refuses content that does not hash to `address`. That is what makes this a
 /// content-addressed store rather than a key-value store with hexadecimal keys.
@@ -900,7 +970,7 @@ async fn put_content(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Json<Value>, ApiError> {
-    authenticate(&st, &headers)?;
+    authorize_mirror_ingest(&st, &headers)?;
 
     if body.len() > MAX_CONTENT_BYTES {
         return Err(err(

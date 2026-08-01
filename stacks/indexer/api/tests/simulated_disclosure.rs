@@ -123,6 +123,7 @@ fn cfg() -> Config {
         default_page_limit: 100,
         max_page_limit: 1000,
         explorer_base: "https://explorer.roax.net".into(),
+        mirror_ingest_token: None,
     }
 }
 

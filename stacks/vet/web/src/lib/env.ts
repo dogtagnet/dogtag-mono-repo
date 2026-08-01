@@ -27,6 +27,12 @@ export const env = {
   // The bearer the mirror's PUT requires. Blank and fallback-free like its neighbour: the write
   // path refuses up front when it is unset, rather than aborting a publication on its first upload.
   // Reading is unauthenticated, so this gates publishing alone.
+  //
+  // PUBLIC BY CONSTRUCTION: vite inlines this into the shipped bundle, so every visitor holds it.
+  // "Keep it secret" is advice nobody could follow here; what matters is what it GRANTS, which is
+  // exactly one capability - publish bytes that hash to their own content address. It reads nothing.
+  // It must be the indexer's MIRROR_INGEST_TOKEN and NEVER an oversight scope token, which would
+  // put read authority over the event feed into the same public bundle.
   contentMirrorToken: import.meta.env.VITE_CONTENT_MIRROR_TOKEN ?? "",
   /** This operator's own provider id, assigned by DogTag at approval. Opaque; never derived. */
   providerId: import.meta.env.VITE_PROVIDER_ID ?? "",

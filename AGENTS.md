@@ -5306,7 +5306,7 @@ reaches the fallback and pins nothing.
 
 `stacks/indexer/api/src/mirror.rs` serves it, `packages/ui/src/mirror/` fetches and CHECKS it.
 Full slice: the mirror routes, the profile blob v2 (contacts + logo), and `ProviderLogo`.
-Repeatable evidence: `make verify-content-mirror-mutations` (26 mutations, self-tested both ways).
+Repeatable evidence: `make verify-content-mirror-mutations` (27 mutations, self-tested both ways).
 
 **CORS is already handled and needs no change here**, but check `main.rs` rather than `routes.rs`
 before concluding otherwise: `build_cors()` wraps the WHOLE router at `main.rs`, permissive by default
@@ -5382,6 +5382,33 @@ mirror refuses the upload and publication is blocked), while **Rust widening alo
 costs more than the logo** - the mirror accepts a media type `parseProfileBlob` refuses, a refused
 logo entry fails the WHOLE profile document by design, and that provider's CONTACTS are withheld too
 with nothing anywhere reporting why.
+
+**THE WRITE GATE IS A DEDICATED `MIRROR_INGEST_TOKEN`, AND THIS WAS MY OWN DESIGN ERROR.**
+`PUT /v1/content/:address` originally reused the ordinary oversight scope registry, and its doc
+argued that was safe "because the address constrains what can be written far more tightly than a
+scope could". That reasoning is TRUE and it is about WRITE safety only - it never asked what READ
+authority the same token carries, which is `/v1/status`, `/v1/events`, `/v1/stats` and
+`/v1/issuers`. Wiring the token into the portals then pushed it into a public browser bundle, which
+is where the omission bites. Recorded as an error of mine rather than as "an issue was identified",
+because the wrong half of the question is the reusable lesson.
+**A SECRET THAT SHIPS IN A PUBLIC BUNDLE IS NOT A SECRET - it is a capability grant to every
+visitor.** Vite inlines every `VITE_*` value at build time, so `VITE_CONTENT_MIRROR_TOKEN` is held by
+anyone who loads the vet or groomer portal. "Keep it secret" is advice nobody could follow, so the
+only question that matters is what it GRANTS, and the answer must be the narrowest thing that still
+works. Before: oversight READS - a scoped token exposed that operator's own event feed to every
+visitor, an unscoped one every issuer's. After: publish bytes that hash to their own content
+address, which content addressing makes nearly inert (cannot overwrite, cannot shadow, cannot read)
+and which the capacity caps below bound.
+`authorize_mirror_ingest` REPLACES `authenticate` on that one route rather than joining it - keeping
+both would leave the browser-shipped value an oversight bearer, which is the entire defect. It
+compares in constant time over DIGESTS, so neither the token's length nor a prefix leaks; it FAILS
+CLOSED with a named 503 when `MIRROR_INGEST_TOKEN` is unset, never falling back to the scope
+registry; and READS stay public and unauthenticated, because a content address is checked against
+the bytes it names so serving them confers nothing. Demo wires
+`dogtag-indexer-mirror-ingest-demo-token` beside the two well-known oversight tokens, deliberately
+separate. The load-bearing test is
+`an_oversight_scope_token_is_refused_by_the_write_route`: without it the change reads as merely
+additive and a build accepting BOTH tokens would pass everything else.
 
 **THE MIRROR IS BOUNDED, AND IT FILLS RATHER THAN EVICTING.** `MAX_CONTENT_BYTES` bounds ONE object
 and says nothing about accumulation, so `MAX_MIRROR_OBJECTS` (4,096) and `MAX_MIRROR_TOTAL_BYTES`

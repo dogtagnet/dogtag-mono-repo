@@ -36,6 +36,32 @@ pub struct Config {
     pub max_page_limit: usize,
     /// Block-explorer base (e.g. `https://explorer.roax.net`) for `txUrl` links in responses.
     pub explorer_base: String,
+
+    /// `MIRROR_INGEST_TOKEN`: the bearer `PUT /v1/content/:address` requires, and the ONLY thing
+    /// that bearer authorizes.
+    ///
+    /// **PUBLIC BY CONSTRUCTION, and that is a statement about where it lives rather than advice.**
+    /// The provider portals ship it to the browser as `VITE_CONTENT_MIRROR_TOKEN`, which vite
+    /// INLINES into the bundle at build time, so every visitor holds it. "Keep this secret" would be
+    /// advice nobody could follow; the honest question is what it GRANTS, and the answer must be the
+    /// narrowest thing that still works.
+    ///
+    /// It grants exactly one capability: publish bytes that hash to their own content address. That
+    /// is nearly inert - such a caller cannot overwrite, cannot displace, cannot shadow anybody
+    /// else's content, cannot READ anything at all, and is bounded by [`MAX_MIRROR_OBJECTS`] and
+    /// [`MAX_MIRROR_TOTAL_BYTES`].
+    ///
+    /// **It is NOT an oversight bearer and confers no read of any kind.** Never set it to an
+    /// `INDEXER_SCOPES` token: those resolve through the scope registry, which gates `/v1/status`,
+    /// `/v1/events`, `/v1/stats` and `/v1/issuers`, so a scope token in a browser bundle would make
+    /// that operator's event feed world-readable - and an unscoped one would publish every issuer's.
+    ///
+    /// `None` REFUSES every write. Never fall back to the scope registry, and never leave writes
+    /// open when unset: an open write surface on a public read endpoint is a free content host.
+    ///
+    /// [`MAX_MIRROR_OBJECTS`]: crate::mirror::MAX_MIRROR_OBJECTS
+    /// [`MAX_MIRROR_TOTAL_BYTES`]: crate::mirror::MAX_MIRROR_TOTAL_BYTES
+    pub mirror_ingest_token: Option<String>,
 }
 
 impl Config {
