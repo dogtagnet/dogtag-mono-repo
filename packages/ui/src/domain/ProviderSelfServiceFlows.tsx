@@ -15,6 +15,21 @@
  * the matching `can*` boolean from the plan it belongs to, so a transaction is never offered for a
  * flow the preflight refused or could not resolve - `indeterminate` disables the button just as
  * `refused` does, because "we could not check" is not permission.
+ *
+ * TWO RULES GOVERN THE SEND, and both close the same defect: a verdict stated before the fact is
+ * established.
+ *
+ *  1. **A send acts on what was CHECKED, never on what the form holds now.** Every handler used to
+ *     read current state while its gate came from a plan computed earlier, so editing an input after
+ *     pressing Check sent an unchecked value. On flow 2 that was not merely confusing: pasting a
+ *     DIFFERENT clone the caller also owns would SUCCEED and silently move the wrong record type's
+ *     pointer. Two mechanisms now stand between that, deliberately, so neither is load-bearing
+ *     alone - a plan is INVALIDATED when any input it depends on changes (the button disables and
+ *     the panel says why), and every send addresses the plan's OWN captured values.
+ *  2. **A submitted transaction is not a completed one.** `writeContractAsync` resolves on a hash
+ *     and does not throw on a revert, so the outcome is read from the receipt and reported as
+ *     itself. See `../provider/sendOutcome` for the four states and why the fourth cannot collapse
+ *     into either neighbour.
  */
 
 import { useCallback, useMemo, useState, type ReactNode } from "react";
@@ -30,6 +45,8 @@ import {
 } from "../components/Card";
 import { Input } from "../components/Input";
 import { Label } from "../components/Label";
+import { PROVIDER_CONTACT_CHANNELS } from "../directory/channels";
+import { blankContactFields } from "../directory/registration";
 import {
   ATTACHMENT_IS_NOT_SELF_SERVICE,
   assessCandidateClone,
@@ -38,15 +55,23 @@ import {
   CONTACT_ONLY_NOTICE,
   CONTACTS_ARE_ANCHORED_NOT_SERVED,
   createLiveProviderReader,
+  mayContinueAfter,
+  outcomeFromReceiptStatus,
   planCloneDeployment,
   planDirectoryPublication,
   REPOINT_SCOPE_NOTICE,
+  sendExplorerHref,
+  sendRecord,
+  sendStateLabel,
   validateDomain,
+  WITHDRAW_LOCATION_NOTICE,
   type CloneAssessment,
   type DeployPlan,
   type DirectoryPublicationPlan,
   type DomainClaimAssessment,
   type ProviderContracts,
+  type SendRecord,
+  type SendState,
 } from "../provider";
 import {
   CORE_ABI,
@@ -54,6 +79,7 @@ import {
   DOMAIN_ABI,
   FACTORY_ABI,
 } from "../provider/liveReader";
+import { roaxPublicClient } from "../wallet/contracts";
 import {
   CloneLifecycleCard,
   DeployPlanCard,
@@ -81,8 +107,32 @@ export interface ProviderSelfServiceFlowsProps {
   capabilities: ProviderFlowCapabilities;
 }
 
-const BLANK_CONTACTS = { phone: "", whatsapp: "", telegram: "", email: "", website: "" };
-const CONTACT_CHANNELS = ["phone", "whatsapp", "telegram", "email", "website"] as const;
+/**
+ * How long to follow a transaction before reporting its outcome as unestablished.
+ *
+ * A bound is required, because the alternative to `unknown` here is not "wait a little longer" - it
+ * is a spinner that never resolves and a provider who cannot tell whether anything happened.
+ */
+const RECEIPT_TIMEOUT_MS = 90_000;
+
+/**
+ * A plan plus the inputs it was computed FROM.
+ *
+ * The key is compared against the live inputs on every render, so a plan whose inputs moved stops
+ * gating anything - see rule 1 in the module header.
+ */
+interface Checked<T> {
+  key: string;
+  plan: T;
+}
+
+function fresh<T>(held: Checked<T> | null, key: string): T | null {
+  return held && held.key === key ? held.plan : null;
+}
+
+function isStale<T>(held: Checked<T> | null, key: string): boolean {
+  return !!held && held.key !== key;
+}
 
 export function ProviderSelfServiceFlows({
   contracts,
@@ -101,16 +151,20 @@ export function ProviderSelfServiceFlows({
   const [domain, setDomain] = useState("");
   const [latInput, setLatInput] = useState("");
   const [lngInput, setLngInput] = useState("");
-  const [contacts, setContacts] = useState(BLANK_CONTACTS);
+  // Folded from the SHARED channel list rather than a local literal, so a sixth channel cannot be
+  // added to the list and silently missed here.
+  const [contacts, setContacts] = useState(() => blankContactFields());
 
-  const [deploy, setDeploy] = useState<DeployPlan | null>(null);
-  const [clone, setClone] = useState<CloneAssessment | null>(null);
-  const [domainState, setDomainState] = useState<DomainClaimAssessment | null>(null);
-  const [publication, setPublication] = useState<DirectoryPublicationPlan | null>(null);
+  const [deployHeld, setDeployHeld] = useState<Checked<DeployPlan> | null>(null);
+  const [cloneHeld, setCloneHeld] = useState<Checked<CloneAssessment> | null>(null);
+  const [domainHeld, setDomainHeld] = useState<Checked<DomainClaimAssessment> | null>(null);
+  const [publicationHeld, setPublicationHeld] = useState<Checked<DirectoryPublicationPlan> | null>(
+    null,
+  );
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState<string[]>([]);
+  const [sent, setSent] = useState<SendRecord[]>([]);
 
   const reader = useMemo(
     () => (missingConfig.length ? null : createLiveProviderReader({ contracts, rpcUrl })),
@@ -120,6 +174,19 @@ export function ProviderSelfServiceFlows({
   const providerIdOk = /^0x[0-9a-fA-F]{40}$/.test(providerId);
   const caller = address as `0x${string}` | undefined;
 
+  // The input fingerprints. Anything a plan's answer depends on belongs in its key; a value left out
+  // is a value that can be edited after Check without disabling the button, which is the whole bug.
+  const identity = `${caller ?? ""}|${providerId}`;
+  const deployKey = `${identity}|${recordTypeKey}|${cloneNonce}`;
+  const cloneKey = `${identity}|${candidate}`;
+  const domainKey = `${identity}|${candidate}`;
+  const publicationKey = `${identity}|${latInput}|${lngInput}|${JSON.stringify(contacts)}`;
+
+  const deploy = fresh(deployHeld, deployKey);
+  const clone = fresh(cloneHeld, cloneKey);
+  const domainState = fresh(domainHeld, domainKey);
+  const publication = fresh(publicationHeld, publicationKey);
+
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -128,14 +195,46 @@ export function ProviderSelfServiceFlows({
     } catch (e) {
       // A throw here is a fault in THIS surface or a rejected signature - never a verdict about the
       // provider. Every chain READ the engine makes is already caught and reported as its own
-      // could-not-run, so nothing that reaches here can be mistaken for one.
+      // could-not-run, and every transaction OUTCOME is reported as its own record, so nothing that
+      // reaches here can be mistaken for either.
       setError(e instanceof Error ? e.message.split("\n")[0]! : String(e));
     } finally {
       setBusy(false);
     }
   }, []);
 
-  const note = (hash: string, what: string) => setSent((s) => [`${what}: ${hash}`, ...s]);
+  /**
+   * Send one transaction and report what actually happened to it.
+   *
+   * The hash is recorded as `submitted` BEFORE the receipt is awaited, so a provider who closes the
+   * tab mid-wait still has the hash; it is then replaced in place by the settled record. Returns the
+   * final state so a multi-step sequence can stop rather than sending the next step after a revert.
+   */
+  const sendAndFollow = useCallback(
+    async (what: string, send: () => Promise<`0x${string}`>): Promise<SendState> => {
+      const hash = await send();
+      setSent((s) => [sendRecord(hash, what, "submitted"), ...s]);
+      const settle = (record: SendRecord) =>
+        setSent((s) => s.map((r) => (r.hash === record.hash ? record : r)));
+      try {
+        const receipt = await roaxPublicClient(rpcUrl).waitForTransactionReceipt({
+          hash,
+          timeout: RECEIPT_TIMEOUT_MS,
+        });
+        const state = outcomeFromReceiptStatus(receipt.status);
+        settle(sendRecord(hash, what, state));
+        return state;
+      } catch (e) {
+        // NOT a failure and NOT a success. A receipt we could not fetch says nothing about whether
+        // the transaction mined - it is routed here rather than into the page-level error, which
+        // would collapse it into the same bucket as a rejected signature.
+        const reason = e instanceof Error ? e.message.split("\n")[0]! : String(e);
+        settle(sendRecord(hash, what, "unknown", reason));
+        return "unknown";
+      }
+    },
+    [rpcUrl],
+  );
 
   if (missingConfig.length) {
     return (
@@ -205,15 +304,7 @@ export function ProviderSelfServiceFlows({
               {error}
             </p>
           ) : null}
-          {sent.length ? (
-            <ul className="text-xs text-muted-foreground" data-testid="sent-transactions">
-              {sent.map((s) => (
-                <li key={s} className="break-all font-mono">
-                  {s}
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          <SendLog records={sent} />
         </CardContent>
       </Card>
 
@@ -247,45 +338,44 @@ export function ProviderSelfServiceFlows({
                   disabled={!ready || !providerIdOk}
                   onClick={() =>
                     run(async () => {
-                      setDeploy(
-                        await planCloneDeployment(
-                          {
-                            providerId: providerId as `0x${string}`,
-                            recordType: recordTypeKey,
-                            caller: caller!,
-                            cloneNonce: BigInt(cloneNonce || "0"),
-                          },
-                          reader!,
-                        ),
+                      const plan = await planCloneDeployment(
+                        {
+                          providerId: providerId as `0x${string}`,
+                          recordType: recordTypeKey,
+                          caller: caller!,
+                          cloneNonce: BigInt(cloneNonce || "0"),
+                        },
+                        reader!,
                       );
+                      setDeployHeld({ key: deployKey, plan });
                     })
                   }
                 >
                   Check what this would deploy
                 </Button>
                 <Button
-                  // Gated on the plan, so a refused OR unresolved preflight offers no transaction.
+                  // Gated on the FRESH plan, so a refused, unresolved OR stale preflight offers no
+                  // transaction - and the arguments come from that plan, not from the fields.
                   disabled={!ready || !deploy?.canDeploy}
                   data-testid="deploy-send"
                   onClick={() =>
                     run(async () => {
-                      const hash = await writeContractAsync({
-                        address: contracts.factory,
-                        abi: FACTORY_ABI,
-                        functionName: "createIssuer",
-                        args: [
-                          providerId as `0x${string}`,
-                          recordTypeKey,
-                          BigInt(cloneNonce || "0"),
-                        ],
-                      });
-                      note(hash, "Deployed contract");
+                      const { request } = deploy!;
+                      await sendAndFollow("Deploy contract", () =>
+                        writeContractAsync({
+                          address: contracts.factory,
+                          abi: FACTORY_ABI,
+                          functionName: "createIssuer",
+                          args: [request.providerId, request.recordType, request.cloneNonce],
+                        }),
+                      );
                     })
                   }
                 >
                   Deploy
                 </Button>
               </div>
+              <StaleNotice stale={isStale(deployHeld, deployKey)} testId="deploy-stale" />
               {deploy ? (
                 <DeployPlanCard plan={deploy} attachmentNotice={ATTACHMENT_IS_NOT_SELF_SERVICE} />
               ) : null}
@@ -319,16 +409,15 @@ export function ProviderSelfServiceFlows({
                   disabled={!ready || !providerIdOk || !candidate}
                   onClick={() =>
                     run(async () => {
-                      setClone(
-                        await assessCandidateClone(
-                          {
-                            candidate: candidate as `0x${string}`,
-                            caller: caller!,
-                            providerId: providerId as `0x${string}`,
-                          },
-                          reader!,
-                        ),
+                      const plan = await assessCandidateClone(
+                        {
+                          candidate: candidate as `0x${string}`,
+                          caller: caller!,
+                          providerId: providerId as `0x${string}`,
+                        },
+                        reader!,
                       );
+                      setCloneHeld({ key: cloneKey, plan });
                     })
                   }
                 >
@@ -339,19 +428,23 @@ export function ProviderSelfServiceFlows({
                   data-testid="repoint-send"
                   onClick={() =>
                     run(async () => {
-                      const hash = await writeContractAsync({
-                        address: contracts.core,
-                        abi: CORE_ABI,
-                        functionName: "repointService",
-                        args: [candidate as `0x${string}`],
-                      });
-                      note(hash, "Selected contract");
+                      // The address the assessment JUDGED. Reading the field here is how a different
+                      // but also-owned clone gets selected silently.
+                      await sendAndFollow("Select contract", () =>
+                        writeContractAsync({
+                          address: contracts.core,
+                          abi: CORE_ABI,
+                          functionName: "repointService",
+                          args: [clone!.candidate],
+                        }),
+                      );
                     })
                   }
                 >
                   Make this my current contract
                 </Button>
               </div>
+              <StaleNotice stale={isStale(cloneHeld, cloneKey)} testId="repoint-stale" />
               {clone ? <CloneLifecycleCard assessment={clone} /> : null}
             </CardContent>
           </Card>
@@ -386,7 +479,12 @@ export function ProviderSelfServiceFlows({
                   disabled={!ready || !candidate}
                   onClick={() =>
                     run(async () => {
-                      setDomainState(await assessDomainClaim(candidate as `0x${string}`, caller!, reader!));
+                      const plan = await assessDomainClaim(
+                        candidate as `0x${string}`,
+                        caller!,
+                        reader!,
+                      );
+                      setDomainHeld({ key: domainKey, plan });
                     })
                   }
                 >
@@ -399,13 +497,17 @@ export function ProviderSelfServiceFlows({
                     run(async () => {
                       const v = validateDomain(domain);
                       if (!v.ok) throw new Error(v.reason);
-                      const hash = await writeContractAsync({
-                        address: contracts.domainResolver,
-                        abi: DOMAIN_ABI,
-                        functionName: "claimDomain",
-                        args: [candidate as `0x${string}`, v.domain],
-                      });
-                      note(hash, "Published domain");
+                      // The domain STRING is legitimately current - the assessment checks the
+                      // resolver and this key's authority, neither of which depends on it. The
+                      // SERVICE is the assessment's, for the same reason flow 2's is.
+                      await sendAndFollow("Publish domain", () =>
+                        writeContractAsync({
+                          address: contracts.domainResolver,
+                          abi: DOMAIN_ABI,
+                          functionName: "claimDomain",
+                          args: [domainState!.service, v.domain],
+                        }),
+                      );
                     })
                   }
                 >
@@ -417,13 +519,14 @@ export function ProviderSelfServiceFlows({
                   data-testid="domain-none-send"
                   onClick={() =>
                     run(async () => {
-                      const hash = await writeContractAsync({
-                        address: contracts.domainResolver,
-                        abi: DOMAIN_ABI,
-                        functionName: "declareNoDomain",
-                        args: [candidate as `0x${string}`],
-                      });
-                      note(hash, "Declared no domain");
+                      await sendAndFollow("Declare no domain", () =>
+                        writeContractAsync({
+                          address: contracts.domainResolver,
+                          abi: DOMAIN_ABI,
+                          functionName: "declareNoDomain",
+                          args: [domainState!.service],
+                        }),
+                      );
                     })
                   }
                 >
@@ -439,13 +542,14 @@ export function ProviderSelfServiceFlows({
                     data-testid="domain-withdraw-send"
                     onClick={() =>
                       run(async () => {
-                        const hash = await writeContractAsync({
-                          address: contracts.domainResolver,
-                          abi: DOMAIN_ABI,
-                          functionName: "clearDomain",
-                          args: [candidate as `0x${string}`],
-                        });
-                        note(hash, "Withdrew domain claim");
+                        await sendAndFollow("Withdraw domain claim", () =>
+                          writeContractAsync({
+                            address: contracts.domainResolver,
+                            abi: DOMAIN_ABI,
+                            functionName: "clearDomain",
+                            args: [domainState!.service],
+                          }),
+                        );
                       })
                     }
                   >
@@ -453,6 +557,7 @@ export function ProviderSelfServiceFlows({
                   </Button>
                 ) : null}
               </div>
+              <StaleNotice stale={isStale(domainHeld, domainKey)} testId="domain-stale" />
               {domainState ? <DomainClaimCard assessment={domainState} /> : null}
             </CardContent>
           </Card>
@@ -470,7 +575,7 @@ export function ProviderSelfServiceFlows({
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <div className="grid gap-3 sm:grid-cols-2">
-              {CONTACT_CHANNELS.map((channel) => (
+              {PROVIDER_CONTACT_CHANNELS.map((channel) => (
                 // Five channels in a two-column grid, so the last would sit half-width alone. A URL
                 // is also the longest value here, so spanning is the right shape and not only the
                 // tidier one.
@@ -503,21 +608,20 @@ export function ProviderSelfServiceFlows({
                 disabled={!ready || !providerIdOk}
                 onClick={() =>
                   run(async () => {
-                    setPublication(
-                      await planDirectoryPublication(
-                        {
-                          providerId: providerId as `0x${string}`,
-                          caller: caller!,
-                          latInput,
-                          lngInput,
-                          contacts,
-                          locationKind: 1,
-                          locationActive: true,
-                        },
-                        reader!,
-                        (utf8) => keccak256(toHex(utf8)),
-                      ),
+                    const plan = await planDirectoryPublication(
+                      {
+                        providerId: providerId as `0x${string}`,
+                        caller: caller!,
+                        latInput,
+                        lngInput,
+                        contacts,
+                        locationKind: 1,
+                        locationActive: true,
+                      },
+                      reader!,
+                      (utf8) => keccak256(toHex(utf8)),
                     );
+                    setPublicationHeld({ key: publicationKey, plan });
                   })
                 }
               >
@@ -528,48 +632,101 @@ export function ProviderSelfServiceFlows({
                 data-testid="publish-send"
                 onClick={() =>
                   run(async () => {
-                    // Sent in PLAN ORDER. The anchor lists the provider, so it goes first - and for
-                    // a contact-only provider there is simply no second step, which is the whole of
+                    // Sent in PLAN ORDER, from the plan's own captured digest, coordinates and
+                    // provider id. The anchor lists the provider, so it goes first - and for a
+                    // contact-only provider there is simply no second step, which is the whole of
                     // the no-placeholder rule: the absent pin is absent from the loop, not skipped
                     // inside it.
-                    for (const step of publication!.steps) {
-                      if (step.kind === "profileAnchor") {
-                        const hash = await writeContractAsync({
-                          address: contracts.directory,
-                          abi: DIRECTORY_ABI,
-                          functionName: "setProfileAnchor",
-                          args: [
-                            providerId as `0x${string}`,
-                            step.digest,
-                            step.schema,
-                            step.codec,
-                            step.hashAlgorithm,
-                            step.contenthash,
-                          ],
-                        });
-                        note(hash, "Published contact details");
-                      } else {
-                        const hash = await writeContractAsync({
-                          address: contracts.directory,
-                          abi: DIRECTORY_ABI,
-                          functionName: "publishPin",
-                          args: [
-                            providerId as `0x${string}`,
-                            step.lat,
-                            step.lng,
-                            step.locationKind,
-                            step.active,
-                          ],
-                        });
-                        note(hash, "Published location");
-                      }
+                    const plan = publication!;
+                    for (const step of plan.steps) {
+                      const state =
+                        step.kind === "profileAnchor"
+                          ? await sendAndFollow("Publish contact details", () =>
+                              writeContractAsync({
+                                address: contracts.directory,
+                                abi: DIRECTORY_ABI,
+                                functionName: "setProfileAnchor",
+                                args: [
+                                  plan.providerId,
+                                  step.digest,
+                                  step.schema,
+                                  step.codec,
+                                  step.hashAlgorithm,
+                                  step.contenthash,
+                                ],
+                              }),
+                            )
+                          : step.op === "publish"
+                            ? await sendAndFollow("Publish location", () =>
+                                writeContractAsync({
+                                  address: contracts.directory,
+                                  abi: DIRECTORY_ABI,
+                                  functionName: "publishPin",
+                                  args: [
+                                    plan.providerId,
+                                    step.lat,
+                                    step.lng,
+                                    step.locationKind,
+                                    step.active,
+                                  ],
+                                }),
+                              )
+                            : // The step that stops one provider appearing in two places: a second
+                              // Publish REWRITES the pin it is correcting rather than appending.
+                              await sendAndFollow("Replace location", () =>
+                                writeContractAsync({
+                                  address: contracts.directory,
+                                  abi: DIRECTORY_ABI,
+                                  functionName: "updatePin",
+                                  args: [
+                                    plan.providerId,
+                                    step.locationNo,
+                                    step.lat,
+                                    step.lng,
+                                    step.locationKind,
+                                    step.active,
+                                  ],
+                                }),
+                              );
+                      // A reverted or unfollowable step stops the sequence. `writeContractAsync`
+                      // does not throw on a revert, so without this the pin would be sent after the
+                      // anchor had already failed.
+                      if (!mayContinueAfter(state)) return;
                     }
                   })
                 }
               >
                 Publish
               </Button>
+              {publication?.canWithdrawPin ? (
+                <Button
+                  variant="outline"
+                  data-testid="withdraw-pin-send"
+                  disabled={!ready}
+                  onClick={() =>
+                    run(async () => {
+                      const plan = publication!;
+                      await sendAndFollow("Withdraw location", () =>
+                        writeContractAsync({
+                          address: contracts.directory,
+                          abi: DIRECTORY_ABI,
+                          functionName: "removePin",
+                          args: [plan.providerId, plan.listing!.onlyPin!.locationNo],
+                        }),
+                      );
+                    })
+                  }
+                >
+                  Take my published location down
+                </Button>
+              ) : null}
             </div>
+            {publication?.canWithdrawPin ? (
+              <p className="text-xs text-muted-foreground" data-testid="withdraw-pin-notice">
+                {WITHDRAW_LOCATION_NOTICE}
+              </p>
+            ) : null}
+            <StaleNotice stale={isStale(publicationHeld, publicationKey)} testId="publish-stale" />
             {publication ? (
               <DirectoryPublicationCard
                 plan={publication}
@@ -581,5 +738,73 @@ export function ProviderSelfServiceFlows({
         </Card>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Says the plan on screen is about values that have since changed.
+ *
+ * Rendered rather than silently clearing the panel: the checks are still worth reading, and a panel
+ * that vanished on the first keystroke would look like a fault. The button is disabled either way -
+ * this is the half that explains WHY.
+ */
+function StaleNotice({ stale, testId }: { stale: boolean; testId: string }): ReactNode {
+  if (!stale) return null;
+  return (
+    <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={testId}>
+      You have changed something since this was checked, so what is shown below is about the earlier
+      values. Check again before sending.
+    </p>
+  );
+}
+
+const SEND_STATE_STYLE: Readonly<Record<SendState, string>> = {
+  // Amber, not neutral: an outcome nobody has established yet is a gap in what is known.
+  submitted: "text-amber-700 dark:text-amber-400",
+  succeeded: "text-emerald-700 dark:text-emerald-400",
+  reverted: "text-red-700 dark:text-red-400",
+  unknown: "text-amber-700 dark:text-amber-400",
+};
+
+/**
+ * What was sent, and what became of it.
+ *
+ * Each row states its own outcome rather than implying one from the fact that a hash exists, and
+ * links the transaction only when the hash can actually address one.
+ */
+function SendLog({ records }: { records: readonly SendRecord[] }): ReactNode {
+  if (records.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-2 text-xs" data-testid="sent-transactions">
+      {records.map((r) => {
+        const href = sendExplorerHref(r);
+        return (
+          <li key={r.hash} data-testid={`sent-${r.state}`}>
+            <span className="text-muted-foreground">{r.what}</span>{" "}
+            <span className={SEND_STATE_STYLE[r.state]}>{sendStateLabel(r.state)}</span>
+            <br />
+            {href ? (
+              <a
+                className="break-all font-mono underline"
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {r.hash}
+              </a>
+            ) : (
+              <span className="break-all font-mono text-muted-foreground">{r.hash}</span>
+            )}
+            {r.unknownReason ? (
+              // Printed, not hovered - the same rule the check rows follow. This sentence is what
+              // distinguishes "we could not follow it" from "it failed".
+              <span className="block text-amber-700 dark:text-amber-400">
+                Why the outcome is not known: {r.unknownReason}
+              </span>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

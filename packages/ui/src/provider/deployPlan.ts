@@ -39,6 +39,14 @@ export interface DeployPlanRequest {
 }
 
 export interface DeployPlan {
+  /**
+   * The exact inputs this plan was computed from, carried back out.
+   *
+   * A send addresses THESE, never whatever the form holds when the button is pressed. The free-nonce
+   * and `canCreateService` answers below are about this record type and this number; sending a
+   * different pair would be deploying something nobody checked.
+   */
+  request: DeployPlanRequest;
   checks: ProviderCheck[];
   verdict: ProviderVerdict;
   /**
@@ -148,6 +156,7 @@ export async function planCloneDeployment(
 
   const verdict = foldVerdict(checks);
   return {
+    request: { providerId, recordType, caller, cloneNonce },
     checks,
     verdict,
     ...(predictedAddress ? { predictedAddress } : {}),

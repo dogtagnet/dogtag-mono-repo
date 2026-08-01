@@ -49,8 +49,14 @@ export type CloneLifecycle =
 export type ProviderCheckId =
   /** Did our own configured factory deploy this address? */
   | "clone-provenance"
-  /** Does the caller's key own the clone right now? */
+  /**
+   * WHO owns the clone right now. A REPORT, not an authorization - see `clone-write-authority`.
+   * Owning the contract and being allowed to select it are different facts, and the chain admits a
+   * delegate who owns nothing.
+   */
   | "clone-control"
+  /** Would the CHAIN accept a repoint from this key? Composed from `canWriteService`, never re-derived. */
+  | "clone-write-authority"
   /** Is the clone attached to this provider in the core? */
   | "clone-attachment"
   /** Does the clone's lifecycle currently permit writes at all? */
@@ -66,7 +72,11 @@ export type ProviderCheckId =
   /** Is the directory resolver approved fleet-wide and selected by this provider? */
   | "directory-resolver-live"
   /** Is the location input usable, or deliberately absent? */
-  | "directory-location";
+  | "directory-location"
+  /** What is already published, so a re-publish can UPDATE rather than append a second pin. */
+  | "directory-listing-state"
+  /** Is there anything to publish at all? */
+  | "directory-contents";
 
 /**
  * One check's answer.

@@ -237,7 +237,7 @@ export function DirectoryPublicationCard({
   contactOnlyNotice: string;
   anchoredNotice: string;
 }): ReactNode {
-  const pinSteps = plan.steps.filter((s) => s.kind === "pin");
+  const pinStep = plan.steps.find((s) => s.kind === "pin");
   return (
     <section className="rounded-lg border border-border p-4" data-testid="directory-publication">
       <header className="flex items-center justify-between gap-3">
@@ -245,10 +245,18 @@ export function DirectoryPublicationCard({
         <ProviderVerdictBadge verdict={plan.verdict} />
       </header>
 
+      {/* Derived from the INPUT first and the steps second, because an absent pin step has three
+          different meanings and only one of them is "no location was given". The other two - the
+          published location is already exactly this, and what is published could not be read - must
+          not be reported as a contact-only publication. */}
       <p className="mt-2 text-sm" data-testid="publication-shape">
-        {pinSteps.length === 0
+        {plan.contactOnly
           ? "Contact details only - no location will be published."
-          : "Contact details and one location."}
+          : pinStep
+            ? pinStep.op === "update"
+              ? "Contact details, and a replacement for the location you have already published."
+              : "Contact details and one location."
+            : "The location you gave is not being sent - the checks below say why."}
       </p>
 
       {/* Rendered whenever no location is being published, including when the location was REFUSED.

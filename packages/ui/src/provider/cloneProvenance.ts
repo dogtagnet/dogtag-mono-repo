@@ -15,10 +15,26 @@
  * collapse:
  *
  *   1. PROVENANCE  - did OUR configured factory deploy it? Stops a hand-rolled contract.
- *   2. CONTROL     - does the caller's key own it? Provenance is not attribution: without this,
- *                    provider A can point its listing at provider B's perfectly genuine clone.
+ *   2. AUTHORITY   - would the CHAIN accept a repoint from this key? Provenance is not attribution:
+ *                    without this, provider A can point its listing at provider B's genuine clone.
  *   3. ATTACHMENT  - is it attached to THIS provider in the core? This is the one fact chain
  *                    provenance cannot establish, and it is the registrar's to assert.
+ *
+ * THE AUTHORITY QUESTION IS COMPOSED, NEVER RE-DERIVED. `repointService` is gated by
+ * `ProviderRegistry.canWriteService(service, caller, SERVICE_PERMISSION_REPOINT)`, which admits the
+ * confirmed live owner OR an owner-epoch-scoped delegate holding that bit. This module used to ask
+ * `owner() == caller` instead and refuse anything else - a preflight STRICTER than the chain, which
+ * told a legitimate delegate its key may not select a contract the chain would have let it select.
+ * That is the exact mirror of the `canCreateService` trap recorded in `readers.ts`, and it is the
+ * failure mode `ServiceDomainResolver` avoids by composing `isAuthoritativeFor` rather than
+ * re-listing its terms.
+ *
+ * `owner()` and the `effectiveService` terms are still READ and still shown, because "you are a
+ * delegate, not the owner" and "your provider is suspended" send a provider to different remedies -
+ * but `clone-control` is now a REPORT of who owns the contract and can no longer refuse on its own.
+ * The standing rows keep their refusals because they do NOT disagree with the chain:
+ * `canWriteService` itself requires `_serviceStandingIsEffective` (provider ACTIVE, service ACTIVE,
+ * generation active) and `liveOwner == confirmedOwner`, which is exactly what those rows fold.
  *
  * Two ordering rules are load-bearing and each is easy to undo:
  *
@@ -131,7 +147,11 @@ export async function assessCandidateClone(
     };
   }
 
-  // ---- 2. Control. Ownership is live, and is re-resolved rather than remembered. --------------
+  // ---- 2. Control, REPORTED. Ownership is live, and is re-resolved rather than remembered. ----
+  // Deliberately incapable of refusing: the question is WHO owns the contract, and the answer is
+  // established as soon as the read succeeds. Whether this key may act is `clone-write-authority`
+  // below, which asks the chain. Making this row fail for a non-owner is precisely the regression
+  // this module's header describes, so it is not a stylistic choice.
   let owner: Address | undefined;
   try {
     owner = await reader.cloneOwner(candidate);
@@ -139,11 +159,12 @@ export async function assessCandidateClone(
     checks.push(
       providerCheck(
         "clone-control",
-        "Does your key own this contract?",
-        owned ? "pass" : "fail",
+        "Who owns this contract?",
+        "pass",
         owned
           ? "The contract reports your key as its owner."
-          : `The contract is owned by ${owner}, not by ${caller}.`,
+          : `The contract is owned by ${owner}, not by ${caller}. Your key can still act if that `
+            + "owner has authorised it as a delegate - the next check asks the registry whether it has.",
       ),
     );
   } catch (error) {
@@ -152,7 +173,7 @@ export async function assessCandidateClone(
     checks.push(
       providerCheck(
         "clone-control",
-        "Does your key own this contract?",
+        "Who owns this contract?",
         "could-not-run",
         "Ownership could not be read from this address.",
         reasonFrom(error, "the owner() read failed"),
@@ -212,8 +233,37 @@ export async function assessCandidateClone(
     );
   }
 
-  // ---- 4. Standing, and whether it is already the current pointer. ----------------------------
+  // ---- 4. Authority, standing, and whether it is already the current pointer. -----------------
   if (attachedHere) {
+    // THE authorization row, and the only one that may refuse on the authority axis. Asked of the
+    // core rather than derived from `owner()`, so a delegate the chain admits is admitted here.
+    // Scoped to an attached clone because `repointService` is meaningless for an unattached one and
+    // the attachment row already carries that refusal.
+    try {
+      const mayRepoint = await reader.canWriteServiceRepoint(candidate, caller);
+      checks.push(
+        providerCheck(
+          "clone-write-authority",
+          "May your key select this contract?",
+          mayRepoint ? "pass" : "fail",
+          mayRepoint
+            ? "The registry accepts a selection from your key for this contract."
+            : "The registry does not accept a selection from your key for this contract. The owner "
+              + "on file, or a delegate they authorised for this, may.",
+        ),
+      );
+    } catch (error) {
+      checks.push(
+        providerCheck(
+          "clone-write-authority",
+          "May your key select this contract?",
+          "could-not-run",
+          "Whether the registry would accept a selection from your key could not be read.",
+          reasonFrom(error, "the canWriteService read failed"),
+        ),
+      );
+    }
+
     try {
       const effective = await reader.effectiveService(candidate);
       const frozen =

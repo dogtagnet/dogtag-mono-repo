@@ -40,10 +40,16 @@ function reader(overrides: Partial<ProviderChainReader> = {}): ProviderChainRead
     currentService: unscripted("currentService"),
     canCreateService: unscripted("canCreateService"),
     predictIssuer: unscripted("predictIssuer"),
+    canWriteServiceRepoint: unscripted("canWriteServiceRepoint"),
     domainClaimStanding: unscripted("domainClaimStanding"),
     canWriteDomain: unscripted("canWriteDomain"),
     directoryIsLiveFor: unscripted("directoryIsLiveFor"),
     canWriteProviderRecord: unscripted("canWriteProviderRecord"),
+    providerProfileAnchor: unscripted("providerProfileAnchor"),
+    providerPinCount: unscripted("providerPinCount"),
+    providerNextLocationNumber: unscripted("providerNextLocationNumber"),
+    providerHasPin: unscripted("providerHasPin"),
+    providerPin: unscripted("providerPin"),
     ...overrides,
   } as ProviderChainReader;
 }
@@ -345,5 +351,56 @@ describe("the domain grammar mirrors the contract, and rejects rather than norma
 
   it("accepts a 63-character label, the exact boundary the contract allows", () => {
     expect(validateDomain(`${"a".repeat(63)}.sg`).ok).toBe(true);
+  });
+});
+
+// -------------------------------------------------------------------------------------------------
+// Every plan carries the inputs it was computed FROM
+// -------------------------------------------------------------------------------------------------
+
+// The other half of "a send acts on what was checked". The component invalidates a plan when its
+// inputs change, and addresses the plan's OWN values - so the plan has to carry them. A plan that
+// stopped doing so would leave the send with nothing to address but the live form, which is the
+// defect: check one contract, write to another.
+describe("a plan is answerable about what it judged", () => {
+  it("the deploy plan carries the record type and number it checked", async () => {
+    const plan = await planCloneDeployment(
+      { ...deployBase, cloneNonce: 7n },
+      reader({
+        provider: async () => ({
+          controller: CALLER,
+          directoryResolver: ZERO_ADDR,
+          standing: Standing.ACTIVE,
+        }),
+        canCreateService: async () => true,
+        predictIssuer: async () => PREDICTED,
+        isFactoryClone: async () => false,
+      }),
+    );
+    expect(plan.request).toEqual({
+      providerId: PROVIDER,
+      recordType: RECORD_TYPE,
+      caller: CALLER,
+      cloneNonce: 7n,
+    });
+  });
+
+  it("the domain assessment carries the contract it judged", async () => {
+    const assessment = await assessDomainClaim(
+      SERVICE,
+      CALLER,
+      reader({
+        domainClaimStanding: async () => ({
+          disposition: DomainDisposition.UNSET,
+          domain: "",
+          lineageRecognizesService: true,
+          registryApprovesThisResolver: true,
+          coreSelectsThisResolver: true,
+          serviceStandingEffective: true,
+        }),
+        canWriteDomain: async () => true,
+      }),
+    );
+    expect(assessment.service).toBe(SERVICE);
   });
 });

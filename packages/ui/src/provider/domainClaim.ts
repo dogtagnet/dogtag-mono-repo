@@ -93,6 +93,15 @@ export function describeDisposition(disposition: DomainDisposition, domain: stri
 }
 
 export interface DomainClaimAssessment {
+  /**
+   * The contract this assessment is ABOUT, captured from the request.
+   *
+   * A send must address THIS, never whatever the form holds by the time the button is pressed:
+   * checking one contract and writing to another is the same defect as reporting a submitted
+   * transaction as a completed one, and it is the reason every plan on this surface carries its own
+   * inputs back out.
+   */
+  service: Address;
   checks: ProviderCheck[];
   verdict: ProviderVerdict;
   /**
@@ -194,6 +203,7 @@ export async function assessDomainClaim(
 
   const verdict = foldVerdict(checks);
   return {
+    service,
     checks,
     verdict,
     ...(standing ? { standing } : {}),

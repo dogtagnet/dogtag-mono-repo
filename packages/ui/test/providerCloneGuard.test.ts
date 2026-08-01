@@ -45,10 +45,16 @@ function reader(overrides: Partial<ProviderChainReader>): ProviderChainReader {
     currentService: unscripted("currentService"),
     canCreateService: unscripted("canCreateService"),
     predictIssuer: unscripted("predictIssuer"),
+    canWriteServiceRepoint: unscripted("canWriteServiceRepoint"),
     domainClaimStanding: unscripted("domainClaimStanding"),
     canWriteDomain: unscripted("canWriteDomain"),
     directoryIsLiveFor: unscripted("directoryIsLiveFor"),
     canWriteProviderRecord: unscripted("canWriteProviderRecord"),
+    providerProfileAnchor: unscripted("providerProfileAnchor"),
+    providerPinCount: unscripted("providerPinCount"),
+    providerNextLocationNumber: unscripted("providerNextLocationNumber"),
+    providerHasPin: unscripted("providerHasPin"),
+    providerPin: unscripted("providerPin"),
     ...overrides,
   } as ProviderChainReader;
 }
@@ -74,6 +80,10 @@ function genuineReader(extra: Partial<ProviderChainReader> = {}): ProviderChainR
       ownerConfirmed: true,
       hasActiveIssuer: true,
     }),
+    // The chain's own repoint predicate. Scripted here rather than derived from `cloneOwner`,
+    // because a fake that agreed with the module's old owner-equality rule could not tell a fixed
+    // preflight from a broken one.
+    canWriteServiceRepoint: async (_service, who) => who === PROVIDER_KEY,
     currentService: async () => ZERO_ADDR,
     ...extra,
   });
@@ -177,20 +187,69 @@ describe("the forgery guard refuses what our factory did not deploy", () => {
     expect(r.nextStep).toMatch(/could not run/i);
   });
 
-  it("PROVENANCE IS NOT ATTRIBUTION: a genuine clone owned by another key is refused", async () => {
+  it("PROVENANCE IS NOT ATTRIBUTION: a genuine clone the chain will not let this key move is refused", async () => {
     const r = await assessCandidateClone(
       request(FACTORY_CLONE),
-      genuineReader({ cloneOwner: async () => OTHER_KEY }),
+      genuineReader({
+        cloneOwner: async () => OTHER_KEY,
+        canWriteServiceRepoint: async () => false,
+      }),
     );
 
     expect(r.verdict).toBe("refused");
     expect(r.canRepoint).toBe(false);
+    // The refusal comes from the CHAIN's own predicate, which is the only thing entitled to make it.
+    const authority = r.checks.find((c) => c.id === "clone-write-authority")!;
+    expect(authority.outcome).toBe("fail");
+    // Ownership is still REPORTED, and names the owner, because "you are a delegate, not the owner"
+    // and "you may not act here" are different things a provider needs told apart.
     const control = r.checks.find((c) => c.id === "clone-control")!;
-    expect(control.outcome).toBe("fail");
     expect(control.finding).toContain(OTHER_KEY);
-    // Provenance still passed - the two answers are kept apart, because "not yours" and "not
-    // genuine" send the provider to entirely different remedies.
+    // Provenance still passed - the answers are kept apart, because "not yours" and "not genuine"
+    // send the provider to entirely different remedies.
     expect(r.checks.find((c) => c.id === "clone-provenance")!.outcome).toBe("pass");
+  });
+
+  it("ADMITS A DELEGATE THE CHAIN ADMITS - the preflight is never stricter than the contract", async () => {
+    // `repointService` is gated by `canWriteService(service, caller, SERVICE_PERMISSION_REPOINT)`,
+    // which is true for the confirmed live owner OR an owner-epoch-scoped delegate holding that bit.
+    // This surface used to ask `owner() == caller` instead and refuse everything else, so a provider
+    // operating through a delegate key was told "the contract is owned by X, not by you" and the
+    // button stayed disabled on a transaction the chain would have accepted. Re-deriving an
+    // authorization the contract already exposes is the defect; composing it is the fix.
+    const r = await assessCandidateClone(
+      request(FACTORY_CLONE),
+      genuineReader({
+        cloneOwner: async () => OTHER_KEY,
+        canWriteServiceRepoint: async () => true,
+      }),
+    );
+
+    expect(r.verdict).toBe("ready");
+    expect(r.canRepoint).toBe(true);
+    expect(r.checks.find((c) => c.id === "clone-write-authority")!.outcome).toBe("pass");
+    // Not a pass by silence: the owner is still named, so a delegate can see whose contract it is.
+    expect(r.checks.find((c) => c.id === "clone-control")!.finding).toContain(OTHER_KEY);
+    // And nothing in the check list refuses. A single `fail` anywhere would have folded to
+    // `refused`, which is how a fix at one row can be inert while the button stays disabled.
+    expect(r.checks.some((c) => c.outcome === "fail")).toBe(false);
+  });
+
+  it("an unreadable authority read is indeterminate - a non-answer is not permission", async () => {
+    const r = await assessCandidateClone(
+      request(FACTORY_CLONE),
+      genuineReader({
+        canWriteServiceRepoint: async () => {
+          throw new Error("HTTP request failed: 429");
+        },
+      }),
+    );
+
+    expect(r.verdict).toBe("indeterminate");
+    expect(r.canRepoint).toBe(false);
+    const authority = r.checks.find((c) => c.id === "clone-write-authority")!;
+    expect(authority.outcome).toBe("could-not-run");
+    expect(authority.couldNotRunReason).toContain("429");
   });
 
   it("a genuine clone attached to ANOTHER provider is refused as foreign, not as a forgery", async () => {
@@ -265,9 +324,13 @@ describe("the clone lifecycle is an explicit state, because the flow is not one 
     // Two failures with two remedies: a freeze is cleared by nothing, an unconfirmed handover is
     // cleared by the registrar confirming it. One message for both sends the provider to the wrong
     // one.
+    // `canWriteServiceRepoint` is scripted false alongside, because the chain agrees: the core's
+    // own `canWriteService` requires `_serviceStandingIsEffective`, so a fixture answering `true`
+    // beside a RETIRED service would model a state the contract cannot produce.
     const frozen = await assessCandidateClone(
       request(FACTORY_CLONE),
       genuineReader({
+        canWriteServiceRepoint: async () => false,
         effectiveService: async () => ({
           providerStanding: Standing.ACTIVE,
           serviceStanding: Standing.RETIRED,
@@ -283,6 +346,8 @@ describe("the clone lifecycle is an explicit state, because the flow is not one 
     const unconfirmed = await assessCandidateClone(
       request(FACTORY_CLONE),
       genuineReader({
+        // Same faithfulness point: `canWriteService` also requires `liveOwner == confirmedOwner`.
+        canWriteServiceRepoint: async () => false,
         effectiveService: async () => ({
           providerStanding: Standing.ACTIVE,
           serviceStanding: Standing.ACTIVE,
@@ -334,5 +399,12 @@ describe("the three-state shape is enforced, not remembered", () => {
       expect(c.finding.length).toBeGreaterThan(0);
       expect("couldNotRunReason" in c).toBe(c.outcome === "could-not-run");
     }
+  });
+});
+
+describe("the assessment is answerable about what it judged", () => {
+  it("carries the candidate it judged, so a repoint addresses THAT and not a since-edited field", async () => {
+    const r = await assessCandidateClone(request(FACTORY_CLONE), genuineReader());
+    expect(r.candidate).toBe(FACTORY_CLONE);
   });
 });

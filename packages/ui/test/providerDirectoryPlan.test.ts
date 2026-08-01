@@ -14,16 +14,37 @@
 import { describe, expect, it } from "vitest";
 import {
   contactBlob,
+  MAX_SCANNED_LOCATION_NUMBERS,
   planDirectoryPublication,
   toContractCoordinate,
+  ZERO_WORD,
   type Address,
   type DigestFn,
+  type DirectoryPin,
   type HexWord,
   type ProviderChainReader,
 } from "../src/provider";
 
 const PROVIDER: HexWord = "0x3f5c9a1e77b204d8e6130fa95c8b47e2d61099af";
 const CALLER: Address = "0x2222222222222222222222222222222222222222";
+
+/** A provider that has published contacts before, and one location at number 0. */
+function withOnePin(pin: Partial<DirectoryPin> = {}): Partial<ProviderChainReader> {
+  const stored: DirectoryPin = {
+    locationNo: 0,
+    lat: 1_290_270,
+    lng: 103_851_959,
+    kind: 1,
+    active: true,
+    ...pin,
+  };
+  return {
+    providerPinCount: async () => 1,
+    providerNextLocationNumber: async () => 1,
+    providerHasPin: async (_p, no) => no === stored.locationNo,
+    providerPin: async () => stored,
+  };
+}
 
 const digest: DigestFn = (utf8) =>
   `0x${Array.from(utf8).reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 0xffffffff, 7).toString(16).padStart(64, "0")}` as HexWord;
@@ -42,9 +63,24 @@ function reader(overrides: Partial<ProviderChainReader> = {}): ProviderChainRead
     canCreateService: unscripted("canCreateService"),
     predictIssuer: unscripted("predictIssuer"),
     domainClaimStanding: unscripted("domainClaimStanding"),
+    canWriteServiceRepoint: unscripted("canWriteServiceRepoint"),
     canWriteDomain: unscripted("canWriteDomain"),
     directoryIsLiveFor: async () => true,
     canWriteProviderRecord: async () => true,
+    // A provider that has published nothing yet: no anchor, no pins. The `nextLocationNumber` and
+    // per-pin reads are left UNSCRIPTED on purpose - a case that reaches them without saying so has
+    // scanned when it should not have, and should fail loudly rather than silently.
+    providerProfileAnchor: async () => ({
+      digest: ZERO_WORD,
+      schema: 0,
+      codec: 0,
+      hashAlgorithm: 0,
+      revision: 0n,
+    }),
+    providerPinCount: async () => 0,
+    providerNextLocationNumber: unscripted("providerNextLocationNumber"),
+    providerHasPin: unscripted("providerHasPin"),
+    providerPin: unscripted("providerPin"),
     ...overrides,
   } as ProviderChainReader;
 }
@@ -235,7 +271,11 @@ describe("the contact blob", () => {
     expect(withWebsite.channelsPublished).toBe(3);
   });
 
-  it("warns when a provider would publish neither contacts nor a location", async () => {
+  it("REFUSES a provider publishing neither contacts nor a location, rather than only warning", async () => {
+    // This used to report `canPublish: true` while its own next step said "add at least one so
+    // people can find you" - a plan contradicting its own advice. An empty anchor is a published
+    // emptiness and the listing sequence is append-only, so it is worth refusing rather than
+    // recording.
     const plan = await planDirectoryPublication(
       {
         ...base,
@@ -246,7 +286,232 @@ describe("the contact blob", () => {
       reader(),
       digest,
     );
+    expect(plan.verdict).toBe("refused");
+    expect(plan.canPublish).toBe(false);
+    expect(plan.checks.find((c) => c.id === "directory-contents")!.outcome).toBe("fail");
+    // The specific remedy is stated, rather than deferring to "the failed checks say why" - that
+    // would send the provider to read a sentence this one already contains.
     expect(plan.nextStep).toMatch(/neither contact details nor a location/i);
+  });
+});
+
+describe("re-publishing UPDATES the location it is correcting, and never adds a second", () => {
+  it("rewrites the existing pin by its number instead of appending", async () => {
+    // `publishPin` issues a FRESH location number every call, so a provider correcting a mistyped
+    // coordinate by pressing Publish again would leave BOTH pins live and active in the scan - and
+    // the mobile nearby list is built from exactly that scan, so they would appear at two places at
+    // once. The contract has `updatePin`; the plan has to reach for it.
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.3521", lngInput: "103.8198" },
+      reader(withOnePin()),
+      digest,
+    );
+
+    const pins = plan.steps.filter((s) => s.kind === "pin");
+    expect(pins).toHaveLength(1);
+    expect(pins[0]).toMatchObject({
+      op: "update",
+      locationNo: 0,
+      lat: 1_352_100,
+      lng: 103_819_800,
+    });
+    expect(plan.canPublish).toBe(true);
+  });
+
+  it("emits `publish` only for a provider with NO published location", async () => {
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.3521", lngInput: "103.8198" },
+      reader(),
+      digest,
+    );
+    expect(plan.steps.filter((s) => s.kind === "pin")[0]).toMatchObject({ op: "publish" });
+  });
+
+  it("sends NO pin transaction when the published location is already exactly this", async () => {
+    // `updatePin` reverts `NoChange` on an identical word, so sending it would be an opaque failure
+    // rather than a no-op.
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.290270", lngInput: "103.851959" },
+      reader(withOnePin()),
+      digest,
+    );
+    expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(0);
+    // The contacts are new, so there is still something to send - this is not the nothing-to-do case.
+    expect(plan.steps.filter((s) => s.kind === "profileAnchor")).toHaveLength(1);
+    expect(plan.canPublish).toBe(true);
+  });
+
+  it("REFUSES rather than appending when it cannot tell which of several pins is meant", async () => {
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.3521", lngInput: "103.8198" },
+      reader({ providerPinCount: async () => 3 }),
+      digest,
+    );
+    expect(plan.verdict).toBe("refused");
+    expect(plan.canPublish).toBe(false);
+    expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(0);
+    const state = plan.checks.find((c) => c.id === "directory-listing-state")!;
+    expect(state.outcome).toBe("fail");
+    expect(state.finding).toMatch(/two places at once/i);
+  });
+
+  it("that refusal is SCOPED to publishing a location - contacts can still be updated", async () => {
+    // The over-broad version of the fix would strand a provider with several legacy pins, unable to
+    // change its phone number ever again. A refusal in the other direction is still a refusal.
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "" },
+      reader({ providerPinCount: async () => 3 }),
+      digest,
+    );
+    expect(plan.verdict).toBe("ready");
+    expect(plan.canPublish).toBe(true);
+    expect(plan.checks.find((c) => c.id === "directory-listing-state")!.outcome).toBe("pass");
+  });
+
+  it("an unreadable listing state publishes NO pin and is indeterminate, never an append", async () => {
+    // Appending is only safe when we know there is nothing to replace. "We could not ask what
+    // exists" cannot license a write whose safety depends on knowing.
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.3521", lngInput: "103.8198" },
+      reader({
+        providerPinCount: async () => {
+          throw new Error("HTTP request failed: 502");
+        },
+      }),
+      digest,
+    );
+    expect(plan.verdict).toBe("indeterminate");
+    expect(plan.canPublish).toBe(false);
+    expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(0);
+    const state = plan.checks.find((c) => c.id === "directory-listing-state")!;
+    expect(state.outcome).toBe("could-not-run");
+    expect(state.couldNotRunReason).toContain("502");
+    // And it is NOT reported as a contact-only publication: the provider gave a location.
+    expect(plan.contactOnly).toBe(false);
+  });
+
+  it("abandons the scan past its bound rather than reporting 'no pin found', which would append", async () => {
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.3521", lngInput: "103.8198" },
+      reader({
+        providerPinCount: async () => 1,
+        providerNextLocationNumber: async () => MAX_SCANNED_LOCATION_NUMBERS + 1,
+      }),
+      digest,
+    );
+    expect(plan.verdict).toBe("indeterminate");
+    expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(0);
+    expect(plan.checks.find((c) => c.id === "directory-listing-state")!.couldNotRunReason).toMatch(
+      /past the 64 this page will scan/i,
+    );
+  });
+});
+
+describe("withdrawal is deliberate, and the anchor is not rewritten for nothing", () => {
+  it("offers withdrawal only when exactly one pin was actually read", async () => {
+    const withPin = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "" },
+      reader(withOnePin()),
+      digest,
+    );
+    expect(withPin.canWithdrawPin).toBe(true);
+    expect(withPin.listing?.onlyPin?.locationNo).toBe(0);
+
+    const none = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "" },
+      reader(),
+      digest,
+    );
+    expect(none.canWithdrawPin).toBe(false);
+  });
+
+  it("does NOT offer withdrawal when this key's authority over the record was not established", async () => {
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "" },
+      reader({
+        ...withOnePin(),
+        canWriteProviderRecord: async () => {
+          throw new Error("timeout");
+        },
+      }),
+      digest,
+    );
+    expect(plan.canWithdrawPin).toBe(false);
+  });
+
+  it("a blank coordinate field is NOT a withdrawal - the published pin stays and is said to stay", async () => {
+    // Reading a cleared field as "take my location down" would make a typo destructive.
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "" },
+      reader(withOnePin()),
+      digest,
+    );
+    expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(0);
+    expect(plan.checks.find((c) => c.id === "directory-listing-state")!.finding).toMatch(
+      /does not withdraw/i,
+    );
+  });
+
+  it("omits the anchor when the contacts on chain are already exactly these", async () => {
+    // `setProfileAnchor` has NO `NoChange` guard and the contract is frozen, so a redundant write
+    // bumps the anchor revision - and every bump makes `coversCurrentAddressText` false for any
+    // registrar address confirmation the provider holds. The portal is the only place to avoid it.
+    const { blob } = contactBlob(CONTACTS);
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.3521", lngInput: "103.8198" },
+      reader({
+        ...withOnePin(),
+        providerProfileAnchor: async () => ({
+          digest: digest(blob),
+          schema: 1,
+          codec: 0,
+          hashAlgorithm: 0x1b,
+          revision: 4n,
+        }),
+      }),
+      digest,
+    );
+    expect(plan.steps.filter((s) => s.kind === "profileAnchor")).toHaveLength(0);
+    expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(1);
+  });
+
+  it("refuses a publication in which literally nothing would change", async () => {
+    const { blob } = contactBlob(CONTACTS);
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.290270", lngInput: "103.851959" },
+      reader({
+        ...withOnePin(),
+        providerProfileAnchor: async () => ({
+          digest: digest(blob),
+          schema: 1,
+          codec: 0,
+          hashAlgorithm: 0x1b,
+          revision: 4n,
+        }),
+      }),
+      digest,
+    );
+    expect(plan.steps).toHaveLength(0);
+    expect(plan.verdict).toBe("refused");
+    expect(plan.checks.find((c) => c.id === "directory-contents")!.finding).toMatch(
+      /already published exactly as it stands/i,
+    );
+  });
+
+  it("still sends the anchor when the listing state could not be read - that is what was asked for", async () => {
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "" },
+      reader({
+        providerProfileAnchor: async () => {
+          throw new Error("HTTP request failed: 502");
+        },
+      }),
+      digest,
+    );
+    expect(plan.steps.filter((s) => s.kind === "profileAnchor")).toHaveLength(1);
+    // But it is not offered: the state is unknown, and unknown is not permission.
+    expect(plan.canPublish).toBe(false);
+    expect(plan.verdict).toBe("indeterminate");
   });
 });
 
@@ -279,5 +544,18 @@ describe("an unreadable directory is indeterminate, never a refusal", () => {
     );
     expect(plan.verdict).toBe("refused");
     expect(plan.checks.find((c) => c.id === "directory-resolver-live")!.outcome).toBe("fail");
+  });
+});
+
+describe("the plan is answerable about what it judged", () => {
+  it("carries the provider id it was computed for, so a send addresses THAT", async () => {
+    // The other half of "a send acts on what was checked": the component invalidates a plan when its
+    // inputs change AND addresses the plan's own captured values, so the plan has to carry them.
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "" },
+      reader(),
+      digest,
+    );
+    expect(plan.providerId).toBe(PROVIDER);
   });
 });

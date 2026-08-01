@@ -20,9 +20,11 @@ import {
   DomainDisposition,
   Standing,
   type Address,
+  type DirectoryPin,
   type DomainClaimStanding,
   type EffectiveService,
   type HexWord,
+  type ProfileAnchorRecord,
   type ProviderChainReader,
   type ProviderRecord,
   type ServiceRecord,
@@ -122,6 +124,17 @@ const CORE_ABI = [
     stateMutability: "view",
     inputs: [
       { name: "providerId", type: "bytes20" },
+      { name: "caller", type: "address" },
+      { name: "permission", type: "uint32" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "canWriteService",
+    stateMutability: "view",
+    inputs: [
+      { name: "serviceAddress", type: "address" },
       { name: "caller", type: "address" },
       { name: "permission", type: "uint32" },
     ],
@@ -258,6 +271,37 @@ const DIRECTORY_ABI = [
     ],
     outputs: [{ name: "locationNo", type: "uint16" }],
   },
+  // `updatePin` and `removePin` are what stop this surface being append-only. `publishPin` issues a
+  // FRESH location number on every call, so a provider correcting a mistyped coordinate by pressing
+  // Publish again would leave BOTH pins live in the scan and appear at two places in the mobile
+  // nearby list. Confirmed callable on the deployed ProviderDirectory: an `eth_call` to either
+  // selector reverts with the NAMED `UnknownProvider()` (`0xf2b51dfc`) against an unregistered
+  // provider id, whereas a deliberately nonexistent selector on the same contract returns empty
+  // data - so a named error is positive evidence of dispatch rather than an absence.
+  {
+    type: "function",
+    name: "updatePin",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "providerId", type: "bytes20" },
+      { name: "locationNo", type: "uint16" },
+      { name: "lat", type: "int32" },
+      { name: "lng", type: "int32" },
+      { name: "kind", type: "uint8" },
+      { name: "active", type: "bool" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "removePin",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "providerId", type: "bytes20" },
+      { name: "locationNo", type: "uint16" },
+    ],
+    outputs: [],
+  },
   {
     type: "function",
     name: "isLiveFor",
@@ -265,7 +309,77 @@ const DIRECTORY_ABI = [
     inputs: [{ name: "providerId", type: "bytes20" }],
     outputs: [{ type: "bool" }],
   },
+  {
+    type: "function",
+    name: "profileAnchor",
+    stateMutability: "view",
+    inputs: [{ name: "providerId", type: "bytes20" }],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "digest", type: "bytes32" },
+          { name: "schema", type: "uint32" },
+          { name: "codec", type: "uint16" },
+          { name: "hashAlgorithm", type: "uint8" },
+          { name: "revision", type: "uint64" },
+          { name: "updatedAtBlock", type: "uint64" },
+          { name: "setBy", type: "address" },
+          { name: "contenthash", type: "bytes" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "pinCount",
+    stateMutability: "view",
+    inputs: [{ name: "providerId", type: "bytes20" }],
+    outputs: [{ type: "uint16" }],
+  },
+  {
+    type: "function",
+    name: "nextLocationNumber",
+    stateMutability: "view",
+    inputs: [{ name: "providerId", type: "bytes20" }],
+    outputs: [{ type: "uint16" }],
+  },
+  {
+    type: "function",
+    name: "hasPin",
+    stateMutability: "view",
+    inputs: [
+      { name: "providerId", type: "bytes20" },
+      { name: "locationNo", type: "uint16" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "pin",
+    stateMutability: "view",
+    inputs: [
+      { name: "providerId", type: "bytes20" },
+      { name: "locationNo", type: "uint16" },
+    ],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "providerId", type: "bytes20" },
+          { name: "lat", type: "int32" },
+          { name: "lng", type: "int32" },
+          { name: "locationNo", type: "uint16" },
+          { name: "kind", type: "uint8" },
+          { name: "flags", type: "uint8" },
+        ],
+      },
+    ],
+  },
 ] as const;
+
+/** `ProviderDirectory.PIN_FLAG_ACTIVE` - bit 0 of the packed pin's flags byte. */
+const PIN_FLAG_ACTIVE = 1;
 
 export interface LiveReaderOptions {
   contracts: ProviderContracts;
@@ -277,8 +391,23 @@ export interface LiveReaderOptions {
   client?: PublicClient;
 }
 
-/** `ProviderRegistry.PROVIDER_PERMISSION_RECORD`, mirrored so a read is not needed to ask a question. */
-const PROVIDER_PERMISSION_RECORD = 1;
+/**
+ * `ProviderRegistry.PROVIDER_PERMISSION_RECORD`, mirrored so a read is not needed to ask a question.
+ *
+ * Exported so `providerWriteAbi.test.ts` can pin it against the contract's own declaration. A
+ * permission bit is as silent as a selector when it is wrong: the read answers a confident `false`
+ * about a permission nobody asked about, which reads as "you may not" rather than as a mistake.
+ */
+export const PROVIDER_PERMISSION_RECORD = 1;
+/**
+ * `ProviderRegistry.SERVICE_PERMISSION_REPOINT` (`1 << 2`), the bit `repointService` demands.
+ *
+ * A DIFFERENT bit from `SERVICE_PERMISSION_RECORD` (`1 << 0`) and `SERVICE_PERMISSION_DOMAIN_RESOLVER`
+ * (`1 << 1`), and the difference is the whole grant model: a delegate trusted to publish content is
+ * not thereby trusted to move where new credentials anchor. Pinned by `providerWriteAbi.test.ts`
+ * against the constant's own declaration.
+ */
+export const SERVICE_PERMISSION_REPOINT = 4;
 
 export function createLiveProviderReader(options: LiveReaderOptions): ProviderChainReader {
   const { contracts, rpcUrl, blockNumber } = options;
@@ -450,6 +579,93 @@ export function createLiveProviderReader(options: LiveReaderOptions): ProviderCh
         args: [providerId, getAddress(caller), PROVIDER_PERMISSION_RECORD],
         ...at,
       })) as boolean;
+    },
+
+    async canWriteServiceRepoint(service, caller) {
+      // The chain's own predicate, asked rather than re-derived. Unlike `canCreateService` this one
+      // does NOT branch on `msg.sender` - the caller is an explicit argument - so a plain `eth_call`
+      // with no `from` is the right shape here.
+      return (await client.readContract({
+        address: contracts.core,
+        abi: CORE_ABI,
+        functionName: "canWriteService",
+        args: [getAddress(service), getAddress(caller), SERVICE_PERMISSION_REPOINT],
+        ...at,
+      })) as boolean;
+    },
+
+    async providerProfileAnchor(providerId) {
+      const a = (await client.readContract({
+        address: contracts.directory,
+        abi: DIRECTORY_ABI,
+        functionName: "profileAnchor",
+        args: [providerId],
+        ...at,
+      })) as {
+        digest: HexWord;
+        schema: number;
+        codec: number;
+        hashAlgorithm: number;
+        revision: bigint;
+      };
+      return {
+        digest: a.digest,
+        schema: a.schema,
+        codec: a.codec,
+        hashAlgorithm: a.hashAlgorithm,
+        revision: a.revision,
+      } satisfies ProfileAnchorRecord;
+    },
+
+    async providerPinCount(providerId) {
+      return Number(
+        (await client.readContract({
+          address: contracts.directory,
+          abi: DIRECTORY_ABI,
+          functionName: "pinCount",
+          args: [providerId],
+          ...at,
+        })) as number,
+      );
+    },
+
+    async providerNextLocationNumber(providerId) {
+      return Number(
+        (await client.readContract({
+          address: contracts.directory,
+          abi: DIRECTORY_ABI,
+          functionName: "nextLocationNumber",
+          args: [providerId],
+          ...at,
+        })) as number,
+      );
+    },
+
+    async providerHasPin(providerId, locationNo) {
+      return (await client.readContract({
+        address: contracts.directory,
+        abi: DIRECTORY_ABI,
+        functionName: "hasPin",
+        args: [providerId, locationNo],
+        ...at,
+      })) as boolean;
+    },
+
+    async providerPin(providerId, locationNo) {
+      const p = (await client.readContract({
+        address: contracts.directory,
+        abi: DIRECTORY_ABI,
+        functionName: "pin",
+        args: [providerId, locationNo],
+        ...at,
+      })) as { lat: number; lng: number; locationNo: number; kind: number; flags: number };
+      return {
+        locationNo: Number(p.locationNo),
+        lat: Number(p.lat),
+        lng: Number(p.lng),
+        kind: Number(p.kind),
+        active: (Number(p.flags) & PIN_FLAG_ACTIVE) !== 0,
+      } satisfies DirectoryPin;
     },
   };
 }

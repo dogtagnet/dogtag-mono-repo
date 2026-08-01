@@ -94,6 +94,28 @@ export interface DomainClaimStanding {
 
 export const ZERO_PROVIDER_ID: HexWord = `0x${"0".repeat(40)}`;
 export const ZERO_ADDR: Address = `0x${"0".repeat(40)}`;
+/** A `bytes32` that has never been written. `ProfileAnchor.digest` at revision 0. */
+export const ZERO_WORD: HexWord = `0x${"0".repeat(64)}`;
+
+/** One published location, as `ProviderDirectory.pin` returns it. Coordinates are already scaled. */
+export interface DirectoryPin {
+  locationNo: number;
+  /** Scaled by `COORDINATE_SCALE`, exactly as the contract stores it. */
+  lat: number;
+  lng: number;
+  kind: number;
+  active: boolean;
+}
+
+/** `ProviderDirectory.ProfileAnchor`, trimmed to what deciding a re-anchor needs. */
+export interface ProfileAnchorRecord {
+  /** All-zero means no anchor is currently published - which, at revision 0, means never published. */
+  digest: HexWord;
+  schema: number;
+  codec: number;
+  hashAlgorithm: number;
+  revision: bigint;
+}
 
 /**
  * Every chain read the four S-15 flows need.
@@ -130,6 +152,23 @@ export interface ProviderChainReader {
   currentService(providerId: HexWord, recordType: HexWord): Promise<Address>;
 
   /**
+   * `ProviderRegistry.canWriteService(service, caller, SERVICE_PERMISSION_REPOINT)` - the EXACT
+   * predicate `repointService` is gated by (`ProviderRegistry.sol:653-656`).
+   *
+   * COMPOSED, never re-derived, and that is the point of this method existing. The chain admits the
+   * confirmed live owner OR an owner-epoch-scoped delegate holding that permission bit, so a portal
+   * that asked only `owner() == caller` would be STRICTER than the contract and would tell a
+   * legitimate delegate its key may not select a contract the chain would happily let it select.
+   * That is the same shape as `canCreateService`'s `msg.sender` trap above, pointed the other way,
+   * and this repo already records what two parallel implementations of one authorization rule cost.
+   *
+   * The permission bit is bound by the implementation rather than passed by the caller: a caller
+   * free to name the bit is a caller free to name the wrong one, and every bit here answers a
+   * different question.
+   */
+  canWriteServiceRepoint(service: Address, caller: Address): Promise<boolean>;
+
+  /**
    * `ProviderRegistry.canCreateService(providerId, recordType, caller)`.
    *
    * READ THIS ONE CAREFULLY. Its first term is `generationOfFactory[msg.sender]` - the CALLING
@@ -161,4 +200,23 @@ export interface ProviderChainReader {
   directoryIsLiveFor(providerId: HexWord): Promise<boolean>;
   /** `ProviderRegistry.canWriteProvider(providerId, caller, PROVIDER_PERMISSION_RECORD)`. */
   canWriteProviderRecord(providerId: HexWord, caller: Address): Promise<boolean>;
+
+  /**
+   * `ProviderDirectory.profileAnchor(providerId)`.
+   *
+   * Read so a publication that would change nothing can be left unsent. `setProfileAnchor` has NO
+   * `NoChange` guard and the contract is frozen, so the portal is the only place a no-op re-anchor
+   * can be avoided - and a needless revision bump silently invalidates
+   * `coversCurrentAddressText` on any registrar address confirmation the provider holds.
+   */
+  providerProfileAnchor(providerId: HexWord): Promise<ProfileAnchorRecord>;
+
+  /** `ProviderDirectory.pinCount(providerId)` - how many locations this provider has published. */
+  providerPinCount(providerId: HexWord): Promise<number>;
+  /** `ProviderDirectory.nextLocationNumber(providerId)` - the number the NEXT publish would take. */
+  providerNextLocationNumber(providerId: HexWord): Promise<number>;
+  /** `ProviderDirectory.hasPin(providerId, locationNo)`. */
+  providerHasPin(providerId: HexWord, locationNo: number): Promise<boolean>;
+  /** `ProviderDirectory.pin(providerId, locationNo)`. Throws `UnknownLocation` for an absent one. */
+  providerPin(providerId: HexWord, locationNo: number): Promise<DirectoryPin>;
 }

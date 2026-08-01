@@ -16,6 +16,7 @@
 // signatures in contracts/src/{DogTagIssuerFactoryV2,ProviderRegistry,ServiceDomainResolver,
 // ProviderDirectory}.sol. Do not recompute them from the ABI under test - that would be the ABI
 // agreeing with itself.
+import { readFileSync } from "node:fs";
 import { toFunctionSelector } from "viem";
 import { describe, expect, it } from "vitest";
 import {
@@ -23,6 +24,8 @@ import {
   DIRECTORY_ABI,
   DOMAIN_ABI,
   FACTORY_ABI,
+  PROVIDER_PERMISSION_RECORD,
+  SERVICE_PERMISSION_REPOINT,
 } from "../src/provider/liveReader";
 
 /** name -> the selector `cast sig` gives for the contract's own signature. */
@@ -35,10 +38,22 @@ const EXPECTED: Readonly<Record<string, `0x${string}`>> = {
   clearDomain: "0xf0963cd7",
   setProfileAnchor: "0x4baa4a1f",
   publishPin: "0xe22b7b87",
-  // the two reads whose argument shapes are easiest to get wrong
+  // The two that keep a re-publish from adding a SECOND live pin. Confirmed callable on the
+  // deployed ProviderDirectory: an `eth_call` to either reverts with the NAMED `UnknownProvider()`
+  // (`0xf2b51dfc`) for an unregistered provider id, while a deliberately nonexistent selector on the
+  // same contract returns empty data - so a named error is positive evidence of dispatch.
+  updatePin: "0xa87e91e5",
+  removePin: "0x33c60a69",
+  // the reads whose argument shapes are easiest to get wrong
   canCreateService: "0xecacdfbc",
+  canWriteService: "0x2c337d53",
   isClone: "0x00ae3676",
   predictIssuer: "0xa3604e4f",
+  profileAnchor: "0x88704a5b",
+  pinCount: "0xcd0f8acd",
+  nextLocationNumber: "0x51b047cd",
+  hasPin: "0x2f792e58",
+  pin: "0xb2d3139c",
 };
 
 const ALL = [...FACTORY_ABI, ...CORE_ABI, ...DOMAIN_ABI, ...DIRECTORY_ABI];
@@ -68,6 +83,8 @@ describe("every ABI entry this surface sends against matches the deployed signat
         "clearDomain",
         "setProfileAnchor",
         "publishPin",
+        "updatePin",
+        "removePin",
       ]),
     );
   });
@@ -76,6 +93,46 @@ describe("every ABI entry this surface sends against matches the deployed signat
     // The inverse guard. An extra `nonpayable` entry is a transaction someone can reach for, and an
     // ABI is the only thing standing between a page and a call it was never meant to make.
     const writes = ALL.filter((e) => e.type === "function" && e.stateMutability === "nonpayable");
-    expect(writes).toHaveLength(7);
+    expect(writes).toHaveLength(9);
+  });
+});
+
+// -------------------------------------------------------------------------------------------------
+// The permission bits, pinned against the contract's own declarations
+// -------------------------------------------------------------------------------------------------
+
+// A permission bit is as silent as a selector when it is wrong, and worse to diagnose: the call
+// succeeds and answers a confident `false` about a permission nobody asked about, which a provider
+// reads as "you may not" rather than as a mistake. So the two mirrored literals are checked against
+// the source that owns them rather than against a comment beside them.
+const PROVIDER_REGISTRY_SOURCE = readFileSync(
+  new URL("../../../contracts/src/ProviderRegistry.sol", import.meta.url),
+  "utf8",
+);
+
+/** `uint32 public constant <NAME> = 1 << N;` -> the value. */
+function declaredBit(name: string): number {
+  const m = PROVIDER_REGISTRY_SOURCE.match(
+    new RegExp(`uint32\\s+public\\s+constant\\s+${name}\\s*=\\s*1\\s*<<\\s*(\\d+)\\s*;`),
+  );
+  if (!m) throw new Error(`${name} is not declared in ProviderRegistry.sol as a 1 << N constant`);
+  return 1 << Number(m[1]);
+}
+
+describe("the mirrored permission bits are the contract's own", () => {
+  it("PROVIDER_PERMISSION_RECORD matches its declaration", () => {
+    expect(PROVIDER_PERMISSION_RECORD).toBe(declaredBit("PROVIDER_PERMISSION_RECORD"));
+  });
+
+  it("SERVICE_PERMISSION_REPOINT matches its declaration", () => {
+    expect(SERVICE_PERMISSION_REPOINT).toBe(declaredBit("SERVICE_PERMISSION_REPOINT"));
+  });
+
+  it("is not the neighbouring service bits - a delegate trusted with one is not trusted with these", () => {
+    // The bits are a grant model, not a numbering. `SERVICE_PERMISSION_RECORD` publishes content and
+    // `SERVICE_PERMISSION_DOMAIN_RESOLVER` chooses a resolver; neither says anything about where new
+    // credentials anchor, which is what a repoint moves.
+    expect(SERVICE_PERMISSION_REPOINT).not.toBe(declaredBit("SERVICE_PERMISSION_RECORD"));
+    expect(SERVICE_PERMISSION_REPOINT).not.toBe(declaredBit("SERVICE_PERMISSION_DOMAIN_RESOLVER"));
   });
 });

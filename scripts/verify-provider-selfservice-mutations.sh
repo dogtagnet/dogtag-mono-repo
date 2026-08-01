@@ -19,7 +19,7 @@ set -u
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 export LC_ALL=C
 
-TARGETS="packages/ui/src/provider/cloneProvenance.ts packages/ui/src/provider/directoryPlan.ts packages/ui/src/provider/liveReader.ts packages/ui/src/provider/domainClaim.ts packages/ui/src/domain/ProviderSelfServiceFlows.tsx"
+TARGETS="packages/ui/src/provider/cloneProvenance.ts packages/ui/src/provider/directoryPlan.ts packages/ui/src/provider/liveReader.ts packages/ui/src/provider/domainClaim.ts packages/ui/src/provider/sendOutcome.ts packages/ui/src/domain/ProviderSelfServiceFlows.tsx"
 BACKUP=$(mktemp -d)
 for f in $TARGETS; do mkdir -p "$BACKUP/$(dirname "$f")"; cp "$f" "$BACKUP/$f"; done
 restore() { for f in $TARGETS; do cp "$BACKUP/$f" "$f"; done; }
@@ -69,10 +69,27 @@ mutate "a failed isClone READ rendered as 'not genuine'" \
         "The factory could not be reached, so this address was neither confirmed nor refused.",' \
   test/providerCloneGuard.test.ts
 
-mutate "control check dropped (provenance treated as attribution)" \
+mutate "ownership stops being REPORTED (a delegate cannot see whose contract it is)" \
   packages/ui/src/provider/cloneProvenance.ts \
   "    const owned = owner.toLowerCase() === caller.toLowerCase();" \
   "    const owned = true;" \
+  test/providerCloneGuard.test.ts
+
+# The authorization regression this slice's review found: the portal re-deriving `owner() == caller`
+# instead of composing `canWriteService`, which refuses a delegate the CHAIN admits. Mutating the
+# report back into a refusal is the exact shape of it.
+mutate "clone-control made able to refuse again (a legitimate delegate is turned away)" \
+  packages/ui/src/provider/cloneProvenance.ts \
+  '        "Who owns this contract?",
+        "pass",' \
+  '        "Who owns this contract?",
+        owned ? "pass" : "fail",' \
+  test/providerCloneGuard.test.ts
+
+mutate "the repoint authority sourced from ownership rather than from the chain" \
+  packages/ui/src/provider/cloneProvenance.ts \
+  "      const mayRepoint = await reader.canWriteServiceRepoint(candidate, caller);" \
+  "      const mayRepoint = owner?.toLowerCase() === caller.toLowerCase();" \
   test/providerCloneGuard.test.ts
 
 mutate "attachment collapsed (deployed treated as attached)" \
@@ -81,10 +98,42 @@ mutate "attachment collapsed (deployed treated as attached)" \
   "    attachedHere = true;" \
   test/providerCloneGuard.test.ts
 
+# Re-anchored: the branch now also requires the listing state to have been READ, because appending
+# is only safe when we know there is nothing to replace.
 mutate "a placeholder pin emitted for an ABSENT location (the 0,0 bug)" \
   packages/ui/src/provider/directoryPlan.ts \
-  '  if (location.kind === "located") {' \
-  '  if (location.kind !== "invalid") {' \
+  '  if (location.kind === "located" && listing) {' \
+  '  if (location.kind !== "invalid" && listing) {' \
+  test/providerDirectoryPlan.test.ts
+
+mutate "a SECOND pin appended instead of rewriting the one being corrected" \
+  packages/ui/src/provider/directoryPlan.ts \
+  "    if (listing.pinCount === 0) {" \
+  "    if (true) {" \
+  test/providerDirectoryPlan.test.ts
+
+mutate "several existing pins silently appended to rather than refused" \
+  packages/ui/src/provider/directoryPlan.ts \
+  '    if (tooMany && location.kind === "located") {' \
+  "    if (false) {" \
+  test/providerDirectoryPlan.test.ts
+
+mutate "the anchor re-written for nothing (a registrar address confirmation silently invalidated)" \
+  packages/ui/src/provider/directoryPlan.ts \
+  "  if (!anchorUnchanged) {" \
+  "  if (true) {" \
+  test/providerDirectoryPlan.test.ts
+
+mutate "an empty publication reported ready while its own advice says to add something" \
+  packages/ui/src/provider/directoryPlan.ts \
+  '  if (channelsPublished === 0 && location.kind !== "located") {' \
+  "  if (false) {" \
+  test/providerDirectoryPlan.test.ts
+
+mutate "withdrawal offered without establishing this key's authority over the record" \
+  packages/ui/src/provider/directoryPlan.ts \
+  "      directoryLive === true && mayWriteRecord === true && !!listing?.onlyPin," \
+  "      !!listing?.onlyPin," \
   test/providerDirectoryPlan.test.ts
 
 mutate "a zero hashAlgorithm on the profile anchor (contract reverts BadProfileAnchor)" \
@@ -139,6 +188,41 @@ mutate "a write ABI argument type mistyped (wrong selector, on-chain revert)" \
     ],
     outputs: [{ name: "clone", type: "address" }],' \
   test/providerWriteAbi.test.ts
+
+mutate "the repoint permission bit swapped for its neighbour (a confident false, not a revert)" \
+  packages/ui/src/provider/liveReader.ts \
+  "export const SERVICE_PERMISSION_REPOINT = 4;" \
+  "export const SERVICE_PERMISSION_REPOINT = 1;" \
+  test/providerWriteAbi.test.ts
+
+# The two send-time guards. Both live in the component and the outcome module rather than in the pure
+# engine, which is why their catchers are the mounted suites.
+#
+# NOTE ON WHAT IS *NOT* MUTATED HERE, deliberately. Rule 1 in the flows' header is enforced twice -
+# a plan is invalidated when its inputs change AND every send addresses the plan's own captured
+# values - and the two are redundant BY CONSTRUCTION: every input a send reads is in that plan's
+# key, so while invalidation holds a send from current form state produces identical arguments. A
+# mutation swapping one captured value for its field would therefore survive, and counting a
+# behaviour-preserving mutation as evidence is the reading this harness exists to avoid. The
+# invalidation half is mutated below; the captured half is asserted on the plan objects themselves in
+# providerDomainAndDeploy / providerDirectoryPlan / providerCloneGuard, where it IS observable.
+mutate "a stale plan keeps gating the button (check one address, send another)" \
+  packages/ui/src/domain/ProviderSelfServiceFlows.tsx \
+  "  return held && held.key === key ? held.plan : null;" \
+  "  return held ? held.plan : null;" \
+  test/providerSendGuards.test.tsx
+
+mutate "a reverted transaction reported as a completed one" \
+  packages/ui/src/provider/sendOutcome.ts \
+  '  return status === "success" ? "succeeded" : "reverted";' \
+  '  return "succeeded";' \
+  test/providerSendOutcome.test.ts
+
+mutate "an unfollowable receipt collapsed into success rather than staying unestablished" \
+  packages/ui/src/provider/sendOutcome.ts \
+  '  return state === "succeeded";' \
+  '  return state !== "reverted";' \
+  test/providerSendOutcome.test.ts
 
 echo "=== $fails mutation(s) unaccounted for ==="
 restore
