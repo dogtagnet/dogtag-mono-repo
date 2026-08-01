@@ -18,6 +18,7 @@ use tower::ServiceExt;
 use indexer_api::app::{watch_generation, AppState, Config};
 use indexer_api::chain::MemLogSource;
 use indexer_api::directory::Directory;
+use indexer_api::mirror::MemContentMirror;
 use indexer_api::scope::ScopeRegistry;
 use indexer_api::store::{MemStore, Store};
 
@@ -114,6 +115,7 @@ fn state(directory: Arc<Directory>) -> AppState {
         source: Arc::new(MemLogSource::new()),
         scopes: Arc::new(ScopeRegistry::default()),
         directory,
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(cfg()),
     }
 }

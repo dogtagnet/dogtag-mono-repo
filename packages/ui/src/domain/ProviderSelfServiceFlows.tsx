@@ -40,7 +40,7 @@
  *     into either neighbour.
  */
 
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { keccak256, toHex } from "viem";
 import { useAccount, useWriteContract } from "wagmi";
 import { Button } from "../components/Button";
@@ -54,6 +54,14 @@ import {
 import { Input } from "../components/Input";
 import { Label } from "../components/Label";
 import { PROVIDER_CONTACT_CHANNELS } from "../directory/channels";
+import {
+  keccakBytes,
+  mirrorContentReader,
+  publicationDigest,
+  putMirrorContent,
+  resolveProviderProfile,
+  type ProfileResolution,
+} from "../mirror";
 import { blankContactFields } from "../directory/registration";
 import {
   ATTACHMENT_IS_NOT_SELF_SERVICE,
@@ -92,6 +100,7 @@ import {
   CloneLifecycleCard,
   DeployPlanCard,
   DirectoryPublicationCard,
+  PublishedListingCard,
   DomainClaimCard,
   type PlanRetirement,
 } from "./ProviderSelfServicePanel";
@@ -114,6 +123,17 @@ export interface ProviderSelfServiceFlowsProps {
   rpcUrl?: string;
   defaultProviderId?: string;
   capabilities: ProviderFlowCapabilities;
+  /**
+   * The content mirror the profile blob and logo are published to (the indexer's base URL).
+   *
+   * A deployment setting, never provider-supplied. That is not a trust claim about the host - a
+   * content address makes the host irrelevant, which is the point of the whole slice - but a
+   * provider-named upload target is a request the provider controls, and there is no reason to
+   * offer one.
+   */
+  mirrorBase?: string;
+  /** Bearer for the mirror's write route. Reads are public; writes are not a free content host. */
+  mirrorToken?: string;
 }
 
 /**
@@ -193,6 +213,8 @@ export function ProviderSelfServiceFlows({
   rpcUrl,
   defaultProviderId = "",
   capabilities,
+  mirrorBase,
+  mirrorToken,
 }: ProviderSelfServiceFlowsProps): ReactNode {
   const { address, isConnected } = useAccount();
   const { writeContractAsync } = useWriteContract();
@@ -225,6 +247,43 @@ export function ProviderSelfServiceFlows({
   );
   const recordTypeKey = useMemo(() => keccak256(toHex(recordType)), [recordType]);
   const providerIdOk = /^0x[0-9a-fA-F]{40}$/.test(providerId);
+
+  // What a READER sees of this provider. `undefined` is the pending state and is NOT a fourth
+  // rendered outcome - it renders nothing, because before the resolution lands there is no answer.
+  const [listing, setListing] = useState<ProfileResolution | undefined>(undefined);
+  useEffect(() => {
+    if (!reader || !providerIdOk || !mirrorBase) {
+      setListing(undefined);
+      return;
+    }
+    let current = true;
+    void (async () => {
+      try {
+        const anchor = await reader.providerProfileAnchor(providerId as `0x${string}`);
+        const resolved = await resolveProviderProfile(
+          { digest: anchor.digest, hashAlgorithm: anchor.hashAlgorithm, revision: anchor.revision },
+          mirrorContentReader(mirrorBase),
+          keccakBytes,
+        );
+        if (current) setListing(resolved);
+      } catch (error) {
+        // A failed ANCHOR read is not an absence either: the chain could not be asked, so nothing
+        // about what this provider published has been established.
+        if (current) {
+          setListing({
+            state: "unverified",
+            reason: `the published record could not be read from the chain (${
+              error instanceof Error && error.message ? error.message : "no reason given"
+            })`,
+            logo: { state: "unverified", reason: "the published record could not be read" },
+          });
+        }
+      }
+    })();
+    return () => {
+      current = false;
+    };
+  }, [reader, providerId, providerIdOk, mirrorBase, sent.length]);
   const caller = address as `0x${string}` | undefined;
 
   // The input fingerprints. Anything a plan's answer depends on belongs in its key; a value left out
@@ -694,7 +753,7 @@ export function ProviderSelfServiceFlows({
                         locationActive: true,
                       },
                       reader!,
-                      (utf8) => keccak256(toHex(utf8)),
+                      publicationDigest,
                     );
                     setPublicationHeld({ key: publicationKey, plan, spent: false });
                   })
@@ -714,6 +773,30 @@ export function ProviderSelfServiceFlows({
                     // inside it.
                     const plan = publication!;
                     for (const step of plan.steps) {
+                      // A mirror upload is an HTTP publication, not a transaction, and every one of
+                      // them precedes the anchor. It has no receipt to follow, so it is handled here
+                      // rather than through `sendAndFollow`; a failure THROWS, which `run` surfaces
+                      // and which stops the loop before the anchor is sent. That ordering is the
+                      // point: the irreversible write must never name content the mirror lacks.
+                      if (step.kind === "mirrorUpload") {
+                        if (!mirrorBase) {
+                          // Refused rather than skipped. Sending the anchor without its content
+                          // mirrored would publish a digest that resolves to nothing, which every
+                          // consumer reads as "this provider published nothing".
+                          throw new Error(
+                            "no content mirror is configured, so the profile document cannot be "
+                              + "published. Set VITE_CONTENT_MIRROR_BASE before publishing.",
+                          );
+                        }
+                        await putMirrorContent(
+                          mirrorBase,
+                          step.address,
+                          step.bytes,
+                          step.mediaType,
+                          mirrorToken,
+                        );
+                        continue;
+                      }
                       const state =
                         step.kind === "profileAnchor"
                           ? await sendAndFollow("Publish contact details", () => setPublicationHeld(spend), () =>
@@ -809,6 +892,12 @@ export function ProviderSelfServiceFlows({
                 anchoredNotice={CONTACTS_ARE_ANCHORED_NOT_SERVED}
                 retired={publicationRetired}
               />
+            ) : null}
+            {/* What a READER sees, resolved through the mirror rather than restated from the form.
+                Rendered only once a provider id is well formed, because before that there is no
+                record to resolve and "nothing published" would be a claim about nobody. */}
+            {providerIdOk ? (
+              <PublishedListingCard resolution={listing} providerName={providerId} />
             ) : null}
           </CardContent>
         </Card>

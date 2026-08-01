@@ -29,6 +29,7 @@ use tower::ServiceExt; // oneshot
 use indexer_api::app::{watch_generation, AppState, Config};
 use indexer_api::chain::{ChainError, LogSource, SourceBackend, WatchContext, SIMULATED_CHAIN_ID};
 use indexer_api::directory::Directory;
+use indexer_api::mirror::MemContentMirror;
 use indexer_api::events::IndexedEvent;
 use indexer_api::scope::{ScopeConfig, ScopeRegistry};
 use indexer_api::store::{MemStore, Store};
@@ -138,6 +139,7 @@ fn state(source: Arc<dyn LogSource>) -> AppState {
             clones: vec![],
         }])),
         directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(cfg()),
     }
 }

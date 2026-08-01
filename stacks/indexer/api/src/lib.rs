@@ -10,6 +10,7 @@ pub mod chain;
 pub mod directory;
 pub mod events;
 pub mod indexer;
+pub mod mirror;
 pub mod routes;
 pub mod scope;
 pub mod store;

@@ -12,8 +12,8 @@
 // `test_the_chain_cannot_tell_a_placeholder_from_a_real_coordinate` pins that absence deliberately,
 // which is what makes this file the load-bearing copy rather than a second opinion.
 import { describe, expect, it } from "vitest";
+import { buildProfileBlob } from "../src/mirror";
 import {
-  contactBlob,
   MAX_SCANNED_LOCATION_NUMBERS,
   planDirectoryPublication,
   toContractCoordinate,
@@ -114,8 +114,8 @@ describe("a contact-only provider publishes no location, and none is invented", 
     expect(plan.contactOnly).toBe(true);
     // The rule, stated the only way that cannot be softened later.
     expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(0);
-    expect(plan.steps).toHaveLength(1);
-    expect(plan.steps[0]!.kind).toBe("profileAnchor");
+    // The profile document is mirrored, then anchored. Two steps, and the upload is first.
+    expect(plan.steps.map((s) => s.kind)).toEqual(["mirrorUpload", "profileAnchor"]);
   });
 
   it("NEVER produces a 0,0 coordinate from a blank field - `Number(\"\")` is 0, not NaN", async () => {
@@ -170,8 +170,14 @@ describe("a located provider does publish a pin", () => {
     const pins = plan.steps.filter((s) => s.kind === "pin");
     expect(pins).toHaveLength(1);
     expect(pins[0]).toMatchObject({ lat: 1_290_270, lng: 103_851_959, locationKind: 1, active: true });
-    // Order matters: the anchor lists the provider, so it goes first.
-    expect(plan.steps[0]!.kind).toBe("profileAnchor");
+    // Order matters, and the reason changed with S-17: the anchor is the IRREVERSIBLE half, so
+    // every mirror upload precedes it. An anchor naming content the mirror does not hold reads, to
+    // every consumer, exactly like a provider who published nothing.
+    expect(plan.steps.map((s) => s.kind)).toEqual([
+      "mirrorUpload",
+      "profileAnchor",
+      "pin",
+    ]);
   });
 
   it("0,0 typed DELIBERATELY is published, because it is a real place", async () => {
@@ -185,7 +191,7 @@ describe("a located provider does publish a pin", () => {
     );
     expect(plan.contactOnly).toBe(false);
     expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(1);
-    expect(plan.steps[1]).toMatchObject({ lat: 0, lng: 0 });
+    expect(plan.steps.find((s) => s.kind === "pin")).toMatchObject({ lat: 0, lng: 0 });
   });
 
   it("rounds rather than truncates, so southern and western pins are not biased", () => {
@@ -252,7 +258,7 @@ describe("the profile anchor carries every argument setProfileAnchor needs", () 
 
 describe("the contact blob", () => {
   it("omits a blank channel rather than publishing an empty one", () => {
-    const { blob, channelsPublished } = contactBlob(CONTACTS);
+    const { blob, channelsPublished } = buildProfileBlob(CONTACTS, null);
     expect(channelsPublished).toBe(2);
     const parsed = JSON.parse(blob) as { contact: Record<string, string> };
     expect(Object.keys(parsed.contact)).toEqual(["phone", "email"]);
@@ -260,14 +266,14 @@ describe("the contact blob", () => {
   });
 
   it("is stable for the same input, so re-publishing does not move the digest", () => {
-    expect(contactBlob(CONTACTS).blob).toBe(contactBlob({ ...CONTACTS }).blob);
+    expect(buildProfileBlob(CONTACTS, null).blob).toBe(buildProfileBlob({ ...CONTACTS }, null).blob);
   });
 
   it("distinguishes an omitted channel from a published empty one", () => {
     // If these produced the same document the digest could not tell "I did not publish a website"
     // from "I published an empty website".
-    const withWebsite = contactBlob({ ...CONTACTS, website: "https://clinic.example.sg" });
-    expect(withWebsite.blob).not.toBe(contactBlob(CONTACTS).blob);
+    const withWebsite = buildProfileBlob({ ...CONTACTS, website: "https://clinic.example.sg" }, null);
+    expect(withWebsite.blob).not.toBe(buildProfileBlob(CONTACTS, null).blob);
     expect(withWebsite.channelsPublished).toBe(3);
   });
 
@@ -456,7 +462,7 @@ describe("withdrawal is deliberate, and the anchor is not rewritten for nothing"
     // `setProfileAnchor` has NO `NoChange` guard and the contract is frozen, so a redundant write
     // bumps the anchor revision - and every bump makes `coversCurrentAddressText` false for any
     // registrar address confirmation the provider holds. The portal is the only place to avoid it.
-    const { blob } = contactBlob(CONTACTS);
+    const { blob } = buildProfileBlob(CONTACTS, null);
     const plan = await planDirectoryPublication(
       { ...base, latInput: "1.3521", lngInput: "103.8198" },
       reader({
@@ -476,7 +482,7 @@ describe("withdrawal is deliberate, and the anchor is not rewritten for nothing"
   });
 
   it("refuses a publication in which literally nothing would change", async () => {
-    const { blob } = contactBlob(CONTACTS);
+    const { blob } = buildProfileBlob(CONTACTS, null);
     const plan = await planDirectoryPublication(
       { ...base, latInput: "1.290270", lngInput: "103.851959" },
       reader({

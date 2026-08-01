@@ -70,13 +70,19 @@ document:
     Never modify functional source, tests, workflows, circuits, contracts, or generated bindings during Document.
     If resolving documentation would require more than 10 files, any non-documentation file, or cross-slice reconciliation, make no such edits and return an ask-user finding instead.
 
-# Zero disables follow-up fix loops. In v1.40.0 the initial Document agent may
-# still make fixes in an accidental raw run, so these prompt constraints and the
-# post-stage commit guard remain defense-in-depth, not a runtime cap.
+# Follow-up fix loops, capped at two rounds per stage.
+#
+# These were 0, which parked EVERY finding for a human decision and overrode the machine-wide
+# setting. The captain asked for the gate to be less strict, so each stage now gets up to two
+# automatic fix rounds; anything still outstanding after that still parks rather than shipping.
+#
+# The Document safety constraints below are UNCHANGED and are not what this relaxes: the prompt
+# constraints and the post-stage commit guard remain defense-in-depth against an accidental raw
+# run, not a runtime cap.
 auto_fix:
-  review: 0
-  document: 0
-  lint: 0
+  review: 2
+  document: 2
+  lint: 2
 
 # The lint guard identifies Document commits by this exact v1.40.0 expansion:
 # "no-mistakes(document): <summary>".

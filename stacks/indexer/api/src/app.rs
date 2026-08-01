@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::chain::{LogSource, WatchContext, WatchGeneration};
 use crate::directory::Directory;
+use crate::mirror::ContentMirror;
 use crate::scope::ScopeRegistry;
 use crate::store::Store;
 
@@ -221,6 +222,13 @@ pub struct AppState {
     pub source: Arc<dyn LogSource>,
     pub scopes: Arc<ScopeRegistry>,
     pub directory: Arc<Directory>,
+    /// The S-17 content-addressed mirror: the bytes a `ProfileAnchor` digest names.
+    ///
+    /// A separate trait from `Store` on purpose. The event index and the content mirror have
+    /// different lifecycles (one is rebuildable from the chain by rescanning, the other is not
+    /// derivable from anything on chain — the chain holds only the digest), so folding blob methods
+    /// into `Store` would force every index implementation to grow a storage concern it does not own.
+    pub mirror: Arc<dyn ContentMirror>,
     pub cfg: Arc<Config>,
 }
 

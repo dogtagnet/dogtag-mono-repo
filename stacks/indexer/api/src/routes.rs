@@ -32,6 +32,7 @@ use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 use crate::app::{keccak_key, AppState};
 use crate::events::{EventType, Finality, IndexedEvent};
+use crate::mirror::{ContentRead, MAX_CONTENT_BYTES};
 use crate::scope::Principal;
 use crate::store::{EventQuery, StoreError};
 
@@ -813,6 +814,126 @@ async fn issuers(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<
     Ok(Json(json!({ "issuers": out, "scope": { "label": principal.label } })))
 }
 
+// ------------------------------------------------------------------------------------------------
+// The content-addressed mirror (S-17)
+// ------------------------------------------------------------------------------------------------
+
+/// `GET /v1/content/:address` — serve the bytes stored at one content address.
+///
+/// **Public and unauthenticated, like the rest of the provider-directory read surface.** What it
+/// serves is publication-safe by construction: a provider's own contact blob and logo, whose digest
+/// is already published on chain for anyone to read.
+///
+/// Serving is NOT evidence and this response does not ask to be believed. The caller recomputes the
+/// digest over the body and compares it to the address it requested; that recomputation is the
+/// security boundary. See `crate::mirror` for why the checks on this side are defence in depth.
+///
+/// Three outcomes, kept apart because they have three different remedies:
+///   - **200** — bytes that re-hashed to the requested address on the way out;
+///   - **404** — the mirror holds nothing here (a FACT: never published, or withdrawn);
+///   - **503** — the store could not be read, or holds bytes that no longer hash to their key.
+///
+/// A store failure must never arrive as a 404. "We hold nothing" and "we could not look" are the
+/// could-not-check/absence pair this codebase refuses to collapse everywhere else, and a publisher
+/// told 404 would re-publish content that is already there while the real fault went uninvestigated.
+async fn content(
+    State(st): State<AppState>,
+    axum::extract::Path(address): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let read = st.mirror.get(&address).await.map_err(|e| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("content mirror unavailable: {e}"),
+        )
+    })?;
+
+    match read {
+        ContentRead::Found { bytes, media_type } => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_str(&media_type)
+                    .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+            );
+            // Content-addressed bytes are immutable by construction: the address cannot name
+            // different bytes later, because different bytes have a different address.
+            headers.insert(
+                CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            );
+            // The bytes are rendered in operator portals. Even though the media type is sniffed and
+            // allowlisted on ingest, nothing served from here may be interpreted as a document.
+            headers.insert(
+                axum::http::header::HeaderName::from_static("x-content-type-options"),
+                HeaderValue::from_static("nosniff"),
+            );
+            headers.insert(
+                axum::http::header::CONTENT_DISPOSITION,
+                HeaderValue::from_static("inline"),
+            );
+            Ok((headers, bytes))
+        }
+        ContentRead::Absent => Err(err(
+            StatusCode::NOT_FOUND,
+            "no content is mirrored at this address",
+        )),
+        ContentRead::Corrupt => Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "mirrored content no longer hashes to its address and will not be served",
+        )),
+    }
+}
+
+/// `PUT /v1/content/:address` — publish bytes under their own content address.
+///
+/// Bearer-gated by the ordinary scope registry: writing to the mirror is an operator action, and an
+/// open write surface on a public read endpoint is a free content host. Any recognised principal may
+/// publish, scoped or unscoped, because the address constrains what can be written far more tightly
+/// than a scope could — a caller can only ever store the one blob that hashes to the address it
+/// names, so it cannot overwrite, displace or shadow anybody else's content.
+///
+/// The ingest check refuses content that does not hash to `address`. That is what makes this a
+/// content-addressed store rather than a key-value store with hexadecimal keys.
+async fn put_content(
+    State(st): State<AppState>,
+    axum::extract::Path(address): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    authenticate(&st, &headers)?;
+
+    if body.len() > MAX_CONTENT_BYTES {
+        return Err(err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!("content is over the {MAX_CONTENT_BYTES}-byte limit"),
+        ));
+    }
+    let media_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        // Parameters (`; charset=utf-8`) describe the transfer, not the type being allowlisted.
+        .map(|v| v.split(';').next().unwrap_or(v).trim().to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let outcome = st
+        .mirror
+        .put(&address, body.to_vec(), &media_type)
+        .await
+        .map_err(|e| {
+            err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("content mirror unavailable: {e}"),
+            )
+        })?;
+
+    match outcome {
+        Ok(stored) => Ok(Json(json!({ "address": stored, "bytes": body.len() }))),
+        // 400 rather than 409: the request is wrong, not in conflict with existing state. A
+        // mismatched address means the caller computed one of the two values incorrectly.
+        Err(rejection) => Err(err(StatusCode::BAD_REQUEST, &rejection.message())),
+    }
+}
+
 /// The router. `demo` toggles a permissive posture only via env in `main`; scoping is always enforced.
 /// Compression lives here so every embedding of the public directory routes negotiates gzip,
 /// including hermetic tests and deployments that do not use the standalone binary's assembly.
@@ -825,6 +946,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/businesses", get(businesses))
         .route("/v1/businesses/nearest", post(nearest_businesses))
+        .route("/v1/content/:address", get(content).put(put_content))
         .route("/v1/status", get(status))
         .route("/v1/events", get(events))
         .route("/v1/stats", get(stats))

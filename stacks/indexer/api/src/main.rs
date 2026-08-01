@@ -15,6 +15,7 @@ use indexer_api::app::{
 use indexer_api::chain::{AlloyLogSource, LogSource, MemLogSource};
 use indexer_api::directory::Directory;
 use indexer_api::indexer::Indexer;
+use indexer_api::mirror::{ContentMirror, MemContentMirror};
 use indexer_api::scope::{ScopeConfig, ScopeRegistry};
 use indexer_api::store::{MemStore, Store};
 
@@ -174,11 +175,19 @@ async fn main() {
         Arc::new(AlloyLogSource::new(rpc_url).with_chain_id(chain_id))
     };
 
+    // --- content mirror ------------------------------------------------------------------------
+    // In memory for now, so the mirror is ephemeral and a restart empties it. That is honest rather
+    // than convenient: content addressing means a lost object is re-publishable byte-for-byte by
+    // whoever holds the original, and a missing address answers 404 (a fact) rather than a wrong
+    // answer. A durable store slots in behind `ContentMirror` without touching either route.
+    let mirror: Arc<dyn ContentMirror> = Arc::new(MemContentMirror::new());
+
     let state = AppState {
         store,
         source,
         scopes: Arc::new(scopes),
         directory: directory.clone(),
+        mirror,
         cfg: Arc::new(cfg),
     };
 

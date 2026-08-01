@@ -66,7 +66,6 @@ export {
 } from "./domainClaim";
 
 export {
-  contactBlob,
   CONTACT_ONLY_NOTICE,
   CONTACTS_ARE_ANCHORED_NOT_SERVED,
   COORDINATE_SCALE,
