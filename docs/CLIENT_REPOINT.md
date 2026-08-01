@@ -6,7 +6,8 @@ Every consumer of an address that moves in the generation-1 to generation-2 cuto
 The live deployment is S-14 and every C-step in it is separately approvable.
 
 S-14 has since run on ROAX, so the inventory's `generation2` column is now filled for the entries with a single successor and still `null` for the rest - and a null no longer means one thing.
-It means either not deployed at all (`IssuerDomainRegistry`; C-7 was out of scope), or deployed with **no single successor** (`DogTagIssuerFactory` splits by caller role, so its halves are named on `supersededByReaders` / `supersededByWriters` instead), or deployed but **BLOCKED** (`IssuerRegistry`).
+It means either deployed with **no single successor** (`DogTagIssuerFactory` splits by caller role, so its halves are named on `supersededByReaders` / `supersededByWriters` instead), or deployed but **BLOCKED** (`IssuerRegistry`).
+C-7 has since run too, so `IssuerDomainRegistry`'s successor is no longer a null at all: `ServiceDomainResolver` was deployed on 2026-08-01 and its address is filled in the inventory. That fills the column and repoints nothing - it is DEPLOYED AND UNWIRED, approved by no registrar and selected by no service, and the repoint is still C-9/C-10.
 Every entry states which, on `generation2Provenance`; `scripts/check-cutover-consumers.sh` requires that key and prints it, because "N of M are FILLED" cannot tell the three nulls apart.
 A filled address is a record of what was deployed and repoints nothing - the repoint is C-9/C-10 and is gated on `semanticEquivalence`, not on an address existing - and a placeholder in a still-null entry would be the invented data this fleet forbids.
 

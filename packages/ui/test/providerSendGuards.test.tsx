@@ -175,6 +175,97 @@ describe("a plan stops gating anything once its inputs change", () => {
   });
 });
 
+describe("a plan does not outlive its own transaction", () => {
+  // The other set of inputs. A plan is keyed on the FORM, so an untouched form leaves the key
+  // matching - but the answers came from the CHAIN, and submitting moves that. Without this, Check
+  // -> Send -> Send fires a second transaction against state nobody re-read.
+  it("disables the send after one transaction, with the form untouched", async () => {
+    type("candidate", CLONE_A);
+    await settle();
+    byText("Check this contract").click();
+    await settle();
+    expect(button("repoint-send").disabled).toBe(false);
+
+    button("repoint-send").click();
+    await settle();
+
+    expect(writeContractAsync).toHaveBeenCalledTimes(1);
+    expect(button("repoint-send").disabled).toBe(true);
+  });
+
+  it("says the plan was ACTED ON, not that an input was edited - different remedies", async () => {
+    type("candidate", CLONE_A);
+    await settle();
+    byText("Check this contract").click();
+    await settle();
+    button("repoint-send").click();
+    await settle();
+
+    expect(host.querySelector("[data-testid='repoint-stale-spent']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='repoint-stale']")).toBeNull();
+    expect(host.textContent).toContain("already been acted on");
+  });
+
+  it("a second press really does send nothing", async () => {
+    // Non-vacuous: the button is clicked again rather than merely inspected, because a disabled
+    // attribute that some future handler ignored would still let the transaction through.
+    type("candidate", CLONE_A);
+    await settle();
+    byText("Check this contract").click();
+    await settle();
+    button("repoint-send").click();
+    await settle();
+    button("repoint-send").click();
+    await settle();
+
+    expect(writeContractAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("retires the plan after a REVERT too - the chain may have moved precisely because it reverted", async () => {
+    receipt.mockImplementation(async () => ({ status: "reverted" }));
+    type("candidate", CLONE_A);
+    await settle();
+    byText("Check this contract").click();
+    await settle();
+    button("repoint-send").click();
+    await settle();
+
+    expect(button("repoint-send").disabled).toBe(true);
+    // The outcome is still reported: retiring the plan must not hide the result the provider needs.
+    expect(host.querySelector("[data-testid='sent-reverted']")).not.toBeNull();
+  });
+
+  it("retires the plan after an UNFETCHABLE receipt - an unestablished outcome authorizes nothing", async () => {
+    receipt.mockImplementation(async () => {
+      throw new Error("Timed out while waiting for transaction");
+    });
+    type("candidate", CLONE_A);
+    await settle();
+    byText("Check this contract").click();
+    await settle();
+    button("repoint-send").click();
+    await settle();
+
+    expect(button("repoint-send").disabled).toBe(true);
+    expect(host.querySelector("[data-testid='sent-unknown']")).not.toBeNull();
+  });
+
+  it("re-checking after a send restores the button", async () => {
+    // The flow must not be stranded: retiring is a demand to re-read, not a dead end.
+    type("candidate", CLONE_A);
+    await settle();
+    byText("Check this contract").click();
+    await settle();
+    button("repoint-send").click();
+    await settle();
+    byText("Check this contract").click();
+    await settle();
+
+    expect(button("repoint-send").disabled).toBe(false);
+    expect(host.querySelector("[data-testid='repoint-stale-spent']")).toBeNull();
+  });
+});
+
 describe("a submitted transaction is reported as submitted, and settled by its receipt", () => {
   it("reports a successful transaction as succeeded, with a link", async () => {
     type("candidate", CLONE_A);

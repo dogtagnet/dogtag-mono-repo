@@ -3,12 +3,14 @@
 Registry plan `dogtag-regplan-p3` slice **S-9**.
 `contracts/src/ServiceDomainResolver.sol`, covered by `contracts/test/ServiceDomainResolver.t.sol`.
 
-**BUILT AND TESTED ONLY — NOT DEPLOYED.**
-No address in `contracts/deployments/roax.json`, no deploy script, no `.env.example` entry, and no consumer points at it.
-Deploying it is part of the cutover (C-5 onward) and is separately captain-authorized.
+**DEPLOYED AND UNWIRED.**
+Cutover step C-7 deployed it live on ROAX on 2026-08-01, so it has an address in `contracts/deployments/roax.json` — recorded under `_c7_typed_resolvers` with its transaction hash, block and signer.
+It answers nothing: no `.env.example` entry names it, no client config carries it, no consumer reads it, and its store is empty, because a typed resolver does nothing until the registrar calls `setResolverApproved(DOMAIN, resolver, true)` AND each service selects it — both KYC work that C-7 did not perform.
+Client repointing is C-9/C-10 and has NOT happened.
+Its source is consequently FROZEN in the same sense as the contracts S-14 deployed: an edit makes it diverge from deployed bytecode.
 It is additive in exactly the sense `ProviderRegistry`, `CloneProvenanceRouter` and the generation-2 issuer pair are: nothing already deployed changes, and no existing address moves.
 
-It supersedes `IssuerDomainRegistry`, which stays deployed and wired until that cutover.
+It supersedes `IssuerDomainRegistry`, which stays deployed and stays the WIRED domain surface until that cutover.
 The product fact is unchanged — *this service contract asserts that its domain is D, and the zone at D asserts this contract back* — and so is the record convention in [ISSUER_DOMAIN_BINDING.md](./ISSUER_DOMAIN_BINDING.md).
 What moves is where the three questions behind a claim are answered: authority to the S-6 `ProviderRegistry`, provenance to the S-8 `CloneProvenanceRouter`, and the meaning of "no domain" out of an overloaded empty string.
 

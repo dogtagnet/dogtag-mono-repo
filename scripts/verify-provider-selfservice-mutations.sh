@@ -206,10 +206,20 @@ mutate "the repoint permission bit swapped for its neighbour (a confident false,
 # behaviour-preserving mutation as evidence is the reading this harness exists to avoid. The
 # invalidation half is mutated below; the captured half is asserted on the plan objects themselves in
 # providerDomainAndDeploy / providerDirectoryPlan / providerCloneGuard, where it IS observable.
+# Re-anchored: `fresh` now folds a SECOND retirement reason, so the old search string is absent and
+# would have reported INERT. The two halves are mutated separately because they retire a plan for
+# different reasons - the form moved, versus the chain moved - and a fix to one says nothing about
+# the other.
 mutate "a stale plan keeps gating the button (check one address, send another)" \
   packages/ui/src/domain/ProviderSelfServiceFlows.tsx \
-  "  return held && held.key === key ? held.plan : null;" \
-  "  return held ? held.plan : null;" \
+  "  return held && !held.spent && held.key === key ? held.plan : null;" \
+  "  return held && !held.spent ? held.plan : null;" \
+  test/providerSendGuards.test.tsx
+
+mutate "a plan outlives its own transaction (press Send twice, send twice)" \
+  packages/ui/src/domain/ProviderSelfServiceFlows.tsx \
+  "  return held && !held.spent ? { ...held, spent: true } : held;" \
+  "  return held;" \
   test/providerSendGuards.test.tsx
 
 mutate "a reverted transaction reported as a completed one" \

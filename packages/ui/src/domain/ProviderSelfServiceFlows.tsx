@@ -26,6 +26,14 @@
  *     pointer. Two mechanisms now stand between that, deliberately, so neither is load-bearing
  *     alone - a plan is INVALIDATED when any input it depends on changes (the button disables and
  *     the panel says why), and every send addresses the plan's OWN captured values.
+ *
+ *     A PLAN IS ALSO RETIRED BY ITS OWN TRANSACTION, which is the same rule applied to the other
+ *     set of inputs. A plan is keyed on the FORM, so an untouched form leaves the key matching -
+ *     but the answers came from the CHAIN, and submitting moves that. Without it, Check -> Publish
+ *     -> Publish re-sent `setProfileAnchor` with a digest whose `anchorUnchanged` guard had been
+ *     computed against pre-transaction state, bumping the anchor revision for nothing and
+ *     invalidating `coversCurrentAddressText` on any registrar address confirmation the provider
+ *     holds - the exact harm `directoryPlan.ts` reads the current anchor to avoid.
  *  2. **A submitted transaction is not a completed one.** `writeContractAsync` resolves on a hash
  *     and does not throw on a revert, so the outcome is read from the receipt and reported as
  *     itself. See `../provider/sendOutcome` for the four states and why the fourth cannot collapse
@@ -116,22 +124,49 @@ export interface ProviderSelfServiceFlowsProps {
 const RECEIPT_TIMEOUT_MS = 90_000;
 
 /**
- * A plan plus the inputs it was computed FROM.
+ * A plan plus the inputs it was computed FROM, and whether it has already been acted on.
  *
  * The key is compared against the live inputs on every render, so a plan whose inputs moved stops
- * gating anything - see rule 1 in the module header.
+ * gating anything - see rule 1 in the module header. `spent` closes the other half of the same rule:
+ * the inputs a plan is keyed on are the FORM's, and a transaction moves the CHAIN's, so a plan whose
+ * key still matches can have been falsified by its own send.
  */
 interface Checked<T> {
   key: string;
   plan: T;
+  /** Set once a transaction has been submitted against this plan. Never unset. */
+  spent: boolean;
 }
 
+/** A plan that may still authorize a transaction: keyed on the current inputs, and not yet acted on. */
 function fresh<T>(held: Checked<T> | null, key: string): T | null {
-  return held && held.key === key ? held.plan : null;
+  return held && !held.spent && held.key === key ? held.plan : null;
 }
 
-function isStale<T>(held: Checked<T> | null, key: string): boolean {
-  return !!held && held.key !== key;
+/**
+ * Why a held plan is no longer gating its button. `null` when it still is, or when there is none.
+ *
+ * Two reasons, told apart rather than merged, because they have different remedies and a provider
+ * who cannot tell them apart cannot act: `edited` means re-check what you typed, `spent` means the
+ * chain has moved under the answer you were shown.
+ */
+function retiredBecause<T>(held: Checked<T> | null, key: string): "edited" | "spent" | null {
+  if (!held) return null;
+  if (held.spent) return "spent";
+  return held.key === key ? null : "edited";
+}
+
+/**
+ * Retire a plan because a transaction has been submitted against it.
+ *
+ * Applied at SUBMISSION rather than at any one terminal outcome, which covers all of them: the
+ * moment our own transaction is in flight, the chain state the plan was computed against is no
+ * longer necessarily current. A revert is no exception - a write can revert precisely BECAUSE
+ * something moved - and an unfetchable receipt least of all, since an outcome nobody could establish
+ * must not authorize a resend.
+ */
+function spend<T>(held: Checked<T> | null): Checked<T> | null {
+  return held && !held.spent ? { ...held, spent: true } : held;
 }
 
 export function ProviderSelfServiceFlows({
@@ -211,8 +246,17 @@ export function ProviderSelfServiceFlows({
    * final state so a multi-step sequence can stop rather than sending the next step after a revert.
    */
   const sendAndFollow = useCallback(
-    async (what: string, send: () => Promise<`0x${string}`>): Promise<SendState> => {
+    async (
+      what: string,
+      retire: () => void,
+      send: () => Promise<`0x${string}`>,
+    ): Promise<SendState> => {
       const hash = await send();
+      // The plan that authorized this is retired HERE, before the outcome is known, so every
+      // terminal state inherits it and no handler can forget one. It is a required parameter rather
+      // than an optional one so a new flow cannot silently omit it. A rejected signature never
+      // reaches this line, which is correct: nothing was submitted, so nothing was falsified.
+      retire();
       setSent((s) => [sendRecord(hash, what, "submitted"), ...s]);
       const settle = (record: SendRecord) =>
         setSent((s) => s.map((r) => (r.hash === record.hash ? record : r)));
@@ -347,7 +391,7 @@ export function ProviderSelfServiceFlows({
                         },
                         reader!,
                       );
-                      setDeployHeld({ key: deployKey, plan });
+                      setDeployHeld({ key: deployKey, plan, spent: false });
                     })
                   }
                 >
@@ -361,7 +405,7 @@ export function ProviderSelfServiceFlows({
                   onClick={() =>
                     run(async () => {
                       const { request } = deploy!;
-                      await sendAndFollow("Deploy contract", () =>
+                      await sendAndFollow("Deploy contract", () => setDeployHeld(spend), () =>
                         writeContractAsync({
                           address: contracts.factory,
                           abi: FACTORY_ABI,
@@ -375,7 +419,7 @@ export function ProviderSelfServiceFlows({
                   Deploy
                 </Button>
               </div>
-              <StaleNotice stale={isStale(deployHeld, deployKey)} testId="deploy-stale" />
+              <PlanNotice reason={retiredBecause(deployHeld, deployKey)} testId="deploy-stale" />
               {deploy ? (
                 <DeployPlanCard plan={deploy} attachmentNotice={ATTACHMENT_IS_NOT_SELF_SERVICE} />
               ) : null}
@@ -417,7 +461,7 @@ export function ProviderSelfServiceFlows({
                         },
                         reader!,
                       );
-                      setCloneHeld({ key: cloneKey, plan });
+                      setCloneHeld({ key: cloneKey, plan, spent: false });
                     })
                   }
                 >
@@ -430,7 +474,7 @@ export function ProviderSelfServiceFlows({
                     run(async () => {
                       // The address the assessment JUDGED. Reading the field here is how a different
                       // but also-owned clone gets selected silently.
-                      await sendAndFollow("Select contract", () =>
+                      await sendAndFollow("Select contract", () => setCloneHeld(spend), () =>
                         writeContractAsync({
                           address: contracts.core,
                           abi: CORE_ABI,
@@ -444,7 +488,7 @@ export function ProviderSelfServiceFlows({
                   Make this my current contract
                 </Button>
               </div>
-              <StaleNotice stale={isStale(cloneHeld, cloneKey)} testId="repoint-stale" />
+              <PlanNotice reason={retiredBecause(cloneHeld, cloneKey)} testId="repoint-stale" />
               {clone ? <CloneLifecycleCard assessment={clone} /> : null}
             </CardContent>
           </Card>
@@ -484,7 +528,7 @@ export function ProviderSelfServiceFlows({
                         caller!,
                         reader!,
                       );
-                      setDomainHeld({ key: domainKey, plan });
+                      setDomainHeld({ key: domainKey, plan, spent: false });
                     })
                   }
                 >
@@ -500,7 +544,7 @@ export function ProviderSelfServiceFlows({
                       // The domain STRING is legitimately current - the assessment checks the
                       // resolver and this key's authority, neither of which depends on it. The
                       // SERVICE is the assessment's, for the same reason flow 2's is.
-                      await sendAndFollow("Publish domain", () =>
+                      await sendAndFollow("Publish domain", () => setDomainHeld(spend), () =>
                         writeContractAsync({
                           address: contracts.domainResolver,
                           abi: DOMAIN_ABI,
@@ -519,7 +563,7 @@ export function ProviderSelfServiceFlows({
                   data-testid="domain-none-send"
                   onClick={() =>
                     run(async () => {
-                      await sendAndFollow("Declare no domain", () =>
+                      await sendAndFollow("Declare no domain", () => setDomainHeld(spend), () =>
                         writeContractAsync({
                           address: contracts.domainResolver,
                           abi: DOMAIN_ABI,
@@ -542,7 +586,7 @@ export function ProviderSelfServiceFlows({
                     data-testid="domain-withdraw-send"
                     onClick={() =>
                       run(async () => {
-                        await sendAndFollow("Withdraw domain claim", () =>
+                        await sendAndFollow("Withdraw domain claim", () => setDomainHeld(spend), () =>
                           writeContractAsync({
                             address: contracts.domainResolver,
                             abi: DOMAIN_ABI,
@@ -557,7 +601,7 @@ export function ProviderSelfServiceFlows({
                   </Button>
                 ) : null}
               </div>
-              <StaleNotice stale={isStale(domainHeld, domainKey)} testId="domain-stale" />
+              <PlanNotice reason={retiredBecause(domainHeld, domainKey)} testId="domain-stale" />
               {domainState ? <DomainClaimCard assessment={domainState} /> : null}
             </CardContent>
           </Card>
@@ -621,7 +665,7 @@ export function ProviderSelfServiceFlows({
                       reader!,
                       (utf8) => keccak256(toHex(utf8)),
                     );
-                    setPublicationHeld({ key: publicationKey, plan });
+                    setPublicationHeld({ key: publicationKey, plan, spent: false });
                   })
                 }
               >
@@ -641,7 +685,7 @@ export function ProviderSelfServiceFlows({
                     for (const step of plan.steps) {
                       const state =
                         step.kind === "profileAnchor"
-                          ? await sendAndFollow("Publish contact details", () =>
+                          ? await sendAndFollow("Publish contact details", () => setPublicationHeld(spend), () =>
                               writeContractAsync({
                                 address: contracts.directory,
                                 abi: DIRECTORY_ABI,
@@ -657,7 +701,7 @@ export function ProviderSelfServiceFlows({
                               }),
                             )
                           : step.op === "publish"
-                            ? await sendAndFollow("Publish location", () =>
+                            ? await sendAndFollow("Publish location", () => setPublicationHeld(spend), () =>
                                 writeContractAsync({
                                   address: contracts.directory,
                                   abi: DIRECTORY_ABI,
@@ -673,7 +717,7 @@ export function ProviderSelfServiceFlows({
                               )
                             : // The step that stops one provider appearing in two places: a second
                               // Publish REWRITES the pin it is correcting rather than appending.
-                              await sendAndFollow("Replace location", () =>
+                              await sendAndFollow("Replace location", () => setPublicationHeld(spend), () =>
                                 writeContractAsync({
                                   address: contracts.directory,
                                   abi: DIRECTORY_ABI,
@@ -706,7 +750,7 @@ export function ProviderSelfServiceFlows({
                   onClick={() =>
                     run(async () => {
                       const plan = publication!;
-                      await sendAndFollow("Withdraw location", () =>
+                      await sendAndFollow("Withdraw location", () => setPublicationHeld(spend), () =>
                         writeContractAsync({
                           address: contracts.directory,
                           abi: DIRECTORY_ABI,
@@ -726,7 +770,7 @@ export function ProviderSelfServiceFlows({
                 {WITHDRAW_LOCATION_NOTICE}
               </p>
             ) : null}
-            <StaleNotice stale={isStale(publicationHeld, publicationKey)} testId="publish-stale" />
+            <PlanNotice reason={retiredBecause(publicationHeld, publicationKey)} testId="publish-stale" />
             {publication ? (
               <DirectoryPublicationCard
                 plan={publication}
@@ -742,18 +786,29 @@ export function ProviderSelfServiceFlows({
 }
 
 /**
- * Says the plan on screen is about values that have since changed.
+ * Says why the button is off, in the provider's own terms.
  *
- * Rendered rather than silently clearing the panel: the checks are still worth reading, and a panel
- * that vanished on the first keystroke would look like a fault. The button is disabled either way -
- * this is the half that explains WHY.
+ * Rendered rather than silently dropping the panel: a panel that vanished on the first keystroke -
+ * or the moment a transaction was signed - would look like a fault. The button is disabled either
+ * way; this is the half that explains WHICH of the two reasons it is, because "re-read what you
+ * typed" and "the chain has moved" send a provider to different places.
  */
-function StaleNotice({ stale, testId }: { stale: boolean; testId: string }): ReactNode {
-  if (!stale) return null;
+function PlanNotice({
+  reason,
+  testId,
+}: {
+  reason: "edited" | "spent" | null;
+  testId: string;
+}): ReactNode {
+  if (!reason) return null;
   return (
-    <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={testId}>
-      You have changed something since this was checked, so what is shown below is about the earlier
-      values. Check again before sending.
+    <p
+      className="text-xs text-amber-700 dark:text-amber-400"
+      data-testid={reason === "spent" ? `${testId}-spent` : testId}
+    >
+      {reason === "edited"
+        ? "You have changed something since this was checked, so what is shown below is about the earlier values. Check again before sending."
+        : "This has already been acted on, and the answers below were read before that transaction. Check again before sending another."}
     </p>
   );
 }

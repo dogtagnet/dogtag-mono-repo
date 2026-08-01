@@ -2084,6 +2084,20 @@ That is why the mutation harness mutates the invalidation and the plans assert t
 directly - counting a behaviour-preserving mutation as evidence is the reading that harness exists to
 avoid.
 
+**A PLAN IS ALSO RETIRED BY ITS OWN TRANSACTION, and that is the same rule aimed at the other set of
+inputs.** A plan is keyed on the FORM, so an untouched form leaves the key matching - but every
+answer in it came from the CHAIN, and submitting moves that. Check -> Publish -> Publish therefore
+re-sent `setProfileAnchor` with a digest whose `anchorUnchanged` guard had been computed against
+pre-transaction state, bumping the anchor revision for nothing and invalidating
+`coversCurrentAddressText` on any registrar address confirmation the provider holds - precisely the
+harm `directoryPlan.ts` reads the current anchor to avoid. `Checked<T>` carries a `spent` flag,
+`fresh()` requires it unset, and `sendAndFollow` takes a REQUIRED `retire` callback it invokes at
+SUBMISSION - before the outcome is known, so every terminal state inherits it and no handler can
+forget one. A rejected signature never reaches that line, which is correct: nothing was submitted, so
+nothing was falsified. Retiring must never hide the send record; the outcome is separate state the
+provider still needs to read. The two retirement reasons are reported APART (`PlanNotice`), because
+"re-read what you typed" and "the chain has moved" send a provider to different places.
+
 *A SUBMITTED transaction is not a completed one.* `writeContractAsync` resolves on a hash and does NOT
 throw on a revert, so a reverted write left a message asserting the action had succeeded. Outcomes now
 come from the receipt through `provider/sendOutcome.ts`, which carries FOUR states -
