@@ -119,6 +119,19 @@ mutate "a malformed logo entry degraded to 'no logo' instead of refusing the doc
   "    return { ok: true, profile: { contact, logo: null } };" \
   test/contentAddress.test.ts
 
+# The TypeScript half of the hand-mirrored allowlist, and the twin of the Rust widening below. This
+# is the list parseProfileBlob actually consults, and `application/json` is the specific value a
+# reader "reconciling" it against mirror.rs::is_servable_media_type would add - which would let a
+# LOGO entry name a JSON document that ProviderLogo then hands to an <img>.
+mutate "the servable image set widened past its hand-mirrored Rust twin" \
+  packages/ui/src/mirror/profileBlob.ts \
+  '  "image/gif",
+] as const;' \
+  '  "image/gif",
+  "application/json",
+] as const;' \
+  test/contentAddress.test.ts
+
 mutate "the served media type believed rather than checked against what was published" \
   packages/ui/src/mirror/resolveProfile.ts \
   "  if (servedType !== logo.mediaType) {" \

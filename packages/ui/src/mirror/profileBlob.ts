@@ -42,8 +42,10 @@ export const PROVIDER_PROFILE_SCHEMA_ID = "dogtag/provider-profile/2";
  * logo entry against.
  *
  * **HAND-MIRRORED from `mirror.rs::SERVABLE_IMAGE_MEDIA_TYPES`, and the two move together or not at
- * all.** Nothing derives one from the other, so each side pins its own list exhaustively and these
- * notes are what carry the pair across the language boundary.
+ * all.** Nothing derives one from the other, so each side pins its own list exhaustively - here by
+ * `keeps the servable image set closed, and hand-mirrored with mirror.rs` in
+ * `test/contentAddress.test.ts` - and these notes are what carry the pair across the language
+ * boundary, because neither test can read the other language.
  *
  * It mirrors the IMAGE half only. `mirror.rs::is_servable_media_type` additionally admits
  * `PROFILE_MEDIA_TYPE`, because the mirror stores the profile blob itself - but that type must never

@@ -5306,7 +5306,7 @@ reaches the fallback and pins nothing.
 
 `stacks/indexer/api/src/mirror.rs` serves it, `packages/ui/src/mirror/` fetches and CHECKS it.
 Full slice: the mirror routes, the profile blob v2 (contacts + logo), and `ProviderLogo`.
-Repeatable evidence: `make verify-content-mirror-mutations` (16 mutations, self-tested both ways).
+Repeatable evidence: `make verify-content-mirror-mutations` (17 mutations, self-tested both ways).
 
 **CORS is already handled and needs no change here**, but check `main.rs` rather than `routes.rs`
 before concluding otherwise: `build_cors()` wraps the WHOLE router at `main.rs`, permissive by default
@@ -5370,8 +5370,10 @@ ONLY.** `mirror.rs::SERVABLE_IMAGE_MEDIA_TYPES` and
 `packages/ui/src/mirror/profileBlob.ts::SERVABLE_IMAGE_MEDIA_TYPES` have no shared source and neither
 derives from the other, so they move together or not at all - the same treatment the four
 `grantInForceAt` copies and the three DoH classifiers get. Each side pins its own list exhaustively
-(`the_servable_image_set_is_closed_and_hand_mirrored_in_typescript` in Rust) so an accidental edit
-reddens; neither test can read the other language, which is what the notes at both constants are for.
+(`the_servable_image_set_is_closed_and_hand_mirrored_in_typescript` in Rust, `keeps the servable
+image set closed, and hand-mirrored with mirror.rs` in `packages/ui/test/contentAddress.test.ts`) so
+an accidental edit reddens, and each direction has its own mutation in the harness; neither test can
+read the other language, which is what the notes at both constants are for.
 Two things are easy to get wrong. `is_servable_media_type` also admits `PROFILE_MEDIA_TYPE` because
 the mirror stores the blob itself, so a reader "reconciling" the two by adding `application/json` to
 the TypeScript list would let a LOGO entry declare it - a JSON document `ProviderLogo` then hands to

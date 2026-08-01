@@ -18,7 +18,9 @@ import {
   MULTIHASH_KECCAK_256,
   namesContent,
   parseProfileBlob,
+  PROFILE_MEDIA_TYPE,
   resolveProviderProfile,
+  SERVABLE_IMAGE_MEDIA_TYPES,
   verifyContentAddress,
   ZERO_ADDRESS,
   type ContentAddress,
@@ -128,6 +130,38 @@ describe("the profile blob round-trips exactly", () => {
         schema: "dogtag/provider-profile/2",
         contact: {},
         logo: { digest: "0xnope", hashAlgorithm: 27, mediaType: "image/png", byteLength: 1 },
+      }),
+    );
+    expect(parsed.ok).toBe(false);
+  });
+
+  it("keeps the servable image set closed, and hand-mirrored with mirror.rs", () => {
+    // The TypeScript half of the pair `mirror.rs::SERVABLE_IMAGE_MEDIA_TYPES` names. Pinned as a
+    // CLOSED set rather than by its members, because the drift that matters is a widening nobody
+    // thinks is dangerous, and THIS is the list `parseProfileBlob` actually consults.
+    expect([...SERVABLE_IMAGE_MEDIA_TYPES]).toEqual([
+      "image/png",
+      "image/jpeg",
+      "image/webp",
+      "image/gif",
+    ]);
+    // `mirror.rs::is_servable_media_type` also admits the blob's own type, and reconciling the two
+    // lists by adding it HERE is the specific mistake the notes at both constants warn about: this
+    // list is what a LOGO entry is checked against.
+    expect([...SERVABLE_IMAGE_MEDIA_TYPES]).not.toContain(PROFILE_MEDIA_TYPE);
+  });
+
+  it("refuses a logo entry declaring the profile blob's own type, which names no image at all", () => {
+    const parsed = parseProfileBlob(
+      JSON.stringify({
+        schema: "dogtag/provider-profile/2",
+        contact: {},
+        logo: {
+          digest: addressOf(REAL_LOGO),
+          hashAlgorithm: 27,
+          mediaType: PROFILE_MEDIA_TYPE,
+          byteLength: 1,
+        },
       }),
     );
     expect(parsed.ok).toBe(false);
