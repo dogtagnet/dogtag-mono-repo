@@ -6,6 +6,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 Start every new Dogtag run with `no-mistakes axi run --skip=document --intent "<intent>"` until upstream provides an enforced step/file budget and this policy is deliberately revised. Do not use bare `axi run` or `no-mistakes rerun`, which cannot preserve this skip. The config instructions and post-stage commit guard are prompt/supervision defense-in-depth for accidental raw runs, not a runtime cap: update only documentation made stale directly by the submitted branch; never run write-mode formatters, generators, codegen, or UniFFI/binding synchronization; and never edit functional source, tests, workflows, circuits, contracts, or generated bindings. If the work would require more than 10 files, any non-documentation file, or cross-slice reconciliation, make no such edits and return an ask-user finding.
 
+**The `auto_fix` relaxation from 0 to 2 (S-17, captain-requested) DID widen this posture, and describing it as "Document safety is unchanged" understates it.**
+`auto_fix.document: 0` was itself pinned by `scripts/test-no-mistakes-document-guard.sh`, beside `document.instructions` and the commit template, so it was part of this defense-in-depth rather than a general strictness knob: the Document agent can now run up to two fix rounds where before it could run none.
+That guard test caught the drift and its pin was updated to 2 rather than deleted or loosened into a range, because the property it exists for is that the gate config cannot change silently.
+What is genuinely unchanged is the `document.instructions` constraints above, the post-stage commit guard, and the standing `--skip=document` policy - which is why the practical exposure is small: every Dogtag run starts with `--skip=document`, so that step does not execute at all.
+Do not soften this into "no functional change".
+
 ## No-mistakes Test safety (high priority, conditional)
 
 When acting as the no-mistakes Test or evidence agent, use the configured targeted command plus at most the smallest checks directly relevant to the submitted diff. Never run `cargo test --workspace` or another full monorepo suite locally, and do not expand into browsers or screenshots unless the diff changes that UI. Treat 15 minutes as a prompt/supervision budget, not a hard enforced timeout; park with a finding instead of broadening beyond it.

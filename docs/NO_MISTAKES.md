@@ -47,7 +47,11 @@ If someone accidentally starts a raw run without `--skip=document`, the Document
 
 No-mistakes v1.40.0 has no absolute step timeout, OS-level path allowlist, or built-in file-write budget. The instructions in `.no-mistakes.yaml` and `AGENTS.md` are prompt constraints. The lint-invoked repository guard runs only after earlier stages, so it is defense-in-depth and not a runtime cap: it rejects any dirty gate worktree, then rejects commits whose configured subject begins `no-mistakes(document): ` when they touch a non-documentation path, a known generated/codegen path, or more than 10 files. Rejecting staged, unstaged, untracked, or dirty-submodule state prevents an unfinished sweep from evading commit-prefix inspection.
 
-`auto_fix.document: 0` disables follow-up fix loops only. The initial Document agent may still make and commit fixes, which is why both the prompt boundary and commit guard are needed.
+`auto_fix.review`, `auto_fix.document` and `auto_fix.lint` are **2**, not the 0 they were until the S-17 branch.
+The zeros overrode the machine-wide setting and parked every finding for a human decision, and the captain asked for the gate to be less strict, so each stage now gets up to two automatic fix rounds and anything still outstanding after those still parks.
+State the Document consequence precisely rather than as no change: `auto_fix.document: 0` was itself pinned by `scripts/test-no-mistakes-document-guard.sh`, alongside `document.instructions` and the commit template, so it was part of that defense-in-depth and relaxing it does widen the Document posture - the Document agent can now run fix rounds where before it could not.
+What is genuinely unchanged is the `document.instructions` constraints, the post-stage commit guard, and the standing `--skip=document` policy, which is why the practical exposure is small: every Dogtag run starts with `--skip=document`, so that step does not execute at all.
+The fix-loop cap was never the boundary in any case, because the initial Document agent may still make and commit fixes, which is why both the prompt boundary and commit guard are needed.
 
 ## Trusted-default-branch activation
 

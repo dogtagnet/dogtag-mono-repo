@@ -76,9 +76,16 @@ document:
 # setting. The captain asked for the gate to be less strict, so each stage now gets up to two
 # automatic fix rounds; anything still outstanding after that still parks rather than shipping.
 #
-# The Document safety constraints below are UNCHANGED and are not what this relaxes: the prompt
-# constraints and the post-stage commit guard remain defense-in-depth against an accidental raw
-# run, not a runtime cap.
+# Do NOT read this as "Document safety is unchanged", which understates it. `auto_fix.document: 0`
+# was itself pinned by scripts/test-no-mistakes-document-guard.sh, beside document.instructions and
+# the commit template, so it was part of that defense-in-depth: relaxing it DOES widen the Document
+# posture, and the Document agent can now run fix rounds where before it could not.
+#
+# What is genuinely unchanged is the document.instructions constraints below, the post-stage commit
+# guard, and the standing --skip=document policy - which is why the practical exposure is small:
+# every Dogtag run starts with --skip=document, so that step does not execute at all. The prompt
+# constraints and the commit guard remain defense-in-depth against an accidental raw run, not a
+# runtime cap.
 auto_fix:
   review: 2
   document: 2
