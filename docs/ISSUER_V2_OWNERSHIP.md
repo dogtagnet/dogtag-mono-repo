@@ -5,7 +5,7 @@ Registry-plan slice **S-7**.
 
 **Status: deployed on ROAX by S-14, and unwired. Nothing reads either contract.**
 Cutover steps C-3a and C-3b deployed them, so `contracts/deployments/roax.json` carries `DogTagIssuerV2Impl` and `DogTagIssuerFactoryV2` keys - see `_s14_cutover` there for the addresses, transaction hashes and blocks, which are deliberately not copied into this file.
-There is still no `.env.example` key and no client config naming either, and nothing in the tree points at one: client repointing is C-9/C-10 and enabling generation-2 issuance is C-11, both outstanding and both separately captain-authorized.
+S-15 added a blank `VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR` to the vet and groomer `.env.example` files and to their env plumbing, so the key EXISTS - but it ships empty and the code has no fallback, so nothing in the tree resolves an address from it. That is stronger evidence of unwiredness than an absent key, because a blank fallback-free var cannot quietly resolve to a bundled constant. Client repointing is C-9/C-10 and enabling generation-2 issuance is C-11, both outstanding and both separately captain-authorized.
 State it as "deployed, unwired" rather than as "the cutover is done", and note the ledger is what this repo can speak for - a claim about every chain in existence is not one it can check.
 
 ---

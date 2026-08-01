@@ -285,22 +285,27 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   publishes one contract set plus one independently rotatable artifact set and their binding.
   `CloneProvenanceRouter` is also in that live source and was **DEPLOYED BY S-14** (cutover C-4, with
   generation 2 appended at C-4b): it has a ledger entry, but no `.env.example` entry and no consumer
-  points at it, because client repointing is C-9/C-10. **This paragraph mixes two statuses, so read
-  each sentence for its own rather than pattern-matching the wording:** this one and the
-  `ProviderRegistry` sentence below it are DEPLOYED BUT UNWIRED, while the two sentences BETWEEN them
-  (`ProviderDirectory`, `ServiceDomainResolver`) say "built and tested only, NOT deployed" and are
-  still TRUE, because C-7 was out of scope of S-14. See "CloneProvenanceRouter" below and
-  `_s14_cutover` in `contracts/deployments/roax.json`.
+  points at it, because client repointing is C-9/C-10. **Every generation-2 contract named in this
+  paragraph now carries the SAME status - DEPLOYED BUT UNWIRED - and the distinction to keep is
+  deployed versus wired, never deployed versus built.** The two typed resolvers
+  (`ProviderDirectory`, `ServiceDomainResolver`) were the last exceptions and stopped being one when
+  C-7 deployed them on 2026-08-01; earlier revisions of this paragraph said they were "built and
+  tested only, NOT deployed" and told a reader that clause was still true, which it is not. See
+  "CloneProvenanceRouter" below, `_s14_cutover` and `_c7_typed_resolvers` in
+  `contracts/deployments/roax.json`.
   `ProviderDirectory` is the S-10 typed DIRECTORY resolver selected through the S-6 core (pins,
-  contacts and profile anchors, keyed by `providerId`) and is likewise **built and tested only, NOT
-  deployed** - no address, no deploy script, no `.env.example` entry, and the indexer's provider
-  directory still reads the admin business source. See "ProviderDirectory" below.
-  `ServiceDomainResolver` is the S-9 successor to `IssuerDomainRegistry` and is likewise **built and
-  tested only, NOT deployed**; the deployed `IssuerDomainRegistry` remains the wired one until the
-  cutover, so no consumer address moved with it. See "ServiceDomainResolver" below.
+  contacts and profile anchors, keyed by `providerId`) and was **deployed by C-7 and is UNWIRED** -
+  it has a ledger entry, but `resolverApproved()` is false, every store is empty, the
+  `VITE_PROVIDER_DIRECTORY_ADDR` that S-15 added to both portal `.env.example` files ships BLANK with
+  no code fallback, and the indexer's provider directory still reads the admin business source. See
+  "ProviderDirectory" below.
+  `ServiceDomainResolver` is the S-9 successor to `IssuerDomainRegistry` and was likewise **deployed
+  by C-7 and is UNWIRED**; the deployed `IssuerDomainRegistry` remains the wired domain surface until
+  the cutover, so no consumer address moved with it. See "ServiceDomainResolver" below.
   `ProviderRegistry` is the separately tested S-6 provider identity/authority core: it was **deployed
-  live on ROAX by S-14 and is UNWIRED** - it has a `ProviderRegistry` ledger entry, but no
-  `.env.example` entry and no consumer reads it, because client repointing is C-9/C-10 (see "The
+  live on ROAX by S-14 and is UNWIRED** - it has a `ProviderRegistry` ledger entry, and both portal
+  `.env.example` files now NAME it (`VITE_PROVIDER_REGISTRY_ADDR`, added blank by S-15), but no
+  consumer resolves an address from it, because client repointing is C-9/C-10 (see "The
   generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover` in `contracts/deployments/roax.json`;
   do not transcribe the address here). It admits only
   owner-bearing clones, matching the plan's retire/re-issue recommendation for the five ownerless V1
@@ -1244,8 +1249,11 @@ An already-installed app keeps proving against its **baked** key until you do, s
 `test/IssuerV2.t.sol` (63 tests). **Both were deployed live on ROAX by S-14 and NOTHING READS EITHER** -
 the ledger carries `DogTagIssuerV2Impl` and `DogTagIssuerFactoryV2` keys under their own names (see "The
 generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover` in `deployments/roax.json`; do not
-transcribe the addresses here), but there is no `.env.example` key, no client config, and nothing in the
-tree points at one. Say it that way rather than "the cutover is done": deployed is not wired, client
+transcribe the addresses here). S-15 added a blank `VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR` to both portal
+`.env.example` files and to their env plumbing, so the KEY exists - but it ships EMPTY with no code
+fallback, so nothing in the tree resolves an address from it. Read a blank fallback-free var as
+STRONGER evidence of unwiredness than an absent one: an absent key can be added and silently pick up a
+bundled constant, and this one cannot. Say it that way rather than "the cutover is done": deployed is not wired, client
 repointing is C-9/C-10, and enabling generation-2 issuance is C-11 - all separately captain-authorized
 and all outstanding. The generation-1 `DogTagIssuer.sol` /
 `DogTagIssuerFactory.sol` are UNMODIFIED; the pair is purely additive, like `ProtocolRegistry` and
@@ -1754,10 +1762,21 @@ no acceptance and no way back - exactly the permanent stranding two-step exists 
 
 `contracts/src/ProviderDirectory.sol`, the typed DIRECTORY resolver selected through the S-6
 `ProviderRegistry` (registry plan `dogtag-regplan-p3` slice S-10).
-**BUILT AND TESTED ONLY - NOT DEPLOYED.** No address in `contracts/deployments/roax.json`, no deploy
-script, no `.env.example` entry, and no consumer points at it; the indexer's provider directory still
-reads the admin business source (`stacks/indexer/api/src/directory.rs`). Deploying it and switching
-that source are separate captain-authorized steps.
+**DEPLOYED BY C-7 ON 2026-08-01, AND UNWIRED.** It has a `ProviderDirectory` ledger entry in
+`contracts/deployments/roax.json` (see `_c7_typed_resolvers`; do not transcribe the address here),
+but it answers nothing: `resolverApproved()` is FALSE and every store is empty, because a typed
+resolver does nothing until the registrar calls `setResolverApproved(DIRECTORY, resolver, true)` AND
+each provider selects it - both KYC work that C-7 did not perform. S-15 added
+`VITE_PROVIDER_DIRECTORY_ADDR` to the vet and groomer `.env.example` files and to their env plumbing,
+so the key EXISTS - but it ships BLANK and the code has no fallback (`?? ""`), so no consumer resolves
+an address from it; read that as stronger evidence of unwiredness than an absent key, since a blank
+fallback-free var cannot quietly resolve to a bundled constant. The indexer's provider directory still
+reads the admin business source (`stacks/indexer/api/src/directory.rs`). Approving it and switching that source are separate
+captain-authorized steps. **The source is now FROZEN in the same sense as the S-14 six** - an edit
+makes it diverge from deployed bytecode - so the two items recorded below as open against it (the
+unowned `uint8` kind-code mapping, and the permanent scan weight of a provider that has lost ACTIVE
+standing) are redeploy-gated rather than edit-gated. Redeploying is free while no consumer carries
+the address, which is today.
 
 **The trap, and it is the reason the slice exists.** Both source reports (`dogtag-nearby-n5`,
 `dogtag-rdns-r7`) build the provider listing out of the location pins. A provider may publish contacts
@@ -1955,10 +1974,14 @@ fields having shipped with no coverage at all).
 ## ServiceDomainResolver - three absences, and the router term that is NOT redundant
 
 `contracts/src/ServiceDomainResolver.sol`. Full rationale: `docs/SERVICE_DOMAIN_RESOLVER.md`.
-**BUILT AND TESTED ONLY - NOT DEPLOYED.** No address in `contracts/deployments/roax.json`, no deploy
-script, no `.env.example` entry, no consumer points at it (registry plan slice S-9). It SUPERSEDES
-`IssuerDomainRegistry`, which stays deployed and stays the wired one until the cutover - so nothing
-moved and no `.env.example`/bundle/doc address changed in that slice. Abandoning the deployed one is
+**DEPLOYED BY C-7 ON 2026-08-01, AND UNWIRED.** It has a `ServiceDomainResolver` ledger entry in
+`contracts/deployments/roax.json` (see `_c7_typed_resolvers`; do not transcribe the address here),
+but the `VITE_SERVICE_DOMAIN_RESOLVER_ADDR` that S-15 added to both portal `.env.example` files
+ships BLANK with no code fallback, and it is approved by no registrar and selected by no service, so
+its store is empty and it answers nothing (registry plan slice S-9).
+Its source is FROZEN in the same sense as the S-14 six - an edit diverges from deployed bytecode.
+It SUPERSEDES `IssuerDomainRegistry`, which stays deployed and stays the wired domain surface until
+the cutover - so nothing moved and no `.env.example`/bundle/doc address changed. Abandoning the older deployed one is
 free and that was RE-VERIFIED rather than inherited from the plan: `boundCloneCount() == 0` **and zero
 logs of any kind** at head 303690 on 2026-07-30. Read the log count, not just the counter - the counter
 ignores `setDomainAdmin`, which appoints a self-service key without writing a binding, so only "no logs"
@@ -2040,6 +2063,215 @@ rather than re-listing its terms, so the standing half of a write has exactly on
 resolver holds no name, no description and no DNS state - a generation-2 clone's `name()` is empty by
 construction, so registrar identity comes from the core's `publicIdentityAnchor` and the human-readable
 text stays the DNS record's own value.
+
+## Provider self-service (S-15), and the typed resolvers it needed deployed (C-7)
+
+The provider-facing surface for the generation-2 set: deploy your own clone, choose which of your
+contracts is current, claim a domain, publish your listing.
+Engine in `packages/ui/src/provider/` (pure, reader-injected, three-state), renderer in
+`packages/ui/src/domain/ProviderSelfServicePanel.tsx`, the flows plus the SEND in
+`packages/ui/src/domain/ProviderSelfServiceFlows.tsx`, thin pages at `stacks/{vet,groomer}/web`
+(route `/provider`).
+No backend on this path at all - every write is a wallet transaction to a contract the provider owns,
+the same posture as the owner wallet and for the same reason.
+Each action is gated on the matching `can*` boolean from its own plan, so **`indeterminate` disables a
+button exactly as `refused` does**: could-not-check is not permission.
+
+**THREE RULES ABOUT THE SEND, all closing the same defect - a verdict stated before the fact is
+established - and each of them shipped broken once.**
+
+*A send acts on what was CHECKED.* Every handler originally read current form state while its button
+was gated on a plan computed earlier, so editing an input after pressing Check sent an unchecked
+value. On flow 2 that was not merely confusing: pasting a DIFFERENT clone the caller also owns would
+SUCCEED and silently move the wrong record type's pointer. Two mechanisms now stand between that,
+deliberately: a plan is INVALIDATED when any input it depends on changes (the button disables and a
+stale notice says why), and every send addresses the plan's OWN captured values - `CloneAssessment
+.candidate`, `DomainClaimAssessment.service`, `DeployPlan.request`, `DirectoryPublicationPlan
+.providerId`. They are REDUNDANT BY CONSTRUCTION, because every input a send reads is in that plan's
+key, so a mutation swapping one captured value for its live field survives while invalidation holds.
+That is why the mutation harness mutates the invalidation and the plans assert their captured inputs
+directly - counting a behaviour-preserving mutation as evidence is the reading that harness exists to
+avoid.
+
+**A PLAN IS ALSO RETIRED BY ITS OWN TRANSACTION, and that is the same rule aimed at the other set of
+inputs.** A plan is keyed on the FORM, so an untouched form leaves the key matching - but every
+answer in it came from the CHAIN, and submitting moves that. Check -> Publish -> Publish therefore
+re-sent `setProfileAnchor` with a digest whose `anchorUnchanged` guard had been computed against
+pre-transaction state, bumping the anchor revision for nothing and invalidating
+`coversCurrentAddressText` on any registrar address confirmation the provider holds - precisely the
+harm `directoryPlan.ts` reads the current anchor to avoid. `Checked<T>` carries a `spent` flag,
+`fresh()` requires it unset, and `sendAndFollow` takes a REQUIRED `retire` callback it invokes at
+SUBMISSION - before the outcome is known, so every terminal state inherits it and no handler can
+forget one. A rejected signature never reaches that line, which is correct: nothing was submitted, so
+nothing was falsified. Retiring must never hide the send record; the outcome is separate state the
+provider still needs to read. The two retirement reasons are reported APART (`PlanNotice`), because
+"re-read what you typed" and "the chain has moved" send a provider to different places.
+
+**A RETIRED PLAN IS STILL RENDERED, AND THAT IS WHY THE LABEL HAS TO BE UNMISSABLE.** The cards were
+gated on `fresh()`, so retiring one silently dropped it - underneath a notice that said "the answers
+below", with nothing below. Worse, it destroyed the one thing a provider most wants the moment a
+transaction goes out: what they had checked before sending. So `fresh()` decides only whether a plan
+may AUTHORIZE a send, `shown()` decides whether its answers are VISIBLE, and one value must never
+answer both again. What makes showing a superseded answer safe is the labelling, so the qualifier is
+attached to the VERDICT BADGE itself (struck through, with an amber "Superseded - …" beside it) and
+not only to a banner above the card: a reader who scans to a green "Ready" and stops is exactly the
+reader a separate banner misses. Same treatment this repo already gives a value it cannot stand
+behind; do not invent a third one, and do not demote either half to small grey text.
+
+*A SUBMITTED transaction is not a completed one.* `writeContractAsync` resolves on a hash and does NOT
+throw on a revert, so a reverted write left a message asserting the action had succeeded. Outcomes now
+come from the receipt through `provider/sendOutcome.ts`, which carries FOUR states -
+`submitted | succeeded | reverted | unknown`. `unknown` is a receipt that could not be fetched and is
+NEITHER neighbour; it carries its reason under the same present-iff invariant as `providerCheck`. The
+explorer link goes through the shared `txExplorerHref`, so a malformed hash renders inert rather than
+as a dead link. **A multi-step publication STOPS on anything but `succeeded`** (`mayContinueAfter`) -
+without it the pin is sent after the anchor has already reverted.
+
+*The chain's own predicates are COMPOSED, never re-derived.* `repointService` is gated by
+`ProviderRegistry.canWriteService(service, caller, SERVICE_PERMISSION_REPOINT)`, which admits the
+confirmed live owner OR an owner-epoch-scoped delegate holding that bit. `cloneProvenance.ts` asked
+`owner() == caller` instead and refused everything else - a preflight STRICTER than the contract, the
+exact mirror of the `canCreateService` trap below. `clone-control` is now a REPORT of who owns the
+contract and cannot refuse; `clone-write-authority` composes the core's predicate and is the only row
+entitled to refuse on that axis. The standing rows keep their refusals because they do NOT disagree
+with the chain: `canWriteService` itself requires `_serviceStandingIsEffective` and
+`liveOwner == confirmedOwner`, which is exactly what they fold. `canRepoint` still additionally
+requires `lifecycle === "attached"`, because `repointService` reverts `NoChange()` on the clone that
+is already current.
+
+**VET AND GROOMER GET DIFFERENT FLOWS, and the split is real rather than cosmetic.** A groomer
+VERIFIES and does not ISSUE - `BUSINESS_TYPE=groomer` mounts no issuance routes - so a groomer has no
+`DogTagIssuer` clone at all. Flows 1, 2 and 3 are each keyed BY a clone (deploy one, select one, claim
+a domain FOR one), so for a groomer they are INAPPLICABLE, not merely hidden; flow 4 is keyed by
+`providerId`, so it applies to every provider and a groomer appears in the directory exactly as a vet
+does. Hence `ProviderFlowCapabilities`: the caller states what it is and the component never guesses
+from a URL or a build flag. Mounting for vets alone would have left a groomer with no way to publish
+its contacts or location at all.
+
+**The anchor's `schema`/`codec`/`hashAlgorithm`/`contenthash` live in the PLAN STEP, not at the call
+site.** `ProviderDirectory` reverts `BadProfileAnchor` on a zero `schema` or `hashAlgorithm`, and a
+second sender filling them in itself would be free to invent different values for the same blob -
+one document with two on-chain descriptions of what it is. `hashAlgorithm` is keccak-256's multicodec
+`0x1b` because that is what the digest function actually is; naming sha2-256 (`0x12`) because it is the
+commoner constant would make a verifier recompute the wrong hash and call a genuine blob altered.
+`contenthash` is EMPTY while S-17 does not exist - publishing a location nothing serves is a worse
+claim than publishing none.
+
+**C-7 IS DONE: `ProviderDirectory` and `ServiceDomainResolver` are DEPLOYED on ROAX and UNWIRED.**
+Addresses, transaction hashes, blocks and the signer live in `contracts/deployments/roax.json` under
+`_c7_typed_resolvers` - do not transcribe them here.
+Two consequences worth carrying: both sources are now FROZEN in the same sense as the S-14 six, so the
+two items this file records as open against `ProviderDirectory` (the unowned `uint8` kind-code mapping,
+and the permanent scan weight of a provider that has lost ACTIVE standing) are redeploy-gated rather
+than edit-gated; and a typed resolver answers NOTHING until the registrar calls
+`setResolverApproved(kind, resolver, true)` AND each provider selects it, both of which are KYC work
+that C-7 did not perform. `resolverApproved()` is false and every store is empty.
+
+**THE FLOW IS PROVIDER -> REGISTRAR -> PROVIDER, and modelling it as one action describes a journey
+nobody can walk.** `ProviderRegistry.attachService` is `onlyOwner`, so a clone the provider deployed and
+owns is attached to NOBODY until DogTag attaches it, and `repointService` refuses an address that was
+never attached. `CloneLifecycle` therefore carries `deployed` as a first-class waiting state whose next
+step belongs to someone else - not an error, and not something the provider can retry.
+
+**`canCreateService` MUST be asked AS THE FACTORY, and this is the sharpest trap in the slice.**
+Its first term is `generationOfFactory[msg.sender]`, because the core is designed to be asked this BY a
+factory during `createIssuer`. A plain `eth_call` carries no `from`, so `msg.sender` is the zero address,
+no generation matches, and the answer is **`false` for every provider on earth** - a preflight without an
+explicit `account` tells a perfectly eligible provider it may not deploy.
+Same shape as `ProviderRegistry.isWhitelistedFor`'s `msg.sender` branch, which `docs/CLIENT_REPOINT.md`
+records as the reason `ISSUER_REGISTRY_ADDR` cannot move; it just fails in the opposite direction here.
+It CANNOT be decomposed instead - the service-creation approval it folds lives in a private mapping with
+no getter, so the aggregate is the only way to observe that term at all.
+`createLiveProviderReader` passes `account: contracts.factory` on exactly that one read and on no other,
+and `canCreateService is asked AS THE FACTORY` asserts what reaches `readContract` rather than the value
+it returns - a fake answering `true` would satisfy any assertion about the result while the `account` was
+silently dropped.
+
+**THE FORGERY GUARD IS THE CHAIN'S; the portal's copy exists because the portal is the other place an
+address is entered.** `attachService` proves `factory.isClone(service)` against the factory pinned to the
+NAMED generation, so a forged contract, an EOA and a genuine clone of another generation are each refused
+- three different named errors, because the remedies differ. Two ordering rules in
+`assessCandidateClone` are load-bearing and each is easy to undo: a definite `false` from provenance is
+FINAL and the assessment stops (reading on would let a neighbouring could-not-run sit beside the refusal
+and read as its cause), while a failed READ is never a refusal - "we could not reach the factory" is a
+statement about our connectivity, not about the provider's contract.
+
+**The no-placeholder-coordinate rule can ONLY live in the portal.** `0,0` is a real coordinate, so a pin
+at the origin is byte-for-byte a genuine one and `ProviderDirectory` cannot refuse it without refusing a
+real provider there - `ProviderSelfService.t.sol`'s
+`test_the_chain_cannot_tell_a_placeholder_from_a_real_coordinate` pins that ABSENCE deliberately, which
+is what makes `directoryPlan.ts` the load-bearing copy rather than a second opinion. The rule is enforced
+by SHAPE, not by a value: an absent location produces a plan with NO pin step, so there is no code path
+on which a placeholder could be written. The location text goes through the shared `parseLocationInput`
+and never a second parser - `Number("")` is `0`, and a second parser is exactly how that bug came back
+last time.
+
+**PUBLISHING IS NOT APPEND-ONLY, and treating it as such put one provider in two places.**
+`ProviderDirectory.publishPin` issues a FRESH location number on every call, so a provider correcting
+a mistyped coordinate by pressing Publish again left BOTH pins live and active in `_pinScan` - which
+is exactly the sequence the mobile nearby list is built from, so it would have shown them at two
+places at once. `updatePin` and `removePin` ARE callable on the deployed contract (an `eth_call` to
+either selector reverts with the NAMED `UnknownProvider()` for an unregistered provider id, while a
+deliberately nonexistent selector on the same contract returns empty data - a named error is positive
+evidence of dispatch), so the plan reads what is already published and REWRITES the pin it is
+correcting. Four things follow, and each is easy to undo:
+- The pin step is a two-shape union (`op: "publish" | "update"`), so an append cannot carry a location
+  number and a rewrite cannot omit one.
+- **More than one existing pin REFUSES rather than appending**, and that refusal is scoped to the case
+  where a pin would actually be written - a provider with several legacy pins must still be able to
+  update its CONTACTS, so an unconditional version would be over-broad in the other direction.
+- **An unreadable listing state emits NO pin step.** Appending is only safe when we know there is
+  nothing to replace, so "we could not ask what exists" cannot license it.
+- The scan for the single existing pin is bounded (`MAX_SCANNED_LOCATION_NUMBERS`), and past that
+  bound it is a could-not-run rather than "no pin found" - which would append.
+
+**The anchor is omitted when it would change nothing.** `setProfileAnchor` has NO `NoChange` guard and
+the contract is now frozen, so a re-publish of unchanged contacts bumps the anchor revision, and every
+bump makes `pinAddressProvenance.coversCurrentAddressText` false for any registrar address
+confirmation the provider holds. The portal is the only place that no-op can be avoided. Withdrawal is
+its own action (`removePin`, offered only when exactly one pin was actually READ and this key's
+authority was established) and is NEVER inferred from a cleared coordinate field, which would make a
+typo destructive. And a publication carrying neither contacts nor a location is REFUSED rather than
+recorded - it used to report itself ready while its own next step said "add at least one so people can
+find you".
+
+**Evidence, and where it runs.** `contracts/test/ProviderSelfService.t.sol` (23 tests) walks all four
+flows plus every negative against the REAL core, router, both factory generations, real clones, the
+domain resolver and the directory - no doubles, because the claims are about how those compose. It is in
+`forge test`, which is NOT in the no-mistakes gate, so it is operator-invoked. The engine and
+component tests live in `packages/ui`, which IS in the gate - including two MOUNTED suites
+(`providerCapabilitySplit`, `providerSendGuards`), because the capability split, the stale-plan
+invalidation and the receipt-settled outcome are all properties of what a provider can REACH rather
+than of a pure function. `scripts/verify-provider-selfservice-mutations.sh` (`make
+verify-provider-selfservice-mutations`) is the repeatable mutation gate; it self-tests,
+reporting an unapplied mutation as INERT and exiting 1.
+
+**NO FLOW'S SEND PATH HAS EVER BEEN EXECUTED AGAINST A CHAIN, and cannot be yet.** `registerProvider`
+and `setServiceCreationApproval` are `onlyOwner` registrar KYC work (the rest of C-2), so no provider
+exists on ROAX to drive one. Everything behind the buttons is preflight logic plus contract-level
+journey tests; `writeContractAsync` has sent nothing anywhere. Two hermetic tests stand in for that,
+deliberately, and neither is a substitute: `providerWriteAbi.test.ts` pins all seven write selectors
+against `cast sig` (a mistyped argument type produces a different selector, which no compiler catches
+and which reverts on chain reading like an authorization fault - the same failure the mobile
+`isValid` selector had), and `providerCapabilitySplit.test.tsx` MOUNTS both capability sets in jsdom.
+What would actually verify it: a fork with a registered, approved provider driving the real calls, or
+a live run after C-2's registrar steps. One mutation was REJECTED from it for being behaviour-preserving - deleting the explicit
+lowercase check in `validateDomain` leaves the charset rule below it refusing uppercase anyway, so only
+the message changed and calling that "unpinned" would have been the inert-mutation reading the harness
+exists to avoid.
+
+**Both `.env.example` files carry the five vars BLANK on purpose.** Blank is not an oversight: the
+generation-2 set is deployed but unwired, and a value shipped in a template opts every deployment that
+copies it into reading generation 2 without anyone deciding to. The code has no fallback either, so a
+blank cannot fall through to a bundled constant.
+
+**Rendering a vet- or groomer-portal page locally without a backend:** seed
+`localStorage["vet.opToken"]` (or `"groomer.opToken"`) with any string - the Layout gates on its presence, so no login round trip is needed - and build with
+`VITE_VET_API_BASE` and `VITE_CENTRAL_API_BASE` set to an absolute dead host, which takes `/api` out of
+the picture entirely so `vite preview`'s `server.proxy` can never reach the captain's live backend.
+`vite preview` binds **IPv6-only**, so probe `http://[::1]:<port>` - a `127.0.0.1` curl reports a
+perfectly healthy server as dead.
+
 
 ## Governance authority (Phase-2 executed) - tooling signer
 

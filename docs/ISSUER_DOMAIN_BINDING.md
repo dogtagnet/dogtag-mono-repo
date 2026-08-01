@@ -4,9 +4,12 @@
 This document defines the DNS record convention, the verification chain, and the display rules.
 Implementations that disagree with this document are wrong.
 
-**A successor to the on-chain half exists in source and is not deployed.**
+**A successor to the on-chain half is DEPLOYED AND UNWIRED.**
 Registry-plan slice S-9 adds `contracts/src/ServiceDomainResolver.sol`, which supersedes
 `IssuerDomainRegistry` — see [SERVICE_DOMAIN_RESOLVER.md](./SERVICE_DOMAIN_RESOLVER.md).
+Cutover step C-7 deployed it on ROAX on 2026-08-01 (`_c7_typed_resolvers` in
+`contracts/deployments/roax.json`), but no registrar has approved it and no service has selected it,
+so it resolves nothing and no consumer reads it; client repointing is C-9/C-10 and has not happened.
 Nothing in this document changes because of it today: the deployed `IssuerDomainRegistry` is still the
 wired contract, the record convention and the six display states are unchanged, and every consumer still
 reads the address it always did.

@@ -20,6 +20,7 @@ import { Verifications } from "./pages/Verifications";
 import { VerificationDetail } from "./pages/VerificationDetail";
 import { Verify } from "./pages/Verify";
 import { Setup } from "./pages/Setup";
+import ProviderSelfService from "./pages/ProviderSelfService";
 import { Settings } from "./pages/Settings";
 import { Unlock } from "./pages/Unlock";
 
@@ -67,6 +68,10 @@ export function App() {
       <Route path="/import" element={<Layout title="Import from user"><ImportFromUser /></Layout>} />
       <Route path="/verify" element={<Layout title="Ad-hoc verification"><Verify /></Layout>} />
       <Route path="/setup" element={<Layout title="Setup"><Setup /></Layout>} />
+      <Route
+        path="/provider"
+        element={<Layout title="Provider self-service"><ProviderSelfService /></Layout>}
+      />
       <Route path="/settings" element={<Layout title="Settings"><Settings /></Layout>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
