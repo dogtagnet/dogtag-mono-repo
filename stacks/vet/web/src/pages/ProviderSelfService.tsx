@@ -43,6 +43,7 @@ export default function ProviderSelfService() {
       rpcUrl={env.roaxRpc}
       defaultProviderId={env.providerId}
       mirrorBase={env.contentMirrorBase}
+      mirrorToken={env.contentMirrorToken}
       capabilities={{ issuance: true, listing: true }}
     />
   );

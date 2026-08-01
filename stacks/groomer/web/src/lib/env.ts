@@ -23,6 +23,10 @@ export const env = {
   // Blank ships blank, like its four neighbours: a value in the template would opt every deployment
   // that copies it into publishing at a host nobody chose.
   contentMirrorBase: import.meta.env.VITE_CONTENT_MIRROR_BASE ?? "",
+  // The bearer the mirror's PUT requires. Blank and fallback-free like its neighbour: the write
+  // path refuses up front when it is unset, rather than aborting a publication on its first upload.
+  // Reading is unauthenticated, so this gates publishing alone.
+  contentMirrorToken: import.meta.env.VITE_CONTENT_MIRROR_TOKEN ?? "",
   /** This shop's own provider id, assigned by DogTag at approval. Opaque; never derived. */
   providerId: import.meta.env.VITE_PROVIDER_ID ?? "",
   demoMode: import.meta.env.VITE_DEMO_MODE === "1" || import.meta.env.VITE_DEMO_MODE === "true",

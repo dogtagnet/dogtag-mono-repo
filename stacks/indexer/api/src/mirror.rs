@@ -26,6 +26,28 @@
 //! Anyone holding an address can fetch what it names. Content addressing gives integrity, never
 //! privacy — the same sentence `ProviderDirectory.setProfileAnchor` carries. Nothing private may be
 //! mirrored.
+//!
+//! # BOUNDED, AND IT FILLS RATHER THAN EVICTING
+//!
+//! The write surface is reachable by any principal the scope registry resolves, and scoped tokens
+//! are handed to third-party vet and groomer deployments - so an unbounded store here is permission
+//! for a stranger to exhaust the heap of the service that also serves the government oversight feed.
+//! [`MAX_CONTENT_BYTES`] bounds one object and bounds nothing about accumulation, so
+//! [`MAX_MIRROR_OBJECTS`] and [`MAX_MIRROR_TOTAL_BYTES`] bound the store. BOTH, because a million
+//! one-byte objects and a smaller set of 512 KiB ones are different exhaustion routes and neither
+//! cap bounds the other.
+//!
+//! **THERE IS NO EVICTION, and that is a deferral rather than an omission.** At either cap the
+//! mirror REFUSES new content - loudly, with [`IngestRejection::MirrorFull`] naming the limit it hit
+//! and a 507 from the route - and it never drops, overwrites or ages out anything to make room. An
+//! operator's remedy today is a restart, which empties an already-ephemeral store. LRU/TTL eviction
+//! is the follow-up, and it is not free to design: this module answers 404 for "never published, or
+//! withdrawn", so evicting a live object silently converts a published listing into that state.
+//! Nothing here should be read as implying eviction exists.
+//!
+//! A re-publish of content the mirror ALREADY holds is not growth and does not count against either
+//! cap. That is load-bearing rather than generous: re-publishing is the normal repair path after a
+//! restart, so a cap that counted it would refuse exactly the operation that restores a lost object.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -48,6 +70,29 @@ pub const MULTIHASH_KECCAK_256: u8 = 0x1b;
 /// and because an unbounded public read surface is a bandwidth amplifier. 512 KiB is generous for a
 /// raster logo and small enough that a full page of them is affordable.
 pub const MAX_CONTENT_BYTES: usize = 512 * 1024;
+
+/// How many distinct objects the mirror will hold.
+///
+/// A provider publishes at most two - its profile document and its logo - so this is roughly 2,048
+/// providers. State that plainly rather than as a capacity claim: the production directory is sized
+/// at hundreds of thousands of providers, so this in-memory store is a development and testnet
+/// store that FILLS, not a production one. A durable store with eviction slots in behind
+/// [`ContentMirror`] and is the follow-up; see the module doc.
+pub const MAX_MIRROR_OBJECTS: usize = 4_096;
+
+/// How many bytes the mirror will hold across every object.
+///
+/// Separate from [`MAX_MIRROR_OBJECTS`] because neither bounds the other: at [`MAX_CONTENT_BYTES`]
+/// each, the object cap alone would permit 2 GiB, and at one byte each the byte cap alone would
+/// permit 134 million objects. Whichever binds first is the one that refuses.
+pub const MAX_MIRROR_TOTAL_BYTES: usize = 128 * 1024 * 1024;
+
+/// Which cap an ingest hit. Carried on the rejection so the message names the real constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirrorLimit {
+    Objects,
+    TotalBytes,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum MirrorError {
@@ -87,6 +132,13 @@ pub enum IngestRejection {
     /// what they ARE. The declaration is provider-supplied, so it is checked against the bytes
     /// rather than believed.
     MediaTypeMismatch { declared: String, sniffed: String },
+    /// The mirror is at a capacity cap. The request is WELL FORMED and the mirror is full, which is
+    /// why the route answers 507 rather than 400: nothing about the content is wrong.
+    MirrorFull {
+        limit: MirrorLimit,
+        cap: usize,
+        held: usize,
+    },
 }
 
 impl IngestRejection {
@@ -107,8 +159,58 @@ impl IngestRejection {
             Self::MediaTypeMismatch { declared, sniffed } => {
                 format!("declared {declared} but the bytes are {sniffed}")
             }
+            Self::MirrorFull {
+                limit: MirrorLimit::Objects,
+                cap,
+                held,
+            } => format!(
+                "the content mirror is full: it holds {held} objects and will hold {cap}. It does not evict, so nothing was displaced to make room"
+            ),
+            Self::MirrorFull {
+                limit: MirrorLimit::TotalBytes,
+                cap,
+                held,
+            } => format!(
+                "the content mirror is full: it holds {held} bytes and will hold {cap}. It does not evict, so nothing was displaced to make room"
+            ),
         }
     }
+}
+
+/// Whether one more object fits, given what the store already holds.
+///
+/// Pure, so the whole capacity ladder is unit-testable without a store, exactly like
+/// [`check_ingest`]. The store-state read that feeds it happens under the lock in the
+/// implementation, so the decision cannot race the insert it guards.
+///
+/// `replacing` is the size of what is ALREADY stored at this address, when anything is. Content
+/// addressing makes that delta zero by construction - the same address is the same bytes is the
+/// same length - so the subtraction is defensive rather than load-bearing, and it must not be
+/// "simplified" into an unconditional `+ incoming`: what matters is that an already-held address
+/// counts as NO growth at all, which is what keeps the re-publish repair path open at the cap.
+pub fn check_capacity(
+    held_objects: usize,
+    held_bytes: usize,
+    replacing: Option<usize>,
+    incoming: usize,
+) -> Result<(), IngestRejection> {
+    let objects_after = held_objects + usize::from(replacing.is_none());
+    if objects_after > MAX_MIRROR_OBJECTS {
+        return Err(IngestRejection::MirrorFull {
+            limit: MirrorLimit::Objects,
+            cap: MAX_MIRROR_OBJECTS,
+            held: held_objects,
+        });
+    }
+    let bytes_after = held_bytes - replacing.unwrap_or(0) + incoming;
+    if bytes_after > MAX_MIRROR_TOTAL_BYTES {
+        return Err(IngestRejection::MirrorFull {
+            limit: MirrorLimit::TotalBytes,
+            cap: MAX_MIRROR_TOTAL_BYTES,
+            held: held_bytes,
+        });
+    }
+    Ok(())
 }
 
 /// The content address of `bytes` — lowercase `0x` + 64 hex.
@@ -265,7 +367,26 @@ pub trait ContentMirror: Send + Sync {
 #[derive(Default)]
 struct MemInner {
     objects: HashMap<String, (Vec<u8>, String)>,
+    /// Running total, so a capacity decision is not an O(n) sum on every write. Maintained by
+    /// [`MemInner::insert`] ALONE - every writer goes through it, including `plant_unchecked`,
+    /// because a second insert site is how the accounting drifts away from the map it describes.
+    total_bytes: usize,
     fail_reads: bool,
+}
+
+impl MemInner {
+    fn held(&self, address: &str) -> Option<usize> {
+        self.objects.get(address).map(|(bytes, _)| bytes.len())
+    }
+
+    fn insert(&mut self, address: String, bytes: Vec<u8>, media_type: String) {
+        let incoming = bytes.len();
+        let displaced = self
+            .objects
+            .insert(address, (bytes, media_type))
+            .map_or(0, |(old, _)| old.len());
+        self.total_bytes = self.total_bytes - displaced + incoming;
+    }
 }
 
 /// In-memory mirror: the demo/test store, and the one the hermetic suites drive.
@@ -299,8 +420,7 @@ impl MemContentMirror {
         self.inner
             .lock()
             .unwrap()
-            .objects
-            .insert(address, (bytes, media_type.to_string()));
+            .insert(address, bytes, media_type.to_string());
     }
 
     pub fn len(&self) -> usize {
@@ -309,6 +429,11 @@ impl MemContentMirror {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Total bytes held, for the capacity tests and for an operator probe.
+    pub fn total_bytes(&self) -> usize {
+        self.inner.lock().unwrap().total_bytes
     }
 }
 
@@ -346,11 +471,18 @@ impl ContentMirror for MemContentMirror {
             Ok(address) => address,
             Err(rejection) => return Ok(Err(rejection)),
         };
-        self.inner
-            .lock()
-            .unwrap()
-            .objects
-            .insert(address.clone(), (bytes, media_type.to_string()));
+        // The capacity decision and the insert it guards happen under ONE lock, so a concurrent
+        // publication cannot slip between them and carry the store past a cap.
+        let mut inner = self.inner.lock().unwrap();
+        if let Err(rejection) = check_capacity(
+            inner.objects.len(),
+            inner.total_bytes,
+            inner.held(&address),
+            bytes.len(),
+        ) {
+            return Ok(Err(rejection));
+        }
+        inner.insert(address.clone(), bytes, media_type.to_string());
         Ok(Ok(address))
     }
 }
@@ -494,6 +626,77 @@ mod tests {
         let blob = br#"{"schema":"dogtag/provider-profile/2","contact":{}}"#;
         let address = content_address(blob);
         assert_eq!(check_ingest(&address, blob, PROFILE_MEDIA_TYPE).unwrap(), address);
+    }
+
+    #[test]
+    fn the_per_object_cap_is_hand_mirrored_in_typescript() {
+        // The TypeScript half is `MAX_CONTENT_BYTES` in `packages/ui/src/mirror/profileBlob.ts`,
+        // which refuses an oversized logo in the picker with a visible reason rather than letting
+        // the provider discover it as a 413 after a file upload. Same treatment as
+        // SERVABLE_IMAGE_MEDIA_TYPES: no shared source, so each side pins its own value and the
+        // notes at both constants carry the pair.
+        assert_eq!(MAX_CONTENT_BYTES, 512 * 1024);
+    }
+
+    #[test]
+    fn the_mirror_refuses_at_the_object_cap_rather_than_evicting() {
+        assert!(matches!(
+            check_capacity(MAX_MIRROR_OBJECTS, 0, None, 1),
+            Err(IngestRejection::MirrorFull { limit: MirrorLimit::Objects, .. })
+        ));
+        // One below the cap still admits, so the boundary is the cap and not one short of it.
+        assert!(check_capacity(MAX_MIRROR_OBJECTS - 1, 0, None, 1).is_ok());
+    }
+
+    #[test]
+    fn the_mirror_refuses_at_the_total_byte_cap_too_because_neither_cap_bounds_the_other() {
+        // Well under the OBJECT cap and still refused: a small number of large objects is its own
+        // exhaustion route, which is why both caps exist.
+        assert!(matches!(
+            check_capacity(2, MAX_MIRROR_TOTAL_BYTES, None, 1),
+            Err(IngestRejection::MirrorFull { limit: MirrorLimit::TotalBytes, .. })
+        ));
+        assert!(check_capacity(2, MAX_MIRROR_TOTAL_BYTES - 1, None, 1).is_ok());
+    }
+
+    #[test]
+    fn re_publishing_content_already_held_is_admitted_at_both_caps() {
+        // The repair path after a restart, and the reason the delta is computed against what is
+        // already stored rather than assumed to be growth. A cap that counted a re-publish would
+        // refuse exactly the operation that restores a lost object.
+        assert!(check_capacity(MAX_MIRROR_OBJECTS, MAX_MIRROR_TOTAL_BYTES, Some(64), 64).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_refused_ingest_stores_nothing_and_leaves_the_accounting_alone() {
+        let mirror = MemContentMirror::new();
+        let honest = png();
+        let address = content_address(&honest);
+        mirror.put(&address, honest.clone(), "image/png").await.unwrap().unwrap();
+        assert_eq!(mirror.len(), 1);
+        assert_eq!(mirror.total_bytes(), honest.len());
+
+        let other = b"\x89PNG\r\n\x1a\n a different body".to_vec();
+        let rejected = mirror
+            .put(&content_address(&other), other, "image/jpeg")
+            .await
+            .unwrap()
+            .expect_err("declared type disagrees with the bytes");
+        assert!(matches!(rejected, IngestRejection::MediaTypeMismatch { .. }));
+        assert_eq!(mirror.len(), 1, "a refused ingest may store nothing");
+        assert_eq!(mirror.total_bytes(), honest.len(), "nor move the accounting");
+    }
+
+    #[tokio::test]
+    async fn re_publishing_the_same_bytes_does_not_double_count_them() {
+        let mirror = MemContentMirror::new();
+        let bytes = png();
+        let address = content_address(&bytes);
+        for _ in 0..3 {
+            mirror.put(&address, bytes.clone(), "image/png").await.unwrap().unwrap();
+        }
+        assert_eq!(mirror.len(), 1);
+        assert_eq!(mirror.total_bytes(), bytes.len());
     }
 
     #[test]

@@ -17,6 +17,8 @@ import {
   isContentAddress,
   MULTIHASH_KECCAK_256,
   namesContent,
+  checkLogoPublication,
+  MAX_CONTENT_BYTES,
   parseProfileBlob,
   PROFILE_MEDIA_TYPE,
   resolveProviderProfile,
@@ -372,5 +374,39 @@ describe("the publication digest hashes text as its UTF-8 bytes", () => {
     const { publicationDigest } = await import("../src/mirror");
     expect(publicationDigest(blob)).toBe(keccak256(utf8(blob)));
     expect(publicationDigest(blob)).toBe(keccak256(toHex(blob)));
+  });
+});
+
+describe("a logo the provider chose is checked here, with a reason, before any upload", () => {
+  it("keeps the per-object cap hand-mirrored with mirror.rs", () => {
+    // The second half of the pair the notes at both constants describe. Pinned exactly, like the
+    // media-type list, because nothing derives one side from the other.
+    expect(MAX_CONTENT_BYTES).toBe(512 * 1024);
+  });
+
+  it("refuses SVG, and says WHY rather than dropping the file", () => {
+    const verdict = checkLogoPublication(new Uint8Array([1, 2, 3]), "image/svg+xml");
+    expect(verdict.ok).toBe(false);
+    expect(!verdict.ok && verdict.reason).toMatch(/script/i);
+  });
+
+  it("refuses an oversized file naming the limit, rather than letting the mirror 413 it", () => {
+    const verdict = checkLogoPublication(new Uint8Array(MAX_CONTENT_BYTES + 1), "image/png");
+    expect(verdict.ok).toBe(false);
+    expect(!verdict.ok && verdict.reason).toMatch(/512 KiB/);
+  });
+
+  it("refuses an empty file rather than publishing nothing under an address", () => {
+    expect(checkLogoPublication(new Uint8Array(), "image/png").ok).toBe(false);
+  });
+
+  it("admits every servable image type, so the picker and the mirror agree", () => {
+    for (const mediaType of SERVABLE_IMAGE_MEDIA_TYPES) {
+      expect(checkLogoPublication(new Uint8Array([1]), mediaType).ok).toBe(true);
+    }
+  });
+
+  it("admits a file exactly AT the cap - the boundary is the cap, not one below it", () => {
+    expect(checkLogoPublication(new Uint8Array(MAX_CONTENT_BYTES), "image/png").ok).toBe(true);
   });
 });

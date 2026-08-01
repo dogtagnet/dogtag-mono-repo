@@ -12,7 +12,8 @@
 // `test_the_chain_cannot_tell_a_placeholder_from_a_real_coordinate` pins that absence deliberately,
 // which is what makes this file the load-bearing copy rather than a second opinion.
 import { describe, expect, it } from "vitest";
-import { buildProfileBlob } from "../src/mirror";
+import { buildProfileBlob, logoRef } from "../src/mirror";
+import { mirrorPublicationRefusal } from "../src/provider";
 import {
   MAX_SCANNED_LOCATION_NUMBERS,
   planDirectoryPublication,
@@ -46,8 +47,16 @@ function withOnePin(pin: Partial<DirectoryPin> = {}): Partial<ProviderChainReade
   };
 }
 
-const digest: DigestFn = (utf8) =>
-  `0x${Array.from(utf8).reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 0xffffffff, 7).toString(16).padStart(64, "0")}` as HexWord;
+// Takes TEXT or BYTES, exactly like the real `DigestFn`. A string-only double could not model a
+// publication carrying a logo at all - the logo's address is digested from raw bytes - so it would
+// have made every logo case unreachable rather than merely unasserted.
+const digest: DigestFn = (content) => {
+  const codes =
+    typeof content === "string"
+      ? Array.from(content).map((c) => c.charCodeAt(0))
+      : Array.from(content);
+  return `0x${codes.reduce((h, c) => (h * 31 + c) % 0xffffffff, 7).toString(16).padStart(64, "0")}` as HexWord;
+};
 
 function reader(overrides: Partial<ProviderChainReader> = {}): ProviderChainReader {
   const unscripted = (name: string) => async () => {
@@ -481,7 +490,12 @@ describe("withdrawal is deliberate, and the anchor is not rewritten for nothing"
     expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(1);
   });
 
-  it("refuses a publication in which literally nothing would change", async () => {
+  it("still RE-PUBLISHES to the mirror when the chain is already right, and sends no transaction", async () => {
+    // The repair path, and the exact sequence the review reported: the mirror is ephemeral, so a
+    // restart empties it while the chain still holds the digest. This used to emit nothing at all
+    // and report "nothing to send" about content it held the sole remaining copy of. Uploading is
+    // idempotent by construction - same bytes, same address - so it is emitted unconditionally,
+    // while the anchor transaction stays conditional because a needless one bumps the revision.
     const { blob } = buildProfileBlob(CONTACTS, null);
     const plan = await planDirectoryPublication(
       { ...base, latInput: "1.290270", lngInput: "103.851959" },
@@ -497,11 +511,64 @@ describe("withdrawal is deliberate, and the anchor is not rewritten for nothing"
       }),
       digest,
     );
-    expect(plan.steps).toHaveLength(0);
-    expect(plan.verdict).toBe("refused");
+    expect(plan.steps.filter((s) => s.kind === "profileAnchor")).toHaveLength(0);
+    expect(plan.steps.filter((s) => s.kind === "pin")).toHaveLength(0);
+    expect(plan.steps.filter((s) => s.kind === "mirrorUpload")).toHaveLength(1);
+    // Offerable: an uploads-only publication is a real one, not "nothing to do".
+    expect(plan.canPublish).toBe(true);
     expect(plan.checks.find((c) => c.id === "directory-contents")!.finding).toMatch(
-      /already published exactly as it stands/i,
+      /send no transaction/i,
     );
+  });
+
+  it("re-publishes the LOGO too, not only the profile document - BOTH uploads are unconditional", async () => {
+    // The gap the mutation gate found: with the logo upload alone re-gated on `anchorUnchanged`
+    // every existing case still passed, because none of them published a logo AND had a matching
+    // anchor. A provider whose logo the mirror has lost is exactly who needs the repair path.
+    const logo = { bytes: new Uint8Array([9, 9, 9]), mediaType: "image/png" as const };
+    const { blob } = buildProfileBlob(CONTACTS, logoRef(digest(logo.bytes), logo));
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.290270", lngInput: "103.851959", logo },
+      reader({
+        ...withOnePin(),
+        providerProfileAnchor: async () => ({
+          digest: digest(blob),
+          schema: 1,
+          codec: 0,
+          hashAlgorithm: 0x1b,
+          revision: 4n,
+        }),
+      }),
+      digest,
+    );
+    expect(plan.steps.filter((s) => s.kind === "profileAnchor")).toHaveLength(0);
+    const uploads = plan.steps.filter((s) => s.kind === "mirrorUpload");
+    expect(uploads.map((s) => (s.kind === "mirrorUpload" ? s.what : ""))).toEqual([
+      "logo",
+      "profile",
+    ]);
+    expect(plan.canPublish).toBe(true);
+  });
+
+  it("describes an uploads-only publication honestly rather than as '0 transactions: .'", async () => {
+    const { blob } = buildProfileBlob(CONTACTS, null);
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "1.290270", lngInput: "103.851959" },
+      reader({
+        ...withOnePin(),
+        providerProfileAnchor: async () => ({
+          digest: digest(blob),
+          schema: 1,
+          codec: 0,
+          hashAlgorithm: 0x1b,
+          revision: 4n,
+        }),
+      }),
+      digest,
+    );
+    const finding = plan.checks.find((c) => c.id === "directory-contents")!.finding;
+    expect(finding).not.toMatch(/0 transactions/);
+    expect(finding).toMatch(/re-published to the content mirror/i);
   });
 
   it("still sends the anchor when the listing state could not be read - that is what was asked for", async () => {
@@ -563,5 +630,91 @@ describe("the plan is answerable about what it judged", () => {
       digest,
     );
     expect(plan.providerId).toBe(PROVIDER);
+  });
+});
+
+describe("the mirror settings are checked BEFORE the first step, not during the loop", () => {
+  const uploadStep = {
+    kind: "mirrorUpload" as const,
+    what: "profile" as const,
+    address: "0x11" as `0x${string}`,
+    bytes: new Uint8Array([1]),
+    mediaType: "application/json",
+  };
+  const pinStep = {
+    kind: "pin" as const,
+    op: "publish" as const,
+    lat: 1,
+    lng: 2,
+    locationKind: 1,
+    active: true,
+  };
+
+  it("names the missing base rather than letting the first upload throw mid-sequence", () => {
+    const reason = mirrorPublicationRefusal([uploadStep], "", "tok");
+    expect(reason).toMatch(/VITE_CONTENT_MIRROR_BASE/);
+  });
+
+  it("names the missing TOKEN too - the case that used to surface as 'missing bearer token'", () => {
+    // Aborting inside the loop left the anchor unsent and told the operator nothing actionable.
+    const reason = mirrorPublicationRefusal([uploadStep], "http://mirror", "");
+    expect(reason).toMatch(/VITE_CONTENT_MIRROR_TOKEN/);
+  });
+
+  it("does not refuse a checked plan that publishes no content at all", () => {
+    // A pin-only correction needs neither setting, so refusing it would be over-broad.
+    expect(mirrorPublicationRefusal([pinStep], "", "")).toBeNull();
+  });
+
+  it("answers for an UNCHECKED form too, because every publication uploads its profile document", () => {
+    // What lets the surface state a configuration problem before the provider fills the form in,
+    // rather than after they press Publish.
+    expect(mirrorPublicationRefusal(undefined, "", "")).toMatch(/VITE_CONTENT_MIRROR_BASE/);
+    expect(mirrorPublicationRefusal(undefined, "http://mirror", "tok")).toBeNull();
+  });
+
+  it("is silent when both are configured", () => {
+    expect(mirrorPublicationRefusal([uploadStep], "http://mirror", "tok")).toBeNull();
+  });
+});
+
+describe("a logo the provider chose is validated with a VISIBLE reason, never dropped", () => {
+  it("publishes a logo under its own address, uploaded BEFORE the anchor", async () => {
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "", logo: { bytes: new Uint8Array([1, 2, 3]), mediaType: "image/png" } },
+      reader({}),
+      digest,
+    );
+    const kinds = plan.steps.map((s) => s.kind);
+    expect(kinds.indexOf("mirrorUpload")).toBeLessThan(kinds.indexOf("profileAnchor"));
+    const uploads = plan.steps.filter((s) => s.kind === "mirrorUpload");
+    expect(uploads).toHaveLength(2);
+    expect(uploads[0]).toMatchObject({ what: "logo", mediaType: "image/png" });
+  });
+
+  it("moves the anchor digest, so a logo swap cannot ride an already-checked plan", async () => {
+    const withA = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "", logo: { bytes: new Uint8Array([1]), mediaType: "image/png" } },
+      reader({}),
+      digest,
+    );
+    const withB = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "", logo: { bytes: new Uint8Array([2]), mediaType: "image/png" } },
+      reader({}),
+      digest,
+    );
+    const anchorOf = (p: typeof withA) =>
+      p.steps.find((s) => s.kind === "profileAnchor") as { digest: string };
+    expect(anchorOf(withA).digest).not.toBe(anchorOf(withB).digest);
+  });
+
+  it("no logo is ORDINARY: no upload for one, and nothing reads as a failure", async () => {
+    const plan = await planDirectoryPublication(
+      { ...base, latInput: "", lngInput: "", logo: null },
+      reader({}),
+      digest,
+    );
+    expect(plan.steps.filter((s) => s.kind === "mirrorUpload")).toHaveLength(1);
+    expect(plan.checks.every((c) => c.outcome !== "fail")).toBe(true);
   });
 });

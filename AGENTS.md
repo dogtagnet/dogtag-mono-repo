@@ -5306,7 +5306,7 @@ reaches the fallback and pins nothing.
 
 `stacks/indexer/api/src/mirror.rs` serves it, `packages/ui/src/mirror/` fetches and CHECKS it.
 Full slice: the mirror routes, the profile blob v2 (contacts + logo), and `ProviderLogo`.
-Repeatable evidence: `make verify-content-mirror-mutations` (17 mutations, self-tested both ways).
+Repeatable evidence: `make verify-content-mirror-mutations` (26 mutations, self-tested both ways).
 
 **CORS is already handled and needs no change here**, but check `main.rs` rather than `routes.rs`
 before concluding otherwise: `build_cors()` wraps the WHOLE router at `main.rs`, permissive by default
@@ -5383,6 +5383,76 @@ costs more than the logo** - the mirror accepts a media type `parseProfileBlob` 
 logo entry fails the WHOLE profile document by design, and that provider's CONTACTS are withheld too
 with nothing anywhere reporting why.
 
+**THE MIRROR IS BOUNDED, AND IT FILLS RATHER THAN EVICTING.** `MAX_CONTENT_BYTES` bounds ONE object
+and says nothing about accumulation, so `MAX_MIRROR_OBJECTS` (4,096) and `MAX_MIRROR_TOTAL_BYTES`
+(128 MiB) bound the store - both, because a million one-byte objects and a smaller set of 512 KiB
+ones are different exhaustion routes and neither cap bounds the other. This matters because the PUT
+is reachable by any principal the scope registry resolves, and scoped tokens are handed to
+third-party vet and groomer deployments: unbounded here is permission for a stranger to exhaust the
+heap of the service that also serves the government oversight feed. At either cap the ingest is
+refused with `IngestRejection::MirrorFull` naming the limit, and the route answers **507**, not 400 -
+the request is well formed and the store is full, and a 400 would send the publisher to re-check
+bytes that were never the problem.
+**A re-publish of content the mirror ALREADY holds is not growth and does not count**, which is
+load-bearing rather than generous: uploads are unconditional (below), so re-publishing is the normal
+repair path, and a cap that counted it would refuse exactly the operation that restores a lost
+object. The delta is zero by construction - same address is same bytes - so `check_capacity`'s
+`replacing` argument is defensive; do not "simplify" it into an unconditional `+ 1`.
+**THERE IS NO EVICTION, deliberately and with the captain's permission, and nothing may imply there
+is.** The mirror fills and then refuses; an operator's remedy today is a restart, which empties an
+already-ephemeral store. LRU/TTL is the follow-up and is not free to design: 404 here means "never
+published, or withdrawn", so evicting a live object silently converts a published listing into that
+state. The 4,096-object cap is roughly 2,048 providers at two objects each, which is well below the
+hundreds of thousands the production directory is sized at - state that plainly: this in-memory store
+is a development and testnet store, and a durable one slots in behind `ContentMirror`.
+
+**THE UPLOADS ARE UNCONDITIONAL; ONLY THE ANCHOR TRANSACTION IS CONDITIONAL.** Both once shared the
+`!anchorUnchanged` branch, which made content lost from the ephemeral mirror UNRECOVERABLE: a restart
+empties the mirror while the chain still holds the digest, so the listing correctly reads
+`unverified`, and the only publisher surface then answered "nothing to publish" about content it held
+the sole remaining copy of. An upload is idempotent by construction - same bytes, same address, and
+the PUT overwrites identical content - so it costs one request and restores the object. The anchor
+stays conditional because a needless `setProfileAnchor` bumps the revision and invalidates
+`coversCurrentAddressText` on any registrar address confirmation; that rule is unchanged and still
+pinned. Two consequences: a publication whose ONLY steps are uploads is offerable
+(`canPublish`), and `describeSteps` describes it by what it does rather than through an empty
+transaction sentence, which rendered as a dangling `0 transactions: .` and read as nothing to do.
+The old "everything is already published, so there is nothing to send" refusal is GONE rather than
+left as dead code - the profile document is always uploaded, so it could never fire again, and an
+unreachable refusal is a claim nobody can check.
+
+**THE MIRROR SETTINGS ARE REFUSED BEFORE THE FIRST STEP, NEVER FROM INSIDE THE LOOP.**
+`VITE_CONTENT_MIRROR_TOKEN` joins `VITE_CONTENT_MIRROR_BASE` in both portals' `env.ts` and
+`.env.example`, blank and fallback-free on the S-15 precedent, and both pages pass it. But wiring the
+prop is only half: the missing-base case was discovered from inside the send loop, so a publication
+aborted mid-sequence, and the missing-token case surfaced as a bare "missing bearer token" from the
+HTTP layer with nothing actionable in it. `mirrorPublicationRefusal` is the one rule, used at BOTH
+call sites - the pre-flight throw and the Publish button's own disabled state - because a helper
+consulted only at the throw site still leaves a button offering an action that cannot succeed. It
+answers for an UNCHECKED form too (every publication uploads its profile document), so a
+misconfigured deployment says so before the provider fills the form in.
+**The READ side deliberately does NOT gate on the token**, and that asymmetry is correct rather than
+an oversight: `GET /v1/content/:address` is unauthenticated by design, because a content address is
+checked against the bytes it names, so `PublishedListingCard`'s `unconfigured` stays keyed on the
+base alone. Adding a token term there for symmetry would report a working read surface as unable to
+start.
+
+**THE LOGO PICKER EXISTS, and its `publicationKey` term is the part easiest to miss.** A file input
+on the publication form reads the bytes and threads them into `DirectoryPublicationRequest.logo`;
+`checkLogoPublication` refuses a non-servable type or an oversized file WITH A VISIBLE REASON rather
+than dropping it, because a picker that silently ignores a selection leaves the provider believing
+they published a logo. That check is a courtesy and not the security boundary - the mirror sniffs the
+bytes against the declared type on ingest, so a relabelled SVG passes the picker and is refused
+there. `publicationKey` carries a logo term keyed on the logo's CONTENT ADDRESS, never the `File`
+object, whose identity changes on every re-render and would retire a fresh plan on each keystroke:
+without the term, swapping the logo after pressing Check would send the CHECKED plan carrying the OLD
+one, which is the S-15 stale-plan invariant exactly. Clearing the field means PUBLISH NO LOGO rather
+than "leave the old one", and it moves the key. Selecting none stays entirely ordinary - `logo: null`,
+no upload step, and the rendering side reports `notPublished` quietly.
+`MAX_CONTENT_BYTES` is now a THIRD hand-mirrored constant beside `SERVABLE_IMAGE_MEDIA_TYPES` and
+moves with `mirror.rs` under the same discipline; unlike the media-type list both its drift
+directions are loud, and differ only in where the provider finds out.
+
 **404 and 503 are kept apart on the read route.** An unknown address is 404 (a FACT about the
 mirror's contents); an unreadable store, or a row that no longer hashes to its key, is 503. A store
 failure arriving as 404 would send a publisher to re-publish content that may already be there while
@@ -5405,7 +5475,10 @@ already have. Locations are deployment configuration; the identifier is what bel
 
 **NOT RUN, and it cannot be run here.** The CHAIN half: `ProviderDirectory` is unwired, so no
 `ProfileAnchor` exists on ROAX to resolve and approving the resolver is registrar KYC work outside
-this slice. Mobile logo rendering is also out of scope - the mobile nearby surface reads the indexer's
+this slice. The WRITE half is now reachable from the product - the token is wired, the uploads are
+unconditional and the logo picker exists - but no publication has been driven end to end against a
+live chain, for that same reason: `setProfileAnchor` needs an approved resolver. What HAS been driven
+end to end is the mirror itself, over its real routes. Mobile logo rendering is also out of scope - the mobile nearby surface reads the indexer's
 admin-sourced directory, which carries no anchor, and repointing is C-9/C-10. The mirror's own store
 is in-memory, so a restart empties it; that is honest rather than convenient, since content addressing
 makes a lost object re-publishable byte-for-byte and a missing address answers 404 rather than a wrong

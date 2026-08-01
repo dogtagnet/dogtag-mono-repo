@@ -363,6 +363,13 @@ export function PublishedListingCard({
    * prevent one flow over. It also makes the two halves of this surface AGREE: the publish path
    * already refuses loudly with a named "no content mirror is configured", so the read path must not
    * fail silently in the same deployment.
+   *
+   * **It is keyed on the mirror BASE alone, and deliberately not on the mirror token.** The write
+   * path needs both and refuses up front without either; reading does not, because
+   * `GET /v1/content/:address` is unauthenticated by design - a content address is checked against
+   * the bytes it names, so serving them confers nothing and gating the read would buy no integrity.
+   * Adding a token term here for symmetry would report a perfectly working read surface as unable
+   * to start.
    */
   unconfigured?: boolean;
 }): ReactNode {

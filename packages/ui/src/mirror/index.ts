@@ -21,12 +21,15 @@ export {
 
 export {
   buildProfileBlob,
+  checkLogoPublication,
   logoRef,
+  MAX_CONTENT_BYTES,
   parseProfileBlob,
   PROFILE_MEDIA_TYPE,
   PROVIDER_PROFILE_SCHEMA,
   PROVIDER_PROFILE_SCHEMA_ID,
   SERVABLE_IMAGE_MEDIA_TYPES,
+  type LogoCheck,
   type LogoPublication,
   type ProfileBlobParse,
   type ProfileLogoRef,

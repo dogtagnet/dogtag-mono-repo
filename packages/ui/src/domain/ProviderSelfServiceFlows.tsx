@@ -55,11 +55,14 @@ import { Input } from "../components/Input";
 import { Label } from "../components/Label";
 import { PROVIDER_CONTACT_CHANNELS } from "../directory/channels";
 import {
+  checkLogoPublication,
   keccakBytes,
   mirrorContentReader,
   publicationDigest,
   putMirrorContent,
   resolveProviderProfile,
+  SERVABLE_IMAGE_MEDIA_TYPES,
+  type LogoPublication,
   type ProfileResolution,
 } from "../mirror";
 import { blankContactFields } from "../directory/registration";
@@ -72,6 +75,7 @@ import {
   CONTACTS_ARE_ANCHORED_NOT_SERVED,
   createLiveProviderReader,
   mayContinueAfter,
+  mirrorPublicationRefusal,
   outcomeFromReceiptStatus,
   planCloneDeployment,
   planDirectoryPublication,
@@ -229,6 +233,12 @@ export function ProviderSelfServiceFlows({
   // Folded from the SHARED channel list rather than a local literal, so a sixth channel cannot be
   // added to the list and silently missed here.
   const [contacts, setContacts] = useState(() => blankContactFields());
+  // `null` is the ordinary "no logo" case and is never a failure - the rendering side reports it as
+  // `notPublished`, quietly. `logoError` is what a REFUSED file leaves behind: a picker that
+  // silently ignored a selection would leave the provider believing they had published one.
+  const [logo, setLogo] = useState<LogoPublication | null>(null);
+  const [logoName, setLogoName] = useState<string>("");
+  const [logoError, setLogoError] = useState<string | null>(null);
 
   const [deployHeld, setDeployHeld] = useState<Checked<DeployPlan> | null>(null);
   const [cloneHeld, setCloneHeld] = useState<Checked<CloneAssessment> | null>(null);
@@ -292,7 +302,12 @@ export function ProviderSelfServiceFlows({
   const deployKey = `${identity}|${recordTypeKey}|${cloneNonce}`;
   const cloneKey = `${identity}|${candidate}`;
   const domainKey = `${identity}|${candidate}`;
-  const publicationKey = `${identity}|${latInput}|${lngInput}|${JSON.stringify(contacts)}`;
+  // The logo is keyed by its CONTENT ADDRESS, not by the File object, whose identity changes on
+  // every re-render and would retire a perfectly fresh plan on each keystroke. Leaving it out of
+  // the key would be the stale-plan bug in its purest form: swap the logo after pressing Check and
+  // the button stays enabled while the CHECKED plan still carries the old one.
+  const logoAddress = useMemo(() => (logo ? publicationDigest(logo.bytes) : "none"), [logo]);
+  const publicationKey = `${identity}|${latInput}|${lngInput}|${JSON.stringify(contacts)}|${logoAddress}`;
 
   const deploy = fresh(deployHeld, deployKey);
   const clone = fresh(cloneHeld, cloneKey);
@@ -307,6 +322,14 @@ export function ProviderSelfServiceFlows({
   const cloneRetired = retiredBecause(cloneHeld, cloneKey);
   const domainRetired = retiredBecause(domainHeld, domainKey);
   const publicationRetired = retiredBecause(publicationHeld, publicationKey);
+  // Computed from the CHECKED plan when there is one, and from "a publication always uploads its
+  // profile document" when there is not - so a deployment missing either setting says so before the
+  // provider fills the form in, rather than after they press Publish.
+  const publicationMirrorRefusal = mirrorPublicationRefusal(
+    publication?.steps,
+    mirrorBase,
+    mirrorToken,
+  );
 
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -735,7 +758,75 @@ export function ProviderSelfServiceFlows({
                 <Input id="lng" value={lngInput} onChange={(e) => setLngInput(e.target.value)} />
               </div>
             </div>
+            <div>
+              <Label htmlFor="provider-logo">Logo (optional)</Label>
+              <input
+                id="provider-logo"
+                type="file"
+                data-testid="logo-input"
+                accept={SERVABLE_IMAGE_MEDIA_TYPES.join(",")}
+                className="mt-1 block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:py-1.5 file:text-sm"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  // Clearing the field means PUBLISH NO LOGO, not "leave the old one". The key
+                  // moves with it, so a plan checked with a logo cannot be sent without one.
+                  if (!file) {
+                    setLogo(null);
+                    setLogoName("");
+                    setLogoError(null);
+                    return;
+                  }
+                  void (async () => {
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    const verdict = checkLogoPublication(bytes, file.type);
+                    if (!verdict.ok) {
+                      // Refused files leave NO logo selected and say which rule they broke. A
+                      // silent drop would leave the provider believing they had published one.
+                      setLogo(null);
+                      setLogoName("");
+                      setLogoError(verdict.reason);
+                      return;
+                    }
+                    setLogo({ bytes, mediaType: file.type as LogoPublication["mediaType"] });
+                    setLogoName(file.name);
+                    setLogoError(null);
+                  })();
+                }}
+              />
+              {logoError ? (
+                <p className="mt-1 text-xs text-amber-700 dark:text-amber-400" data-testid="logo-error">
+                  {logoError}
+                </p>
+              ) : logo ? (
+                <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                  <span data-testid="logo-selected">{logoName} will be published.</span>
+                  <button
+                    type="button"
+                    data-testid="logo-clear"
+                    className="underline"
+                    onClick={() => {
+                      setLogo(null);
+                      setLogoName("");
+                      setLogoError(null);
+                    }}
+                  >
+                    Publish no logo
+                  </button>
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Publishing no logo is a normal listing. A logo is published to the content mirror
+                  under its own fingerprint, and a reader that cannot match it shows no image at all
+                  rather than a stand-in.
+                </p>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground">{CONTACT_ONLY_NOTICE}</p>
+            {publicationMirrorRefusal ? (
+              <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="publish-mirror-refusal">
+                {publicationMirrorRefusal}
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
@@ -751,6 +842,7 @@ export function ProviderSelfServiceFlows({
                         contacts,
                         locationKind: 1,
                         locationActive: true,
+                        logo,
                       },
                       reader!,
                       publicationDigest,
@@ -762,7 +854,7 @@ export function ProviderSelfServiceFlows({
                 Check what this would publish
               </Button>
               <Button
-                disabled={!ready || !publication?.canPublish}
+                disabled={!ready || !publication?.canPublish || !!publicationMirrorRefusal}
                 data-testid="publish-send"
                 onClick={() =>
                   run(async () => {
@@ -772,6 +864,11 @@ export function ProviderSelfServiceFlows({
                     // the no-placeholder rule: the absent pin is absent from the loop, not skipped
                     // inside it.
                     const plan = publication!;
+                    // Refused BEFORE the first step, never during. Discovering this from inside the
+                    // loop aborted the publication mid-sequence, and the missing-token case
+                    // surfaced as a bare "missing bearer token" from the HTTP layer.
+                    const refusal = mirrorPublicationRefusal(plan.steps, mirrorBase, mirrorToken);
+                    if (refusal) throw new Error(refusal);
                     for (const step of plan.steps) {
                       // A mirror upload is an HTTP publication, not a transaction, and every one of
                       // them precedes the anchor. It has no receipt to follow, so it is handled here
@@ -779,17 +876,8 @@ export function ProviderSelfServiceFlows({
                       // and which stops the loop before the anchor is sent. That ordering is the
                       // point: the irreversible write must never name content the mirror lacks.
                       if (step.kind === "mirrorUpload") {
-                        if (!mirrorBase) {
-                          // Refused rather than skipped. Sending the anchor without its content
-                          // mirrored would publish a digest that resolves to nothing, which every
-                          // consumer reads as "this provider published nothing".
-                          throw new Error(
-                            "no content mirror is configured, so the profile document cannot be "
-                              + "published. Set VITE_CONTENT_MIRROR_BASE before publishing.",
-                          );
-                        }
                         await putMirrorContent(
-                          mirrorBase,
+                          mirrorBase!,
                           step.address,
                           step.bytes,
                           step.mediaType,

@@ -32,7 +32,7 @@ use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 use crate::app::{keccak_key, AppState};
 use crate::events::{EventType, Finality, IndexedEvent};
-use crate::mirror::{ContentRead, MAX_CONTENT_BYTES};
+use crate::mirror::{ContentRead, IngestRejection, MAX_CONTENT_BYTES};
 use crate::scope::Principal;
 use crate::store::{EventQuery, StoreError};
 
@@ -928,6 +928,13 @@ async fn put_content(
 
     match outcome {
         Ok(stored) => Ok(Json(json!({ "address": stored, "bytes": body.len() }))),
+        // A full mirror is NOT a bad request, and collapsing the two would send a publisher to
+        // re-check bytes that are perfectly correct while the real fault - an operator one - went
+        // unreported. The request is well formed and the store has no room, which is what 507 says.
+        Err(rejection @ IngestRejection::MirrorFull { .. }) => Err(err(
+            StatusCode::INSUFFICIENT_STORAGE,
+            &rejection.message(),
+        )),
         // 400 rather than 409: the request is wrong, not in conflict with existing state. A
         // mismatched address means the caller computed one of the two values incorrectly.
         Err(rejection) => Err(err(StatusCode::BAD_REQUEST, &rejection.message())),

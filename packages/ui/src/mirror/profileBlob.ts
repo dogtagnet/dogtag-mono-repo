@@ -65,6 +65,19 @@ export const SERVABLE_IMAGE_MEDIA_TYPES = [
 ] as const;
 export type ServableImageMediaType = (typeof SERVABLE_IMAGE_MEDIA_TYPES)[number];
 
+/**
+ * The largest object the mirror accepts, so an oversized logo is refused HERE with a reason the
+ * provider can act on rather than discovered as a 413 half way through a publication.
+ *
+ * **The SECOND half of the hand-mirrored pair described above** - `mirror.rs::MAX_CONTENT_BYTES` -
+ * and it moves with it under exactly the same discipline: each side pins its own value, and neither
+ * test can read the other language. Unlike the media-type list, BOTH drift directions here are
+ * loud and the difference is only where the provider finds out: a value larger than the mirror's
+ * lets the picker accept a file the mirror then refuses mid-publication, and a smaller one refuses a
+ * legitimate logo up front with a visible reason.
+ */
+export const MAX_CONTENT_BYTES = 512 * 1024;
+
 /** The profile blob's own media type when mirrored. */
 export const PROFILE_MEDIA_TYPE = "application/json";
 
@@ -101,6 +114,45 @@ function isServableImageMediaType(value: unknown): value is ServableImageMediaTy
     typeof value === "string" &&
     (SERVABLE_IMAGE_MEDIA_TYPES as readonly string[]).includes(value)
   );
+}
+
+export type LogoCheck = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+
+/**
+ * Whether a file the provider chose may be published as a logo.
+ *
+ * A REFUSED file must be told which rule it broke, never silently dropped: a picker that quietly
+ * ignores a selection leaves the provider believing they published a logo, and the rendering side
+ * would then report `notPublished` about a provider who thought otherwise.
+ *
+ * This is not the security boundary and must not be described as one. The mirror SNIFFS the bytes
+ * against the declared type on ingest, because the declaration is caller-supplied - so an SVG
+ * relabelled `image/png` passes here and is refused there. What this buys is that an honest mistake
+ * is reported immediately, beside the field, instead of aborting a publication half way through.
+ */
+export function checkLogoPublication(bytes: Uint8Array, mediaType: string): LogoCheck {
+  if (!isServableImageMediaType(mediaType)) {
+    return {
+      ok: false,
+      reason:
+        `${mediaType || "That file's type"} is not published as a logo. `
+        + `Use ${SERVABLE_IMAGE_MEDIA_TYPES.map((t) => t.replace("image/", "")).join(", ")}. `
+        + "SVG is deliberately refused: it is a document that can carry script, and a logo renders "
+        + "inside operator portals.",
+    };
+  }
+  if (bytes.length === 0) {
+    return { ok: false, reason: "That file is empty, so there is nothing to publish." };
+  }
+  if (bytes.length > MAX_CONTENT_BYTES) {
+    return {
+      ok: false,
+      reason:
+        `That file is ${Math.ceil(bytes.length / 1024)} KiB and the mirror accepts `
+        + `${MAX_CONTENT_BYTES / 1024} KiB. Publish a smaller logo.`,
+    };
+  }
+  return { ok: true };
 }
 
 /**

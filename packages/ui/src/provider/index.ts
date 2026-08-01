@@ -70,6 +70,7 @@ export {
   CONTACTS_ARE_ANCHORED_NOT_SERVED,
   COORDINATE_SCALE,
   MAX_SCANNED_LOCATION_NUMBERS,
+  mirrorPublicationRefusal,
   planDirectoryPublication,
   readListingState,
   toContractCoordinate,

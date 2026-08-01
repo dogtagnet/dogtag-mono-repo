@@ -33,13 +33,23 @@ trap restore EXIT
 
 fails=0
 
+# Returns non-zero when the search string is ABSENT, which the callers report as INERT.
+#
+# This is the authoritative presence check, and it replaced a `grep -qF` one that was WRONG for
+# the multi-line mutations: grep -F treats embedded newlines as separate patterns and ORs them,
+# so a mutation whose exact text had drifted still matched one of its lines, passed the check,
+# then died inside this function - and was reported GREEN, i.e. "the claim is not pinned", when
+# in truth the mutation had never been applied. That is this harness's own
+# could-not-check-rendered-as-its-neighbour bug, in exactly the shape its header warns about, and
+# a real drift has already hidden behind it.
 apply() {
   local file="$1" old="$2" new="$3"
   python3 - "$file" "$old" "$new" <<'PY'
 import sys
 p, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(p).read()
-assert old in s
+if old not in s:
+    sys.exit(3)
 open(p, "w").write(s.replace(old, new, 1))
 PY
 }
@@ -48,11 +58,10 @@ PY
 mutate() {
   local label="$1" file="$2" old="$3" new="$4" spec="$5"
   restore
-  if ! grep -qF -- "$old" "$file"; then
+  if ! apply "$file" "$old" "$new"; then
     echo "INERT  $label -- search string absent from $file; mutation never applied"
     fails=$((fails+1)); return
   fi
-  apply "$file" "$old" "$new"
   out=$(pnpm --filter @dogtag/ui exec vitest run "$spec" 2>&1)
   if echo "$out" | grep -qE "Tests +[0-9]+ failed"; then
     echo "PINNED $label -- $(echo "$out" | grep -oE "Tests +[0-9]+ failed" | head -1)"
@@ -66,11 +75,10 @@ mutate() {
 mutate_rs() {
   local label="$1" file="$2" old="$3" new="$4" target="$5"
   restore
-  if ! grep -qF -- "$old" "$file"; then
+  if ! apply "$file" "$old" "$new"; then
     echo "INERT  $label -- search string absent from $file; mutation never applied"
     fails=$((fails+1)); return
   fi
-  apply "$file" "$old" "$new"
   # COMPILE FIRST, and separately. A mutation that does not build is INERT, not evidence: its red is
   # a build failure rather than a test disagreeing with it. It has to be its own step, because
   # `cargo test` prints its own `error: test failed, to rerun pass ...` on an ordinary red - so a
@@ -167,12 +175,12 @@ mutate "notPublished given the failure tone, so the two no-image states stop bei
 # ---- the publication ORDER ---------------------------------------------------------------------
 mutate "the profile document no longer mirrored, so the anchor names content nothing holds" \
   packages/ui/src/provider/directoryPlan.ts \
-  '    steps.push({
-      kind: "mirrorUpload",
-      what: "profile",' \
-  '    if (false) steps.push({
-      kind: "mirrorUpload",
-      what: "profile",' \
+  '  steps.push({
+    kind: "mirrorUpload",
+    what: "profile",' \
+  '  if (false) steps.push({
+    kind: "mirrorUpload",
+    what: "profile",' \
   test/providerDirectoryPlan.test.ts
 
 # ---- the listing preview: cannot-start must not wear the pending spelling ----------------------
@@ -187,6 +195,76 @@ mutate "an unverified document's contacts rendered as published facts" \
   '      ) : resolution.state === "unverified" ? (' \
   '      ) : false ? (' \
   test/publishedListingRender.test.tsx
+
+# ---- the capacity caps: the store FILLS and refuses, and never evicts --------------------------
+mutate_rs "the object cap removed (a stranger's token grows the oversight indexer's heap without bound)" \
+  stacks/indexer/api/src/mirror.rs \
+  "    if objects_after > MAX_MIRROR_OBJECTS {" \
+  "    if false {" \
+  "--lib"
+
+mutate_rs "the total-byte cap removed (a few large objects exhaust the heap the object cap does not bound)" \
+  stacks/indexer/api/src/mirror.rs \
+  "    if bytes_after > MAX_MIRROR_TOTAL_BYTES {" \
+  "    if false {" \
+  "--lib"
+
+mutate_rs "a re-publish counted as growth (the repair path refused at exactly the cap)" \
+  stacks/indexer/api/src/mirror.rs \
+  "    let objects_after = held_objects + usize::from(replacing.is_none());" \
+  "    let objects_after = held_objects + 1;" \
+  "--lib"
+
+# ---- the uploads are UNCONDITIONAL, so lost content can be restored ----------------------------
+mutate "the uploads gated on the anchor again (content lost from the ephemeral mirror is unrecoverable)" \
+  packages/ui/src/provider/directoryPlan.ts \
+  "  if (logo && logoAddress) {
+    steps.push({
+      kind: \"mirrorUpload\"," \
+  "  if (!anchorUnchanged && logo && logoAddress) {
+    steps.push({
+      kind: \"mirrorUpload\"," \
+  test/providerDirectoryPlan.test.ts
+
+mutate "the profile upload gated on the anchor again (the reported no-repair sequence)" \
+  packages/ui/src/provider/directoryPlan.ts \
+  "  steps.push({
+    kind: \"mirrorUpload\",
+    what: \"profile\"," \
+  "  if (!anchorUnchanged) steps.push({
+    kind: \"mirrorUpload\",
+    what: \"profile\"," \
+  test/providerDirectoryPlan.test.ts
+
+# ---- the mirror settings are refused BEFORE the loop, not inside it ----------------------------
+mutate "the missing-token refusal dropped (publication aborts mid-sequence on 'missing bearer token')" \
+  packages/ui/src/provider/directoryPlan.ts \
+  "  if (!mirrorToken) {" \
+  "  if (false) {" \
+  test/providerDirectoryPlan.test.ts
+
+mutate "the pre-flight answered only for a CHECKED plan (a config fault stays hidden until Publish)" \
+  packages/ui/src/provider/directoryPlan.ts \
+  "  if (steps && !steps.some((step) => step.kind === \"mirrorUpload\")) return null;" \
+  "  if (!steps || !steps.some((step) => step.kind === \"mirrorUpload\")) return null;" \
+  test/providerDirectoryPlan.test.ts
+
+# ---- the logo picker validates, with a reason, rather than dropping ----------------------------
+mutate "an oversized logo admitted by the picker (discovered as a 413 mid-publication instead)" \
+  packages/ui/src/mirror/profileBlob.ts \
+  "  if (bytes.length > MAX_CONTENT_BYTES) {" \
+  "  if (false) {" \
+  test/contentAddress.test.ts
+
+mutate "an SVG logo admitted by the picker (a document that can carry script, in an operator portal)" \
+  packages/ui/src/mirror/profileBlob.ts \
+  "  if (!isServableImageMediaType(mediaType)) {
+    return {
+      ok: false," \
+  "  if (false) {
+    return {
+      ok: false," \
+  test/contentAddress.test.ts
 
 # ---- the mirror itself (Rust) ------------------------------------------------------------------
 mutate_rs "the mirror accepts content at an address it does not hash to" \

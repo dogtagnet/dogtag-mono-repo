@@ -512,6 +512,8 @@ export {
   putMirrorContent,
   resolveProviderProfile,
   SERVABLE_IMAGE_MEDIA_TYPES,
+  checkLogoPublication,
+  MAX_CONTENT_BYTES,
   verifyContentAddress,
   ZERO_ADDRESS,
   type BytesDigestFn,
@@ -528,4 +530,5 @@ export {
   type ProviderLogoProps,
   type ProviderProfile,
   type ServableImageMediaType,
+  type LogoCheck,
 } from "./mirror";

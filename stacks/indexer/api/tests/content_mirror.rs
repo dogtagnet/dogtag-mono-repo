@@ -20,7 +20,9 @@ use tower::ServiceExt;
 use indexer_api::app::{watch_generation, AppState, Config};
 use indexer_api::chain::MemLogSource;
 use indexer_api::directory::Directory;
-use indexer_api::mirror::{content_address, MemContentMirror, PROFILE_MEDIA_TYPE};
+use indexer_api::mirror::{
+    content_address, MemContentMirror, MAX_MIRROR_OBJECTS, PROFILE_MEDIA_TYPE,
+};
 use indexer_api::scope::{ScopeConfig, ScopeRegistry};
 use indexer_api::store::{MemStore, Store};
 
@@ -311,4 +313,46 @@ async fn the_served_response_forbids_content_type_sniffing() {
         response.headers().get("x-content-type-options").and_then(|v| v.to_str().ok()),
         Some("nosniff")
     );
+}
+
+#[tokio::test]
+async fn a_full_mirror_answers_507_and_names_the_limit_rather_than_400() {
+    // The mirror does not evict, so at a cap it refuses. That refusal must not wear the
+    // bad-request spelling: the bytes are perfectly correct and the store has no room, and a 400
+    // would send the publisher to re-check content that was never the problem.
+    let mirror = MemContentMirror::new();
+    for i in 0..MAX_MIRROR_OBJECTS {
+        mirror.plant_unchecked(&format!("0x{i:064x}"), vec![0u8; 1], "image/png");
+    }
+    let state = state(mirror);
+
+    let bytes = png("one-too-many");
+    let address = content_address(&bytes);
+    let (status, body) = put(&state, &address, bytes, "image/png", Some(TOKEN)).await;
+    assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(message.contains("full"), "the reason must name the real constraint: {message}");
+    assert!(
+        message.contains("does not evict"),
+        "and must not imply room was made: {message}"
+    );
+}
+
+#[tokio::test]
+async fn re_publishing_content_the_mirror_already_holds_is_admitted_at_the_cap() {
+    // The repair path after a restart, over the real route. A cap that counted an idempotent
+    // re-publish would refuse exactly the operation that restores a lost object - and since the
+    // publication plan now emits its uploads unconditionally, this is the ordinary case rather than
+    // an exotic one.
+    let mirror = MemContentMirror::new();
+    let bytes = png("already-here");
+    let address = content_address(&bytes);
+    mirror.plant_unchecked(&address, bytes.clone(), "image/png");
+    for i in 0..(MAX_MIRROR_OBJECTS - 1) {
+        mirror.plant_unchecked(&format!("0x{i:064x}"), vec![0u8; 1], "image/png");
+    }
+    let state = state(mirror);
+
+    let (status, _) = put(&state, &address, bytes, "image/png", Some(TOKEN)).await;
+    assert_eq!(status, StatusCode::OK, "an already-held address is not growth");
 }
