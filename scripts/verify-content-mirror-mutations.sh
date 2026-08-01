@@ -194,8 +194,18 @@ mutate_rs "a corrupted row served instead of refused on the way out" \
 
 mutate_rs "SVG admitted to the mirror (it can carry script, and this renders in a portal)" \
   stacks/indexer/api/src/mirror.rs \
-  '    matches!(media_type, "image/png" | "image/jpeg" | "image/webp" | "image/gif")' \
-  '    matches!(media_type, "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/svg+xml")' \
+  '    &["image/png", "image/jpeg", "image/webp", "image/gif"];' \
+  '    &["image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml"];' \
+  "--lib"
+
+# The QUIET drift direction, and the reason the set is pinned as closed rather than by naming the one
+# type that is obviously unsafe. An ordinary new raster format reddens the SVG test not at all, while
+# the TypeScript mirror in packages/ui/src/mirror/profileBlob.ts would then refuse a logo the mirror
+# had accepted - which fails the whole profile document and withholds that provider's contacts too.
+mutate_rs "the servable image set widened past its hand-mirrored TypeScript twin" \
+  stacks/indexer/api/src/mirror.rs \
+  '    &["image/png", "image/jpeg", "image/webp", "image/gif"];' \
+  '    &["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"];' \
   "--lib"
 
 mutate_rs "the declared media type believed rather than sniffed (the allowlist bypass)" \

@@ -37,7 +37,24 @@ import { isContentAddress, MULTIHASH_KECCAK_256, type ContentAddress } from "./c
 export const PROVIDER_PROFILE_SCHEMA = 2;
 export const PROVIDER_PROFILE_SCHEMA_ID = "dogtag/provider-profile/2";
 
-/** The media types the mirror will store and serve. Mirrors `mirror.rs::is_servable_media_type`. */
+/**
+ * The image media types a published logo may declare, and the allowlist `parseProfileBlob` checks a
+ * logo entry against.
+ *
+ * **HAND-MIRRORED from `mirror.rs::SERVABLE_IMAGE_MEDIA_TYPES`, and the two move together or not at
+ * all.** Nothing derives one from the other, so each side pins its own list exhaustively and these
+ * notes are what carry the pair across the language boundary.
+ *
+ * It mirrors the IMAGE half only. `mirror.rs::is_servable_media_type` additionally admits
+ * `PROFILE_MEDIA_TYPE`, because the mirror stores the profile blob itself - but that type must never
+ * be added HERE, since this list is what a LOGO entry is checked against and a logo declaring
+ * `application/json` would name a document `ProviderLogo` then hands to an `<img>`.
+ *
+ * The two drift directions fail differently. Rust widening alone is the quiet one: the mirror
+ * accepts a logo media type this list refuses, and a refused logo entry fails the WHOLE document by
+ * design, so that provider's contacts are withheld too. This side widening alone is loud: the mirror
+ * refuses the upload and publication is blocked.
+ */
 export const SERVABLE_IMAGE_MEDIA_TYPES = [
   "image/png",
   "image/jpeg",

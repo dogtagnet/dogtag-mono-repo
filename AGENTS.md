@@ -5306,7 +5306,7 @@ reaches the fallback and pins nothing.
 
 `stacks/indexer/api/src/mirror.rs` serves it, `packages/ui/src/mirror/` fetches and CHECKS it.
 Full slice: the mirror routes, the profile blob v2 (contacts + logo), and `ProviderLogo`.
-Repeatable evidence: `make verify-content-mirror-mutations` (15 mutations, self-tested both ways).
+Repeatable evidence: `make verify-content-mirror-mutations` (16 mutations, self-tested both ways).
 
 **CORS is already handled and needs no change here**, but check `main.rs` rather than `routes.rs`
 before concluding otherwise: `build_cors()` wraps the WHOLE router at `main.rs`, permissive by default
@@ -5364,6 +5364,22 @@ nothing about whether they are safe to render, and the provider is exactly the p
 slice declines to take on trust. The declared media type is also SNIFFED against the bytes on ingest,
 because the declaration is provider-supplied and would otherwise be the only gate; the consumer
 re-checks the served type against the published one for the same reason.
+
+**The servable-image allowlist is a HAND-MIRRORED cross-language pair, and it mirrors the IMAGE HALF
+ONLY.** `mirror.rs::SERVABLE_IMAGE_MEDIA_TYPES` and
+`packages/ui/src/mirror/profileBlob.ts::SERVABLE_IMAGE_MEDIA_TYPES` have no shared source and neither
+derives from the other, so they move together or not at all - the same treatment the four
+`grantInForceAt` copies and the three DoH classifiers get. Each side pins its own list exhaustively
+(`the_servable_image_set_is_closed_and_hand_mirrored_in_typescript` in Rust) so an accidental edit
+reddens; neither test can read the other language, which is what the notes at both constants are for.
+Two things are easy to get wrong. `is_servable_media_type` also admits `PROFILE_MEDIA_TYPE` because
+the mirror stores the blob itself, so a reader "reconciling" the two by adding `application/json` to
+the TypeScript list would let a LOGO entry declare it - a JSON document `ProviderLogo` then hands to
+an `<img>`. And the two drift directions are NOT symmetric: TypeScript widening alone is loud (the
+mirror refuses the upload and publication is blocked), while **Rust widening alone is silent and
+costs more than the logo** - the mirror accepts a media type `parseProfileBlob` refuses, a refused
+logo entry fails the WHOLE profile document by design, and that provider's CONTACTS are withheld too
+with nothing anywhere reporting why.
 
 **404 and 503 are kept apart on the read route.** An unknown address is 404 (a FACT about the
 mirror's contents); an unreadable store, or a row that no longer hashes to its key, is 503. A store

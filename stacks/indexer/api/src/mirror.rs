@@ -128,16 +128,41 @@ pub fn normalize_address(raw: &str) -> Option<String> {
     Some(format!("0x{}", body.to_ascii_lowercase()))
 }
 
-/// The media types this mirror will store and serve.
+/// The image types this mirror will store and serve.
 ///
 /// **SVG is deliberately absent, and that is a security decision rather than an omission.** SVG is
 /// an XML document that can carry `<script>`, and these bytes are rendered inside operator portals
 /// holding an admin session. A correct content address proves the bytes are the ones the provider
 /// published — it says nothing about whether they are safe to render, and a provider is exactly the
 /// party whose claim the whole slice declines to take on trust. Raster only.
+///
+/// **HAND-MIRRORED in TypeScript as `SERVABLE_IMAGE_MEDIA_TYPES` in
+/// `packages/ui/src/mirror/profileBlob.ts`, and the two move together or not at all.** Nothing
+/// derives one from the other, so the guard is the one this repo gives its other cross-language
+/// folds: each side pins its own list exhaustively (here,
+/// `the_servable_image_set_is_closed_and_hand_mirrored_in_typescript`) so an accidental edit reddens,
+/// plus this note, because neither test can read the other language.
+///
+/// Mirror the IMAGE list ONLY. [`PROFILE_MEDIA_TYPE`] is servable too, being the profile blob's own
+/// type, but it must never join the TypeScript list: that list is the allowlist a LOGO entry is
+/// checked against, and a logo declaring `application/json` would name a document a portal then
+/// hands to an `<img>`.
+///
+/// The two drift directions fail differently, and only one of them is quiet:
+///
+/// * **This side widens alone** - the mirror accepts a logo media type `parseProfileBlob` refuses,
+///   and a refused logo entry fails the WHOLE profile document by design, so that provider's
+///   CONTACTS are withheld as well and nothing anywhere reports why. This is the dangerous
+///   direction, and it is why the pin lives here rather than only in TypeScript.
+/// * **TypeScript widens alone** - a publication names a type [`check_ingest`] refuses, so the
+///   `mirrorUpload` step fails and publication is blocked loudly rather than silently.
+pub const SERVABLE_IMAGE_MEDIA_TYPES: &[&str] =
+    &["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/// Whether this mirror will store and serve `media_type`: an image from
+/// [`SERVABLE_IMAGE_MEDIA_TYPES`], or the profile blob's own [`PROFILE_MEDIA_TYPE`].
 pub fn is_servable_media_type(media_type: &str) -> bool {
-    matches!(media_type, "image/png" | "image/jpeg" | "image/webp" | "image/gif")
-        || media_type == PROFILE_MEDIA_TYPE
+    SERVABLE_IMAGE_MEDIA_TYPES.contains(&media_type) || media_type == PROFILE_MEDIA_TYPE
 }
 
 /// The profile blob's own media type. JSON, and inert.
@@ -423,6 +448,27 @@ mod tests {
         let address = content_address(svg);
         let rejection = check_ingest(&address, svg, "image/svg+xml").expect_err("must refuse");
         assert!(matches!(rejection, IngestRejection::UnsupportedMediaType { .. }));
+    }
+
+    #[test]
+    fn the_servable_image_set_is_closed_and_hand_mirrored_in_typescript() {
+        // Pinned as a CLOSED set rather than by naming a few members, because the drift that matters
+        // is a widening nobody thinks is dangerous. `svg_is_refused_however_correct_its_address`
+        // catches the one type that is obviously unsafe; an ordinary new raster format added here
+        // reddens nothing without this, and `packages/ui/src/mirror/profileBlob.ts` would then refuse
+        // a logo the mirror had accepted - which fails the whole profile document and withholds that
+        // provider's contacts too. Widening this list means widening SERVABLE_IMAGE_MEDIA_TYPES
+        // there in the same change; see the note on the constant.
+        assert_eq!(
+            SERVABLE_IMAGE_MEDIA_TYPES,
+            ["image/png", "image/jpeg", "image/webp", "image/gif"],
+        );
+        for media_type in SERVABLE_IMAGE_MEDIA_TYPES {
+            assert!(is_servable_media_type(media_type), "{media_type} must stay servable");
+        }
+        // Servable, and deliberately NOT part of the image half: a logo entry may never declare it.
+        assert!(is_servable_media_type(PROFILE_MEDIA_TYPE));
+        assert!(!SERVABLE_IMAGE_MEDIA_TYPES.contains(&PROFILE_MEDIA_TYPE));
     }
 
     #[test]
