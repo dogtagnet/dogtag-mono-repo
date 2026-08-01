@@ -897,7 +897,11 @@ export function ProviderSelfServiceFlows({
                 Rendered only once a provider id is well formed, because before that there is no
                 record to resolve and "nothing published" would be a claim about nobody. */}
             {providerIdOk ? (
-              <PublishedListingCard resolution={listing} providerName={providerId} />
+              <PublishedListingCard
+                resolution={listing}
+                providerName={providerId}
+                unconfigured={!mirrorBase}
+              />
             ) : null}
           </CardContent>
         </Card>

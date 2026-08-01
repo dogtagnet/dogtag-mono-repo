@@ -5306,7 +5306,15 @@ reaches the fallback and pins nothing.
 
 `stacks/indexer/api/src/mirror.rs` serves it, `packages/ui/src/mirror/` fetches and CHECKS it.
 Full slice: the mirror routes, the profile blob v2 (contacts + logo), and `ProviderLogo`.
-Repeatable evidence: `make verify-content-mirror-mutations` (13 mutations, self-tested both ways).
+Repeatable evidence: `make verify-content-mirror-mutations` (15 mutations, self-tested both ways).
+
+**CORS is already handled and needs no change here**, but check `main.rs` rather than `routes.rs`
+before concluding otherwise: `build_cors()` wraps the WHOLE router at `main.rs`, permissive by default
+with an explicit `CORS_ALLOW_ORIGINS` allowlist, so the content routes inherit it. A grep confined to
+`routes.rs` finds only `CompressionLayer` and reads as if there were none - which matters because this
+slice is the first BROWSER consumer of the indexer (`/v1/businesses`'s existing callers are the admin
+backend and the native apps, neither of which does a preflight), so a missing layer here would make
+every logo on every portal render nothing forever, on healthy content.
 
 **AN UNVERIFIED LOGO RENDERS NOTHING.** Not a placeholder, not a broken-image icon, not a generic
 avatar, not an initials block. A logo is the strongest visual claim of legitimacy in the product, so
@@ -5385,9 +5393,19 @@ is in-memory, so a restart empties it; that is honest rather than convenient, si
 makes a lost object re-publishable byte-for-byte and a missing address answers 404 rather than a wrong
 answer. A durable store slots in behind `ContentMirror` without touching either route.
 
+**CANNOT-START IS NOT PENDING, and collapsing them is a spinner that never resolves.**
+`PublishedListingCard` shows a provider what a READER sees, and its `resolution === undefined` means
+"not finished yet" and nothing else; "no content mirror is configured, so this cannot begin" is a
+SEPARATE rendered line. The two shared a spelling once, so a deployment with no mirror rendered a
+spinner forever - and the asymmetry made the surface disagree with itself, because the publish path
+already refuses loudly with a named "no content mirror is configured" in that same deployment. The
+mirror base is `VITE_CONTENT_MIRROR_BASE`, declared BLANK in both portal `.env.example` files with no
+code fallback, following the same precedent as S-15's five blank-but-declared vars: a value in a
+template opts every deployment that copies it into publishing at a host nobody chose.
+
 **Evidence, and how to reproduce it.** `cargo test -p indexer-api` (64 tests incl. `tests/
 content_mirror.rs` over the real router) - operator-invoked, since the gate carries no cargo leg.
-`pnpm --filter @dogtag/ui test` (754) IS in the gate. The browser demonstration ran against a real
+`pnpm --filter @dogtag/ui test` (763) IS in the gate. The browser demonstration ran against a real
 `indexer-api` on a self-chosen port with real PNGs published over real HTTP. **The corrupted case must
 serve a VALID, RENDERABLE, WRONG image** - a mangled file would be refused by the browser's own
 decoder, so "nothing rendered" would prove nothing; only a perfectly decodable substitution

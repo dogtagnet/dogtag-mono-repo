@@ -350,9 +350,21 @@ export function DirectoryPublicationCard({
 export function PublishedListingCard({
   resolution,
   providerName,
+  unconfigured,
 }: {
   resolution: ProfileResolution | undefined;
   providerName: string;
+  /**
+   * Set when no content mirror is configured, so the resolution CANNOT start.
+   *
+   * Its own rendered line, never the pending spinner. `undefined` means "not finished yet", and
+   * letting "cannot begin" share that spelling is a spinner that never resolves and an operator who
+   * cannot tell whether anything is happening - the exact failure `RECEIPT_TIMEOUT_MS` exists to
+   * prevent one flow over. It also makes the two halves of this surface AGREE: the publish path
+   * already refuses loudly with a named "no content mirror is configured", so the read path must not
+   * fail silently in the same deployment.
+   */
+  unconfigured?: boolean;
 }): ReactNode {
   return (
     <section className="rounded-lg border border-border p-4" data-testid="published-listing">
@@ -360,8 +372,16 @@ export function PublishedListingCard({
         <h3 className="text-sm font-semibold">What a reader sees</h3>
       </header>
 
-      {resolution === undefined ? (
-        <p className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+      {unconfigured ? (
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="listing-unconfigured">
+          No content mirror is configured, so what you have published cannot be read back here. Set{" "}
+          <code>VITE_CONTENT_MIRROR_BASE</code> to check it.
+        </p>
+      ) : resolution === undefined ? (
+        <p
+          className="mt-2 flex items-center gap-2 text-sm text-muted-foreground"
+          data-testid="listing-pending"
+        >
           <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> Reading what you have
           published…
         </p>

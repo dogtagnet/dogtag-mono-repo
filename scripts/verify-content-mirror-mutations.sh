@@ -24,7 +24,7 @@ set -u
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 export LC_ALL=C
 
-TS_TARGETS="packages/ui/src/mirror/contentAddress.ts packages/ui/src/mirror/resolveProfile.ts packages/ui/src/mirror/profileBlob.ts packages/ui/src/mirror/ProviderLogo.tsx packages/ui/src/provider/directoryPlan.ts"
+TS_TARGETS="packages/ui/src/mirror/contentAddress.ts packages/ui/src/mirror/resolveProfile.ts packages/ui/src/mirror/profileBlob.ts packages/ui/src/mirror/ProviderLogo.tsx packages/ui/src/provider/directoryPlan.ts packages/ui/src/domain/ProviderSelfServicePanel.tsx"
 RS_TARGETS="stacks/indexer/api/src/mirror.rs"
 BACKUP=$(mktemp -d)
 for f in $TS_TARGETS $RS_TARGETS; do mkdir -p "$BACKUP/$(dirname "$f")"; cp "$f" "$BACKUP/$f"; done
@@ -161,6 +161,19 @@ mutate "the profile document no longer mirrored, so the anchor names content not
       kind: "mirrorUpload",
       what: "profile",' \
   test/providerDirectoryPlan.test.ts
+
+# ---- the listing preview: cannot-start must not wear the pending spelling ----------------------
+mutate "cannot-start collapsed back into pending (the spinner that never resolves)" \
+  packages/ui/src/domain/ProviderSelfServicePanel.tsx \
+  "      {unconfigured ? (" \
+  "      {false ? (" \
+  test/publishedListingRender.test.tsx
+
+mutate "an unverified document's contacts rendered as published facts" \
+  packages/ui/src/domain/ProviderSelfServicePanel.tsx \
+  '      ) : resolution.state === "unverified" ? (' \
+  '      ) : false ? (' \
+  test/publishedListingRender.test.tsx
 
 # ---- the mirror itself (Rust) ------------------------------------------------------------------
 mutate_rs "the mirror accepts content at an address it does not hash to" \
