@@ -2126,8 +2126,19 @@ flows plus every negative against the REAL core, router, both factory generation
 domain resolver and the directory - no doubles, because the claims are about how those compose. It is in
 `forge test`, which is NOT in the no-mistakes gate, so it is operator-invoked. The engine's 46 tests are
 in `packages/ui`, which IS in the gate. `scripts/verify-provider-selfservice-mutations.sh` (`make
-verify-provider-selfservice-mutations`) is the repeatable mutation gate (10 mutations); it self-tests,
-reporting an unapplied mutation as INERT and exiting 1. One mutation was REJECTED from it for being behaviour-preserving - deleting the explicit
+verify-provider-selfservice-mutations`) is the repeatable mutation gate (12 mutations); it self-tests,
+reporting an unapplied mutation as INERT and exiting 1.
+
+**NO FLOW'S SEND PATH HAS EVER BEEN EXECUTED AGAINST A CHAIN, and cannot be yet.** `registerProvider`
+and `setServiceCreationApproval` are `onlyOwner` registrar KYC work (the rest of C-2), so no provider
+exists on ROAX to drive one. Everything behind the buttons is preflight logic plus contract-level
+journey tests; `writeContractAsync` has sent nothing anywhere. Two hermetic tests stand in for that,
+deliberately, and neither is a substitute: `providerWriteAbi.test.ts` pins all seven write selectors
+against `cast sig` (a mistyped argument type produces a different selector, which no compiler catches
+and which reverts on chain reading like an authorization fault - the same failure the mobile
+`isValid` selector had), and `providerCapabilitySplit.test.tsx` MOUNTS both capability sets in jsdom.
+What would actually verify it: a fork with a registered, approved provider driving the real calls, or
+a live run after C-2's registrar steps. One mutation was REJECTED from it for being behaviour-preserving - deleting the explicit
 lowercase check in `validateDomain` leaves the charset rule below it refusing uppercase anyway, so only
 the message changed and calling that "unpinned" would have been the inert-mutation reading the harness
 exists to avoid.

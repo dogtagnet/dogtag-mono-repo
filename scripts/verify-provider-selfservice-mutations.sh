@@ -19,7 +19,7 @@ set -u
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 export LC_ALL=C
 
-TARGETS="packages/ui/src/provider/cloneProvenance.ts packages/ui/src/provider/directoryPlan.ts packages/ui/src/provider/liveReader.ts packages/ui/src/provider/domainClaim.ts"
+TARGETS="packages/ui/src/provider/cloneProvenance.ts packages/ui/src/provider/directoryPlan.ts packages/ui/src/provider/liveReader.ts packages/ui/src/provider/domainClaim.ts packages/ui/src/domain/ProviderSelfServiceFlows.tsx"
 BACKUP=$(mktemp -d)
 for f in $TARGETS; do mkdir -p "$BACKUP/$(dirname "$f")"; cp "$f" "$BACKUP/$f"; done
 restore() { for f in $TARGETS; do cp "$BACKUP/$f" "$f"; done; }
@@ -120,6 +120,25 @@ mutate "domain silently NORMALIZED instead of refused" \
   "  const domain = input.trim();" \
   "  const domain = input.trim().toLowerCase();" \
   test/providerDomainAndDeploy.test.ts
+
+# The two claims with no chain behind them: the capability split (verified once in a browser, which
+# is not repeatable) and the write ABIs (whose send path has never been executed anywhere, so a
+# mistyped argument would first surface as an on-chain revert reading like an authorization fault).
+mutate "issuance flows rendered for an operator that issues nothing" \
+  packages/ui/src/domain/ProviderSelfServiceFlows.tsx \
+  "      {capabilities.issuance ? (" \
+  "      {true ? (" \
+  test/providerCapabilitySplit.test.tsx
+
+mutate "a write ABI argument type mistyped (wrong selector, on-chain revert)" \
+  packages/ui/src/provider/liveReader.ts \
+  '      { name: "cloneNonce", type: "uint96" },
+    ],
+    outputs: [{ name: "clone", type: "address" }],' \
+  '      { name: "cloneNonce", type: "uint256" },
+    ],
+    outputs: [{ name: "clone", type: "address" }],' \
+  test/providerWriteAbi.test.ts
 
 echo "=== $fails mutation(s) unaccounted for ==="
 restore
