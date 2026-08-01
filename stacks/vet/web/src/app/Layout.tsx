@@ -11,6 +11,7 @@ import {
   type NavItem,
 } from "@dogtag/ui";
 import {
+  Building2,
   Dog,
   FilePlus2,
   ListChecks,
@@ -38,6 +39,7 @@ const NAV: NavItem[] = [
   { key: "traceability", href: "/traceability", label: "Traceability", icon: Waypoints },
   { key: "import", href: "/import", label: "Import from user", icon: Download },
   { key: "verify", href: "/verify", label: "Verification", icon: ShieldCheck },
+  { key: "provider", href: "/provider", label: "Provider self-service", icon: Building2 },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

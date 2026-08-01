@@ -235,7 +235,7 @@
     {
       "contract": "IssuerDomainRegistry",
       "generation1": "0xD3B121FEaCde93b95288912EAdbB10824550FdBF",
-      "generation2": null,
+      "generation2": "0x4AB4a70CFa9CE9415B96dF543C218F90a2619c33",
       "supersededBy": "ServiceDomainResolver",
       "repointStep": "C-7, then C-9",
       "semanticEquivalence": "UNVERIFIED. ServiceDomainResolver deliberately does NOT expose domainOf(address) returns (string) - resolveDomain returns a tuple carrying a Disposition, because an empty string was three different facts. That is a CODE change in every consumer, not an address repoint. See docs/SERVICE_DOMAIN_RESOLVER.md.",
@@ -244,7 +244,7 @@
         "303690 on 2026-07-30. Read the log count, not just the counter - setDomainAdmin appoints a key",
         "without writing a binding, so only 'no logs' establishes nothing is stranded."
       ],
-      "generation2Provenance": "generation2 stays NULL: ServiceDomainResolver is built and tested but NOT DEPLOYED. C-7 was out of scope of S-14, so there is no address to record and none is invented."
+      "generation2Provenance": "ServiceDomainResolver was deployed live by C-7 on 2026-08-01 at 0x4AB4a70CFa9CE9415B96dF543C218F90a2619c33 (tx 0x70cdb26e3723ac0431c13e3c90da8edba7f3bb5519a3c434163a8119015b414a, block 316865, signer = the deployer EOA 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96); see _c7_typed_resolvers in contracts/deployments/roax.json. The address is recorded here so the successor is FINDABLE, NOT as a repoint target - the same standing this file gives IssuerRegistry's generation-2 address. Two separate things still block a repoint and deploying changed neither. (1) semanticEquivalence below remains UNVERIFIED and is a CODE change in every consumer, not an address swap: the successor exposes no domainOf(address) returns (string) at all. (2) The resolver is UNWIRED - a typed resolver answers nothing until the registrar calls setResolverApproved(DOMAIN, resolver, true) on ProviderRegistry AND each service selects it via setDomainResolver, both of which are KYC work that C-7 did not perform. recordedServiceCount() is 0. The deployed IssuerDomainRegistry 0xD3B121FEaCde93b95288912EAdbB10824550FdBF above stays the wired domain surface until C-9/C-10."
     },
     {
       "contract": "DogTagIssuerImpl",

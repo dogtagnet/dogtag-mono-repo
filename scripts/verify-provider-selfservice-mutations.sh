@@ -1,0 +1,128 @@
+#!/bin/bash
+# registry-plan S-15: the repeatable mutation gate for the provider self-service engine.
+#
+# Run it to prove the engine's guards are PINNED rather than merely present. Written in bash, not
+# zsh: zsh does not word-split an unquoted "$var", so a list-driven loop there runs once with the
+# whole string and every search misses - a check that passes by not running. LC_ALL=C is exported
+# for the WHOLE script rather than around one command, so the verdict does not depend on the
+# caller's locale.
+#
+# A mutation that leaves the suite GREEN is reported as this harness's own failure. So is one whose
+# search string no longer matches: an unapplied mutation produces a false 'pinned' reading, which is
+# the exact mistake scripts/verify-issuance-authority-mutations.sh was written to stop making.
+# A mutation must also CHANGE BEHAVIOUR - deleting the explicit lowercase check in validateDomain
+# was tried and rejected here, because the charset rule below it refuses uppercase anyway, so only
+# the message changed and 'unpinned' would have been the wrong reading. One break at a time; a mutation that leaves the suite GREEN is reported as
+# its own failure, and a mutation that fails to APPLY is reported as INERT rather than counted as
+# evidence (a mutation whose search string no longer matches produces a false "pinned" reading).
+set -u
+cd "$(cd "$(dirname "$0")/.." && pwd)"
+export LC_ALL=C
+
+TARGETS="packages/ui/src/provider/cloneProvenance.ts packages/ui/src/provider/directoryPlan.ts packages/ui/src/provider/liveReader.ts packages/ui/src/provider/domainClaim.ts"
+BACKUP=$(mktemp -d)
+for f in $TARGETS; do mkdir -p "$BACKUP/$(dirname "$f")"; cp "$f" "$BACKUP/$f"; done
+restore() { for f in $TARGETS; do cp "$BACKUP/$f" "$f"; done; }
+trap restore EXIT
+
+fails=0
+
+# $1 label, $2 file, $3 old, $4 new, $5 test file
+mutate() {
+  local label="$1" file="$2" old="$3" new="$4" spec="$5"
+  restore
+  if ! grep -qF -- "$old" "$file"; then
+    echo "INERT  $label -- search string absent from $file; mutation never applied"
+    fails=$((fails+1)); return
+  fi
+  python3 - "$file" "$old" "$new" <<'PY'
+import sys
+p,old,new = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(p).read()
+assert old in s
+open(p,"w").write(s.replace(old, new, 1))
+PY
+  out=$(pnpm --filter @dogtag/ui exec vitest run "$spec" 2>&1)
+  if echo "$out" | grep -qE "Tests +[0-9]+ failed"; then
+    red=$(echo "$out" | grep -oE "Tests +[0-9]+ failed" | head -1)
+    echo "PINNED $label -- $red"
+  else
+    echo "GREEN  $label -- MUTATION SURVIVED, the claim is not pinned"
+    fails=$((fails+1))
+  fi
+}
+
+echo "=== S-15 mutation evidence ==="
+
+mutate "provenance refusal deleted (a forged address falls through)" \
+  packages/ui/src/provider/cloneProvenance.ts \
+  "  if (genuine === false) {" \
+  "  if (false) {" \
+  test/providerCloneGuard.test.ts
+
+mutate "a failed isClone READ rendered as 'not genuine'" \
+  packages/ui/src/provider/cloneProvenance.ts \
+  '        "could-not-run",
+        "The factory could not be reached, so this address was neither confirmed nor refused.",
+        reasonFrom(error, "the isClone read failed"),' \
+  '        "fail",
+        "The factory could not be reached, so this address was neither confirmed nor refused.",' \
+  test/providerCloneGuard.test.ts
+
+mutate "control check dropped (provenance treated as attribution)" \
+  packages/ui/src/provider/cloneProvenance.ts \
+  "    const owned = owner.toLowerCase() === caller.toLowerCase();" \
+  "    const owned = true;" \
+  test/providerCloneGuard.test.ts
+
+mutate "attachment collapsed (deployed treated as attached)" \
+  packages/ui/src/provider/cloneProvenance.ts \
+  "    attachedHere = !attachedToNobody && service.providerId.toLowerCase() === providerId.toLowerCase();" \
+  "    attachedHere = true;" \
+  test/providerCloneGuard.test.ts
+
+mutate "a placeholder pin emitted for an ABSENT location (the 0,0 bug)" \
+  packages/ui/src/provider/directoryPlan.ts \
+  '  if (location.kind === "located") {
+    steps.push({
+      kind: "pin",
+      lat: toContractCoordinate(location.lat),
+      lng: toContractCoordinate(location.lng),' \
+  '  if (location.kind !== "invalid") {
+    steps.push({
+      kind: "pin",
+      lat: location.kind === "located" ? toContractCoordinate(location.lat) : 0,
+      lng: location.kind === "located" ? toContractCoordinate(location.lng) : 0,' \
+  test/providerDirectoryPlan.test.ts
+
+mutate "coordinate truncated instead of rounded" \
+  packages/ui/src/provider/directoryPlan.ts \
+  "  return Math.round(degrees * COORDINATE_SCALE);" \
+  "  return Math.trunc(degrees * COORDINATE_SCALE);" \
+  test/providerDirectoryPlan.test.ts
+
+mutate "canCreateService asked with no 'from' (the msg.sender trap)" \
+  packages/ui/src/provider/liveReader.ts \
+  "        account: contracts.factory," \
+  "" \
+  test/providerDomainAndDeploy.test.ts
+
+mutate "an unreadable domain record defaulted to UNSET ('nobody has said')" \
+  packages/ui/src/provider/domainClaim.ts \
+  "    ...(standing ? { standing } : {})," \
+  "    standing: standing ?? { disposition: 0, domain: \"\", lineageRecognizesService: false, registryApprovesThisResolver: false, coreSelectsThisResolver: false, serviceStandingEffective: false }," \
+  test/providerDomainAndDeploy.test.ts
+
+# The MEANINGFUL version of the case mutation. Merely deleting the explicit lowercase check is
+# behaviour-preserving - the charset rule below it refuses uppercase anyway, so only the message
+# changes - and reporting that as "unpinned" would be the inert-mutation reading this harness exists
+# to avoid. The real defect class is NORMALIZING, so the mutation normalizes.
+mutate "domain silently NORMALIZED instead of refused" \
+  packages/ui/src/provider/domainClaim.ts \
+  "  const domain = input.trim();" \
+  "  const domain = input.trim().toLowerCase();" \
+  test/providerDomainAndDeploy.test.ts
+
+echo "=== $fails mutation(s) unaccounted for ==="
+restore
+exit $((fails > 0 ? 1 : 0))

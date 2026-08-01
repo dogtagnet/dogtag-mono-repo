@@ -2041,6 +2041,84 @@ resolver holds no name, no description and no DNS state - a generation-2 clone's
 construction, so registrar identity comes from the core's `publicIdentityAnchor` and the human-readable
 text stays the DNS record's own value.
 
+## Provider self-service (S-15), and the typed resolvers it needed deployed (C-7)
+
+The provider-facing surface for the generation-2 set: deploy your own clone, choose which of your
+contracts is current, claim a domain, publish your listing.
+Engine in `packages/ui/src/provider/` (pure, reader-injected, three-state), renderer in
+`packages/ui/src/domain/ProviderSelfServicePanel.tsx`, page at `stacks/vet/web/src/pages/ProviderSelfService.tsx`
+(route `/provider`).
+No backend on this path at all - every write is a wallet transaction to a contract the provider owns,
+the same posture as the owner wallet and for the same reason.
+
+**C-7 IS DONE: `ProviderDirectory` and `ServiceDomainResolver` are DEPLOYED on ROAX and UNWIRED.**
+Addresses, transaction hashes, blocks and the signer live in `contracts/deployments/roax.json` under
+`_c7_typed_resolvers` - do not transcribe them here.
+Two consequences worth carrying: both sources are now FROZEN in the same sense as the S-14 six, so the
+two items this file records as open against `ProviderDirectory` (the unowned `uint8` kind-code mapping,
+and the permanent scan weight of a provider that has lost ACTIVE standing) are redeploy-gated rather
+than edit-gated; and a typed resolver answers NOTHING until the registrar calls
+`setResolverApproved(kind, resolver, true)` AND each provider selects it, both of which are KYC work
+that C-7 did not perform. `resolverApproved()` is false and every store is empty.
+
+**THE FLOW IS PROVIDER -> REGISTRAR -> PROVIDER, and modelling it as one action describes a journey
+nobody can walk.** `ProviderRegistry.attachService` is `onlyOwner`, so a clone the provider deployed and
+owns is attached to NOBODY until DogTag attaches it, and `repointService` refuses an address that was
+never attached. `CloneLifecycle` therefore carries `deployed` as a first-class waiting state whose next
+step belongs to someone else - not an error, and not something the provider can retry.
+
+**`canCreateService` MUST be asked AS THE FACTORY, and this is the sharpest trap in the slice.**
+Its first term is `generationOfFactory[msg.sender]`, because the core is designed to be asked this BY a
+factory during `createIssuer`. A plain `eth_call` carries no `from`, so `msg.sender` is the zero address,
+no generation matches, and the answer is **`false` for every provider on earth** - a preflight without an
+explicit `account` tells a perfectly eligible provider it may not deploy.
+Same shape as `ProviderRegistry.isWhitelistedFor`'s `msg.sender` branch, which `docs/CLIENT_REPOINT.md`
+records as the reason `ISSUER_REGISTRY_ADDR` cannot move; it just fails in the opposite direction here.
+It CANNOT be decomposed instead - the service-creation approval it folds lives in a private mapping with
+no getter, so the aggregate is the only way to observe that term at all.
+`createLiveProviderReader` passes `account: contracts.factory` on exactly that one read and on no other,
+and `canCreateService is asked AS THE FACTORY` asserts what reaches `readContract` rather than the value
+it returns - a fake answering `true` would satisfy any assertion about the result while the `account` was
+silently dropped.
+
+**THE FORGERY GUARD IS THE CHAIN'S; the portal's copy exists because the portal is the other place an
+address is entered.** `attachService` proves `factory.isClone(service)` against the factory pinned to the
+NAMED generation, so a forged contract, an EOA and a genuine clone of another generation are each refused
+- three different named errors, because the remedies differ. Two ordering rules in
+`assessCandidateClone` are load-bearing and each is easy to undo: a definite `false` from provenance is
+FINAL and the assessment stops (reading on would let a neighbouring could-not-run sit beside the refusal
+and read as its cause), while a failed READ is never a refusal - "we could not reach the factory" is a
+statement about our connectivity, not about the provider's contract.
+
+**The no-placeholder-coordinate rule can ONLY live in the portal.** `0,0` is a real coordinate, so a pin
+at the origin is byte-for-byte a genuine one and `ProviderDirectory` cannot refuse it without refusing a
+real provider there - `ProviderSelfService.t.sol`'s
+`test_the_chain_cannot_tell_a_placeholder_from_a_real_coordinate` pins that ABSENCE deliberately, which
+is what makes `directoryPlan.ts` the load-bearing copy rather than a second opinion. The rule is enforced
+by SHAPE, not by a value: an absent location produces a plan with NO pin step, so there is no code path
+on which a placeholder could be written. The location text goes through the shared `parseLocationInput`
+and never a second parser - `Number("")` is `0`, and a second parser is exactly how that bug came back
+last time.
+
+**Evidence, and where it runs.** `contracts/test/ProviderSelfService.t.sol` (23 tests) walks all four
+flows plus every negative against the REAL core, router, both factory generations, real clones, the
+domain resolver and the directory - no doubles, because the claims are about how those compose. It is in
+`forge test`, which is NOT in the no-mistakes gate, so it is operator-invoked. The engine's 46 tests are
+in `packages/ui`, which IS in the gate. `scripts/verify-provider-selfservice-mutations.sh` is the
+repeatable mutation gate (9 mutations); it self-tests, reporting an unapplied mutation as INERT and
+exiting 1. One mutation was REJECTED from it for being behaviour-preserving - deleting the explicit
+lowercase check in `validateDomain` leaves the charset rule below it refusing uppercase anyway, so only
+the message changed and calling that "unpinned" would have been the inert-mutation reading the harness
+exists to avoid.
+
+**Rendering a vet-portal page locally without a backend:** seed `localStorage["vet.opToken"]` with any
+string - the Layout gates on its presence, so no login round trip is needed - and build with
+`VITE_VET_API_BASE` and `VITE_CENTRAL_API_BASE` set to an absolute dead host, which takes `/api` out of
+the picture entirely so `vite preview`'s `server.proxy` can never reach the captain's live backend.
+`vite preview` binds **IPv6-only**, so probe `http://[::1]:<port>` - a `127.0.0.1` curl reports a
+perfectly healthy server as dead.
+
+
 ## Governance authority (Phase-2 executed) - tooling signer
 
 - **Governance authority is signer-1 `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`; the tooling ADMIN key

@@ -10,6 +10,7 @@ import { Records } from "./pages/Records";
 import { Traceability } from "./pages/Traceability";
 import { ImportFromUser } from "./pages/ImportFromUser";
 import { Verify } from "./pages/Verify";
+import ProviderSelfService from "./pages/ProviderSelfService";
 import { Settings } from "./pages/Settings";
 
 export function App() {
@@ -32,6 +33,10 @@ export function App() {
       <Route path="/traceability" element={<Layout title="Traceability"><Traceability /></Layout>} />
       <Route path="/import" element={<Layout title="Import from user"><ImportFromUser /></Layout>} />
       <Route path="/verify" element={<Layout title="Verification"><Verify /></Layout>} />
+      <Route
+        path="/provider"
+        element={<Layout title="Provider self-service"><ProviderSelfService /></Layout>}
+      />
       <Route path="/settings" element={<Layout title="Settings"><Settings /></Layout>} />
       <Route path="*" element={<Navigate to="/issue" replace />} />
     </Routes>
