@@ -44,11 +44,16 @@ import {MIN_PUBLISH_TIMELOCK_SECONDS_V2, DEFAULT_PUBLISH_TIMELOCK_SECONDS_V2} fr
 ///
 /// # THE ASSERTIONS HERE ARE PRECONDITIONS, NOT EVIDENCE
 ///
-/// A `require` inside a forge script runs in the script's own EVM. In phase 2 that EVM has forked live
-/// state, so the preconditions guarding the irreversible append really do read the deployed router and
-/// factory - which is exactly where they are worth the most, because a failed simulation broadcasts
-/// nothing. But a `require` placed AFTER a `new X()` in phase 1 or 3 reads the script's local copy, not
-/// the chain, so it can only catch a wrong ARGUMENT and can never establish a landed result.
+/// A `require` inside a forge script runs in the script's own EVM. That EVM has forked live state, so
+/// a require reading an address supplied by the ENVIRONMENT - the whole of phase 2's preamble, and
+/// phase 3's router and core checks - really does read the deployed contract, which is exactly where
+/// such a check is worth the most, because a failed simulation broadcasts nothing. But a `require`
+/// placed AFTER a `new X()` reads the script's local copy, not the chain, so it can only catch a wrong
+/// ARGUMENT and can never establish a landed result.
+///
+/// Each phase must therefore re-establish every environment-supplied address it uses, even one an
+/// earlier phase already checked: the phases are separate invocations with separate environments, so
+/// an earlier phase's guard says nothing about the value a later one is handed.
 ///
 /// Landed state is therefore verified out of band, against the chain, between phases -
 /// `docs/CUTOVER_REHEARSAL.md` §6 makes the same distinction for C-4b, which it checks by EFFECT
@@ -223,6 +228,25 @@ contract ExecuteCutover is Script {
         // The router must already be the complete generation list, because C-5 binds it immutably.
         require(router.generationCount() == 2, "C-5: router does not yet hold both generations");
         require(router.generationAt(0) == gen1.factory, "C-5: generation 1 must be at index 0");
+
+        // The core is guarded HERE as well as in phase 2, and that is not redundancy. The phases are
+        // separate invocations, each reading its own `CUTOVER_CORE` out of its own environment, so
+        // phase 2's checks establish nothing about the value phase 3 is handed - a stale core from an
+        // abandoned phase-1 re-run, or one digit typed wrong, never meets them at all. C-5 writes this
+        // address into the registry's IMMUTABLE `issuerRegistry` slot and
+        // `VerificationRegistryConsent`'s constructor only rejects zero, so a wrong core is remedied
+        // only by redeploying. The post-deploy requires below cannot catch it either:
+        // `registryV2.issuerRegistry() == address(core)` is tautological with whatever was passed in.
+        require(address(core).code.length > 0, "C-5: core address holds no code");
+        require(core.owner() == gen1.governance, "C-5: core owner is not governance");
+        // The strongest binding available without a new environment variable: the router's TAIL
+        // generation is the generation-2 factory, and that factory's `registry` is immutable and was
+        // fixed at C-3b. So a `CUTOVER_CORE` naming anything other than the core that factory was
+        // built over cannot reach the immutable binding.
+        require(
+            DogTagIssuerFactoryV2(router.generationAt(1)).registry() == address(core),
+            "C-5: core is not the one the router's generation-2 factory is bound to"
+        );
 
         vm.startBroadcast();
         VerificationRegistryConsent registryV2 = CutoverSequence.c5_deployRegistryV2(core, router, gen1); // C-5

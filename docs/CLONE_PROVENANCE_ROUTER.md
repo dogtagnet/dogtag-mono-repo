@@ -2,9 +2,11 @@
 
 `contracts/src/CloneProvenanceRouter.sol`, tests in `contracts/test/CloneProvenanceRouter.t.sol`.
 
-**Status: built and tested only. Nothing is deployed.**
-There is no address for it in `contracts/deployments/roax.json`, no `.env.example` entry, and no consumer points at it.
-Deployment is a separate, captain-authorized step (registry plan `dogtag-regplan-p3` slice S-8, cutover step C-4).
+**Status: deployed by S-14 on ROAX, and unwired.**
+Cutover step C-4 deployed it and C-4b appended generation 2, so `contracts/deployments/roax.json` carries a `CloneProvenanceRouter` key - see `_s14_cutover` there for the address, transaction hash and block, which are deliberately not copied into this file.
+It is the `rootIndex` of the generation-2 `VerificationRegistryConsent` deployed at C-5, but that registry is itself unwired: no `.env.example` entry names the router and no consumer resolves a root through it.
+Repointing clients is C-9/C-10 and is a separate, captain-authorized step.
+**C-12 has not been performed**, so the deliberately-open mirror direction described below is live rather than closed.
 
 ## What it is
 

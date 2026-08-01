@@ -17,8 +17,22 @@
     "Addresses are matched in FULL (40 hex digits) and CASE-INSENSITIVELY. Both halves are load-bearing;",
     "see docs/CLIENT_REPOINT.md for the two ways an 8-hex case-sensitive grep gets this wrong.",
     "",
-    "generation2 is null for every entry because nothing is deployed. S-13 repoints; S-14 deploys.",
-    "A placeholder here would be the invented data this fleet forbids."
+    "S-14 DEPLOYED, so `generation2` is now FILLED for the entries that have a single successor and",
+    "still null for the rest. A null no longer means one thing, and the difference matters:",
+    "  - not deployed at all (IssuerDomainRegistry - C-7 was out of scope of S-14);",
+    "  - deployed, but NO SINGLE SUCCESSOR (DogTagIssuerFactory splits by caller role, so filling one",
+    "    half would hand it to a consumer of the other - the successors are on supersededByReaders /",
+    "    supersededByWriters instead);",
+    "  - deployed, but the repoint is BLOCKED (IssuerRegistry - the successor answers a different",
+    "    question, see its note).",
+    "Every entry therefore carries `generation2Provenance`, which states WHICH of those a null is, or -",
+    "for a filled entry - where the address came from and that recording it repoints nothing. The gate",
+    "requires that key and prints it, because otherwise 'N of M are FILLED' is the only signal and it",
+    "cannot tell the three nulls apart.",
+    "",
+    "A FILLED value is a record of what was deployed, never an instruction to repoint: repointing is",
+    "C-9/C-10 and is gated on `semanticEquivalence`, not on an address existing. A placeholder in any",
+    "of the still-null entries would be the invented data this fleet forbids."
   ],
   "chainId": 135,
   "generation1Ledger": "contracts/deployments/roax.json",
@@ -195,7 +209,7 @@
       "generation2": "0xE49f30D6677f019f11298B3294377E6B817d43Da",
       "supersededBy": "VerificationRegistryConsent V2",
       "repointStep": "C-9",
-      "semanticEquivalence": "UNVERIFIED - the V2 contract is not written, so no question-for-question comparison has been made. Establish it before C-9, not during.",
+      "semanticEquivalence": "UNVERIFIED, but no longer for the original reason. V2 IS written and deployed - CutoverSequence.c5_deployRegistryV2 constructs contracts/src/VerificationRegistryConsent.sol, the SAME source as generation 1, so every selector and every question-for-question semantic is identical BY CONSTRUCTION. What is unverified is the effect of the CONSTRUCTOR BINDINGS, which are the only difference: the authority is the new ProviderRegistry core (whose isWhitelistedFor answers a caller-scoped question - see the IssuerRegistry entry) and rootIndex is the CloneProvenanceRouter rather than the generation-1 factory. Neither has been exercised end to end against a real credential. Establish that before C-9, not during; and note this entry does NOT clear C-9, because the separate IssuerRegistry entry is still BLOCKED.",
       "note": [
         "Its issuerRegistry / sbt / rootIndex are all immutable, so replacing the authority core forces",
         "this redeploy on its own. C-6 must migrate the VERIFY: relayer capabilities BEFORE any client",
@@ -279,7 +293,7 @@
     "historical-ledger": "PRESERVE. The deployment record. AGENTS.md: do not rewrite historical records.",
     "pinned-fixture": "PRESERVE. Pinned to a block; the S-12 fork test REFUSES to run if it disagrees with the fork.",
     "hermetic-fixture": "PRESERVE. A MemChain or mocked-network constant that resolves nothing live. Reusing a real address here is cosmetic.",
-    "inventory-manifest": "PRESERVE the generation-1 values. This file itself, which records WHAT MOVED and therefore holds every generation-1 address by design. S-14 fills each `generation2` beside its `generation1`; it never replaces one, or the record of what moved from where is lost."
+    "inventory-manifest": "PRESERVE the generation-1 values. This file itself, which records WHAT MOVED and therefore holds every generation-1 address by design. S-14 filled `generation2` BESIDE its `generation1` wherever a single successor exists; it never replaces one, or the record of what moved from where is lost. Where S-14 left a null it is for a stated reason - see `generation2Provenance` on that entry and the _doc above."
   },
   "consumers": [
     {

@@ -101,8 +101,14 @@ contract RehearseCutover is Script {
         CutoverSequence.Generation1 memory gen1 = _generation1();
 
         // The rehearsal deliberately uses the FLOOR (1 hour) rather than the production default
-        // (2 days), so a rehearsal can be walked end to end in one sitting. The live C-8 uses
-        // 2 days. The floor is enforced in the constructor, so zero is unrepresentable either way.
+        // (2 days), so a rehearsal can be walked end to end in one sitting. The floor is enforced in
+        // the constructor, so zero is unrepresentable either way.
+        //
+        // The live ROAX C-8 also took the floor, with the testnet opt-in stated aloud - the reasoning
+        // is in `_s14_cutover` in deployments/roax.json, and the value is IMMUTABLE there. So do not
+        // read this line as saying the live registry matches the production default.
+        // MAINNET MUST USE 2 DAYS: `DeployProtocolRegistryV2.s.sol` enforces exactly that unless a
+        // testnet deploy is stated.
         uint256 publishTimelock = vm.envOr("REHEARSAL_PUBLISH_TIMELOCK", uint256(1 hours));
 
         console.log("generation-1 factory        ", gen1.factory);

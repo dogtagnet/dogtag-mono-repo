@@ -1,9 +1,10 @@
 # ProtocolRegistryV2: the generation-2 discovery layer, and the timelock (registry-plan S-11)
 
 The generation-2 discovery anchor: the dogtag-governed record of which contracts and which proving artifacts are current.
-BUILT AND TESTED ONLY.
-Nothing here is deployed: this repo records no `ProtocolRegistryV2` address, no `.env.example` entry, and no client points at one.
-Deploying it is cutover step C-8 and is separately captain-authorized.
+DEPLOYED BY S-14, AND UNWIRED.
+Cutover step C-8 ran live on ROAX, so `contracts/deployments/roax.json` carries a `ProtocolRegistryV2` key - see `_s14_cutover` there for the address, transaction hash and block, which are deliberately not copied into this file.
+Nothing has been published on it and no `.env.example` entry or client points at it; repointing is C-9 and is separately captain-authorized.
+Its `PUBLISH_TIMELOCK` was deployed at the contract's 1-hour floor with the testnet opt-in stated aloud, and it is IMMUTABLE - the reasoning is in `_s14_cutover`. **Mainnet must use exactly 2 days.**
 
 Generation 1's deployed `ProtocolRegistry` (`0xf5492A67…`, see `docs/PROTOCOL_REGISTRY_RUNBOOK.md`) is untouched and stays live until the cutover repoints clients.
 
