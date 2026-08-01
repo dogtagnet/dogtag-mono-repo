@@ -294,8 +294,27 @@ echo "Starting portals (vite dev):"
 run admin-web ":39741" env VITE_DEMO_MODE=1 \
   VITE_ISSUER_DOMAIN_REGISTRY_ADDR="$ISSUER_DOMAIN_REGISTRY" \
   pnpm --filter @dogtag/admin-web dev
-run vet-web    ":41873" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" pnpm --filter @dogtag/vet-web dev
-run groomer-web ":43617" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" pnpm --filter @dogtag/groomer-web dev
+# The S-17 content mirror, so the provider self-service page can publish into the demo indexer
+# instead of reporting "no content mirror is configured". Both are needed: the base names the
+# mirror and the token is the ONLY bearer its PUT accepts. LAN_IP rather than localhost, because the
+# browser holding these values may not be on this machine - the same reason every DEPLOYMENT_URL
+# above uses it.
+#
+# This wires the DEMO ONLY. The shipped `.env.example` entries stay BLANK and fallback-free, so a
+# real deployment still refuses to publish until an operator sets both deliberately.
+#
+# The token is PUBLIC BY CONSTRUCTION: vite inlines it into the bundle, so every visitor to the demo
+# portal holds it. That is fine precisely because of what it grants - publish bytes that hash to
+# their own address, bounded by the mirror's caps - and it is deliberately NOT either well-known
+# oversight token, which would put read authority over the event feed into the same bundle.
+DEMO_MIRROR_BASE="${DEMO_MIRROR_BASE:-http://$LAN_IP:46001}"
+DEMO_MIRROR_INGEST_TOKEN=dogtag-indexer-mirror-ingest-demo-token
+run vet-web    ":41873" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" \
+  VITE_CONTENT_MIRROR_BASE="$DEMO_MIRROR_BASE" VITE_CONTENT_MIRROR_TOKEN="$DEMO_MIRROR_INGEST_TOKEN" \
+  pnpm --filter @dogtag/vet-web dev
+run groomer-web ":43617" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" \
+  VITE_CONTENT_MIRROR_BASE="$DEMO_MIRROR_BASE" VITE_CONTENT_MIRROR_TOKEN="$DEMO_MIRROR_INGEST_TOKEN" \
+  pnpm --filter @dogtag/groomer-web dev
 run government-web ":44831" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/government-web dev
 # OWNER (holder) wallet — local records, selective disclosure, and verification receipts. The native
 # apps own the owner-hidden scan/prove flow; the browser wallet has no backend or prover wiring.

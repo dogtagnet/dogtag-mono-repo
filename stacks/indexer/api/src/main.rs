@@ -15,6 +15,7 @@ use indexer_api::app::{
 use indexer_api::chain::{AlloyLogSource, LogSource, MemLogSource};
 use indexer_api::directory::Directory;
 use indexer_api::indexer::Indexer;
+use indexer_api::mirror::{ContentMirror, MemContentMirror};
 use indexer_api::scope::{ScopeConfig, ScopeRegistry};
 use indexer_api::store::{MemStore, Store};
 
@@ -145,6 +146,7 @@ async fn main() {
         default_page_limit: env("DEFAULT_PAGE_LIMIT", "100").parse().unwrap_or(100),
         max_page_limit: env("MAX_PAGE_LIMIT", "1000").parse().unwrap_or(1000),
         explorer_base: env("EXPLORER_BASE", "https://explorer.roax.net"),
+        mirror_ingest_token: mirror_ingest_token(demo),
     };
 
     // --- scope registry (token -> {unscoped | signers/clones}) ---------------------------------
@@ -174,11 +176,19 @@ async fn main() {
         Arc::new(AlloyLogSource::new(rpc_url).with_chain_id(chain_id))
     };
 
+    // --- content mirror ------------------------------------------------------------------------
+    // In memory for now, so the mirror is ephemeral and a restart empties it. That is honest rather
+    // than convenient: content addressing means a lost object is re-publishable byte-for-byte by
+    // whoever holds the original, and a missing address answers 404 (a fact) rather than a wrong
+    // answer. A durable store slots in behind `ContentMirror` without touching either route.
+    let mirror: Arc<dyn ContentMirror> = Arc::new(MemContentMirror::new());
+
     let state = AppState {
         store,
         source,
         scopes: Arc::new(scopes),
         directory: directory.clone(),
+        mirror,
         cfg: Arc::new(cfg),
     };
 
@@ -252,6 +262,31 @@ fn build_scopes(demo: bool) -> ScopeRegistry {
         ]);
     }
     ScopeRegistry::default()
+}
+
+/// The demo content-ingest bearer, alongside the two well-known oversight tokens.
+///
+/// A SEPARATE token from those on purpose, and the separation is the point rather than tidiness:
+/// this one authorizes publishing content and nothing else, while an oversight token reads the
+/// cross-issuer event feed. Demo is exactly where reusing one for the other would look harmless.
+pub const DEMO_MIRROR_INGEST_TOKEN: &str = "dogtag-indexer-mirror-ingest-demo-token";
+
+/// `MIRROR_INGEST_TOKEN`, or the well-known demo one, or `None` - which REFUSES every write.
+///
+/// There is deliberately no fallback to the scope registry. See `Config::mirror_ingest_token`: a
+/// scope token is an oversight READ bearer, and the portals ship this value into a public browser
+/// bundle.
+fn mirror_ingest_token(demo: bool) -> Option<String> {
+    if let Ok(raw) = std::env::var("MIRROR_INGEST_TOKEN") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if demo {
+        return Some(DEMO_MIRROR_INGEST_TOKEN.to_string());
+    }
+    None
 }
 
 /// Build the directory from `INDEXER_DIRECTORY` (JSON `{addr: name}`) + admin-API enrichment env. In

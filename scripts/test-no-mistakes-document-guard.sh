@@ -88,7 +88,15 @@ raise "guard runs before prerequisites" unless
   config.dig("commands", "lint").index("check-no-mistakes-document-guard.sh") <
     config.dig("commands", "lint").index("scripts/ensure-ts-prereqs.sh")
 raise "write-mode lint" if config.dig("commands", "lint").match?(/(?:^|\s)(?:--write|-w)(?:\s|$)/)
-raise "auto_fix" unless %w[review document lint].all? { |step| config.dig("auto_fix", step) == 0 }
+# These were 0, which overrode the machine-wide setting and parked every finding for a human
+# decision; the captain asked for the gate to be less strict, so each stage now gets up to two
+# automatic fix rounds and anything still outstanding after that still parks.
+# The assertion stays an EXACT equality rather than a range or a floor, because its whole job is
+# that this value cannot drift silently, and a `>= 0` would make the next drift invisible.
+# `auto_fix.document` is pinned HERE, beside document.instructions and the commit template, so it
+# carried document-safety weight: relaxing it really does widen the Document posture, and calling
+# that "no change" would understate it. Move this line only with a deliberate policy decision.
+raise "auto_fix" unless %w[review document lint].all? { |step| config.dig("auto_fix", step) == 2 }
 raise "commit template" unless config.dig("commit", "fix_message") ==
   "no-mistakes({{.Step}}): {{.Summary}}"
 

@@ -30,8 +30,11 @@ use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
+use alloy::primitives::keccak256;
+
 use crate::app::{keccak_key, AppState};
 use crate::events::{EventType, Finality, IndexedEvent};
+use crate::mirror::{ContentRead, IngestRejection, MAX_CONTENT_BYTES};
 use crate::scope::Principal;
 use crate::store::{EventQuery, StoreError};
 
@@ -85,6 +88,61 @@ fn authenticate<'a>(st: &'a AppState, headers: &HeaderMap) -> Result<&'a Princip
     st.scopes
         .resolve(&token)
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unknown or unauthorized token"))
+}
+
+/// Compare two tokens without leaking either through timing.
+///
+/// The DIGESTS are compared rather than the raw bytes, so neither the configured token's LENGTH nor
+/// any prefix of it is observable: a length check followed by a byte loop would answer faster for a
+/// wrong-length guess than for a same-length one, which is the shape a short-circuiting `==` has.
+/// Same rule the `.ics` calendar feed token holds, for the same reason.
+fn constant_time_token_eq(presented: &str, configured: &str) -> bool {
+    let (a, b) = (
+        keccak256(presented.as_bytes()),
+        keccak256(configured.as_bytes()),
+    );
+    let mut difference = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        difference |= x ^ y;
+    }
+    difference == 0
+}
+
+/// The gate on `PUT /v1/content/:address`, and DELIBERATELY NOT [`authenticate`].
+///
+/// **This is a REPLACEMENT of that gate on this one route, never an addition**, and the difference
+/// is the whole point. The scope registry a bearer resolves through also gates `/v1/status`,
+/// `/v1/events`, `/v1/stats` and `/v1/issuers`, so a token accepted here by `authenticate` is an
+/// oversight READ bearer - and the provider portals ship this value into a public browser bundle,
+/// where every visitor holds it. Accepting both would leave that bundle carrying read authority over
+/// an operator's own event feed, or over every issuer's if the token were unscoped.
+///
+/// FAILS CLOSED when no ingest token is configured. Falling back to the scope registry would restore
+/// exactly the coupling above, and leaving writes open would make a public read endpoint a free
+/// content host.
+fn authorize_mirror_ingest(st: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let configured = st
+        .cfg
+        .mirror_ingest_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "this mirror accepts no content: MIRROR_INGEST_TOKEN is not configured",
+            )
+        })?;
+    let presented =
+        bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing bearer token"))?;
+    if !constant_time_token_eq(&presented, configured) {
+        return Err(err(
+            StatusCode::UNAUTHORIZED,
+            "not the content-ingest token. Oversight scope tokens are deliberately refused here: \
+             they carry read authority this route must never accept",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -813,6 +871,146 @@ async fn issuers(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<
     Ok(Json(json!({ "issuers": out, "scope": { "label": principal.label } })))
 }
 
+// ------------------------------------------------------------------------------------------------
+// The content-addressed mirror (S-17)
+// ------------------------------------------------------------------------------------------------
+
+/// `GET /v1/content/:address` — serve the bytes stored at one content address.
+///
+/// **Public and unauthenticated, like the rest of the provider-directory read surface.** What it
+/// serves is publication-safe by construction: a provider's own contact blob and logo, whose digest
+/// is already published on chain for anyone to read.
+///
+/// Serving is NOT evidence and this response does not ask to be believed. The caller recomputes the
+/// digest over the body and compares it to the address it requested; that recomputation is the
+/// security boundary. See `crate::mirror` for why the checks on this side are defence in depth.
+///
+/// Three outcomes, kept apart because they have three different remedies:
+///   - **200** — bytes that re-hashed to the requested address on the way out;
+///   - **404** — the mirror holds nothing here (a FACT: never published, or withdrawn);
+///   - **503** — the store could not be read, or holds bytes that no longer hash to their key.
+///
+/// A store failure must never arrive as a 404. "We hold nothing" and "we could not look" are the
+/// could-not-check/absence pair this codebase refuses to collapse everywhere else, and a publisher
+/// told 404 would re-publish content that is already there while the real fault went uninvestigated.
+async fn content(
+    State(st): State<AppState>,
+    axum::extract::Path(address): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let read = st.mirror.get(&address).await.map_err(|e| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("content mirror unavailable: {e}"),
+        )
+    })?;
+
+    match read {
+        ContentRead::Found { bytes, media_type } => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_str(&media_type)
+                    .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+            );
+            // Content-addressed bytes are immutable by construction: the address cannot name
+            // different bytes later, because different bytes have a different address.
+            headers.insert(
+                CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            );
+            // The bytes are rendered in operator portals. Even though the media type is sniffed and
+            // allowlisted on ingest, nothing served from here may be interpreted as a document.
+            headers.insert(
+                axum::http::header::HeaderName::from_static("x-content-type-options"),
+                HeaderValue::from_static("nosniff"),
+            );
+            headers.insert(
+                axum::http::header::CONTENT_DISPOSITION,
+                HeaderValue::from_static("inline"),
+            );
+            Ok((headers, bytes))
+        }
+        ContentRead::Absent => Err(err(
+            StatusCode::NOT_FOUND,
+            "no content is mirrored at this address",
+        )),
+        ContentRead::Corrupt => Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "mirrored content no longer hashes to its address and will not be served",
+        )),
+    }
+}
+
+/// `PUT /v1/content/:address` — publish bytes under their own content address.
+///
+/// Gated by the DEDICATED `MIRROR_INGEST_TOKEN` (see [`authorize_mirror_ingest`]), never by the
+/// oversight scope registry.
+///
+/// **A SECRET THAT SHIPS IN A PUBLIC BUNDLE IS NOT A SECRET; it is a capability grant to every
+/// visitor.** The provider portals hold this token in the browser, so the only question worth asking
+/// is what it grants, and the answer here is one thing: publish bytes that hash to their own
+/// address. It reads nothing.
+///
+/// **This route originally reused the ordinary scope registry, and that was MY OWN DESIGN ERROR.**
+/// The doc argued the open write surface was safe "because the address constrains what can be
+/// written far more tightly than a scope could" - true, and about WRITE safety only. It never asked
+/// what READ authority the same token carries, which is `/v1/status`, `/v1/events`, `/v1/stats` and
+/// `/v1/issuers`. Wiring the token into the portals then pushed it into a public browser bundle,
+/// which is where that omission bites.
+///
+/// The address constraint still holds and is still worth stating: a caller can only ever store the
+/// one blob that hashes to the address it names, so it cannot overwrite, displace or shadow anybody
+/// else's content. Accumulation is bounded separately by the mirror's own capacity caps.
+///
+/// The ingest check refuses content that does not hash to `address`. That is what makes this a
+/// content-addressed store rather than a key-value store with hexadecimal keys.
+async fn put_content(
+    State(st): State<AppState>,
+    axum::extract::Path(address): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    authorize_mirror_ingest(&st, &headers)?;
+
+    if body.len() > MAX_CONTENT_BYTES {
+        return Err(err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &format!("content is over the {MAX_CONTENT_BYTES}-byte limit"),
+        ));
+    }
+    let media_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        // Parameters (`; charset=utf-8`) describe the transfer, not the type being allowlisted.
+        .map(|v| v.split(';').next().unwrap_or(v).trim().to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let outcome = st
+        .mirror
+        .put(&address, body.to_vec(), &media_type)
+        .await
+        .map_err(|e| {
+            err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("content mirror unavailable: {e}"),
+            )
+        })?;
+
+    match outcome {
+        Ok(stored) => Ok(Json(json!({ "address": stored, "bytes": body.len() }))),
+        // A full mirror is NOT a bad request, and collapsing the two would send a publisher to
+        // re-check bytes that are perfectly correct while the real fault - an operator one - went
+        // unreported. The request is well formed and the store has no room, which is what 507 says.
+        Err(rejection @ IngestRejection::MirrorFull { .. }) => Err(err(
+            StatusCode::INSUFFICIENT_STORAGE,
+            &rejection.message(),
+        )),
+        // 400 rather than 409: the request is wrong, not in conflict with existing state. A
+        // mismatched address means the caller computed one of the two values incorrectly.
+        Err(rejection) => Err(err(StatusCode::BAD_REQUEST, &rejection.message())),
+    }
+}
+
 /// The router. `demo` toggles a permissive posture only via env in `main`; scoping is always enforced.
 /// Compression lives here so every embedding of the public directory routes negotiates gzip,
 /// including hermetic tests and deployments that do not use the standalone binary's assembly.
@@ -825,6 +1023,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/businesses", get(businesses))
         .route("/v1/businesses/nearest", post(nearest_businesses))
+        .route("/v1/content/:address", get(content).put(put_content))
         .route("/v1/status", get(status))
         .route("/v1/events", get(events))
         .route("/v1/stats", get(stats))

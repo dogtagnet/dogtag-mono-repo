@@ -37,8 +37,15 @@
  * confirmation the provider holds. The portal is the only place that no-op can be avoided.
  */
 
-import { PROVIDER_CONTACT_CHANNELS, type ContactChannelRecord } from "../directory/channels";
+import { type ContactChannelRecord } from "../directory/channels";
 import { parseLocationInput, type LocationInput } from "../directory/registration";
+import {
+  buildProfileBlob,
+  logoRef,
+  PROFILE_MEDIA_TYPE,
+  PROVIDER_PROFILE_SCHEMA,
+  type LogoPublication,
+} from "../mirror/profileBlob";
 import { ZERO_WORD, type Address, type DirectoryPin, type HexWord, type ProviderChainReader } from "./readers";
 import {
   foldVerdict,
@@ -60,12 +67,25 @@ export const COORDINATE_SCALE = 1_000_000;
  * false statement about which function produced the digest, and a verifier that believed it would
  * recompute the wrong hash and report a genuine blob as altered.
  *
- * `codec` describes the CONTENTHASH, and there is no contenthash yet, so 0 (unspecified) is the
- * honest value rather than a guess at what S-17 will serve.
+ * `schema` lives in {@link PROVIDER_PROFILE_SCHEMA}, beside the blob's own schema STRING, because
+ * the two describe the same document and must only ever move together.
+ *
+ * `codec` describes how to RESOLVE the anchored digest. S-15 published 0 (unspecified), which was
+ * honest while nothing served the content; S-17 serves it, so an unchanged 0 would now be a false
+ * silence about content that really is resolvable.
  */
-export const PROVIDER_CONTACT_SCHEMA = 1;
 export const MULTIHASH_KECCAK_256 = 0x1b;
-export const CONTENTHASH_CODEC_UNSPECIFIED = 0;
+
+/**
+ * The digest is a raw keccak-256 content address, resolvable from any DogTag content mirror.
+ *
+ * **The contenthash stays EMPTY, and that is the scheme rather than an omission.** A content address
+ * makes the host irrelevant by construction - the bytes are checked against the address, so serving
+ * confers nothing - and a host published here would be a provider-named fetch target buying no
+ * integrity it does not already have. Locations are deployment configuration; the identifier is what
+ * belongs on chain.
+ */
+export const CONTENTHASH_CODEC_DOGTAG_MIRROR_V1 = 1;
 export const EMPTY_CONTENTHASH = "0x" as const;
 
 export interface DirectoryPublicationRequest {
@@ -80,16 +100,40 @@ export interface DirectoryPublicationRequest {
   locationKind: number;
   /** Whether a published pin should currently be shown. */
   locationActive: boolean;
+  /**
+   * The logo to publish, or `null` for none.
+   *
+   * `null` is the ordinary contact-only case and is not a failure. The bytes are mirrored under
+   * their own content address and that address is committed INSIDE the profile blob, so the chain's
+   * single anchor digest covers the logo too.
+   */
+  logo?: LogoPublication | null;
 }
 
 /**
- * One transaction the provider would send, in order.
+ * One step the provider would perform, in order.
  *
  * A discriminated union rather than a struct with optional coordinates, so "publish a pin" and
  * "publish contacts" are different shapes and no consumer can reach for a coordinate that a
  * contact-only publication does not have.
+ *
+ * **Not every step is a transaction.** `mirrorUpload` is an HTTP publication to the content mirror,
+ * and every one of them is ordered BEFORE the `profileAnchor` transaction. That ordering is
+ * load-bearing rather than tidy: the anchor is the irreversible half, so it must never name content
+ * the mirror does not hold. The same rule that puts `issue(R)` before `mintCustodial` - the
+ * unrepairable write goes last, so a failure of an earlier step costs a retry rather than a
+ * permanently dangling reference.
  */
 export type DirectoryStep =
+  | {
+      kind: "mirrorUpload";
+      /** What this object is, so a runner can report which upload failed. */
+      what: "logo" | "profile";
+      /** The content address these bytes hash to. The mirror refuses them under any other. */
+      address: HexWord;
+      bytes: Uint8Array;
+      mediaType: string;
+    }
   | {
       kind: "profileAnchor";
       /** keccak256 of the canonical contact blob. The blob itself is off chain. */
@@ -206,35 +250,20 @@ export function toContractCoordinate(degrees: number): number {
   return Math.round(degrees * COORDINATE_SCALE);
 }
 
-/**
- * The canonical publication-safe contact blob.
- *
- * Channels are emitted in the shared list's order and a blank channel is OMITTED rather than
- * carried as `""` - an omitted channel is absent, a present-but-empty one is a published emptiness,
- * and the digest must not make those the same document. Folded over
- * {@link PROVIDER_CONTACT_CHANNELS} so a channel added there is picked up here without an edit,
- * which is the property that list exists for.
- *
- * Content addressing gives integrity, not privacy: anyone can fetch what the digest names, so only
- * publication-safe values belong in it.
- */
-export function contactBlob(contacts: Readonly<ContactChannelRecord<string>>): {
-  blob: string;
-  channelsPublished: number;
-} {
-  const published: [string, string][] = [];
-  for (const channel of PROVIDER_CONTACT_CHANNELS) {
-    const value = (contacts[channel] ?? "").trim();
-    if (value) published.push([channel, value]);
-  }
-  return {
-    blob: JSON.stringify({ schema: "dogtag/provider-contact/1", contact: Object.fromEntries(published) }),
-    channelsPublished: published.length,
-  };
-}
+// The blob builder lives in `../mirror/profileBlob` as of S-17, beside the PARSER that reads it
+// back. The v1 `contactBlob` that lived here is gone rather than deprecated: it emitted a document
+// this build can no longer read, and a second builder is precisely how a provider comes to publish
+// something no consumer understands with the digest verifying perfectly either way.
 
-/** Injected so the plan stays pure and testable; the live surface passes viem's `keccak256`. */
-export type DigestFn = (utf8: string) => HexWord;
+/**
+ * Injected so the plan stays pure and testable; the live surface passes viem's `keccak256`.
+ *
+ * Takes UTF-8 TEXT or raw BYTES, because a plan digests both: the profile blob is a string and a
+ * logo is an image. One function rather than two, so the two content addresses in one publication
+ * cannot end up computed by different algorithms - which would make the blob's own digest cover a
+ * logo address no consumer could reproduce.
+ */
+export type DigestFn = (content: string | Uint8Array) => HexWord;
 
 /**
  * Read what this provider has already published.
@@ -400,7 +429,14 @@ export async function planDirectoryPublication(
   }
 
   // ---- The steps ------------------------------------------------------------------------------
-  const { blob, channelsPublished } = contactBlob(contacts);
+  // The logo is addressed FIRST, because its address is a field of the blob and therefore an input
+  // to the blob's own digest. That is what puts the logo under the chain's single anchor digest.
+  const logo = request.logo ?? null;
+  const logoAddress = logo ? digest(logo.bytes) : null;
+  const { blob, channelsPublished } = buildProfileBlob(
+    contacts,
+    logo && logoAddress ? logoRef(logoAddress, logo) : null,
+  );
   const anchorDigest = digest(blob);
   const steps: DirectoryStep[] = [];
 
@@ -412,14 +448,47 @@ export async function planDirectoryPublication(
     !!listing &&
     listing.anchorDigest.toLowerCase() === anchorDigest.toLowerCase() &&
     listing.anchorDigest.toLowerCase() !== ZERO_WORD;
+
+  // THE UPLOADS ARE UNCONDITIONAL, and the anchor transaction is not. Two different concerns that
+  // shared one branch until they were separated here.
+  //
+  // An upload is idempotent BY CONSTRUCTION - the same bytes have the same address, and the mirror
+  // overwrites identical content - so re-uploading costs one request. Omitting it when the anchor
+  // already matches made a lost object unrecoverable: the mirror is ephemeral, so a restart empties
+  // it while the chain still holds the digest, and the only publisher surface would then answer
+  // "nothing to publish" about content it is holding the sole remaining copy of. The remaining
+  // workaround - editing a contact to move the digest - bumps the anchor revision and invalidates
+  // `coversCurrentAddressText` on any registrar address confirmation, which is precisely the harm
+  // `anchorUnchanged` exists to prevent.
+  //
+  // Both uploads still precede the anchor. A mirror that does not hold what the anchor names would
+  // leave every consumer resolving `absent` for a digest the chain says is published - which is
+  // indistinguishable, from the outside, from a provider who published nothing.
+  if (logo && logoAddress) {
+    steps.push({
+      kind: "mirrorUpload",
+      what: "logo",
+      address: logoAddress,
+      bytes: logo.bytes,
+      mediaType: logo.mediaType,
+    });
+  }
+  steps.push({
+    kind: "mirrorUpload",
+    what: "profile",
+    address: anchorDigest,
+    bytes: new TextEncoder().encode(blob),
+    mediaType: PROFILE_MEDIA_TYPE,
+  });
+
   if (!anchorUnchanged) {
     steps.push({
       kind: "profileAnchor",
       digest: anchorDigest,
       blob,
       channelsPublished,
-      schema: PROVIDER_CONTACT_SCHEMA,
-      codec: CONTENTHASH_CODEC_UNSPECIFIED,
+      schema: PROVIDER_PROFILE_SCHEMA,
+      codec: CONTENTHASH_CODEC_DOGTAG_MIRROR_V1,
       hashAlgorithm: MULTIHASH_KECCAK_256,
       contenthash: EMPTY_CONTENTHASH,
     });
@@ -461,6 +530,13 @@ export async function planDirectoryPublication(
   // Closes the contradiction where a plan reported itself ready while its own next step said "add
   // at least one so people can find you". An empty anchor is a published emptiness, and the listing
   // sequence is append-only, so it is worth refusing rather than recording.
+  //
+  // This is now the ONLY reachable refusal here, and deliberately so. The profile document is
+  // always uploaded, so `steps` is never empty and the old "everything is already published, so
+  // there is nothing to send" branch could not fire - an unreachable refusal is a claim nobody can
+  // check, so it is gone rather than left as reassuring dead code. A publication whose only steps
+  // are uploads IS offerable: it re-publishes the document to the mirror and sends no transaction,
+  // which is exactly the repair path after the mirror has lost it.
   if (channelsPublished === 0 && location.kind !== "located") {
     checks.push(
       providerCheck(
@@ -468,15 +544,6 @@ export async function planDirectoryPublication(
         "Is there anything to publish?",
         "fail",
         "You are publishing neither contact details nor a location. Add at least one so people can find you.",
-      ),
-    );
-  } else if (steps.length === 0) {
-    checks.push(
-      providerCheck(
-        "directory-contents",
-        "Is there anything to publish?",
-        "fail",
-        "Everything here is already published exactly as it stands, so there is nothing to send.",
       ),
     );
   } else {
@@ -509,6 +576,48 @@ export async function planDirectoryPublication(
   };
 }
 
+/**
+ * Why this publication cannot be sent with the mirror as configured, or `null` when it can.
+ *
+ * THE REFUSAL LIVES HERE, ONE LEVEL ABOVE THE SEND LOOP, and that placement is the fix rather than a
+ * tidy-up. Both of these were once discovered from INSIDE the loop, on the first upload: the loop
+ * had already begun, so the publication aborted mid-sequence, and the missing-token case surfaced as
+ * a bare "missing bearer token" from the HTTP layer with nothing an operator could act on. A step
+ * sequence must be refused before its first step, not during it.
+ *
+ * Both call sites use this - the pre-flight throw AND the button's own disabled state - because a
+ * helper consulted only at the throw site still leaves a button offering an action that cannot
+ * succeed.
+ *
+ * A CHECKED plan with no uploads needs neither setting and is never refused here. That case is real:
+ * a pin-only correction sends transactions and publishes no content.
+ *
+ * `undefined` steps means no plan has been checked yet, and is answered as though there WILL be
+ * uploads - which is true by construction, since every publication uploads its profile document.
+ * That is what lets the surface state a configuration problem before the provider fills the form in
+ * rather than after they press Publish.
+ */
+export function mirrorPublicationRefusal(
+  steps: readonly DirectoryStep[] | undefined,
+  mirrorBase: string | undefined,
+  mirrorToken: string | undefined,
+): string | null {
+  if (steps && !steps.some((step) => step.kind === "mirrorUpload")) return null;
+  if (!mirrorBase) {
+    return (
+      "No content mirror is configured, so the profile document cannot be published and the anchor "
+      + "would name content nothing holds. Set VITE_CONTENT_MIRROR_BASE before publishing."
+    );
+  }
+  if (!mirrorToken) {
+    return (
+      "No content mirror token is configured, so the mirror would refuse this publication. Set "
+      + "VITE_CONTENT_MIRROR_TOKEN before publishing."
+    );
+  }
+  return null;
+}
+
 /** What is already on chain, in the provider's own terms. */
 function describeListing(listing: DirectoryListingState, publishingLocation: boolean): string {
   const anchored =
@@ -527,9 +636,18 @@ function describeListing(listing: DirectoryListingState, publishingLocation: boo
   return `${anchored} You have ${listing.pinCount} published locations.`;
 }
 
-/** What would actually be sent, so "Publish" is never a button whose effect is unstated. */
+/**
+ * What would actually be sent, so "Publish" is never a button whose effect is unstated.
+ *
+ * The mirror uploads and the transactions are counted SEPARATELY, because they are different acts
+ * with different costs and different reversibility: an upload can be repeated freely, while a
+ * `setProfileAnchor` bumps a revision that invalidates any registrar address confirmation. Rolling
+ * them into one "5 transactions" would overstate what reaches the chain.
+ */
 function describeSteps(steps: readonly DirectoryStep[]): string {
-  const parts = steps.map((step) => {
+  const uploads = steps.filter((step) => step.kind === "mirrorUpload");
+  const transactions = steps.filter((step) => step.kind !== "mirrorUpload");
+  const parts = transactions.map((step) => {
     if (step.kind === "profileAnchor") {
       return step.channelsPublished === 0
         ? "your contact details (none - this records that you publish none)"
@@ -539,7 +657,18 @@ function describeSteps(steps: readonly DirectoryStep[]): string {
       ? "a new location"
       : `a replacement for your published location (number ${step.locationNo})`;
   });
-  return `This would send ${parts.length} transaction${parts.length === 1 ? "" : "s"}: ${parts.join(", then ")}.`;
+  const what = uploads.map((step) => (step.kind === "mirrorUpload" ? step.what : "")).join(" and your ");
+  // Uploads with NO transaction is an ordinary, offerable publication - the repair path after the
+  // mirror has lost content the chain still names - so it is described by what it DOES rather than
+  // through the empty transaction sentence, which rendered as a dangling "0 transactions: ." and
+  // read as nothing to do.
+  if (parts.length === 0) {
+    return `This would send no transaction. Your ${what} would be re-published to the content mirror, `
+      + "which is what restores content the mirror no longer holds while the chain still names it.";
+  }
+  const sent = `This would send ${parts.length} transaction${parts.length === 1 ? "" : "s"}: ${parts.join(", then ")}.`;
+  if (uploads.length === 0) return sent;
+  return `${sent} Your ${what} would be published to the content mirror first, so the anchor never names content the mirror does not hold.`;
 }
 
 function directoryNextStep(
@@ -577,12 +706,16 @@ export const CONTACT_ONLY_NOTICE =
  * The blob is composed here and hosted nowhere.
  *
  * The chain carries only the integrity anchor - digest, schema, codec, hash algorithm, contenthash.
- * The mirror that actually serves the blob is S-17, which depends on this slice. So a provider's
- * contacts are ANCHORED by this flow and are not yet FETCHABLE from chain data alone, and a surface
- * must say that rather than implying the details are already readable by anyone.
+ * S-17 built the mirror that serves the document that digest names, so this no longer says the
+ * service does not exist - that sentence became FALSE the moment the mirror shipped, and a surface
+ * that kept it would be understating what a provider had just published.
+ *
+ * What it must still not do is overstate it. The anchor is a fingerprint, not a hosting guarantee:
+ * a reader fetches the document from a mirror and CHECKS it against that fingerprint, so what the
+ * chain guarantees is that altered content is detectable, never that the content is reachable.
  */
 export const CONTACTS_ARE_ANCHORED_NOT_SERVED =
-  "Your contact details are recorded on chain as a fingerprint, so anyone can check they have not been altered. The service that publishes the details themselves is not built yet.";
+  "Your contact details are recorded on chain as a fingerprint, and the details themselves are published to the content mirror. Anyone reading them checks them against that fingerprint, so altered details are detectable rather than merely unlikely.";
 
 /**
  * Taking a published location down, stated as a value the surface must render.

@@ -6,6 +6,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 Start every new Dogtag run with `no-mistakes axi run --skip=document --intent "<intent>"` until upstream provides an enforced step/file budget and this policy is deliberately revised. Do not use bare `axi run` or `no-mistakes rerun`, which cannot preserve this skip. The config instructions and post-stage commit guard are prompt/supervision defense-in-depth for accidental raw runs, not a runtime cap: update only documentation made stale directly by the submitted branch; never run write-mode formatters, generators, codegen, or UniFFI/binding synchronization; and never edit functional source, tests, workflows, circuits, contracts, or generated bindings. If the work would require more than 10 files, any non-documentation file, or cross-slice reconciliation, make no such edits and return an ask-user finding.
 
+**The `auto_fix` relaxation from 0 to 2 (S-17, captain-requested) DID widen this posture, and describing it as "Document safety is unchanged" understates it.**
+`auto_fix.document: 0` was itself pinned by `scripts/test-no-mistakes-document-guard.sh`, beside `document.instructions` and the commit template, so it was part of this defense-in-depth rather than a general strictness knob: the Document agent can now run up to two fix rounds where before it could run none.
+That guard test caught the drift and its pin was updated to 2 rather than deleted or loosened into a range, because the property it exists for is that the gate config cannot change silently.
+What is genuinely unchanged is the `document.instructions` constraints above, the post-stage commit guard, and the standing `--skip=document` policy - which is why the practical exposure is small: every Dogtag run starts with `--skip=document`, so that step does not execute at all.
+Do not soften this into "no functional change".
+
 ## No-mistakes Test safety (high priority, conditional)
 
 When acting as the no-mistakes Test or evidence agent, use the configured targeted command plus at most the smallest checks directly relevant to the submitted diff. Never run `cargo test --workspace` or another full monorepo suite locally, and do not expand into browsers or screenshots unless the diff changes that UI. Treat 15 minutes as a prompt/supervision budget, not a hard enforced timeout; park with a finding instead of broadening beyond it.
@@ -1942,8 +1948,11 @@ must be in ACTIVE standing to publish at all.
 **Contacts are in the anchored blob, not on chain.** `ProfileAnchor` publishes only the integrity
 anchor (digest + schema/codec/hashAlgorithm + contenthash + revision + block + setBy) for the blob
 carrying contacts, address text, hours, services and logo - the split `dogtag-nearby-n5` §4 verified.
-So **a contact-only provider is LISTED but not yet CONTACTABLE from chain data alone until the S-17
-content mirror lands**; state that as the honest current gap rather than as contacts being unsupported.
+**S-17 built the mirror that serves what the digest names**, so the gap this paragraph used to record -
+a contact-only provider LISTED but not CONTACTABLE - is closed in code: the blob is published to
+`indexer-api`'s content mirror and read back through `packages/ui/src/mirror`. Read that as a code
+claim and not a deployment one: `ProviderDirectory` is still unwired (`resolverApproved()` false,
+every store empty), so no anchor exists on ROAX to resolve today.
 `name` is deliberately absent - `DogTagIssuer.name()` is already authoritative and a second copy would
 be free to drift. This anchor is NOT the core's `PublicIdentityAnchor`: that one is registrar-written
 identity, this one is provider-written content carrying no registrar attestation at all. A cleared
@@ -5298,3 +5307,247 @@ assertion about a button EXISTING and about WHAT it copies on a secure origin.
 That case must stub `navigator.clipboard` to `undefined` ITSELF rather than lean on the file's
 `beforeEach`, which installs a working one for the other cases; without the local override it never
 reaches the fallback and pins nothing.
+
+## The content-addressed profile and logo mirror (S-17) - and the one rule that defines it
+
+`stacks/indexer/api/src/mirror.rs` serves it, `packages/ui/src/mirror/` fetches and CHECKS it.
+Full slice: the mirror routes, the profile blob v2 (contacts + logo), and `ProviderLogo`.
+Repeatable evidence: `make verify-content-mirror-mutations` (27 mutations, self-tested both ways).
+
+**CORS is already handled and needs no change here**, but check `main.rs` rather than `routes.rs`
+before concluding otherwise: `build_cors()` wraps the WHOLE router at `main.rs`, permissive by default
+with an explicit `CORS_ALLOW_ORIGINS` allowlist, so the content routes inherit it. A grep confined to
+`routes.rs` finds only `CompressionLayer` and reads as if there were none - which matters because this
+slice is the first BROWSER consumer of the indexer (`/v1/businesses`'s existing callers are the admin
+backend and the native apps, neither of which does a preflight), so a missing layer here would make
+every logo on every portal render nothing forever, on healthy content.
+
+**AN UNVERIFIED LOGO RENDERS NOTHING.** Not a placeholder, not a broken-image icon, not a generic
+avatar, not an initials block. A logo is the strongest visual claim of legitimacy in the product, so
+a stand-in shown for one that could not be verified is precisely how a forged provider comes to look
+real. Absent is absent.
+
+**The way that rule breaks is TIMING, not logic, which is why the absence must be STRUCTURAL.** An
+`<img>` whose `src` points at unverified bytes is fetched - and may be PAINTED - before any check
+lands, so a component that mounts the element and corrects itself afterwards has already shown the
+thing it exists to withhold. So there is no `onError` fallback, no reserved box that later fills, and
+no CSS-hidden image: while verification is pending or failed the element **does not exist in the
+DOM**, and the object URL is minted only from bytes that already verified. `packages/ui/test/
+providerLogoRender.test.tsx` is a MOUNTED suite for exactly this reason - a pure assertion over a
+returned state object cannot see a paint - and like `rpcSettingsVerdict.test.ts` it must never be
+rewritten with `act()`, which reorders promise continuations against passive effects and would hide
+the defect it exists to catch.
+
+**Three states, and the two that render no image must be told apart by TONE.** `verified` renders;
+`unverified` renders nothing plus a visible reason; `notPublished` is ORDINARY and renders nothing
+plus a quiet line. Both no-image states look identical without that asymmetry, so the repo's standing
+rule applies - facts render neutral, failures warn. A tooltip is not a state: hover survives neither
+a screenshot nor a touch device.
+
+**Verification is RECOMPUTATION, and the client's copy is the security boundary.** The mirror checks
+on ingest AND again on read, but that is DEFENCE IN DEPTH: a client that skips its own recompute
+because "the mirror already checked" has turned content addressing back into trusting where the bytes
+came from, which is the one thing content addressing exists to remove. `verifyContentAddress` READS
+`hashAlgorithm` rather than assuming keccak - recomputing with the wrong function would report a
+genuine blob as altered.
+
+**The logo digest is INSIDE the blob, because `ProfileAnchor` carries exactly one `digest`.** That
+gives one unbroken chain: chain anchor -> blob bytes (verified) -> logo address (covered by that
+verification) -> logo bytes (verified). A logo address read out of an UNVERIFIED blob has no standing,
+so `resolveProviderProfile` refuses to fetch one - and refuses to return the CONTACTS either, since
+they inherit their standing from the same verification. A broken blob poisons both.
+
+**Mirror uploads are ordered BEFORE the anchor transaction**, same rule as `issue(R)` before
+`mintCustodial`: the irreversible write goes last, so an anchor never names content the mirror does
+not hold. A dangling anchor is indistinguishable, from outside, from a provider who published nothing.
+`DirectoryStep` therefore has a non-transaction member (`mirrorUpload`) and `describeSteps` counts
+uploads separately from transactions rather than overstating what reaches the chain.
+
+**SVG is refused outright, and that is a security decision rather than an omission.** It is an XML
+document that can carry `<script>`, and these bytes render inside operator portals holding an admin
+session. A correct content address proves the bytes are the ones the provider published - it says
+nothing about whether they are safe to render, and the provider is exactly the party whose claim this
+slice declines to take on trust. The declared media type is also SNIFFED against the bytes on ingest,
+because the declaration is provider-supplied and would otherwise be the only gate; the consumer
+re-checks the served type against the published one for the same reason.
+
+**The servable-image allowlist is a HAND-MIRRORED cross-language pair, and it mirrors the IMAGE HALF
+ONLY.** `mirror.rs::SERVABLE_IMAGE_MEDIA_TYPES` and
+`packages/ui/src/mirror/profileBlob.ts::SERVABLE_IMAGE_MEDIA_TYPES` have no shared source and neither
+derives from the other, so they move together or not at all - the same treatment the four
+`grantInForceAt` copies and the three DoH classifiers get. Each side pins its own list exhaustively
+(`the_servable_image_set_is_closed_and_hand_mirrored_in_typescript` in Rust, `keeps the servable
+image set closed, and hand-mirrored with mirror.rs` in `packages/ui/test/contentAddress.test.ts`) so
+an accidental edit reddens, and each direction has its own mutation in the harness; neither test can
+read the other language, which is what the notes at both constants are for.
+Two things are easy to get wrong. `is_servable_media_type` also admits `PROFILE_MEDIA_TYPE` because
+the mirror stores the blob itself, so a reader "reconciling" the two by adding `application/json` to
+the TypeScript list would let a LOGO entry declare it - a JSON document `ProviderLogo` then hands to
+an `<img>`. And the two drift directions are NOT symmetric: TypeScript widening alone is loud (the
+mirror refuses the upload and publication is blocked), while **Rust widening alone is silent and
+costs more than the logo** - the mirror accepts a media type `parseProfileBlob` refuses, a refused
+logo entry fails the WHOLE profile document by design, and that provider's CONTACTS are withheld too
+with nothing anywhere reporting why.
+
+**THE WRITE GATE IS A DEDICATED `MIRROR_INGEST_TOKEN`, AND THIS WAS MY OWN DESIGN ERROR.**
+`PUT /v1/content/:address` originally reused the ordinary oversight scope registry, and its doc
+argued that was safe "because the address constrains what can be written far more tightly than a
+scope could". That reasoning is TRUE and it is about WRITE safety only - it never asked what READ
+authority the same token carries, which is `/v1/status`, `/v1/events`, `/v1/stats` and
+`/v1/issuers`. Wiring the token into the portals then pushed it into a public browser bundle, which
+is where the omission bites. Recorded as an error of mine rather than as "an issue was identified",
+because the wrong half of the question is the reusable lesson.
+**A SECRET THAT SHIPS IN A PUBLIC BUNDLE IS NOT A SECRET - it is a capability grant to every
+visitor.** Vite inlines every `VITE_*` value at build time, so `VITE_CONTENT_MIRROR_TOKEN` is held by
+anyone who loads the vet or groomer portal. "Keep it secret" is advice nobody could follow, so the
+only question that matters is what it GRANTS, and the answer must be the narrowest thing that still
+works. Before: oversight READS - a scoped token exposed that operator's own event feed to every
+visitor, an unscoped one every issuer's. After: publish bytes that hash to their own content
+address, which content addressing makes nearly inert (cannot overwrite, cannot shadow, cannot read)
+and which the capacity caps below bound.
+`authorize_mirror_ingest` REPLACES `authenticate` on that one route rather than joining it - keeping
+both would leave the browser-shipped value an oversight bearer, which is the entire defect. It
+compares in constant time over DIGESTS, so neither the token's length nor a prefix leaks; it FAILS
+CLOSED with a named 503 when `MIRROR_INGEST_TOKEN` is unset, never falling back to the scope
+registry; and READS stay public and unauthenticated, because a content address is checked against
+the bytes it names so serving them confers nothing. Demo wires
+`dogtag-indexer-mirror-ingest-demo-token` beside the two well-known oversight tokens, deliberately
+separate, and `scripts/demo-up.sh` now passes it plus `VITE_CONTENT_MIRROR_BASE` to BOTH portals -
+the DEMO only, since the shipped `.env.example` entries stay blank and fallback-free.
+**That wiring removes one blocker and not all of them, which is worth stating rather than leaving a
+reader to discover:** the provider self-service page short-circuits on `missingConfig` before it
+renders the publication form at all, and demo passes none of the four generation-2 addresses it
+needs (`VITE_PROVIDER_REGISTRY_ADDR`, `VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR`,
+`VITE_SERVICE_DOMAIN_RESOLVER_ADDR`, `VITE_PROVIDER_DIRECTORY_ADDR`), because pointing a portal at
+generation 2 is the C-9/C-10 repoint and is captain-gated. So the demo mirror is reachable and
+correctly tokened, and the demo publish FORM is still not rendered. The load-bearing test is
+`an_oversight_scope_token_is_refused_by_the_write_route`: without it the change reads as merely
+additive and a build accepting BOTH tokens would pass everything else.
+
+**THE MIRROR IS BOUNDED, AND IT FILLS RATHER THAN EVICTING.** `MAX_CONTENT_BYTES` bounds ONE object
+and says nothing about accumulation, so `MAX_MIRROR_OBJECTS` (4,096) and `MAX_MIRROR_TOTAL_BYTES`
+(128 MiB) bound the store - both, because a million one-byte objects and a smaller set of 512 KiB
+ones are different exhaustion routes and neither cap bounds the other. This matters because the PUT
+is reachable by whoever holds `MIRROR_INGEST_TOKEN`, and that token is PUBLIC BY CONSTRUCTION
+wherever a portal publishes - vite inlines it into the shipped bundle - so the population that can
+fill the store is EVERY VISITOR TO EITHER PORTAL. That is strictly wider than the third-party
+deployments holding scope tokens an earlier draft named, so **the caps matter MORE since the write
+gate moved to a dedicated token, not less**: narrowing what the token grants did not narrow who
+holds it, and these caps are now the only thing bounding public writes to the service that also
+serves the government oversight feed. At either cap the ingest is
+refused with `IngestRejection::MirrorFull` naming the limit, and the route answers **507**, not 400 -
+the request is well formed and the store is full, and a 400 would send the publisher to re-check
+bytes that were never the problem.
+**A re-publish of content the mirror ALREADY holds is not growth and does not count**, which is
+load-bearing rather than generous: uploads are unconditional (below), so re-publishing is the normal
+repair path, and a cap that counted it would refuse exactly the operation that restores a lost
+object. The delta is zero by construction - same address is same bytes - so `check_capacity`'s
+`replacing` argument is defensive; do not "simplify" it into an unconditional `+ 1`.
+**THERE IS NO EVICTION, deliberately and with the captain's permission, and nothing may imply there
+is.** The mirror fills and then refuses; an operator's remedy today is a restart, which empties an
+already-ephemeral store. LRU/TTL is the follow-up and is not free to design: 404 here means "never
+published, or withdrawn", so evicting a live object silently converts a published listing into that
+state. The 4,096-object cap is roughly 2,048 providers at two objects each, which is well below the
+hundreds of thousands the production directory is sized at - state that plainly: this in-memory store
+is a development and testnet store, and a durable one slots in behind `ContentMirror`.
+
+**THE UPLOADS ARE UNCONDITIONAL; ONLY THE ANCHOR TRANSACTION IS CONDITIONAL.** Both once shared the
+`!anchorUnchanged` branch, which made content lost from the ephemeral mirror UNRECOVERABLE: a restart
+empties the mirror while the chain still holds the digest, so the listing correctly reads
+`unverified`, and the only publisher surface then answered "nothing to publish" about content it held
+the sole remaining copy of. An upload is idempotent by construction - same bytes, same address, and
+the PUT overwrites identical content - so it costs one request and restores the object. The anchor
+stays conditional because a needless `setProfileAnchor` bumps the revision and invalidates
+`coversCurrentAddressText` on any registrar address confirmation; that rule is unchanged and still
+pinned. Two consequences: a publication whose ONLY steps are uploads is offerable
+(`canPublish`), and `describeSteps` describes it by what it does rather than through an empty
+transaction sentence, which rendered as a dangling `0 transactions: .` and read as nothing to do.
+The old "everything is already published, so there is nothing to send" refusal is GONE rather than
+left as dead code - the profile document is always uploaded, so it could never fire again, and an
+unreachable refusal is a claim nobody can check.
+
+**THE MIRROR SETTINGS ARE REFUSED BEFORE THE FIRST STEP, NEVER FROM INSIDE THE LOOP.**
+`VITE_CONTENT_MIRROR_TOKEN` joins `VITE_CONTENT_MIRROR_BASE` in both portals' `env.ts` and
+`.env.example`, blank and fallback-free on the S-15 precedent, and both pages pass it. But wiring the
+prop is only half: the missing-base case was discovered from inside the send loop, so a publication
+aborted mid-sequence, and the missing-token case surfaced as a bare "missing bearer token" from the
+HTTP layer with nothing actionable in it. `mirrorPublicationRefusal` is the one rule, used at BOTH
+call sites - the pre-flight throw and the Publish button's own disabled state - because a helper
+consulted only at the throw site still leaves a button offering an action that cannot succeed. It
+answers for an UNCHECKED form too (every publication uploads its profile document), so a
+misconfigured deployment says so before the provider fills the form in.
+**The READ side deliberately does NOT gate on the token**, and that asymmetry is correct rather than
+an oversight: `GET /v1/content/:address` is unauthenticated by design, because a content address is
+checked against the bytes it names, so `PublishedListingCard`'s `unconfigured` stays keyed on the
+base alone. Adding a token term there for symmetry would report a working read surface as unable to
+start.
+
+**THE LOGO PICKER EXISTS, and its `publicationKey` term is the part easiest to miss.** A file input
+on the publication form reads the bytes and threads them into `DirectoryPublicationRequest.logo`;
+`checkLogoPublication` refuses a non-servable type or an oversized file WITH A VISIBLE REASON rather
+than dropping it, because a picker that silently ignores a selection leaves the provider believing
+they published a logo. That check is a courtesy and not the security boundary - the mirror sniffs the
+bytes against the declared type on ingest, so a relabelled SVG passes the picker and is refused
+there. `publicationKey` carries a logo term keyed on the logo's CONTENT ADDRESS, never the `File`
+object, whose identity changes on every re-render and would retire a fresh plan on each keystroke:
+without the term, swapping the logo after pressing Check would send the CHECKED plan carrying the OLD
+one, which is the S-15 stale-plan invariant exactly. Clearing the field means PUBLISH NO LOGO rather
+than "leave the old one", and it moves the key. Selecting none stays entirely ordinary - `logo: null`,
+no upload step, and the rendering side reports `notPublished` quietly.
+`MAX_CONTENT_BYTES` is now a THIRD hand-mirrored constant beside `SERVABLE_IMAGE_MEDIA_TYPES` and
+moves with `mirror.rs` under the same discipline; unlike the media-type list both its drift
+directions are loud, and differ only in where the provider finds out.
+
+**404 and 503 are kept apart on the read route.** An unknown address is 404 (a FACT about the
+mirror's contents); an unreadable store, or a row that no longer hashes to its key, is 503. A store
+failure arriving as 404 would send a publisher to re-publish content that may already be there while
+the real fault went uninvestigated - the could-not-check/absence pair this codebase refuses to
+collapse anywhere else.
+
+**Both schema spellings move together.** `PROVIDER_PROFILE_SCHEMA` (uint32, on chain) and
+`PROVIDER_PROFILE_SCHEMA_ID` (`"dogtag/provider-profile/2"`, in the blob) describe the same document.
+The 1 -> 2 bump was free exactly once - `ProviderDirectory` is deployed but `resolverApproved()` is
+false and every store is empty, so no anchor names a v1 document and none ever will. A later change
+does not get that window. The v1 `contactBlob` was DELETED rather than deprecated: a second builder is
+how a provider comes to publish something no consumer understands with the digest verifying either
+way, so build and parse live in one module (`mirror/profileBlob.ts`).
+
+**`codec` is now 1 (`CONTENTHASH_CODEC_DOGTAG_MIRROR_V1`) and `contenthash` stays EMPTY.** S-15
+published codec 0 (unspecified), which was honest while nothing served the content and became a false
+silence once something did. The contenthash carries no host because a content address makes the host
+irrelevant by construction, and a provider-named fetch target would buy no integrity it does not
+already have. Locations are deployment configuration; the identifier is what belongs on chain.
+
+**NOT RUN, and it cannot be run here.** The CHAIN half: `ProviderDirectory` is unwired, so no
+`ProfileAnchor` exists on ROAX to resolve and approving the resolver is registrar KYC work outside
+this slice. The WRITE half is now reachable from the product - the token is wired, the uploads are
+unconditional and the logo picker exists - but no publication has been driven end to end against a
+live chain, for that same reason: `setProfileAnchor` needs an approved resolver. What HAS been driven
+end to end is the mirror itself, over its real routes. Mobile logo rendering is also out of scope - the mobile nearby surface reads the indexer's
+admin-sourced directory, which carries no anchor, and repointing is C-9/C-10. The mirror's own store
+is in-memory, so a restart empties it; that is honest rather than convenient, since content addressing
+makes a lost object re-publishable byte-for-byte and a missing address answers 404 rather than a wrong
+answer. A durable store slots in behind `ContentMirror` without touching either route.
+
+**CANNOT-START IS NOT PENDING, and collapsing them is a spinner that never resolves.**
+`PublishedListingCard` shows a provider what a READER sees, and its `resolution === undefined` means
+"not finished yet" and nothing else; "no content mirror is configured, so this cannot begin" is a
+SEPARATE rendered line. The two shared a spelling once, so a deployment with no mirror rendered a
+spinner forever - and the asymmetry made the surface disagree with itself, because the publish path
+already refuses loudly with a named "no content mirror is configured" in that same deployment. The
+mirror base is `VITE_CONTENT_MIRROR_BASE`, declared BLANK in both portal `.env.example` files with no
+code fallback, following the same precedent as S-15's five blank-but-declared vars: a value in a
+template opts every deployment that copies it into publishing at a host nobody chose.
+
+**Evidence, and how to reproduce it.** `cargo test -p indexer-api` (64 tests incl. `tests/
+content_mirror.rs` over the real router) - operator-invoked, since the gate carries no cargo leg.
+`pnpm --filter @dogtag/ui test` (763) IS in the gate. The browser demonstration ran against a real
+`indexer-api` on a self-chosen port with real PNGs published over real HTTP. **The corrupted case must
+serve a VALID, RENDERABLE, WRONG image** - a mangled file would be refused by the browser's own
+decoder, so "nothing rendered" would prove nothing; only a perfectly decodable substitution
+distinguishes a working check from a broken one. It is staged against a deliberately HOSTILE host
+rather than by corrupting the mirror, because our own mirror correctly REFUSES the substitution on
+ingest, and the hostile host is the real threat model anyway. **That case needs a CONTROL** - the same
+hostile path with nothing substituted, which must render - and the control earned its place: the first
+run had both cases publishing the same logo bytes, so they shared an address and the substitution hit
+both. The control caught it.

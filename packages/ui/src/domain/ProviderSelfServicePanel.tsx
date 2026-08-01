@@ -20,7 +20,9 @@
 import { AlertTriangle, CircleHelp, CircleSlash, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "../components/Badge";
+import { PROVIDER_CONTACT_CHANNELS } from "../directory/channels";
 import { cn } from "../lib/cn";
+import { ProviderLogo, type ProfileResolution } from "../mirror";
 import type {
   CheckOutcome,
   CloneAssessment,
@@ -329,6 +331,105 @@ export function DirectoryPublicationCard({
       <p className="mt-2 text-xs text-muted-foreground">{anchoredNotice}</p>
       <p className="mt-2 text-sm">{plan.nextStep}</p>
       <ProviderCheckList checks={plan.checks} />
+    </section>
+  );
+}
+
+/**
+ * What a READER sees of this provider's published listing (registry-plan S-17).
+ *
+ * A provider needs to know whether what they published actually resolves, and this is the only
+ * surface that can tell them: it runs the same resolution any consumer runs - fetch from the content
+ * mirror, recompute the digest, compare it to what the chain anchors - and renders the result rather
+ * than the intent. A publication that verifies here verifies everywhere; one that does not is broken
+ * for everyone, and the provider is the only party who can fix it.
+ *
+ * The logo obeys the slice's rule, which {@link ProviderLogo} owns: verified renders, unverified
+ * renders NOTHING with a visible reason, not published is ordinary and quiet.
+ */
+export function PublishedListingCard({
+  resolution,
+  providerName,
+  unconfigured,
+}: {
+  resolution: ProfileResolution | undefined;
+  providerName: string;
+  /**
+   * Set when no content mirror is configured, so the resolution CANNOT start.
+   *
+   * Its own rendered line, never the pending spinner. `undefined` means "not finished yet", and
+   * letting "cannot begin" share that spelling is a spinner that never resolves and an operator who
+   * cannot tell whether anything is happening - the exact failure `RECEIPT_TIMEOUT_MS` exists to
+   * prevent one flow over. It also makes the two halves of this surface AGREE: the publish path
+   * already refuses loudly with a named "no content mirror is configured", so the read path must not
+   * fail silently in the same deployment.
+   *
+   * **It is keyed on the mirror BASE alone, and deliberately not on the mirror token.** The write
+   * path needs both and refuses up front without either; reading does not, because
+   * `GET /v1/content/:address` is unauthenticated by design - a content address is checked against
+   * the bytes it names, so serving them confers nothing and gating the read would buy no integrity.
+   * Adding a token term here for symmetry would report a perfectly working read surface as unable
+   * to start.
+   */
+  unconfigured?: boolean;
+}): ReactNode {
+  return (
+    <section className="rounded-lg border border-border p-4" data-testid="published-listing">
+      <header className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">What a reader sees</h3>
+      </header>
+
+      {unconfigured ? (
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="listing-unconfigured">
+          No content mirror is configured, so what you have published cannot be read back here. Set{" "}
+          <code>VITE_CONTENT_MIRROR_BASE</code> to check it.
+        </p>
+      ) : resolution === undefined ? (
+        <p
+          className="mt-2 flex items-center gap-2 text-sm text-muted-foreground"
+          data-testid="listing-pending"
+        >
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> Reading what you have
+          published…
+        </p>
+      ) : resolution.state === "notPublished" ? (
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="listing-not-published">
+          {resolution.withdrawn
+            ? "You have taken your published details down. Your listing is still here; the details are not."
+            : "You have not published any details yet."}
+        </p>
+      ) : resolution.state === "unverified" ? (
+        // Loud, because this is the state in which the chain says something IS published and a
+        // reader cannot confirm it - which looks, from the outside, exactly like publishing nothing.
+        <p
+          className="mt-2 flex items-start gap-1.5 text-sm text-amber-700 dark:text-amber-400"
+          data-testid="listing-unverified"
+        >
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            <span className="font-medium">Your published details could not be confirmed.</span>{" "}
+            {resolution.reason}
+          </span>
+        </p>
+      ) : (
+        <div className="mt-3 flex items-start gap-3" data-testid="listing-resolved">
+          <ProviderLogo logo={resolution.logo} providerName={providerName} />
+          <dl className="min-w-0 flex-1 text-sm">
+            {PROVIDER_CONTACT_CHANNELS.map((channel) => {
+              const value = resolution.profile.contact[channel];
+              if (!value) return null;
+              return (
+                <div key={channel} className="flex gap-2">
+                  <dt className="w-20 shrink-0 text-xs uppercase text-muted-foreground">
+                    {channel}
+                  </dt>
+                  <dd className="min-w-0 break-words">{value}</dd>
+                </div>
+              );
+            })}
+          </dl>
+        </div>
+      )}
     </section>
   );
 }

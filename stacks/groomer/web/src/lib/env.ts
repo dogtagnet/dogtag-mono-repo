@@ -19,6 +19,20 @@ export const env = {
   issuerFactoryV2Addr: import.meta.env.VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR ?? "",
   serviceDomainResolverAddr: import.meta.env.VITE_SERVICE_DOMAIN_RESOLVER_ADDR ?? "",
   providerDirectoryAddr: import.meta.env.VITE_PROVIDER_DIRECTORY_ADDR ?? "",
+  // The S-17 content mirror the profile document and logo are published to and read back from.
+  // Blank ships blank, like its four neighbours: a value in the template would opt every deployment
+  // that copies it into publishing at a host nobody chose.
+  contentMirrorBase: import.meta.env.VITE_CONTENT_MIRROR_BASE ?? "",
+  // The bearer the mirror's PUT requires. Blank and fallback-free like its neighbour: the write
+  // path refuses up front when it is unset, rather than aborting a publication on its first upload.
+  // Reading is unauthenticated, so this gates publishing alone.
+  //
+  // PUBLIC BY CONSTRUCTION: vite inlines this into the shipped bundle, so every visitor holds it.
+  // "Keep it secret" is advice nobody could follow here; what matters is what it GRANTS, which is
+  // exactly one capability - publish bytes that hash to their own content address. It reads nothing.
+  // It must be the indexer's MIRROR_INGEST_TOKEN and NEVER an oversight scope token, which would
+  // put read authority over the event feed into the same public bundle.
+  contentMirrorToken: import.meta.env.VITE_CONTENT_MIRROR_TOKEN ?? "",
   /** This shop's own provider id, assigned by DogTag at approval. Opaque; never derived. */
   providerId: import.meta.env.VITE_PROVIDER_ID ?? "",
   demoMode: import.meta.env.VITE_DEMO_MODE === "1" || import.meta.env.VITE_DEMO_MODE === "true",

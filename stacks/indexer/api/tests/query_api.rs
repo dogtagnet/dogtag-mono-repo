@@ -14,6 +14,7 @@ use tower::ServiceExt; // oneshot
 use indexer_api::app::{keccak_key, watch_generation, AppState, Config};
 use indexer_api::chain::{emit, MemLogSource};
 use indexer_api::directory::Directory;
+use indexer_api::mirror::MemContentMirror;
 use indexer_api::events::{EventType, Finality, IndexedEvent};
 use indexer_api::indexer::Indexer;
 use indexer_api::scope::{Scope, ScopeConfig, ScopeRegistry};
@@ -49,6 +50,7 @@ fn cfg() -> Config {
         default_page_limit: 100,
         max_page_limit: 1000,
         explorer_base: "https://explorer.roax.net".into(),
+        mirror_ingest_token: None,
     }
 }
 
@@ -106,6 +108,7 @@ async fn build() -> (AppState, Arc<Indexer>, MemLogSource) {
         source: Arc::new(mem.clone()),
         scopes: Arc::new(scopes()),
         directory,
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(c),
     };
     let indexer = Arc::new(Indexer::new(state.clone()));
@@ -370,6 +373,7 @@ async fn owner_hidden_verified_decode_and_anti_spoof() {
         source: Arc::new(mem),
         scopes: Arc::new(scopes()),
         directory,
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(c),
     };
     let indexer = Arc::new(Indexer::new(state.clone()));
@@ -450,6 +454,7 @@ async fn missing_generation_is_visible_when_its_events_are_dropped() {
         source: Arc::new(mem),
         scopes: Arc::new(scopes()),
         directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(c),
     };
     let indexer = Indexer::new(state.clone());
@@ -527,6 +532,7 @@ async fn missing_generation_is_visible_when_its_events_are_dropped() {
         source: Arc::new(mem),
         scopes: Arc::new(scopes()),
         directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(configured),
     };
     Indexer::new(configured_state.clone())
@@ -579,6 +585,7 @@ async fn removed_generation_does_not_retrust_its_persisted_clone() {
         source: Arc::new(first_source),
         scopes: Arc::new(scopes()),
         directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(two_generations),
     };
     Indexer::new(first_state)
@@ -615,6 +622,7 @@ async fn removed_generation_does_not_retrust_its_persisted_clone() {
         source: Arc::new(restarted_source),
         scopes: Arc::new(scopes()),
         directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(cfg()),
     };
     let restarted = Indexer::new(restarted_state.clone());
@@ -682,6 +690,7 @@ async fn a_still_configured_generations_clone_stays_trusted_across_a_restart() {
         source: Arc::new(first_source),
         scopes: Arc::new(scopes()),
         directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(two_generations()),
     };
     Indexer::new(first_state.clone())
@@ -721,6 +730,7 @@ async fn a_still_configured_generations_clone_stays_trusted_across_a_restart() {
         source: Arc::new(restarted_source),
         scopes: Arc::new(scopes()),
         directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(two_generations()),
     };
     let restarted = Indexer::new(restarted_state.clone());
@@ -799,6 +809,7 @@ async fn an_unstamped_legacy_row_does_not_retrust_its_clone() {
             source: Arc::new(source),
             scopes: Arc::new(scopes()),
             directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+            mirror: Arc::new(MemContentMirror::new()),
             cfg: Arc::new(cfg()),
         };
         let indexer = Indexer::new(state.clone());
@@ -867,6 +878,7 @@ async fn an_unreadable_index_refuses_to_answer_instead_of_reporting_an_empty_fee
         source: Arc::new(MemLogSource::new()),
         scopes: Arc::new(scopes()),
         directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        mirror: Arc::new(MemContentMirror::new()),
         cfg: Arc::new(cfg()),
     };
 
