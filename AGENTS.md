@@ -102,7 +102,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   move; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
   subject-bearing `Verified` ABI; `CloneProvenanceRouter.t.sol` performs the real cross-generation
   resurrection attack against the router's oldest-first resolution and pins the mirror direction it
-  deliberately does not close; `ProviderRegistry.t.sol` proves the build-only provider-authority
+  deliberately does not close; `ProviderRegistry.t.sol` proves the deployed-but-unwired provider-authority
   core's KYC-standing AND owner/delegate predicate, genuine-factory attachment/repoint, service-scoped
   capabilities, real controller/owner/admin key rotations, the widest-first
   `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` ladder against every lifecycle event that stops new
@@ -283,8 +283,11 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   and deploy scripts are gone; their already-deployed addresses remain solely in the deployment ledger
   for historical reads. Protocol publication keeps the exact compatibility key `dogtag-levelb/1` and
   publishes one contract set plus one independently rotatable artifact set and their binding.
-  `CloneProvenanceRouter` is also in that live source but is **built and tested only, NOT deployed** -
-  no address, no `.env.example` entry, no consumer points at it. See "CloneProvenanceRouter" below.
+  `CloneProvenanceRouter` is also in that live source and is the one contract in this paragraph that
+  **S-14 DEPLOYED** (cutover C-4, with generation 2 appended at C-4b): it has a ledger entry, but no
+  `.env.example` entry and no consumer points at it, because client repointing is C-9/C-10. Read the
+  next two sentences carefully - they use near-identical wording and are still TRUE. See
+  "CloneProvenanceRouter" below and `_s14_cutover` in `contracts/deployments/roax.json`.
   `ProviderDirectory` is the S-10 typed DIRECTORY resolver selected through the S-6 core (pins,
   contacts and profile anchors, keyed by `providerId`) and is likewise **built and tested only, NOT
   deployed** - no address, no deploy script, no `.env.example` entry, and the indexer's provider
@@ -1606,11 +1609,16 @@ modes; the fallback one is the one that can lie.
 repoint takes effect only after a rebuild AND a reinstall on each handset (C-10, the cutover's long
 pole). Nothing between the edited file and the installed build says which state you are in.
 
-**A recognized-but-undeployed version key is not an unknown one.** `manifest::deployment_status` returns
-`AwaitingDeployment` for `dogtag-levelb/2`, and `GET /protocol/manifest` answers 404 `version not yet
-deployed` naming the pending contracts rather than 404 `unknown version`. Both fail closed and serve
-nothing - only the DIAGNOSIS differs, because a typo is the caller's to fix while an undeployed key is
-fixed only by the cutover running. The record carries no address field at all, so it cannot decay into a
+**A recognized version key with no on-chain record is not an unknown one.** `manifest::deployment_status`
+returns `AwaitingDeployment` for `dogtag-levelb/2`, and `GET /protocol/manifest` answers 404 `version not
+yet deployed` naming the outstanding STEPS rather than 404 `unknown version`. Both fail closed and serve
+nothing - only the DIAGNOSIS differs, because a typo is the caller's to fix while this key is fixed by
+publishing a discovery set. **Since S-14 the remedy is PUBLICATION, not deployment:** all six
+generation-2 contracts are deployed and `ProtocolRegistryV2` carries no discovery set, so a record that
+still named those contracts as pending would send an operator to redeploy what already exists - the
+wrong-remedy defect this split exists to prevent. Serving a manifest anyway would be worse: it would
+advertise a version whose on-chain discovery record does not exist, so clients would reconcile against
+nothing. The record carries no address field at all, so it cannot decay into a
 placeholder. Note the generation-2 DISCOVERY key is not an ARTIFACT key: the artifacts are byte-for-byte
 generation 1's and keep `dogtag-levelb-artifacts/1`, so `artifact::resolve` fails closed on it too.
 

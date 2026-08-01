@@ -328,11 +328,15 @@ else:
         print(f"  {a['contract']:<30} {a['generation2']}")
 nulls = [a for a in entries if a["generation2"] is None]
 if nulls:
+    # Printed IN FULL, deliberately. This reason is the ONLY artifact separating the three kinds of
+    # null, so a line cap here would cut the distinguishing clause off some entry and - with no marker
+    # - the partial output would read as the whole of it. Capping and marking would still hide the
+    # clause; there is no length at which this is safe to elide, so it is not elided.
     print(f"Still null ({len(nulls)}), each for its own stated reason:")
     for a in nulls:
         why = " ".join(a["generation2Provenance"].split())
         print(f"  {a['contract']}")
-        for line in textwrap.wrap(why, 92, initial_indent="    ", subsequent_indent="    ")[:3]:
+        for line in textwrap.wrap(why, 92, initial_indent="    ", subsequent_indent="    "):
             print(line)
 PY
 

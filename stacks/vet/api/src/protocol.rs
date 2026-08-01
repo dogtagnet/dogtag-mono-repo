@@ -106,17 +106,18 @@ pub async fn get_manifest(Query(q): Query<ManifestQuery>) -> impl IntoResponse {
     }
     // Still 404 in both arms — there is genuinely no manifest either way, and neither is servable.
     // What differs is the REASON, because the remedies are unrelated: a typo is fixed by the caller,
-    // while a recognized-but-undeployed key is fixed only by the cutover running. Reporting the second
-    // as "unknown version" sends an operator hunting a misspelling that does not exist.
+    // while a recognized key with no on-chain record is fixed by publishing that record. Reporting the
+    // second as "unknown version" sends an operator hunting a misspelling that does not exist, and
+    // naming a step that has already run sends them to redo it — the record itself carries the remedy.
     match manifest::deployment_status(&q.version) {
         manifest::DeploymentStatus::AwaitingDeployment(a) => (
             StatusCode::NOT_FOUND,
             Json(json!({
                 "error": "version not yet deployed",
                 "version": q.version,
-                "detail": "this build recognizes the version key but holds no addresses for it",
+                "detail": "this build recognizes the version key but holds no on-chain record for it",
                 "recordedBy": a.recorded_by,
-                "pendingContracts": a.pending,
+                "outstandingSteps": a.outstanding,
             })),
         )
             .into_response(),

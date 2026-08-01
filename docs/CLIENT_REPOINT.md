@@ -335,12 +335,16 @@ An implicit self-exemption is a hole in the one check whose job is finding holes
 Previously `deployment_for("dogtag-levelb/2")` returned `None`, which is indistinguishable from a typo.
 
 The two absences have unrelated remedies.
-An unknown version is the caller's to fix; a recognised-but-undeployed one is fixed only by the cutover running.
+An unknown version is the caller's to fix; a recognised one with no on-chain record is fixed by publishing that record.
 Reporting the second as `unknown version` sends an operator hunting a misspelling that does not exist.
 
-`GET /protocol/manifest?version=dogtag-levelb/2` therefore answers 404 with `version not yet deployed`, naming the pending contracts and who records them, rather than 404 `unknown version`.
+`GET /protocol/manifest?version=dogtag-levelb/2` therefore answers 404 with `version not yet deployed`, naming the outstanding STEPS and who does them, rather than 404 `unknown version`.
 Both still fail closed and serve nothing - this changes the diagnosis, never the outcome.
 The record carries **no address field at all**, so it cannot decay into a placeholder.
+
+**Since S-14 the remedy is PUBLICATION, not deployment.**
+All six generation-2 contracts are deployed, and `ProtocolRegistryV2` carries no discovery set - so a record still naming those contracts as pending would send an operator to redeploy what already exists, which is the wrong-remedy defect this split exists to prevent.
+Serving a manifest anyway would be worse: it would advertise a version whose on-chain discovery record does not exist, leaving clients to reconcile against nothing.
 
 Note the generation-2 discovery key is not an artifact key.
 The proving artifacts are byte-for-byte generation 1's, so they keep `dogtag-levelb-artifacts/1`; a second artifact identity for identical bytes would be a falsehood.
