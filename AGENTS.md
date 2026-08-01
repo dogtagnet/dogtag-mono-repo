@@ -283,11 +283,14 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   and deploy scripts are gone; their already-deployed addresses remain solely in the deployment ledger
   for historical reads. Protocol publication keeps the exact compatibility key `dogtag-levelb/1` and
   publishes one contract set plus one independently rotatable artifact set and their binding.
-  `CloneProvenanceRouter` is also in that live source and is the one contract in this paragraph that
-  **S-14 DEPLOYED** (cutover C-4, with generation 2 appended at C-4b): it has a ledger entry, but no
-  `.env.example` entry and no consumer points at it, because client repointing is C-9/C-10. Read the
-  next two sentences carefully - they use near-identical wording and are still TRUE. See
-  "CloneProvenanceRouter" below and `_s14_cutover` in `contracts/deployments/roax.json`.
+  `CloneProvenanceRouter` is also in that live source and was **DEPLOYED BY S-14** (cutover C-4, with
+  generation 2 appended at C-4b): it has a ledger entry, but no `.env.example` entry and no consumer
+  points at it, because client repointing is C-9/C-10. **This paragraph mixes two statuses, so read
+  each sentence for its own rather than pattern-matching the wording:** this one and the
+  `ProviderRegistry` sentence below it are DEPLOYED BUT UNWIRED, while the two sentences BETWEEN them
+  (`ProviderDirectory`, `ServiceDomainResolver`) say "built and tested only, NOT deployed" and are
+  still TRUE, because C-7 was out of scope of S-14. See "CloneProvenanceRouter" below and
+  `_s14_cutover` in `contracts/deployments/roax.json`.
   `ProviderDirectory` is the S-10 typed DIRECTORY resolver selected through the S-6 core (pins,
   contacts and profile anchors, keyed by `providerId`) and is likewise **built and tested only, NOT
   deployed** - no address, no deploy script, no `.env.example` entry, and the indexer's provider

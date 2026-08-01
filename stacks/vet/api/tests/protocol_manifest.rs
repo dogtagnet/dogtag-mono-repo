@@ -69,25 +69,37 @@ async fn manifest_route_serve_and_verify_offline() {
     assert_eq!(status_unknown, 404, "unknown version must 404");
     assert!(body_unknown.contains("unknown version"), "body: {body_unknown}");
 
-    // --- 5. S-13: RECOGNIZED but UNDEPLOYED -> 404, and NOT "unknown version" -------------------
+    // --- 5. S-13: RECOGNIZED but NOT SERVEABLE -> 404, and NOT "unknown version" ----------------
     // Both absences fail closed and serve nothing; what must differ is the REASON, because the
-    // remedies are unrelated. A typo is the caller's to fix; `dogtag-levelb/2` is fixed only by the
-    // cutover running. Reporting the second as "unknown version" sends an operator hunting a
-    // misspelling that does not exist.
+    // remedies are unrelated. A typo is the caller's to fix; `dogtag-levelb/2` is fixed by publishing
+    // a discovery set to the deployed `ProtocolRegistryV2`, which carries none. Reporting the second
+    // as "unknown version" sends an operator hunting a misspelling that does not exist - and naming a
+    // step S-14 has already run would send them to redo it, which is the same wrong-remedy defect.
     let r = get("dogtag-levelb/2").await;
     let status_pending = r.status();
     let body_pending = r.text().await.unwrap();
-    assert_eq!(status_pending, 404, "an undeployed version still serves nothing");
+    assert_eq!(status_pending, 404, "a version with no on-chain record still serves nothing");
     assert!(
         body_pending.contains("not yet deployed"),
-        "an undeployed version must say so: {body_pending}"
+        "a version that cannot be served must say so: {body_pending}"
     );
     assert!(
         !body_pending.contains("unknown version"),
         "must NOT collapse into the typo case: {body_pending}"
     );
-    // It names what is pending rather than only that something is - and invents no address.
-    assert!(body_pending.contains("CloneProvenanceRouter"), "body: {body_pending}");
+    // The keys themselves, so a payload rename is caught HERE rather than by a value that silently
+    // stops appearing - which is exactly how this assertion went stale once.
+    assert!(
+        body_pending.contains("recordedBy") && body_pending.contains("outstandingSteps"),
+        "the diagnosis must carry who fills it in and what remains: {body_pending}"
+    );
+    // It names the REMEDY rather than only the absence, and since S-14 that remedy is PUBLICATION to
+    // the deployed registry - mirrors `manifest::tests::the_awaiting_record_names_what_is_outstanding
+    // _without_inventing_an_address`, which pins the same two facts on the record itself.
+    assert!(
+        body_pending.contains("publish") && body_pending.contains("ProtocolRegistryV2"),
+        "the remedy is publication to ProtocolRegistryV2: {body_pending}"
+    );
     assert!(!body_pending.contains("0x"), "no address may be invented: {body_pending}");
 
     // --- Emit a human-readable transcript for the evidence artifact (captured with --nocapture) --
