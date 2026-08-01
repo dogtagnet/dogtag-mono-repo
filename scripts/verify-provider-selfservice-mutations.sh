@@ -19,7 +19,7 @@ set -u
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 export LC_ALL=C
 
-TARGETS="packages/ui/src/provider/cloneProvenance.ts packages/ui/src/provider/directoryPlan.ts packages/ui/src/provider/liveReader.ts packages/ui/src/provider/domainClaim.ts packages/ui/src/provider/sendOutcome.ts packages/ui/src/domain/ProviderSelfServiceFlows.tsx"
+TARGETS="packages/ui/src/provider/cloneProvenance.ts packages/ui/src/provider/directoryPlan.ts packages/ui/src/provider/liveReader.ts packages/ui/src/provider/domainClaim.ts packages/ui/src/provider/sendOutcome.ts packages/ui/src/domain/ProviderSelfServiceFlows.tsx packages/ui/src/domain/ProviderSelfServicePanel.tsx"
 BACKUP=$(mktemp -d)
 for f in $TARGETS; do mkdir -p "$BACKUP/$(dirname "$f")"; cp "$f" "$BACKUP/$f"; done
 restore() { for f in $TARGETS; do cp "$BACKUP/$f" "$f"; done; }
@@ -220,6 +220,21 @@ mutate "a plan outlives its own transaction (press Send twice, send twice)" \
   packages/ui/src/domain/ProviderSelfServiceFlows.tsx \
   "  return held && !held.spent ? { ...held, spent: true } : held;" \
   "  return held;" \
+  test/providerSendGuards.test.tsx
+
+# A retired plan is SHOWN so the provider can still read what they checked, which is only safe
+# because it is labelled. Both halves are mutated: dropping the card destroys the answers, and
+# dropping the marker leaves a superseded verdict reading as current.
+mutate "a retired plan's answers dropped from the page again" \
+  packages/ui/src/domain/ProviderSelfServiceFlows.tsx \
+  "  return held ? held.plan : null;" \
+  "  return null;" \
+  test/providerSendGuards.test.tsx
+
+mutate "a superseded verdict rendered as if it were current" \
+  packages/ui/src/domain/ProviderSelfServicePanel.tsx \
+  "  if (!retired) return badge;" \
+  "  if (retired || !retired) return badge;" \
   test/providerSendGuards.test.tsx
 
 mutate "a reverted transaction reported as a completed one" \

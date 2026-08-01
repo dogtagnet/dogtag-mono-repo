@@ -93,6 +93,7 @@ import {
   DeployPlanCard,
   DirectoryPublicationCard,
   DomainClaimCard,
+  type PlanRetirement,
 } from "./ProviderSelfServicePanel";
 
 /** Which flows this operator is a provider FOR. Stated by the caller, never inferred. */
@@ -138,19 +139,36 @@ interface Checked<T> {
   spent: boolean;
 }
 
-/** A plan that may still authorize a transaction: keyed on the current inputs, and not yet acted on. */
+/**
+ * A plan that may still AUTHORIZE a transaction: keyed on the current inputs, and not yet acted on.
+ *
+ * Deliberately not the same question as whether the answers are VISIBLE - see {@link shown}. One
+ * value answering both is why a retired plan used to vanish underneath a notice that referred to it.
+ */
 function fresh<T>(held: Checked<T> | null, key: string): T | null {
   return held && !held.spent && held.key === key ? held.plan : null;
 }
 
 /**
- * Why a held plan is no longer gating its button. `null` when it still is, or when there is none.
+ * The plan to DISPLAY, retired or not.
+ *
+ * A retired plan is still worth reading: right after a transaction goes out, "what did I check
+ * before I sent this" is the question a provider actually asks, and dropping the card answers it
+ * with nothing. What makes showing it safe is the label - {@link retiredBecause} feeds a superseded
+ * marker onto the verdict itself, so the answers cannot be read as current.
+ */
+function shown<T>(held: Checked<T> | null): T | null {
+  return held ? held.plan : null;
+}
+
+/**
+ * Why a held plan no longer authorizes its button. `null` when it still does, or when there is none.
  *
  * Two reasons, told apart rather than merged, because they have different remedies and a provider
  * who cannot tell them apart cannot act: `edited` means re-check what you typed, `spent` means the
  * chain has moved under the answer you were shown.
  */
-function retiredBecause<T>(held: Checked<T> | null, key: string): "edited" | "spent" | null {
+function retiredBecause<T>(held: Checked<T> | null, key: string): PlanRetirement | null {
   if (!held) return null;
   if (held.spent) return "spent";
   return held.key === key ? null : "edited";
@@ -221,6 +239,15 @@ export function ProviderSelfServiceFlows({
   const clone = fresh(cloneHeld, cloneKey);
   const domainState = fresh(domainHeld, domainKey);
   const publication = fresh(publicationHeld, publicationKey);
+
+  const deployShown = shown(deployHeld);
+  const cloneShown = shown(cloneHeld);
+  const domainShown = shown(domainHeld);
+  const publicationShown = shown(publicationHeld);
+  const deployRetired = retiredBecause(deployHeld, deployKey);
+  const cloneRetired = retiredBecause(cloneHeld, cloneKey);
+  const domainRetired = retiredBecause(domainHeld, domainKey);
+  const publicationRetired = retiredBecause(publicationHeld, publicationKey);
 
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -419,9 +446,13 @@ export function ProviderSelfServiceFlows({
                   Deploy
                 </Button>
               </div>
-              <PlanNotice reason={retiredBecause(deployHeld, deployKey)} testId="deploy-stale" />
-              {deploy ? (
-                <DeployPlanCard plan={deploy} attachmentNotice={ATTACHMENT_IS_NOT_SELF_SERVICE} />
+              <PlanNotice reason={deployRetired} testId="deploy-stale" />
+              {deployShown ? (
+                <DeployPlanCard
+                  plan={deployShown}
+                  attachmentNotice={ATTACHMENT_IS_NOT_SELF_SERVICE}
+                  retired={deployRetired}
+                />
               ) : null}
             </CardContent>
           </Card>
@@ -488,8 +519,8 @@ export function ProviderSelfServiceFlows({
                   Make this my current contract
                 </Button>
               </div>
-              <PlanNotice reason={retiredBecause(cloneHeld, cloneKey)} testId="repoint-stale" />
-              {clone ? <CloneLifecycleCard assessment={clone} /> : null}
+              <PlanNotice reason={cloneRetired} testId="repoint-stale" />
+              {cloneShown ? <CloneLifecycleCard assessment={cloneShown} retired={cloneRetired} /> : null}
             </CardContent>
           </Card>
 
@@ -601,8 +632,8 @@ export function ProviderSelfServiceFlows({
                   </Button>
                 ) : null}
               </div>
-              <PlanNotice reason={retiredBecause(domainHeld, domainKey)} testId="domain-stale" />
-              {domainState ? <DomainClaimCard assessment={domainState} /> : null}
+              <PlanNotice reason={domainRetired} testId="domain-stale" />
+              {domainShown ? <DomainClaimCard assessment={domainShown} retired={domainRetired} /> : null}
             </CardContent>
           </Card>
         </>
@@ -770,12 +801,13 @@ export function ProviderSelfServiceFlows({
                 {WITHDRAW_LOCATION_NOTICE}
               </p>
             ) : null}
-            <PlanNotice reason={retiredBecause(publicationHeld, publicationKey)} testId="publish-stale" />
-            {publication ? (
+            <PlanNotice reason={publicationRetired} testId="publish-stale" />
+            {publicationShown ? (
               <DirectoryPublicationCard
-                plan={publication}
+                plan={publicationShown}
                 contactOnlyNotice={CONTACT_ONLY_NOTICE}
                 anchoredNotice={CONTACTS_ARE_ANCHORED_NOT_SERVED}
+                retired={publicationRetired}
               />
             ) : null}
           </CardContent>
@@ -786,30 +818,41 @@ export function ProviderSelfServiceFlows({
 }
 
 /**
- * Says why the button is off, in the provider's own terms.
+ * Says why the button is off, above answers that are still on screen.
  *
- * Rendered rather than silently dropping the panel: a panel that vanished on the first keystroke -
- * or the moment a transaction was signed - would look like a fault. The button is disabled either
- * way; this is the half that explains WHICH of the two reasons it is, because "re-read what you
- * typed" and "the chain has moved" send a provider to different places.
+ * The panel below it IS rendered - see {@link shown}. Dropping it was the earlier defect: the copy
+ * referred to "what is shown below" while nothing was, and it destroyed the one thing a provider
+ * most wants right after signing, which is what they had checked. So the card stays and is LABELLED,
+ * here and again on the verdict itself.
+ *
+ * Deliberately not `text-xs`: a label a reader can miss is not a state. Warning tone, in the flow of
+ * the card, legible without hovering or interacting - the same treatment this repo gives every other
+ * value it cannot stand behind.
  */
 function PlanNotice({
   reason,
   testId,
 }: {
-  reason: "edited" | "spent" | null;
+  reason: PlanRetirement | null;
   testId: string;
 }): ReactNode {
   if (!reason) return null;
   return (
-    <p
-      className="text-xs text-amber-700 dark:text-amber-400"
+    <div
+      className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300"
       data-testid={reason === "spent" ? `${testId}-spent` : testId}
     >
-      {reason === "edited"
-        ? "You have changed something since this was checked, so what is shown below is about the earlier values. Check again before sending."
-        : "This has already been acted on, and the answers below were read before that transaction. Check again before sending another."}
-    </p>
+      <p className="font-semibold">
+        {reason === "edited"
+          ? "Superseded: these answers are about earlier values"
+          : "Superseded: these answers were read before your transaction"}
+      </p>
+      <p className="mt-1">
+        {reason === "edited"
+          ? "You have changed something since this was checked, so what is shown below describes what you typed before. Check again before sending."
+          : "A transaction has already been sent against this, so the chain may have moved since these answers were read. They are kept below so you can see what you checked. Check again before sending another."}
+      </p>
+    </div>
   );
 }
 

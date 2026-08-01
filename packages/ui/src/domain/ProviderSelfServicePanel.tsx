@@ -88,12 +88,58 @@ const VERDICT_BADGE: Readonly<
   indeterminate: { text: "Unknown", variant: "warning" },
 };
 
-export function ProviderVerdictBadge({ verdict }: { verdict: ProviderVerdict }): ReactNode {
+/**
+ * Why the answers below a verdict no longer describe the present.
+ *
+ * `edited` - an input this plan was computed from has changed since.
+ * `spent`  - a transaction has been sent against it, so the chain has moved under it.
+ *
+ * Kept apart rather than merged into one "stale", because they send a provider to different places:
+ * one means re-read what you typed, the other means re-read the chain.
+ */
+export type PlanRetirement = "edited" | "spent";
+
+const RETIRED_BADGE: Readonly<Record<PlanRetirement, string>> = {
+  edited: "Superseded - inputs changed",
+  spent: "Superseded - read before your transaction",
+};
+
+/**
+ * The verdict, and - when the plan behind it has been retired - the fact that it is superseded.
+ *
+ * A retired plan is still SHOWN, because "what did I check before I sent this" is exactly the
+ * question a provider asks the moment a transaction goes out, and dropping the card answers it with
+ * nothing. What makes that safe is the label, so the label is attached HERE, to the verdict itself,
+ * rather than only to a sentence above the card: a reader who scans to a green "Ready" and stops is
+ * precisely the reader a separate banner misses. The superseded verdict is struck through and an
+ * amber qualifier sits beside it - the treatment this repo already uses for a value it cannot stand
+ * behind, rather than a third invention for the same idea.
+ */
+export function ProviderVerdictBadge({
+  verdict,
+  retired,
+}: {
+  verdict: ProviderVerdict;
+  retired?: PlanRetirement | null;
+}): ReactNode {
   const v = VERDICT_BADGE[verdict];
-  return (
-    <Badge variant={v.variant} data-testid={`verdict-${verdict}`}>
+  const badge = (
+    <Badge
+      variant={v.variant}
+      className={retired ? "line-through opacity-70" : undefined}
+      data-testid={`verdict-${verdict}`}
+    >
       {v.text}
     </Badge>
+  );
+  if (!retired) return badge;
+  return (
+    <span className="flex flex-wrap items-center justify-end gap-2">
+      {badge}
+      <Badge variant="warning" data-testid={`verdict-retired-${retired}`}>
+        {RETIRED_BADGE[retired]}
+      </Badge>
+    </span>
   );
 }
 
@@ -145,7 +191,13 @@ const LIFECYCLE_ICON: Readonly<Record<CloneLifecycle, typeof CircleHelp>> = {
   foreign: AlertTriangle,
 };
 
-export function CloneLifecycleCard({ assessment }: { assessment: CloneAssessment }): ReactNode {
+export function CloneLifecycleCard({
+  assessment,
+  retired,
+}: {
+  assessment: CloneAssessment;
+  retired?: PlanRetirement | null;
+}): ReactNode {
   const copy = LIFECYCLE_COPY[assessment.lifecycle];
   const Icon = LIFECYCLE_ICON[assessment.lifecycle];
   return (
@@ -157,7 +209,7 @@ export function CloneLifecycleCard({ assessment }: { assessment: CloneAssessment
             {copy.title}
           </h3>
         </div>
-        <ProviderVerdictBadge verdict={assessment.verdict} />
+        <ProviderVerdictBadge verdict={assessment.verdict} retired={retired} />
       </header>
       <p className="mt-2 text-sm text-muted-foreground">{copy.body}</p>
       <p className="mt-2 text-sm" data-testid="clone-next-step">
@@ -175,15 +227,17 @@ export function CloneLifecycleCard({ assessment }: { assessment: CloneAssessment
 export function DeployPlanCard({
   plan,
   attachmentNotice,
+  retired,
 }: {
   plan: DeployPlan;
   attachmentNotice: string;
+  retired?: PlanRetirement | null;
 }): ReactNode {
   return (
     <section className="rounded-lg border border-border p-4" data-testid="deploy-plan">
       <header className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Deploy your own contract</h3>
-        <ProviderVerdictBadge verdict={plan.verdict} />
+        <ProviderVerdictBadge verdict={plan.verdict} retired={retired} />
       </header>
       {plan.predictedAddress ? (
         <p className="mt-2 break-all font-mono text-xs" data-testid="predicted-address">
@@ -205,16 +259,18 @@ export function DeployPlanCard({
 
 export function DomainClaimCard({
   assessment,
+  retired,
   unreadableNotice = "The current domain record could not be read, so what this contract publishes is not known.",
 }: {
   assessment: DomainClaimAssessment;
   unreadableNotice?: string;
+  retired?: PlanRetirement | null;
 }): ReactNode {
   return (
     <section className="rounded-lg border border-border p-4" data-testid="domain-claim">
       <header className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Your domain</h3>
-        <ProviderVerdictBadge verdict={assessment.verdict} />
+        <ProviderVerdictBadge verdict={assessment.verdict} retired={retired} />
       </header>
       {/* The typed disposition's own sentence, or an explicit statement that it is unknown. There is
           deliberately no fallback to "no domain published": that is a FACT the chain states, and
@@ -232,17 +288,19 @@ export function DirectoryPublicationCard({
   plan,
   contactOnlyNotice,
   anchoredNotice,
+  retired,
 }: {
   plan: DirectoryPublicationPlan;
   contactOnlyNotice: string;
   anchoredNotice: string;
+  retired?: PlanRetirement | null;
 }): ReactNode {
   const pinStep = plan.steps.find((s) => s.kind === "pin");
   return (
     <section className="rounded-lg border border-border p-4" data-testid="directory-publication">
       <header className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Your listing</h3>
-        <ProviderVerdictBadge verdict={plan.verdict} />
+        <ProviderVerdictBadge verdict={plan.verdict} retired={retired} />
       </header>
 
       {/* Derived from the INPUT first and the steps second, because an absent pin step has three

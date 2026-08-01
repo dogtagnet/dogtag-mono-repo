@@ -295,15 +295,17 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   `contracts/deployments/roax.json`.
   `ProviderDirectory` is the S-10 typed DIRECTORY resolver selected through the S-6 core (pins,
   contacts and profile anchors, keyed by `providerId`) and was **deployed by C-7 and is UNWIRED** -
-  it has a ledger entry, but `resolverApproved()` is false, every store is empty, no `.env.example`
-  entry names it, and the indexer's provider directory still reads the admin business source. See
+  it has a ledger entry, but `resolverApproved()` is false, every store is empty, the
+  `VITE_PROVIDER_DIRECTORY_ADDR` that S-15 added to both portal `.env.example` files ships BLANK with
+  no code fallback, and the indexer's provider directory still reads the admin business source. See
   "ProviderDirectory" below.
   `ServiceDomainResolver` is the S-9 successor to `IssuerDomainRegistry` and was likewise **deployed
   by C-7 and is UNWIRED**; the deployed `IssuerDomainRegistry` remains the wired domain surface until
   the cutover, so no consumer address moved with it. See "ServiceDomainResolver" below.
   `ProviderRegistry` is the separately tested S-6 provider identity/authority core: it was **deployed
-  live on ROAX by S-14 and is UNWIRED** - it has a `ProviderRegistry` ledger entry, but no
-  `.env.example` entry and no consumer reads it, because client repointing is C-9/C-10 (see "The
+  live on ROAX by S-14 and is UNWIRED** - it has a `ProviderRegistry` ledger entry, and both portal
+  `.env.example` files now NAME it (`VITE_PROVIDER_REGISTRY_ADDR`, added blank by S-15), but no
+  consumer resolves an address from it, because client repointing is C-9/C-10 (see "The
   generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover` in `contracts/deployments/roax.json`;
   do not transcribe the address here). It admits only
   owner-bearing clones, matching the plan's retire/re-issue recommendation for the five ownerless V1
@@ -1247,8 +1249,11 @@ An already-installed app keeps proving against its **baked** key until you do, s
 `test/IssuerV2.t.sol` (63 tests). **Both were deployed live on ROAX by S-14 and NOTHING READS EITHER** -
 the ledger carries `DogTagIssuerV2Impl` and `DogTagIssuerFactoryV2` keys under their own names (see "The
 generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover` in `deployments/roax.json`; do not
-transcribe the addresses here), but there is no `.env.example` key, no client config, and nothing in the
-tree points at one. Say it that way rather than "the cutover is done": deployed is not wired, client
+transcribe the addresses here). S-15 added a blank `VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR` to both portal
+`.env.example` files and to their env plumbing, so the KEY exists - but it ships EMPTY with no code
+fallback, so nothing in the tree resolves an address from it. Read a blank fallback-free var as
+STRONGER evidence of unwiredness than an absent one: an absent key can be added and silently pick up a
+bundled constant, and this one cannot. Say it that way rather than "the cutover is done": deployed is not wired, client
 repointing is C-9/C-10, and enabling generation-2 issuance is C-11 - all separately captain-authorized
 and all outstanding. The generation-1 `DogTagIssuer.sol` /
 `DogTagIssuerFactory.sol` are UNMODIFIED; the pair is purely additive, like `ProtocolRegistry` and
@@ -1761,9 +1766,12 @@ no acceptance and no way back - exactly the permanent stranding two-step exists 
 `contracts/deployments/roax.json` (see `_c7_typed_resolvers`; do not transcribe the address here),
 but it answers nothing: `resolverApproved()` is FALSE and every store is empty, because a typed
 resolver does nothing until the registrar calls `setResolverApproved(DIRECTORY, resolver, true)` AND
-each provider selects it - both KYC work that C-7 did not perform. No `.env.example` entry names it,
-no client config carries it, and the indexer's provider directory still reads the admin business
-source (`stacks/indexer/api/src/directory.rs`). Approving it and switching that source are separate
+each provider selects it - both KYC work that C-7 did not perform. S-15 added
+`VITE_PROVIDER_DIRECTORY_ADDR` to the vet and groomer `.env.example` files and to their env plumbing,
+so the key EXISTS - but it ships BLANK and the code has no fallback (`?? ""`), so no consumer resolves
+an address from it; read that as stronger evidence of unwiredness than an absent key, since a blank
+fallback-free var cannot quietly resolve to a bundled constant. The indexer's provider directory still
+reads the admin business source (`stacks/indexer/api/src/directory.rs`). Approving it and switching that source are separate
 captain-authorized steps. **The source is now FROZEN in the same sense as the S-14 six** - an edit
 makes it diverge from deployed bytecode - so the two items recorded below as open against it (the
 unowned `uint8` kind-code mapping, and the permanent scan weight of a provider that has lost ACTIVE
@@ -1968,8 +1976,9 @@ fields having shipped with no coverage at all).
 `contracts/src/ServiceDomainResolver.sol`. Full rationale: `docs/SERVICE_DOMAIN_RESOLVER.md`.
 **DEPLOYED BY C-7 ON 2026-08-01, AND UNWIRED.** It has a `ServiceDomainResolver` ledger entry in
 `contracts/deployments/roax.json` (see `_c7_typed_resolvers`; do not transcribe the address here),
-but no `.env.example` entry names it, no client config carries it, and it is approved by no registrar
-and selected by no service, so its store is empty and it answers nothing (registry plan slice S-9).
+but the `VITE_SERVICE_DOMAIN_RESOLVER_ADDR` that S-15 added to both portal `.env.example` files
+ships BLANK with no code fallback, and it is approved by no registrar and selected by no service, so
+its store is empty and it answers nothing (registry plan slice S-9).
 Its source is FROZEN in the same sense as the S-14 six - an edit diverges from deployed bytecode.
 It SUPERSEDES `IssuerDomainRegistry`, which stays deployed and stays the wired domain surface until
 the cutover - so nothing moved and no `.env.example`/bundle/doc address changed. Abandoning the older deployed one is
@@ -2097,6 +2106,17 @@ forget one. A rejected signature never reaches that line, which is correct: noth
 nothing was falsified. Retiring must never hide the send record; the outcome is separate state the
 provider still needs to read. The two retirement reasons are reported APART (`PlanNotice`), because
 "re-read what you typed" and "the chain has moved" send a provider to different places.
+
+**A RETIRED PLAN IS STILL RENDERED, AND THAT IS WHY THE LABEL HAS TO BE UNMISSABLE.** The cards were
+gated on `fresh()`, so retiring one silently dropped it - underneath a notice that said "the answers
+below", with nothing below. Worse, it destroyed the one thing a provider most wants the moment a
+transaction goes out: what they had checked before sending. So `fresh()` decides only whether a plan
+may AUTHORIZE a send, `shown()` decides whether its answers are VISIBLE, and one value must never
+answer both again. What makes showing a superseded answer safe is the labelling, so the qualifier is
+attached to the VERDICT BADGE itself (struck through, with an amber "Superseded - …" beside it) and
+not only to a banner above the card: a reader who scans to a green "Ready" and stops is exactly the
+reader a separate banner misses. Same treatment this repo already gives a value it cannot stand
+behind; do not invent a third one, and do not demote either half to small grey text.
 
 *A SUBMITTED transaction is not a completed one.* `writeContractAsync` resolves on a hash and does NOT
 throw on a revert, so a reverted write left a message asserting the action had succeeded. Outcomes now

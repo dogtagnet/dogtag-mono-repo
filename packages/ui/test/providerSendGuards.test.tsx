@@ -175,6 +175,101 @@ describe("a plan stops gating anything once its inputs change", () => {
   });
 });
 
+describe("a retired plan is SHOWN, and unmistakably labelled as superseded", () => {
+  // Dropping the card was the earlier defect twice over: the notice referred to "what is shown
+  // below" while nothing was, and it destroyed the one thing a provider most wants right after
+  // signing - what they had checked. So the answers stay, and the label is what makes that safe.
+  const check = async () => {
+    type("candidate", CLONE_A);
+    await settle();
+    byText("Check this contract").click();
+    await settle();
+  };
+
+  it("keeps the checked answers on screen after an input is edited", async () => {
+    await check();
+    expect(host.querySelector("[data-testid='clone-lifecycle']")).not.toBeNull();
+
+    type("candidate", CLONE_B);
+    await settle();
+
+    expect(host.querySelector("[data-testid='clone-lifecycle']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='provider-checks']")).not.toBeNull();
+  });
+
+  it("keeps them on screen after a transaction, which is when they are most wanted", async () => {
+    await check();
+    button("repoint-send").click();
+    await settle();
+
+    expect(host.querySelector("[data-testid='clone-lifecycle']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='provider-checks']")).not.toBeNull();
+  });
+
+  it("STRIKES THROUGH the superseded verdict and names why, on the verdict itself", async () => {
+    // A banner above the card is not enough on its own: a reader who scans to a green "Ready" and
+    // stops is precisely the reader it misses. The qualifier therefore sits on the badge.
+    await check();
+    const before = host.querySelector("[data-testid='verdict-ready']")!;
+    expect(before.className).not.toContain("line-through");
+    expect(host.querySelector("[data-testid='verdict-retired-spent']")).toBeNull();
+
+    button("repoint-send").click();
+    await settle();
+
+    const after = host.querySelector("[data-testid='verdict-ready']")!;
+    expect(after.className).toContain("line-through");
+    const marker = host.querySelector("[data-testid='verdict-retired-spent']")!;
+    expect(marker).not.toBeNull();
+    expect(marker.textContent).toContain("read before your transaction");
+  });
+
+  it("marks an edited plan with its OWN reason, not the transaction one", async () => {
+    await check();
+    type("candidate", CLONE_B);
+    await settle();
+
+    expect(host.querySelector("[data-testid='verdict-retired-edited']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='verdict-retired-spent']")).toBeNull();
+    expect(host.querySelector("[data-testid='verdict-ready']")!.className).toContain("line-through");
+  });
+
+  it("labels it in text a reader cannot miss, not by colour alone", async () => {
+    // The label must survive a reader who does not hover, does not click, and does not know that
+    // amber means anything. So it is asserted as TEXT.
+    await check();
+    button("repoint-send").click();
+    await settle();
+
+    const notice = host.querySelector("[data-testid='repoint-stale-spent']")!;
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain("Superseded");
+    expect(notice.textContent).toContain("read before your transaction");
+    expect(notice.textContent).toContain("Check again before sending another");
+    // Not the small-print treatment the earlier version used.
+    expect(notice.querySelector(".text-xs")).toBeNull();
+  });
+
+  it("does not disturb the send record, which stays separately readable", async () => {
+    await check();
+    button("repoint-send").click();
+    await settle();
+
+    expect(host.querySelector("[data-testid='sent-succeeded']")).not.toBeNull();
+    expect(host.querySelector(`a[href$='${HASH}']`)).not.toBeNull();
+  });
+
+  it("shows NO marker while the plan is still current", async () => {
+    // Non-vacuous: without this, a version that marked everything unconditionally would pass every
+    // case above.
+    await check();
+    expect(host.querySelector("[data-testid='verdict-retired-spent']")).toBeNull();
+    expect(host.querySelector("[data-testid='verdict-retired-edited']")).toBeNull();
+    expect(host.querySelector("[data-testid='repoint-stale']")).toBeNull();
+    expect(host.querySelector("[data-testid='repoint-stale-spent']")).toBeNull();
+  });
+});
+
 describe("a plan does not outlive its own transaction", () => {
   // The other set of inputs. A plan is keyed on the FORM, so an untouched form leaves the key
   // matching - but the answers came from the CHAIN, and submitting moves that. Without this, Check
@@ -203,7 +298,8 @@ describe("a plan does not outlive its own transaction", () => {
 
     expect(host.querySelector("[data-testid='repoint-stale-spent']")).not.toBeNull();
     expect(host.querySelector("[data-testid='repoint-stale']")).toBeNull();
-    expect(host.textContent).toContain("already been acted on");
+    expect(host.textContent).toContain("A transaction has already been sent against this");
+    expect(host.textContent).not.toContain("You have changed something since this was checked");
   });
 
   it("a second press really does send nothing", async () => {

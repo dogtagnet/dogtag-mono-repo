@@ -5,7 +5,9 @@ Registry plan `dogtag-regplan-p3` slice **S-9**.
 
 **DEPLOYED AND UNWIRED.**
 Cutover step C-7 deployed it live on ROAX on 2026-08-01, so it has an address in `contracts/deployments/roax.json` — recorded under `_c7_typed_resolvers` with its transaction hash, block and signer.
-It answers nothing: no `.env.example` entry names it, no client config carries it, no consumer reads it, and its store is empty, because a typed resolver does nothing until the registrar calls `setResolverApproved(DOMAIN, resolver, true)` AND each service selects it — both KYC work that C-7 did not perform.
+It answers nothing: no consumer reads it and its store is empty, because a typed resolver does nothing until the registrar calls `setResolverApproved(DOMAIN, resolver, true)` AND each service selects it — both KYC work that C-7 did not perform.
+S-15 added `VITE_SERVICE_DOMAIN_RESOLVER_ADDR` to the vet and groomer `.env.example` files and to their env plumbing, so the key EXISTS — but it ships BLANK and the code has no fallback, so nothing resolves an address from it.
+Read a blank fallback-free var as STRONGER evidence of unwiredness than an absent one: an absent key can be added and silently pick up a bundled constant, and this one cannot.
 Client repointing is C-9/C-10 and has NOT happened.
 Its source is consequently FROZEN in the same sense as the contracts S-14 deployed: an edit makes it diverge from deployed bytecode.
 It is additive in exactly the sense `ProviderRegistry`, `CloneProvenanceRouter` and the generation-2 issuer pair are: nothing already deployed changes, and no existing address moves.
