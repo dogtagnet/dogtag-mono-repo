@@ -142,43 +142,51 @@ pub const LEVEL_B_ARTIFACT_RELEASE: ArtifactRelease = ArtifactRelease {
 /// under the artifact registry would assert an artifact set that does not exist (R-5, the two axes).
 pub const LEVEL_B_V2_VERSION: &str = "dogtag-levelb/2";
 
-/// A version key this build RECOGNIZES but has no addresses for, because the contracts are built and
-/// not yet deployed. Carries what is missing and who fills it, and NO address field at all — a
-/// placeholder or a zero address here is exactly the invented data this fleet forbids.
+/// A version key this build RECOGNIZES but holds no [`VersionDeployment`] for. Carries what is still
+/// outstanding and who does it, and NO address field at all — a placeholder or a zero address here is
+/// exactly the invented data this fleet forbids.
+///
+/// For `dogtag-levelb/2` the reason is NOT that the contracts are unbuilt or undeployed: registry-plan
+/// S-14 deployed all six live on ROAX, and their addresses are in `contracts/deployments/roax.json`
+/// under `_s14_cutover`. What is missing is the PUBLICATION of a discovery set to the deployed
+/// `ProtocolRegistryV2`, which carries none — so there is no on-chain record for a manifest to be
+/// reconciled against, and serving one would advertise a version the chain does not carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwaitingDeployment {
     pub version: &'static str,
-    /// Who records the addresses, so the reader knows what has to happen rather than only that
-    /// something has not.
+    /// Who fills this in, so the reader knows what has to happen rather than only that something has
+    /// not.
     pub recorded_by: &'static str,
-    /// The contracts this version's record needs, in the order the cutover deploys them.
-    pub pending: &'static [&'static str],
+    /// The steps that remain before this version can be served, in the order they happen.
+    pub outstanding: &'static [&'static str],
 }
 
-/// `dogtag-levelb/2` — recognized, undeployed. See `docs/CLIENT_REPOINT.md`.
+/// `dogtag-levelb/2` — recognized; its contracts are deployed, but nothing is published for them yet.
+/// See `docs/CLIENT_REPOINT.md`.
 pub const LEVEL_B_V2_AWAITING: AwaitingDeployment = AwaitingDeployment {
     version: LEVEL_B_V2_VERSION,
-    recorded_by: "cutover steps C-1 through C-8 (registry plan S-14)",
-    pending: &[
-        "ProviderRegistry",
-        "DogTagIssuerV2 implementation",
-        "DogTagIssuerFactoryV2",
-        "CloneProvenanceRouter",
-        "VerificationRegistryConsent V2",
-        "ProtocolRegistryV2",
+    recorded_by: "publication to the deployed ProtocolRegistryV2 \
+                  (contracts/script/PublishProtocolVersionsV2.s.sol), then recording that published \
+                  record here",
+    outstanding: &[
+        "publish a generation-2 discovery set to the deployed ProtocolRegistryV2 - S-14 deployed that \
+         registry but published nothing to it, so it holds no discovery record",
+        "record the resulting on-chain record here as a VersionDeployment, so a served manifest has \
+         something to be reconciled against",
+        "repoint clients at the generation-2 addresses (cutover C-9/C-10)",
     ],
 };
 
 /// Why a version has no [`VersionDeployment`]. The two absences are DIFFERENT and must not collapse.
 ///
 /// `Unknown` is a typo, or a version this build does not serve.
-/// `AwaitingDeployment` is a key this build knows, whose contracts exist in `contracts/src` and have
-/// no address yet.
+/// `AwaitingDeployment` is a key this build knows and holds no [`VersionDeployment`] for.
 ///
 /// Collapsing them is the could-not-check-rendered-as-a-neighbour defect this repo closes everywhere
 /// else: an operator asking for `dogtag-levelb/2` mid-cutover and reading `unknown version` goes
-/// hunting a misspelling, when the real answer is that S-14 has not run. Both still fail closed and
-/// serve nothing — this changes the DIAGNOSIS, never the outcome.
+/// hunting a misspelling, when the real answer is that its contracts are deployed (S-14) and no
+/// discovery set has been published to `ProtocolRegistryV2` yet. Both still fail closed and serve
+/// nothing — this changes the DIAGNOSIS, never the outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentStatus {
     Recorded(&'static VersionDeployment),
@@ -682,10 +690,10 @@ mod tests {
     /// Leg 1: sign → serialize → deserialize → offline-verify PASSES.
     /// S-13: a recognized-but-undeployed version is NOT reported as an unknown one.
     ///
-    /// The two absences have unrelated remedies — a typo is the caller's to fix, an undeployed key is
-    /// only fixed by the cutover running — so collapsing them sends an operator hunting a misspelling
-    /// that does not exist. Mutation: make `deployment_status`'s `LEVEL_B_V2_VERSION` arm return
-    /// `Unknown` and this reddens.
+    /// The two absences have unrelated remedies — a typo is the caller's to fix, while a recognized
+    /// key with no on-chain record is fixed by publishing that record — so collapsing them sends an
+    /// operator hunting a misspelling that does not exist. Mutation: make `deployment_status`'s
+    /// `LEVEL_B_V2_VERSION` arm return `Unknown` and this reddens.
     #[test]
     fn a_recognized_but_undeployed_version_is_distinguished_from_an_unknown_one() {
         assert!(matches!(
@@ -712,18 +720,28 @@ mod tests {
     /// The awaiting record carries no address field at all, so it cannot become a placeholder that
     /// looks real. It must, however, name what is missing and who fills it — an unset state that says
     /// only "unset" is the thing this replaces.
+    ///
+    /// Since S-14 the remedy is PUBLICATION, not deployment: naming a deployed contract as outstanding
+    /// would send an operator to redeploy something that already exists on chain, which is the same
+    /// wrong-remedy defect the `Unknown`/`AwaitingDeployment` split exists to prevent.
     #[test]
-    fn the_awaiting_record_names_what_is_pending_without_inventing_an_address() {
+    fn the_awaiting_record_names_what_is_outstanding_without_inventing_an_address() {
         let a = &LEVEL_B_V2_AWAITING;
         assert_eq!(a.version, "dogtag-levelb/2");
         assert!(!a.recorded_by.is_empty());
-        // Every contract the generation-2 discovery record needs an address for.
-        assert!(a.pending.contains(&"CloneProvenanceRouter"));
-        assert!(a.pending.contains(&"ProviderRegistry"));
-        assert!(a.pending.contains(&"VerificationRegistryConsent V2"));
-        // The two deliberately-reused addresses are NOT pending — moving either is unrecoverable.
-        assert!(!a.pending.iter().any(|c| c.contains("SBT")));
-        assert!(!a.pending.iter().any(|c| c.contains("Verifier")));
+        assert!(!a.outstanding.is_empty());
+        // The remedy names publication, and names the registry it must be published to.
+        assert!(a.recorded_by.contains("ProtocolRegistryV2"));
+        assert!(a
+            .outstanding
+            .iter()
+            .any(|s| s.contains("publish") && s.contains("ProtocolRegistryV2")));
+        // The two deliberately-reused addresses are NOT outstanding — moving either is unrecoverable.
+        assert!(!a.outstanding.iter().any(|s| s.contains("SBT")));
+        assert!(!a.outstanding.iter().any(|s| s.contains("Verifier")));
+        // Still no address anywhere, in either field.
+        assert!(!a.recorded_by.contains("0x"));
+        assert!(!a.outstanding.iter().any(|s| s.contains("0x")));
     }
 
     /// Generation 2's DISCOVERY key is not an ARTIFACT key. The artifacts are byte-for-byte generation

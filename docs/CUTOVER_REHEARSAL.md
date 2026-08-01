@@ -4,6 +4,13 @@ Slice S-12 of the provider-registry plan (`dogtag-regplan-p3`).
 
 **Nothing in this slice was deployed live.**
 The whole sequence was executed against `anvil --fork-url https://devrpc.roax.net` pinned at block **304000**, chain 135.
+
+> **S-14 has since executed this sequence live on ROAX** (2026-08-01, captain-authorised, testnet only), through `contracts/script/ExecuteCutover.s.sol` - which calls the same `CutoverSequence` functions this rehearsal asserts, and which refuses the pinned block above so it cannot run on the rehearsal fork (it still permits a fork at the current head, deliberately).
+> The addresses, transaction hashes and blocks are in `contracts/deployments/roax.json` under `_s14_cutover`; the operational notes are in `AGENTS.md`.
+> S-14 deployed and appended only: the clients were **not** repointed (C-9/C-10) and C-6, C-7, C-10b, C-11, C-12 and the rest of C-2 were **not** performed, so §4's remaining steps all still stand.
+> One step that WAS performed departed from §4's recommendation: C-8 deployed at the 1-hour floor rather than the 2-day default - see the note under §4's C-8 entry.
+> The statement above remains true of **this** slice - it records the rehearsal, not the live run.
+
 A fork rather than a testnet deploy because a fork answers what the **deployed bytecode actually permits**, not what the source suggests - and that distinction produced three corrections to the plan that reading it could not have.
 
 Reproduce with `make rehearse-cutover`.
@@ -202,6 +209,13 @@ One transaction per (purpose, relayer).
 ### C-8 - deploy `ProtocolRegistryV2` with a non-zero publish timelock
 **Irreversible: the timelock is.** It is immutable, and this deployment is the only opportunity to fix the live registry's `PUBLISH_TIMELOCK == 0` (re-confirmed on the fork).
 The contract enforces a 1-hour floor in its constructor, so zero is unrepresentable - **but the floor is not the target**. Use `DEFAULT_PUBLISH_TIMELOCK` (2 days). The rehearsal uses the floor only so a rehearsal can be walked end to end in one sitting.
+
+> **That recommendation is written in a mainnet-safety register, and the live ROAX C-8 did NOT follow it.**
+> S-14 deployed `ProtocolRegistryV2` at the **1-hour floor** with the testnet opt-in stated aloud, because ROAX's generation-1 registry deliberately ran `PUBLISH_TIMELOCK_SECS=0` so publication could be walked in one sitting and a 2-day delay would block every discovery publish during testing.
+> The full reasoning is in `_s14_cutover` in `contracts/deployments/roax.json`; the operational note is in `AGENTS.md`.
+> **Mainnet must still use exactly 2 days** - `DeployProtocolRegistryV2.s.sol` enforces that unless a testnet deploy is stated, and never permits below the floor.
+> The value is immutable on the deployed instance, so changing it means redeploying; that is free today and only today, because no consumer carries the address yet.
+
 **Rollback:** redeploy and repoint every client carrying the discovery address, including two compile-time mobile bundles.
 
 ### C-9 / C-10 / C-10b - clients, then apps, then SBT roles

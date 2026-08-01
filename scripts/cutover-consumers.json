@@ -17,8 +17,22 @@
     "Addresses are matched in FULL (40 hex digits) and CASE-INSENSITIVELY. Both halves are load-bearing;",
     "see docs/CLIENT_REPOINT.md for the two ways an 8-hex case-sensitive grep gets this wrong.",
     "",
-    "generation2 is null for every entry because nothing is deployed. S-13 repoints; S-14 deploys.",
-    "A placeholder here would be the invented data this fleet forbids."
+    "S-14 DEPLOYED, so `generation2` is now FILLED for the entries that have a single successor and",
+    "still null for the rest. A null no longer means one thing, and the difference matters:",
+    "  - not deployed at all (IssuerDomainRegistry - C-7 was out of scope of S-14);",
+    "  - deployed, but NO SINGLE SUCCESSOR (DogTagIssuerFactory splits by caller role, so filling one",
+    "    half would hand it to a consumer of the other - the successors are on supersededByReaders /",
+    "    supersededByWriters instead);",
+    "  - deployed, but the repoint is BLOCKED (IssuerRegistry - the successor answers a different",
+    "    question, see its note).",
+    "Every entry therefore carries `generation2Provenance`, which states WHICH of those a null is, or -",
+    "for a filled entry - where the address came from and that recording it repoints nothing. The gate",
+    "requires that key and prints it, because otherwise 'N of M are FILLED' is the only signal and it",
+    "cannot tell the three nulls apart.",
+    "",
+    "A FILLED value is a record of what was deployed, never an instruction to repoint: repointing is",
+    "C-9/C-10 and is gated on `semanticEquivalence`, not on an address existing. A placeholder in any",
+    "of the still-null entries would be the invented data this fleet forbids."
   ],
   "chainId": 135,
   "generation1Ledger": "contracts/deployments/roax.json",
@@ -50,8 +64,9 @@
         "APPEND beside generation 1 rather than a swap. That list is keyed by who SIGNED a log, and the",
         "router emits nothing, so a router address there would silently match no event ever."
       ],
-      "supersededByReaders": "CloneProvenanceRouter",
-      "supersededByWriters": "DogTagIssuerFactoryV2"
+      "supersededByReaders": "CloneProvenanceRouter 0xf374f4cA5ebBBAFf0dFcE48D8Cda2e47F9D5da01",
+      "supersededByWriters": "DogTagIssuerFactoryV2 0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6",
+      "generation2Provenance": "generation2 stays NULL DELIBERATELY - this address has no single successor. Both halves were deployed live by S-14 on 2026-08-01 and are named on supersededByReaders/supersededByWriters above WITH their addresses; see _s14_cutover in contracts/deployments/roax.json. Filling one of them in here would hand whichever half is read first to a consumer of the other role, which is exactly the failure this entry's note describes."
     },
     {
       "contract": "IssuerRegistry",
@@ -185,26 +200,28 @@
       "supersededByVerifyKeyReaders": "ProviderRegistry - semantically equivalent, but UNREACHABLE alone: the same env variable also serves the record-type readers below",
       "supersededByEmitterAllowlist": "ProviderRegistry, APPENDED beside generation 1 in INDEXER_GENERATIONS.issuerRegistry - but NOT sufficient on its own. That member is an EMITTER address, so its question is 'which events does it emit', and ProviderRegistry emits NEITHER Whitelisted NOR Delisted (it emits IssuanceCapabilitySet / VerifierCapabilitySet - different names, topic0 and argument shapes). The scanner filters by the Whitelisted/Delisted topic0, so the address alone leaves that generation's whitelist axis permanently dark, failing the same SILENT way a late append does. Pair it with a decoder change or do not append it.",
       "supersededByRecordTypeKeyReaders": "BLOCKED - requires the isRecognizedIssuer(service, signer) migration; ProviderRegistry answers a definite false here",
-      "supersededByWriters": "IssuerRegistry (RETAINED through C-12 - ProviderRegistry has no whitelistFor/delistFor)"
+      "supersededByWriters": "IssuerRegistry (RETAINED through C-12 - ProviderRegistry has no whitelistFor/delistFor)",
+      "generation2Provenance": "generation2 stays NULL: the S-6 authority core was deployed live by S-14 on 2026-08-01 at ProviderRegistry 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 (see _s14_cutover in contracts/deployments/roax.json), but this entry remains BLOCKED and no consumer of ISSUER_REGISTRY_ADDR may be repointed at it - see the note. The address is recorded here so the successor is findable, NOT as a repoint target."
     },
     {
       "contract": "VerificationRegistryConsent",
       "generation1": "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
-      "generation2": null,
+      "generation2": "0xE49f30D6677f019f11298B3294377E6B817d43Da",
       "supersededBy": "VerificationRegistryConsent V2",
       "repointStep": "C-9",
-      "semanticEquivalence": "UNVERIFIED - the V2 contract is not written, so no question-for-question comparison has been made. Establish it before C-9, not during.",
+      "semanticEquivalence": "UNVERIFIED, but no longer for the original reason. V2 IS written and deployed - CutoverSequence.c5_deployRegistryV2 constructs contracts/src/VerificationRegistryConsent.sol, the SAME source as generation 1, so every selector and every question-for-question semantic is identical BY CONSTRUCTION. What is unverified is the effect of the CONSTRUCTOR BINDINGS, which are the only difference: the authority is the new ProviderRegistry core (whose isWhitelistedFor answers a caller-scoped question - see the IssuerRegistry entry) and rootIndex is the CloneProvenanceRouter rather than the generation-1 factory. Neither has been exercised end to end against a real credential. Establish that before C-9, not during; and note this entry does NOT clear C-9, because the separate IssuerRegistry entry is still BLOCKED.",
       "note": [
         "Its issuerRegistry / sbt / rootIndex are all immutable, so replacing the authority core forces",
         "this redeploy on its own. C-6 must migrate the VERIFY: relayer capabilities BEFORE any client",
         "is repointed here: restrictToWhitelistedRelayers defaults true, so a client on V2 whose relayer",
         "was not migrated gets !verify-wl on every verification."
-      ]
+      ],
+      "generation2Provenance": "Deployed live on ROAX by registry-plan S-14 on 2026-08-01; see _s14_cutover in contracts/deployments/roax.json for the transaction hash and block. Recording the address does NOT repoint anything: every consumer below still reads the generation-1 address until C-9."
     },
     {
       "contract": "ProtocolRegistry",
       "generation1": "0xf5492A671E69b1A13f7Fd123C021830eB1ea8081",
-      "generation2": null,
+      "generation2": "0xe98BFf66367F74F413414228adD91c16A24F7fdb",
       "supersededBy": "ProtocolRegistryV2",
       "repointStep": "C-8, then C-9",
       "semanticEquivalence": "VERIFIED, and enforced STRUCTURALLY. The record is deliberately RENAMED (getDiscoverySet/resolveDiscovery, 10 words vs 8), so a generation-1 client cannot dispatch and misdecode it; getArtifactSet/getActiveArtifactSet keep their selectors because the artifact record is genuinely unchanged. See docs/PROTOCOL_REGISTRY_V2.md.",
@@ -212,7 +229,8 @@
         "The discovery anchor. Generation 2 publishes under the NEW discovery key dogtag-levelb/2; the",
         "ARTIFACT key stays dogtag-levelb-artifacts/1 because the artifacts are byte-for-byte identical",
         "and a second identity for them would be a falsehood. See docs/PROTOCOL_REGISTRY_V2.md."
-      ]
+      ],
+      "generation2Provenance": "Deployed live on ROAX by registry-plan S-14 on 2026-08-01; see _s14_cutover in contracts/deployments/roax.json for the transaction hash and block. Recording the address does NOT repoint anything: every consumer below still reads the generation-1 address until C-9."
     },
     {
       "contract": "IssuerDomainRegistry",
@@ -225,12 +243,13 @@
         "Abandoning the deployed one is free: boundCloneCount() == 0 AND zero logs of any kind at head",
         "303690 on 2026-07-30. Read the log count, not just the counter - setDomainAdmin appoints a key",
         "without writing a binding, so only 'no logs' establishes nothing is stranded."
-      ]
+      ],
+      "generation2Provenance": "generation2 stays NULL: ServiceDomainResolver is built and tested but NOT DEPLOYED. C-7 was out of scope of S-14, so there is no address to record and none is invented."
     },
     {
       "contract": "DogTagIssuerImpl",
       "generation1": "0xe4aC139eB257C309Ec448C116A6F657Dab5590BA",
-      "generation2": null,
+      "generation2": "0x91E210AD9A5CCe4aF2C49221f0584E2ad6d13691",
       "supersededBy": "DogTagIssuerV2 implementation",
       "repointStep": "C-3",
       "semanticEquivalence": "NOT APPLICABLE - no consumer calls this address. It is the clone implementation, identified by codehash at factory construction and recorded in the ledger and both mobile bundles.",
@@ -238,7 +257,8 @@
         "The clone implementation. DogTagIssuerFactoryV2 identifies it EXACTLY, by",
         "impl.codehash == keccak256(type(DogTagIssuerV2).runtimeCode), so an ABI-shaped impostor is",
         "refused at construction. Carried here because both mobile bundles and the ledger record it."
-      ]
+      ],
+      "generation2Provenance": "Deployed live on ROAX by registry-plan S-14 on 2026-08-01; see _s14_cutover in contracts/deployments/roax.json for the transaction hash and block. Recording the address does NOT repoint anything: every consumer below still reads the generation-1 address until C-9."
     }
   ],
   "_doNotMoveDoc": [
@@ -273,7 +293,7 @@
     "historical-ledger": "PRESERVE. The deployment record. AGENTS.md: do not rewrite historical records.",
     "pinned-fixture": "PRESERVE. Pinned to a block; the S-12 fork test REFUSES to run if it disagrees with the fork.",
     "hermetic-fixture": "PRESERVE. A MemChain or mocked-network constant that resolves nothing live. Reusing a real address here is cosmetic.",
-    "inventory-manifest": "PRESERVE the generation-1 values. This file itself, which records WHAT MOVED and therefore holds every generation-1 address by design. S-14 fills each `generation2` beside its `generation1`; it never replaces one, or the record of what moved from where is lost."
+    "inventory-manifest": "PRESERVE the generation-1 values. This file itself, which records WHAT MOVED and therefore holds every generation-1 address by design. S-14 filled `generation2` BESIDE its `generation1` wherever a single successor exists; it never replaces one, or the record of what moved from where is lost. Where S-14 left a null it is for a stated reason - see `generation2Provenance` on that entry and the _doc above."
   },
   "consumers": [
     {

@@ -102,13 +102,13 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   move; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
   subject-bearing `Verified` ABI; `CloneProvenanceRouter.t.sol` performs the real cross-generation
   resurrection attack against the router's oldest-first resolution and pins the mirror direction it
-  deliberately does not close; `ProviderRegistry.t.sol` proves the build-only provider-authority
+  deliberately does not close; `ProviderRegistry.t.sol` proves the deployed-but-unwired provider-authority
   core's KYC-standing AND owner/delegate predicate, genuine-factory attachment/repoint, service-scoped
   capabilities, real controller/owner/admin key rotations, the widest-first
   `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` ladder against every lifecycle event that stops new
   issuance, and the registrar-only provider-binding correction; `IssuerV2.t.sol` covers the
-  built-but-undeployed generation-2 issuer pair (see "The generation-2 issuer pair is BUILT, NOT
-  DEPLOYED"); `IssuerV2ProviderAuthority.t.sol` is the one suite that binds the generation-2 pair's
+  deployed-but-unwired generation-2 issuer pair (see "The generation-2 issuer pair is DEPLOYED BUT
+  UNWIRED"); `IssuerV2ProviderAuthority.t.sol` is the one suite that binds the generation-2 pair's
   locally-declared oracle interface to the REAL provider core (`ProviderRegistry.t.sol` binds that core
   too, for its own behaviour), pinning that the four functions the pair asks of it are the core's own on
   both axes a signature has; `ProviderDirectory.t.sol` covers the build-only typed DIRECTORY
@@ -117,11 +117,11 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   real generation-2 clones from the real self-service factory at once, so it is where "these contracts
   compose" is actually exercised rather than mocked (see "ServiceDomainResolver - three absences, and
   the router term that is NOT redundant");
-  and `ProtocolRegistryV2.t.sol` + `DeployProtocolRegistryV2.t.sol` cover the built-but-undeployed
+  and `ProtocolRegistryV2.t.sol` + `DeployProtocolRegistryV2.t.sol` cover the deployed-but-unwired
   generation-2 discovery registry, including the constructor timelock floor, the golden ABI encoding
   both mobile anchor decoders are pinned against, and the publish script's execute-phase re-preflight
   refusing a `zkVerifier` swapped inside the publish window plus its staged-versus-environment check on
-  BOTH axes (see "ProtocolRegistryV2 is BUILT, NOT DEPLOYED"). **The preflight's negative cases are
+  BOTH axes (see "ProtocolRegistryV2 is DEPLOYED BUT UNWIRED"). **The preflight's negative cases are
   asserted by calling `preflight` directly with a mutated struct, never by writing `GEN2_*` and running
   the script**: `vm.setEnv` writes the PROCESS environment while forge runs a suite's test functions
   concurrently, so the env-driven form made that file fail 8 runs out of 8 at default threads under
@@ -283,8 +283,14 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   and deploy scripts are gone; their already-deployed addresses remain solely in the deployment ledger
   for historical reads. Protocol publication keeps the exact compatibility key `dogtag-levelb/1` and
   publishes one contract set plus one independently rotatable artifact set and their binding.
-  `CloneProvenanceRouter` is also in that live source but is **built and tested only, NOT deployed** -
-  no address, no `.env.example` entry, no consumer points at it. See "CloneProvenanceRouter" below.
+  `CloneProvenanceRouter` is also in that live source and was **DEPLOYED BY S-14** (cutover C-4, with
+  generation 2 appended at C-4b): it has a ledger entry, but no `.env.example` entry and no consumer
+  points at it, because client repointing is C-9/C-10. **This paragraph mixes two statuses, so read
+  each sentence for its own rather than pattern-matching the wording:** this one and the
+  `ProviderRegistry` sentence below it are DEPLOYED BUT UNWIRED, while the two sentences BETWEEN them
+  (`ProviderDirectory`, `ServiceDomainResolver`) say "built and tested only, NOT deployed" and are
+  still TRUE, because C-7 was out of scope of S-14. See "CloneProvenanceRouter" below and
+  `_s14_cutover` in `contracts/deployments/roax.json`.
   `ProviderDirectory` is the S-10 typed DIRECTORY resolver selected through the S-6 core (pins,
   contacts and profile anchors, keyed by `providerId`) and is likewise **built and tested only, NOT
   deployed** - no address, no deploy script, no `.env.example` entry, and the indexer's provider
@@ -292,11 +298,14 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   `ServiceDomainResolver` is the S-9 successor to `IssuerDomainRegistry` and is likewise **built and
   tested only, NOT deployed**; the deployed `IssuerDomainRegistry` remains the wired one until the
   cutover, so no consumer address moved with it. See "ServiceDomainResolver" below.
-  `ProviderRegistry` is the separately tested S-6 provider identity/authority core: it is source-only,
-  has no deploy script, ledger entry, or environment address, and is **not deployed**. It admits only
+  `ProviderRegistry` is the separately tested S-6 provider identity/authority core: it was **deployed
+  live on ROAX by S-14 and is UNWIRED** - it has a `ProviderRegistry` ledger entry, but no
+  `.env.example` entry and no consumer reads it, because client repointing is C-9/C-10 (see "The
+  generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover` in `contracts/deployments/roax.json`;
+  do not transcribe the address here). It admits only
   owner-bearing clones, matching the plan's retire/re-issue recommendation for the five ownerless V1
   clones; C-2 therefore still needs that KYC/captain migration choice, because S-6 contains no legacy
-  controller adapter. Its legacy `isWhitelistedFor(bytes32,address)` issuance answer is deliberately
+  controller adapter, and only C-2's chain half (`addFactoryGeneration`) was performed. Its legacy `isWhitelistedFor(bytes32,address)` issuance answer is deliberately
   caller-scoped to an attached clone, so a direct reader (which cannot identify a service through that
   two-argument selector) must migrate to a service-scoped read — but **which** one is the whole
   question, because the three issuance-axis reads are a deliberate ladder, `isRecognizedIssuer` ⊇
@@ -1229,13 +1238,16 @@ An already-installed app keeps proving against its **baked** key until you do, s
   neutral-custodian return value must never be compared as owner identity. Every relay ABI must stay in
   sync with this four-argument signature.
 
-### The generation-2 issuer pair is BUILT, NOT DEPLOYED (registry-plan S-7)
+### The generation-2 issuer pair is DEPLOYED BUT UNWIRED (registry-plan S-7, deployed by S-14)
 
 `DogTagIssuerV2` + `DogTagIssuerFactoryV2` exist in `contracts/src/` and are covered by
-`test/IssuerV2.t.sol` (63 tests). **This repo records no deployment of either** - no address in
-`deployments/roax.json`, no `.env.example` key, no client config, and nothing in the tree points at one.
-Say it that way rather than "deployed nowhere": the ledger is what this repo can speak for. Deploying is
-part of the cutover (S-13/S-14) and separately captain-authorized. The generation-1 `DogTagIssuer.sol` /
+`test/IssuerV2.t.sol` (63 tests). **Both were deployed live on ROAX by S-14 and NOTHING READS EITHER** -
+the ledger carries `DogTagIssuerV2Impl` and `DogTagIssuerFactoryV2` keys under their own names (see "The
+generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover` in `deployments/roax.json`; do not
+transcribe the addresses here), but there is no `.env.example` key, no client config, and nothing in the
+tree points at one. Say it that way rather than "the cutover is done": deployed is not wired, client
+repointing is C-9/C-10, and enabling generation-2 issuance is C-11 - all separately captain-authorized
+and all outstanding. The generation-1 `DogTagIssuer.sol` /
 `DogTagIssuerFactory.sol` are UNMODIFIED; the pair is purely additive, like `ProtocolRegistry` and
 `IssuerDomainRegistry` were.
 
@@ -1340,14 +1352,18 @@ those mutations as a repeatable gate. `IssuerV2.t.sol`'s authority is a stand-in
 (`MockProviderAuthority`), so its three rungs are DERIVED from one set of registrar facts and never
 independently settable; keep it that way or the coverage becomes self-agreement.
 
-## ProtocolRegistryV2 is BUILT, NOT DEPLOYED - and its timelock floor is the point (registry-plan S-11)
+## ProtocolRegistryV2 is DEPLOYED BUT UNWIRED - and its timelock floor is the point (registry-plan S-11, deployed by S-14)
 
 `contracts/src/ProtocolRegistryV2.sol` + the `…V2` deploy/versions/publish scripts. Full rationale:
-**`docs/PROTOCOL_REGISTRY_V2.md`** - do not restate it here, or the copy rots. This repo records no
-address, no `.env.example` entry, and no consumer points at one; deploying is cutover C-8 and separately
-captain-authorized. Generation 1's deployed `ProtocolRegistry` (`0xf5492A67…`) is untouched and stays
-live until clients are repointed, so **no address moved in this slice** - both mobile bundles keep their
-generation-1 key, and a placeholder V2 entry would be invented data.
+**`docs/PROTOCOL_REGISTRY_V2.md`** - do not restate it here, or the copy rots. C-8 ran live on ROAX in
+S-14, so the ledger carries a `ProtocolRegistryV2` key (see "The generation-2 contracts ARE DEPLOYED on
+ROAX" and `_s14_cutover`; do not transcribe the address here), but there is still no `.env.example`
+entry and no consumer points at it - repointing is C-9 and nothing has been published on it.
+Generation 1's deployed `ProtocolRegistry` (`0xf5492A67…`) is untouched and stays
+live until clients are repointed, so **no consumer address moved** - both mobile bundles keep their
+generation-1 key, and a placeholder V2 entry in a consumer would be invented data.
+Its `PUBLISH_TIMELOCK` is the 1-hour floor and is IMMUTABLE; the S-14 section states why, and mainnet
+must still use exactly 2 days.
 
 The six things worth knowing before touching any of it:
 
@@ -1596,20 +1612,69 @@ modes; the fallback one is the one that can lie.
 repoint takes effect only after a rebuild AND a reinstall on each handset (C-10, the cutover's long
 pole). Nothing between the edited file and the installed build says which state you are in.
 
-**A recognized-but-undeployed version key is not an unknown one.** `manifest::deployment_status` returns
-`AwaitingDeployment` for `dogtag-levelb/2`, and `GET /protocol/manifest` answers 404 `version not yet
-deployed` naming the pending contracts rather than 404 `unknown version`. Both fail closed and serve
-nothing - only the DIAGNOSIS differs, because a typo is the caller's to fix while an undeployed key is
-fixed only by the cutover running. The record carries no address field at all, so it cannot decay into a
+**A recognized version key with no on-chain record is not an unknown one.** `manifest::deployment_status`
+returns `AwaitingDeployment` for `dogtag-levelb/2`, and `GET /protocol/manifest` answers 404 `version not
+yet deployed` naming the outstanding STEPS rather than 404 `unknown version`. Both fail closed and serve
+nothing - only the DIAGNOSIS differs, because a typo is the caller's to fix while this key is fixed by
+publishing a discovery set. **Since S-14 the remedy is PUBLICATION, not deployment:** all six
+generation-2 contracts are deployed and `ProtocolRegistryV2` carries no discovery set, so a record that
+still named those contracts as pending would send an operator to redeploy what already exists - the
+wrong-remedy defect this split exists to prevent. Serving a manifest anyway would be worse: it would
+advertise a version whose on-chain discovery record does not exist, so clients would reconcile against
+nothing. The record carries no address field at all, so it cannot decay into a
 placeholder. Note the generation-2 DISCOVERY key is not an ARTIFACT key: the artifacts are byte-for-byte
 generation 1's and keep `dogtag-levelb-artifacts/1`, so `artifact::resolve` fails closed on it too.
+
+## The generation-2 contracts ARE DEPLOYED on ROAX, and nothing reads them yet (S-14)
+
+The eight-transaction on-chain cutover ran live on ROAX (chain 135) on 2026-08-01, captain-authorised, testnet only.
+Addresses, transaction hashes and blocks live in `contracts/deployments/roax.json` under `_s14_cutover` - do not transcribe them here, or this copy rots.
+The six new ledger keys are `ProviderRegistry`, `DogTagIssuerV2Impl`, `CloneProvenanceRouter`, `DogTagIssuerFactoryV2`, `VerificationRegistryConsentV2` and `ProtocolRegistryV2`.
+
+**Deployed is not wired, and the ledger key names are what keep those apart.**
+Client repointing is C-9/C-10 and did NOT happen, so `DogTagIssuerFactory`, `IssuerRegistry`, `VerificationRegistryConsent` and `ProtocolRegistry` remain the addresses every consumer reads.
+The generation-2 keys are recorded under DISTINCT names precisely so no consumer is repointed by a ledger edit - `scripts/demo-up.sh` resolves keys by name through `ledger_addr`, so reusing a generation-1 key would have silently repointed a running stack.
+Say "deployed, unwired" rather than "the cutover is done": everything from C-6 onward, and the rest of C-2, remains outstanding.
+
+**`RehearseCutover.s.sol` cannot perform a live cutover, and that is deliberate rather than a gap.**
+It requires `block.number == pinnedBlock`, which a live chain can never satisfy - that guard is what carries the rehearsal's safety, so it must not be relaxed.
+`contracts/script/ExecuteCutover.s.sol` is the live counterpart and refuses that same pinned block, so it cannot run on the rehearsal fork.
+Read that guard precisely, because it is NOT symmetric: it refuses the pinned block only, and deliberately still permits a fork at the CURRENT head - which is how the simulate-versus-broadcast behaviour below gets measured.
+Nothing in either script establishes that an endpoint is live, so which URL gets passed remains the operator's responsibility.
+Both call the same `CutoverSequence.cN_*` functions with the same arguments in the same order, which is the ONLY reason the S-12 rehearsal and its mutation harness are evidence about the live transactions.
+A live driver that re-derived the constructor arguments - in Solidity, or by hand-encoding `cast send --create` - would be a second definition free to drift by one argument with both looking correct.
+
+**`--skip-simulation` is NOT needed live, and using it would be strictly worse.**
+The §6 divergence that forced it on the S-12 fork was observed under `--unlocked`.
+With `--private-key`, simulation and broadcast attribute every CREATE to `governance@nonce` identically - confirmed against `cast compute-address` for the exact nonces BEFORE sending, which is a free check worth repeating on any future run.
+Keeping simulation ON is a safety property, not a cost: a failed precondition then broadcasts **nothing**, which was observed twice while proving the phase-2 guards refuse.
+Send with `--legacy` (every ROAX deploy does) and `--slow`, because C-3b's constructor behaviour-probes the router and C-4b needs C-3b's factory to exist - those are hard inter-transaction dependencies.
+
+**The driver is PHASED because C-4b is irreversible and its ordering must be read off the chain, not off a banner.**
+Phase 1 (C-1, C-3a, C-4, C-3b) is entirely abandonable; phase 2 (C-4b, C-2) cannot be undone by any transaction; phase 3 (C-5, C-8) is deployments again.
+Between them, verify by EFFECT: after C-4 `generationCount() == 1` with `generationAt(0)` the generation-1 factory - **not** `[factoryV2, factoryV1]`, which is the silent revocation bypass - and after C-4b `generationCount() == 2` with generation 1 still at index 0 and generation 2 at the TAIL.
+Both were checked live, and all 19 roots in `contracts/rehearsal/fixtures/historical-roots.json` were re-resolved at both points as `router.rootIssuer(r) == factoryV1.rootIssuer(r)`, non-zero, proving the append moved no existing answer.
+Phase 2 additionally re-reads the deployed router and factory as PRECONDITIONS - including `factoryV2.priorIndex() == router`, which is what stops a mistyped factory address being appended permanently - and requires `CUTOVER_CONFIRM_IRREVERSIBLE=true` stated aloud.
+
+**`ProtocolRegistryV2`'s `PUBLISH_TIMELOCK` is 3600 (the 1-hour floor) and it is IMMUTABLE.**
+The full reasoning is in the ledger's `_s14_cutover`; the part worth knowing here is that `docs/CUTOVER_REHEARSAL.md` §4 recommends the 2-day default in a mainnet-safety register, and **mainnet must use 2 days** - `DeployProtocolRegistryV2.s.sol` enforces exactly that unless a testnet deploy is stated.
+ROAX took the floor because its generation-1 registry deliberately ran `PUBLISH_TIMELOCK_SECS=0` so publication could be walked in one sitting, and a 2-day delay would block every discovery publish during testing.
+Redeploying C-8 is FREE today and only today: its stated rollback cost is repointing every client including two compile-time mobile bundles, and that cost is zero while no consumer carries the address.
+
+**C-12 was NOT performed, so `CloneProvenanceRouter`'s one open direction is live.**
+A later-generation root can still be re-anchored in an EARLIER generation, which oldest-first resolution then prefers.
+The next section explains why no contract can close it and why the generation-1 issuance freeze is the remedy.
+Nothing issues through generation 2 yet (C-11 is also outstanding), so nothing is exposed today - but do not read the deployment as having closed it.
 
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 
 `contracts/src/CloneProvenanceRouter.sol`. Full rationale: `docs/CLONE_PROVENANCE_ROUTER.md`.
-**BUILT AND TESTED ONLY - NOT DEPLOYED.** No address in `contracts/deployments/roax.json`, no
-`.env.example` entry, no consumer points at it. Deploying it is a separate captain-authorized step
-(registry plan `dogtag-regplan-p3` slice S-8, cutover step C-4).
+**DEPLOYED BY S-14, AND UNWIRED.** C-4 deployed it and C-4b appended generation 2, so the ledger carries
+a `CloneProvenanceRouter` key (see "The generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover`;
+do not transcribe the address here). It IS the `rootIndex` of the generation-2
+`VerificationRegistryConsent` deployed at C-5 - but that registry is itself unwired, so no `.env.example`
+entry names the router and no client resolves a root through it; that is C-9/C-10.
+**C-12 was NOT performed**, so the one open direction below is live rather than closed.
 
 It occupies `VerificationRegistryConsent`'s **immutable** `rootIndex` slot in place of one factory and
 answers `rootIssuer(bytes32)` + `isClone(address)` over an ordered list of factory generations. That

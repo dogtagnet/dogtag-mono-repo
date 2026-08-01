@@ -297,22 +297,47 @@ if d:
 # claim inside the one artifact whose job is catching unearned claims. A filled value is INFORMATIONAL,
 # not a failure: S-14 filling them in is the expected end state. A MISSING key is an error, because a
 # property that was never stated must not be reported as a stated null.
+#
+# `generation2Provenance` is required and PRINTED for the same reason `semanticEquivalence` is. Once
+# S-14 filled some entries and not others, a null stopped meaning one thing - not yet deployed,
+# deployed with no single successor, or deployed but BLOCKED - and a bare "N of M are FILLED" cannot
+# tell those apart. An absent key is an error rather than a silent pass, because a null nobody
+# explained reads exactly like a null nobody has got to yet.
 python3 - "$MANIFEST" <<'PY' || fail=1
-import json, sys
+import json, sys, textwrap
 m = json.load(open(sys.argv[1]))
 missing = [a["contract"] for a in m["movingAddresses"] if "generation2" not in a]
 if missing:
     print("::error:: movingAddresses entries with no `generation2` key at all: " + ", ".join(missing))
     print("          Absent is not null. Record it explicitly as null until S-14 deploys.")
     raise SystemExit(1)
-filled = [(a["contract"], a["generation2"]) for a in m["movingAddresses"] if a["generation2"] is not None]
+unexplained = [a["contract"] for a in m["movingAddresses"] if "generation2Provenance" not in a]
+if unexplained:
+    print("::error:: movingAddresses entries with no `generation2Provenance`: " + ", ".join(unexplained))
+    print("          A null must say WHICH null it is (not deployed / no single successor / BLOCKED),")
+    print("          and a filled one must say where the address came from and that it repoints nothing.")
+    raise SystemExit(1)
+entries = m["movingAddresses"]
+filled = [a for a in entries if a["generation2"] is not None]
 print()
 if not filled:
-    print(f"Generation-2 addresses: read {len(m['movingAddresses'])}, all null - S-13 repoints, S-14 deploys.")
+    print(f"Generation-2 addresses: read {len(entries)}, all null - S-13 repoints, S-14 deploys.")
 else:
-    print(f"Generation-2 addresses: {len(filled)} of {len(m['movingAddresses'])} are FILLED (S-14 in progress):")
-    for contract, addr in filled:
-        print(f"  {contract:<30} {addr}")
+    print(f"Generation-2 addresses: {len(filled)} of {len(entries)} are FILLED (recorded, NOT repointed):")
+    for a in filled:
+        print(f"  {a['contract']:<30} {a['generation2']}")
+nulls = [a for a in entries if a["generation2"] is None]
+if nulls:
+    # Printed IN FULL, deliberately. This reason is the ONLY artifact separating the three kinds of
+    # null, so a line cap here would cut the distinguishing clause off some entry and - with no marker
+    # - the partial output would read as the whole of it. Capping and marking would still hide the
+    # clause; there is no length at which this is safe to elide, so it is not elided.
+    print(f"Still null ({len(nulls)}), each for its own stated reason:")
+    for a in nulls:
+        why = " ".join(a["generation2Provenance"].split())
+        print(f"  {a['contract']}")
+        for line in textwrap.wrap(why, 92, initial_indent="    ", subsequent_indent="    "):
+            print(line)
 PY
 
 if [ "$fail" -eq 0 ]; then
