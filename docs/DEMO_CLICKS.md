@@ -190,7 +190,7 @@ curl -s localhost:44832/health | python3 -c "import sys,json;d=json.load(sys.std
 curl -s localhost:46001/health | python3 -c "import sys,json;d=json.load(sys.stdin);print('indexer:    simulated',d['simulated'],'chainId',d['chainId'])"
 
 if [ ! -f target/release/vet-api ]; then
-  echo 'vet-api binary: NOT BUILT in this checkout - run cargo build --release -p vet-api'
+  echo 'vet-api binary: NOT BUILT in this checkout - run cargo build --release -p vet-api --features mongo'
 elif strings target/release/vet-api | grep -q 'connected to MongoStore'; then
   echo 'vet-api binary: mongo feature ON'
 else
@@ -220,18 +220,22 @@ A healthy stack answers:
 |---|---|---|
 | `mongo feature OFF` | `no MONGO_URI -> MemStore` | **A stock `demo-up.sh` stack, and correct.** Shop data is in memory and does not survive a restart of those backends. |
 | `mongo feature ON` | `MONGO_URI=mongodb://...` | A **MongoStore**, so shop data persists. |
-| `mongo feature OFF` | `MONGO_URI=...` printed | Cannot happen at runtime: that process would have refused to start, so port 41874 reads `DOWN` and `.demo/vet-api.log` carries the reason. |
-| `NOT BUILT in this checkout` | anything | **No verdict about the store.** This checkout has not built vet-api, so there is nothing here to inspect; whatever is answering on 41874 was built somewhere else. Build it, then re-run this block. |
+| `mongo feature OFF` | `MONGO_URI=...` printed | **Read the port before you read this row.** For a process started from *this* checkout the combination cannot happen: it would have refused to start, so port 41874 reads `DOWN` and `.demo/vet-api.log` carries the reason. If you see it with 41874 `up`, that is the different-checkout situation row 4 describes, so the listening process was built somewhere else and the feature line says nothing about it. |
+| `NOT BUILT in this checkout` | anything | **No verdict about the store.** This checkout has not built vet-api, so there is nothing here to inspect; whatever is answering on 41874 was built somewhere else. Build it with `cargo build --release -p vet-api --features mongo`, then re-run this block. Keep the flag: `mongo` is a non-default feature, so a plain `cargo build --release -p vet-api` produces a binary that prints `mongo feature OFF` on the very next run and lands you in row 3. |
 
 **Neither half answers on its own, which is why they are read as a pair.** The feature check proves the
 binary *can* use Mongo; the process check proves it was *told* to. Either alone will report success on a
 stack quietly running the other store, which is precisely the confusion this section exists to prevent.
 
-**Read the pair as complete only on the first three rows.** The feature line describes the binary in
-*this* checkout, while the process line describes whatever process is actually listening. A `NOT BUILT`
-answer means those are not the same thing, so the pair says nothing about the running store at all: this
-monorepo is checked out many times over, and a stack hand-booted from another checkout answers the
-process line perfectly while leaving this one with no binary to inspect.
+**The pair is a complete answer only when the binary in this checkout is the one that is running.**
+When it is, the two halves settle the question between them, which is what this block is for.
+The feature line describes the binary in *this* checkout, while the process line describes whatever
+process is actually listening, and this monorepo is checked out many times over.
+Rows 3 and 4 are both symptoms of those being two different binaries: row 4 leaves this checkout with no
+binary to inspect, and row 3 with 41874 `up` means the listening process was built elsewhere.
+On either of them the pair says nothing about the running store, because a stack hand-booted from another
+checkout answers the process line perfectly while this checkout's feature line is about something else
+entirely.
 
 ---
 
