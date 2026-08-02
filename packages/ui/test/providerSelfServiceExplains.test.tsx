@@ -190,9 +190,12 @@ describe("the contract number explains why it exists, without becoming a wall", 
     // never carried.
     const el = await mount({ issuance: true, listing: true });
     const why = el.querySelector("[data-testid='why-contract-number']")!;
-    expect(why.textContent).toMatch(/record type/i);
-    expect(why.textContent).toMatch(/wallet/i);
-    expect(why.textContent).toMatch(/only one you can vary|only part/i);
+    // The ENUMERATION, not the words scattered anywhere in the disclosure. Asserting
+    // /record type/ and /wallet/ alone passed with the three-input sentence deleted outright,
+    // because both also occur in the paragraphs below it - a mutation caught that, and a test
+    // that survives the removal of the thing it is named for is pinning nothing.
+    expect(why.textContent).toMatch(/exactly three things[^.]*record type[^.]*wallet[^.]*number/i);
+    expect(why.textContent).toMatch(/only one you can vary/i);
   });
 
   it("says what is lost without it, and points at the flow that is its other half", async () => {
