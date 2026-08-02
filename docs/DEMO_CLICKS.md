@@ -444,7 +444,11 @@ preflight that reports whether an action would succeed* is made from the provide
 4. Leave **Record type** at `VACCINATION` - that is the record type §1.2 approved.
 
 **You should see:** the **Connect wallet** button disappears, your address appears under the provider
-id field, and both **Check** buttons come alive.
+id field, and **two** of the four **Check** buttons come alive - flow 1's and flow 4's.
+
+That is not a partial failure: flows 2 and 3 are additionally gated on the **Contract address** field,
+which you have not filled in yet because you have not deployed anything.
+They come alive in §2.5, and the page says as much in amber under each of them.
 
 > **Careful with Fill demo data.** It fills the record type, a domain, a location and the contact
 > fields - but deliberately **not** the provider id, because a made-up provider id is one that does not
