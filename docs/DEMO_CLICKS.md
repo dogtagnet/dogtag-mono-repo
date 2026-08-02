@@ -1048,8 +1048,9 @@ a minute, and one surface that states it out loud:
    `DogTagIssuerFactoryV2`, `CloneProvenanceRouter`, `VerificationRegistryConsentV2`, `ProtocolRegistryV2`,
    `ProviderDirectory`, `ServiceDomainResolver`). The distinct names are deliberate: `demo-up.sh` resolves
    ledger keys **by name**, so reusing a generation-1 key would have silently repointed a running stack.
-3. **The chain agrees.** The three `cast` calls at the top of this guide show the router carrying two
-   generations, the typed directory resolver **not approved**, and the domain registry **empty**.
+3. **The chain agrees.** Run the four `cast` calls at the top of this guide and read them as described
+   there: how many generations the router resolves, whether the typed directory resolver is approved,
+   whether any domain is bound, and whether any provider is registered.
 
 Two consequences worth stating so they are not mistaken for defects:
 
@@ -1093,12 +1094,8 @@ Read the state Act 1 has to move, rather than trusting a number printed here:
 
 ```
 cast call 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 "providerCount()(uint256)" --rpc-url https://devrpc.roax.net
-
-curl -s -X POST https://devrpc.roax.net -H 'content-type: application/json' --data \
-  '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6","fromBlock":"0x0","toBlock":"latest"}]}'
 ```
 
-**How to read them.**
 `providerCount` zero means no provider has been registered yet, so Act 1 has not run for anyone.
 Non-zero means providers now exist; that is Act 1 landing, and it does **not** by itself make the rest of
 this section walkable, because a registered provider is still not an approved, attached, clone-owning one.
@@ -1109,9 +1106,15 @@ curl -s -X POST https://devrpc.roax.net -H 'content-type: application/json' --da
   '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9","fromBlock":"0x0","toBlock":"latest"}]}'
 ```
 
-An empty `result` from the second command in the first block means the generation-2 factory has emitted
-no logs at all, so it has created no clones and nothing has ever been issued through it. A non-empty
-result means clones now exist.
+Then ask separately whether the generation-2 factory has ever created a clone, by reading its own logs:
+
+```
+curl -s -X POST https://devrpc.roax.net -H 'content-type: application/json' --data \
+  '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6","fromBlock":"0x0","toBlock":"latest"}]}'
+```
+
+An empty `result` there means the factory has emitted no logs at all, so it has created no clones and
+nothing has ever been issued through it. A non-empty result means clones now exist.
 
 > **Use raw JSON-RPC for those log queries, not `cast logs`.** This repo has already been bitten by it:
 > `cast logs` renders extra rows for the same query and is misleading here, so an empty result from it is
@@ -1196,10 +1199,10 @@ the older contract for now.
 
 **N8. Publish your listing - contacts, location pin, profile, logo. Status: BLOCKED (needs N1, plus a
 registrar approval of the directory resolver).**
-This is the step that puts a provider in the searchable directory. Two independent blockers:
-`ProviderDirectory.resolverApproved()` reads false (check it with the command in the two-facts section),
-and a typed resolver answers nothing
-until the registrar approves it **and** the provider selects it; and there is no provider to publish under.
+This is the step that puts a provider in the searchable directory. Two independent blockers: a typed
+resolver answers nothing until the registrar approves it **and** the provider selects it, so while
+`ProviderDirectory.resolverApproved()` reads false every directory store stays empty (check it with the
+command in the two-facts section); and there is no provider to publish under.
 Two properties of this step are worth remembering for when it does become walkable:
 
 - **A blank location publishes NO pin at all.** It does not publish `0,0`. That is a real coordinate off
@@ -1439,8 +1442,9 @@ no divergence; admin **Activity** reporting the indexer unconfigured; government
 
 **Checked directly on chain** on that date: the provenance router resolving two factory generations, the
 typed directory resolver not approved, no domain bound, no provider registered, and no logs of any kind
-on `DogTagIssuerFactoryV2`. Those are all mutable, so this section deliberately records that they were
-checked rather than what they returned. Re-read them with the commands in the two-facts section and §N0.
+on `DogTagIssuerFactoryV2`. Every one of those is mutable, so read them as a dated record of what that
+walk saw rather than as the current state - which is why the rest of this guide prints none of them.
+Re-read them with the commands in the two-facts section and §N0.
 
 **One of them has since moved, and it is worth knowing about:** a provider was registered on chain about
 six minutes after this guide's final authoring commit, by the sibling `dogtag-registrar-r9` crew building

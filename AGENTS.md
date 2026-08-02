@@ -4057,8 +4057,9 @@ vet and groomer it is the host printed inside whatever QR that backend mints.
 
 ### Rendering a portal against YOUR OWN backend, with the proxy trap disarmed
 
-The safe counterpart to the section above, and the cheaper way to verify a portal surface end-to-end
-when the spec you would otherwise run is unmocked (or, as for `stacks/admin/web`, does not exist).
+The safe counterpart to "Running the portal Playwright specs by hand WRITES to a live backend" above, and
+the cheaper way to verify a portal surface end-to-end when the spec you would otherwise run is unmocked
+(or, as for `stacks/admin/web`, does not exist).
 
 Every portal has an **absolute API-base override**, which is strictly better than pointing the proxy at
 a dead port: an absolute base takes `/api` out of the picture entirely, so `server.proxy` is never
