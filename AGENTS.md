@@ -5888,3 +5888,43 @@ appears only in explanatory comments in `packages/ui/src/provider/*` and
 So three of the four provider flows are blocked by registrar actions with no surface, and none of them
 is a misconfiguration the provider can fix. State it that way rather than as "the provider journey does
 not work".
+
+## Restarting ONE backend by hand: `DEMO_MODE` comes from `contracts/.env`, not from a default
+
+`scripts/demo-up.sh` sources `contracts/.env` with `set -a`, and that file carries `DEMO_MODE=1`. So
+every backend it starts inherits demo mode from the environment rather than from any flag the script
+passes. Restart a single backend by hand without that file present and it dies at the H2 boot guard -
+`FATAL: refusing to boot in production mode: CENTRAL_HMAC_SECRET is set to the insecure dev default` -
+which reads like a secrets problem and is really a missing `DEMO_MODE=1`.
+
+Two related traps when restarting one service by hand:
+
+- **Do not rebuild the env by replaying `ps eww` output.** Values containing spaces (`ISSUER_NAME="Seaport
+  Vet"`, `"Pampered Paws"`) are split on the space and the service either misbehaves or fails to boot.
+  Re-derive the env explicitly instead; the ledger supplies every address via `ledger_addr`.
+- **Kill by the PID you looked up on the port** (`lsof -nP -iTCP:<port> -sTCP:LISTEN -t`), never by binary
+  path - the standing rule in this repo, and it applies just as much to a one-service restart.
+
+## What a Mongo-backed restart actually preserves - three separate answers
+
+Walked 2026-08-02 by restarting `groomer-api` against `MONGO_DB=dogtag_groomer`:
+
+- **Shop data survives** - clients, pets, a pet's linked DogTag, appointments.
+- **The OPERATOR SESSION survives too**, so no re-login. `op_sessions` are persisted by `MongoStore` and
+  are not by `MemStore`, which is why the same restart on the default store also logs you out.
+- **Custody RE-LOCKS regardless.** The sealed blob persists (`CUSTODY_SEAL_PATH`); the decrypted seed
+  never does.
+
+Do not collapse these into "the data persists" - they have different causes, and the middle one is the
+one people are surprised by in both directions.
+
+## `demo-provision-government.sh` writes back into `contracts/.env`, and needs a restart to take effect
+
+It generates a dedicated government EOA, funds it from the deployer, whitelists it for
+`TRAVEL_CLEARANCE`, reuses the existing clone if there is one, and writes `GOV_SIGNER_KEY` back into
+`contracts/.env` at mode 600 without printing it. The running `government-api` does **not** pick that up -
+it read its env at boot - so `/health` keeps reporting `canSign:false` until the service is restarted.
+The script says so; it is easy to miss and looks like the provisioning failed.
+
+Note it refuses outright without `contracts/.env`, so provisioning cannot be driven purely from an
+exported environment the way `demo-up.sh` can.

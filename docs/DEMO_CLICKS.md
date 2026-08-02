@@ -10,7 +10,7 @@ would need in order to walk it yourself.
 Read that promise precisely, because it is the whole value of this document: an honestly-marked
 unwalked step is fine, and an unwalked step written as though it were walked is the defect this guide
 exists to avoid.
-§9 records exactly what was and was not covered, and when.
+§10 records exactly what was and was not covered, and when.
 
 The order below is the order to read it in.
 Each role picks up the state the previous one left.
@@ -21,12 +21,13 @@ Each role picks up the state the previous one left.
 | 1 | **Admin** | Register and approve a provider |
 | 2 | **The provider** | Deploy their own contract, then try to finish setting up |
 | 3 | **The vet** | Register a pet, issue a credential, anchor it |
-| 4 | **Government** | Verify somebody else's credential; issue their own |
-| 5 | **The owner** | Receive a credential and read it |
-| 6 | **Anyone verifying** | The bench, and eleven attempts to defeat it |
-| 7 | - | Reference: what the four generation-2 reads mean |
-| 8 | - | What this guide does not cover |
-| 9 | - | Evidence: what was walked, when, against which commit |
+| 4 | **The groomer** | Clients, pets, the diary, and checking a credential it did not write |
+| 5 | **Government** | Verify somebody else's credential; issue their own |
+| 6 | **The owner** | Receive a credential and read it |
+| 7 | **Anyone verifying** | The bench, and eleven attempts to defeat it |
+| 8 | - | Reference: what the four generation-2 reads mean |
+| 9 | - | What this guide does not cover |
+| 10 | - | Evidence: what was walked, when, against which commit |
 
 ---
 
@@ -143,7 +144,7 @@ admin signer          0x8E27E117…F4A2 holds WHITELIST_ADMIN  ok
 government            LIVE chain, NO signer -> /issue can only dry_run (no on-chain anchor).
 ```
 
-That last line is not an error; §4.2 explains it and what to do about it.
+That last line is not an error; §5.2 explains it and what to do about it.
 
 | Portal | | Backend | |
 |---|---|---|---|
@@ -304,7 +305,7 @@ The portal passes the factory account on exactly that one read.
 Opened but not re-walked for this guide: **Activity**, **Issuers / Factory**, **Onboard issuer**,
 **Business registry**, **Issuer applications**, **Whitelist**, **Governance**.
 Several of them now carry a **Fill demo data** button.
-**Verification bench** has a section of its own - §6.
+**Verification bench** has a section of its own - §7.
 
 **Activity** reads the oversight indexer, so on a `demo-up.sh` stack it renders the scripted rows
 described in §0.4.
@@ -373,6 +374,7 @@ Walked, on both portals:
 A groomer verifies and does not issue, so it has no issuing contract at all; flows 1 to 3 are keyed by
 one and are not merely hidden but inapplicable.
 Flow 4 is keyed by the provider record, so a groomer appears in the directory exactly as a vet does.
+The rest of what a groomer does has its own section - §4.
 
 ### 2.3 Connect the wallet - a real gate, not a formality
 
@@ -537,7 +539,7 @@ Walked result:
 **This is as far as a desktop can take it, and the reason is architectural rather than a gap.**
 The owner's device folds the profile tree and posts the resulting root; the vet never holds the owner's
 secret.
-Completing the bind needs the phone app (§8).
+Completing the bind needs the phone app (§9).
 
 You can still see exactly what the phone would receive, which is a useful check that the QR is live:
 
@@ -565,7 +567,7 @@ Walked result:
 > Tx: `0xc94027287d9107b15fdd0e04402c0e3eab5848b243ebcef50bd299c2be79d740`
 
 That root is genuinely anchored on ROAX.
-It is the credential used in §4.1, §5 and §6.
+It is the credential used in §5.1, §6 and §7.
 
 > **Data note.** Dog tag 1 and this record are new data created by this walk.
 
@@ -583,11 +585,159 @@ Walked: returns the record with its `wrappedDoc`, whose `signature.merkleRoot` m
 
 ---
 
-## 4. Government
+## 4. The groomer
+
+Groomer portal, http://localhost:43617.
+This is the busiest role in the product, and the one with the most to lose if the store is wrong - so
+walk §0.2 before you put real work into it.
+
+**The groomer runs the same backend binary as the vet with `BUSINESS_TYPE=groomer`, and that is visible
+in the nav.**
+Walked, the groomer's nav is: Dashboard, Calendar, Appointments, Clients, Pets, All verifications,
+Groomers, Reports, Marketing, Import from user, Ad-hoc verification, Setup, Provider self-service,
+Settings.
+**There is no Records page and no Issue page** - a groomer is whitelisted to VERIFY, not to issue, and
+the issuance routes are not even mounted on its backend.
+The pet page says why in its own words: *"A groomer is whitelisted to VERIFY, not to issue - which is
+exactly what makes a vaccination check here worth anything, since the shop asserting the record cannot
+also be the shop that wrote it."*
+
+Sign in - the operator password is prefilled - and unlock custody exactly as in §0.5.
+
+### 4.1 Create a client, with their pet
+
+**Clients → New client → Fill demo data → Create client.**
+
+Walked: the demo values are unmistakably fake - `Demo Client (sample)`, `+65 6000 0000`,
+`demo.client@example.com`, notes *"Demo record - not a real person."* - with an inline pet block filled
+as `Demo Dog (sample)`, Golden Retriever, female, and a microchip.
+**Add pet** adds further pet blocks to the same client.
+
+The client then appears in the list under NAME / CONTACT / PETS.
+
+> **Data note.** This creates real rows in the groomer's store.
+
+### 4.2 The pet is addressable in its own right
+
+**Pets** in the nav lists every pet the shop knows, under PET / SPECIES-BREED / OWNER / DOGTAG, with the
+DogTag column reading **No tag** until one is linked.
+Search takes the pet, the breed, the species, the owner's name, or the DogTag id.
+
+Click the pet to open it. Walked: the detail page carries the profile, the microchip, the owner as a
+link, and three actions - **Edit**, **Book appointment**, **Delete** - plus a DogTag block and a
+Credentials block.
+
+### 4.3 Link a DogTag, and watch the microchip cross-check
+
+Under **DogTag**, type the tag id and click **Add DogTag**.
+Walked with tag `1` - the one the vet allocated in §3.1 - the row becomes *"1 linked to this pet's
+record"* with a **Remove from this record** action, and the cross-check reports:
+
+> **Microchip not compared**
+> This shop holds no credential for that DogTag, so there is nothing to compare the microchip against.
+
+**That neutral state is the one to understand, because it is the common one.**
+The check compares the microchip on the shop's own pet record against the microchip inside a credential
+the shop holds for that tag.
+With no credential held there is nothing to compare, so it says so rather than reporting a pass.
+A match and a mismatch are different outcomes again, and a mismatch refuses the link rather than
+changing any credential's verdict - the credential is still genuine, it just describes a different
+animal.
+Getting a credential into the shop is what §4.6 is for.
+
+### 4.4 Book an appointment
+
+From the pet page click **Book appointment** - it carries the client and pet through in the URL - then
+**Fill demo data**, then **Book appointment**.
+
+Walked: booked as *Demo full groom (sample)*, status **Scheduled**, with groomer *Demo Groomer* and
+notes *"Demo booking - not a real appointment."*
+
+**One thing to correct by hand, observed on the walk: Fill demo data clears the pre-selected pet.**
+The booking arrived from the pet page with the pet already chosen, and the demo fill set it back to
+*No specific pet* - the detail page then shows `PET —`.
+That is legal, because an appointment need not name a pet, but if you want the verification in §4.5 tied
+to a pet, set the pet field back before booking.
+
+### 4.5 See it on the calendar, and publish the diary
+
+**Calendar** shows Day / Week / Month with a **Today** control.
+Walked: the booking appears in the week view on its day, showing the time, the client and the status.
+
+**Calendar sync** publishes the shop's diary at one web address that Google, Apple or Luma can subscribe
+to.
+Click **Publish calendar address**.
+Walked: it mints a secret URL ending `.ics` and states the trade-off plainly:
+
+> **Treat this address like a password.** Anyone who has it can read your whole schedule - client names,
+> pets and times - without logging in. That is what lets a calendar app subscribe without an account.
+
+Fetching that URL returns a real iCalendar document - walked, it carried `X-WR-CALNAME:Pampered Paws —
+appointments`, a 15-minute refresh interval, and a `VEVENT` for the booking with its summary, status,
+groomer and notes.
+The same page imports an `.ics` the other way; the file is parsed **in the browser**, which is what makes
+times in any timezone come across exactly.
+
+The appointment's own page also has **Send to client**, which is the per-booking handoff rather than the
+whole diary.
+
+### 4.6 Check a credential the shop did not write
+
+Two surfaces, and they answer different questions.
+
+**Ad-hoc verification** has both.
+**Check credential status** takes a pasted wrapped document and needs no owner and no phone: it
+recomputes integrity and reads the issuing contract directly on ROAX.
+Walked with the credential the vet issued in §3.2:
+
+> **Verdict: pass** · Valid · VACCINATION
+> Integrity **Yes** · On-chain valid **Yes** · Issued **Yes** · Revoked **No** · Issuer authorised at
+> issuance …
+
+The page is explicit that this is permissionless - *"checked in-browser through your chain-guarded
+endpoint selection … no operator session required"* - and that the signer is read from the chain
+(`issuedBy`) rather than typed in.
+The optional **Expected issuer signer** field can only tighten the result.
+
+**Export on chain** is the other question - the owner-hidden consent flow, where the owner approves on
+their phone and the shop learns only what the owner chose to share.
+It starts with a purpose (walked: *Grooming intake - rabies status*) and **Start export**, which mints a
+QR.
+**Completing it needs the phone app**, so it is not walked here; §9 lists it.
+
+**Import from user** is the third route, and it is the one that would populate §4.3's cross-check.
+It wants a customer JWT that a receptionist has no way to obtain, so it was not walked.
+
+**All verifications** is the shop's own durable history of these checks - purpose, record type, status,
+transaction and timestamps. It deliberately stores no credential PII.
+
+### 4.7 Prove to yourself the data survives - the check worth doing once
+
+If you set up Mongo in §0.2, confirm it rather than trusting it.
+Restart the groomer backend **by PID** and look again:
+
+```
+kill $(lsof -nP -iTCP:43618 -sTCP:LISTEN -t)      # then restart it, or re-run scripts/demo-up.sh
+```
+
+Walked result after a full restart of that backend, with three distinct outcomes worth telling apart:
+
+- **The shop data survived** - the client, the pet, the pet's linked DogTag `1`, and the appointment were
+  all still there.
+- **The operator session survived too**, so no re-login was needed. Sessions live in the same store.
+- **Custody re-locked**, and the banner came back. The sealed key persists; the decrypted seed does not.
+  Unlock again as in §0.5.
+
+On the default in-memory store all three of those are lost instead, and nothing warns you - which is why
+§0.2 is a decision to make before you start rather than after.
+
+---
+
+## 5. Government
 
 Government portal, http://localhost:44831.
 
-### 4.1 Verify somebody else's credential - **walked, and it works**
+### 5.1 Verify somebody else's credential - **walked, and it works**
 
 This is the cross-role check: the vet issued in §3.2, the government verifies here, and the two share no
 database.
@@ -615,13 +765,14 @@ A vet that rotates its key does not retroactively void every certificate it ever
 The contract's own `name()` is *DogTag Vaccination*; the document claims *Seaport Vet*.
 The credential is genuine - the name sits outside the Merkle root, so it is not covered by integrity, and
 the page reports the discrepancy beside the verdict rather than folding it in.
-§6.2 shows the same property from the attacker's side.
+§7.2 shows the same property from the attacker's side.
 
 All reads here are gasless, and no owner and no phone are involved: this checks a document, not a
 consent.
 
-### 4.2 Issue - **not walked; disabled on a stock stack**
+### 5.2 Issue - **walked, but it needs provisioning first**
 
+**On a stock stack this is disabled, and it says so.**
 Click **Fill demo data** on the **Issue** page and the button below reads:
 
 > **Issue + anchor** - Disabled - no issuer clone is configured for TRAVEL_CLEARANCE on this deployment.
@@ -631,15 +782,57 @@ That matches the preflight warning in §0.3 and `/health`, which reports `canSig
 Anchoring a government credential needs three things a plain `demo-up.sh` does not create: a funded
 government signer, that signer whitelisted for the record type, and a contract to anchor into.
 
-The remedy is `scripts/demo-provision-government.sh`, which creates whatever is missing and is safe to
-re-run.
-**It requires `contracts/.env` to exist in the repo root** and refuses with
-`ERROR: …/contracts/.env not found` otherwise - which is why this step was not walked here, since this
-walk ran from a checkout that deliberately has no such file.
+**Provision them.** The script creates whatever is missing and is safe to re-run:
+
+```
+scripts/demo-provision-government.sh
+```
+
+It needs `contracts/.env` in the repo root and refuses with `ERROR: …/contracts/.env not found`
+otherwise.
+Walked output: it generated a dedicated government EOA, funded it with 0.25, whitelisted it for
+`TRAVEL_CLEARANCE`, found the clone already deployed, and wrote the new key back into `contracts/.env`
+at mode 600 without printing it.
+**Restart the government backend afterwards** - it reads those values at boot.
+`/health` should then report `canSign: true` with the signer and the `TRAVEL_CLEARANCE` clone named;
+walked, it did.
+
+**Then issue.** **Fill demo data** → **Issue + anchor**.
+
+Walked result:
+
+> **✓ anchored on-chain**
+> root `0x11580e565ed8…`
+> Receipt **CDJMB8PY6QZW** - *Official CDC-modeled travel-clearance receipt (printable / phone-showable).*
+> **View / print receipt →**
+> Public status page (PII-free, what the QR encodes): `http://localhost:44831/r/CDJMB8PY6QZW`
+> **Hand the credential to the owner:** Create QR · Copy wrapped document
+
+Confirmed independently from the chain: transaction
+`0xfee32a18e0734aed53447d42700697a2b9705b98554f1257d563f8d028ec9f96` at block **326677**, status
+success, and `isValid(root)` on the TRAVEL_CLEARANCE clone answers `true`.
+
+**The public status page is the part worth opening.**
+It is unauthenticated and deliberately PII-free - the whole point being that the QR on a printed receipt
+can be checked by anyone without exposing the traveller:
+
+```
+curl -s http://127.0.0.1:44832/v1/receipts/CDJMB8PY6QZW/status
+```
+
+Walked: `effectiveStatus: VALID`, the record type, the receipt id, `validUntil`, an `issuanceDate`
+derived from the chain, the root, the issuing contract, `chainId: 135`, `simulated: false`, an explorer
+link, and a `checkedAt` timestamp.
+Its HTML twin at `/r/CDJMB8PY6QZW` renders the same as a card headed **● VALID** with the footer *"Live
+on-chain status check · no personal data shown"*.
+No Section A person data appears on either.
+
+> **Data note.** This creates a real government credential on the testnet, and the provisioning step
+> creates a funded EOA and a whitelist grant.
 
 ---
 
-## 5. The owner receives the credential
+## 6. The owner receives the credential
 
 Owner wallet, http://localhost:45931. It has **no backend** - everything is local to the browser.
 
@@ -665,12 +858,12 @@ wallet has no demo-mode flag at all.
 
 ---
 
-## 6. Verification, and eleven attempts to defeat it
+## 7. Verification, and eleven attempts to defeat it
 
 Admin portal → **Verification bench**.
 This is the surface for "what exactly is checked, and what is not".
 
-### 6.1 A genuine credential
+### 7.1 A genuine credential
 
 Paste the §3.2 credential into **Wrapped document JSON** and click **Run the checks**.
 
@@ -696,7 +889,7 @@ and has no concept of a validity window.
 So an expired-but-anchored credential legitimately shows a valid verdict above a red expiry row, and the
 page marks which is which rather than leaving you to guess.
 
-### 6.2 Try to break it - the mutation buttons
+### 7.2 Try to break it - the mutation buttons
 
 Each button tells one specific lie with the record you loaded and re-runs everything.
 
@@ -713,11 +906,11 @@ The forgery is caught precisely, not by everything going red at once.
 
 **Read each button's "what will NOT catch this" list as carefully as its result.**
 The first mutation, **"Relabel the issuer's name"**, declares *"Designed to be caught by: nothing on this
-verification path"* - the same property §4.1 showed from the government's side.
+verification path"* - the same property §5.1 showed from the government's side.
 The name is not covered by the Merkle root, so relabelling it is not detected here; the government verify
 page reports the discrepancy separately.
 
-### 6.3 The attack catalogue - **Run the whole catalogue**
+### 7.3 The attack catalogue - **Run the whole catalogue**
 
 Eleven complete fraudulent records, each with its own scripted chain, each declaring in advance which
 check must refuse it.
@@ -739,7 +932,7 @@ wrong chain, every on-chain row reports *could not run* and the verdict is withh
 
 ---
 
-## 7. Reference: the four generation-2 reads
+## 8. Reference: the four generation-2 reads
 
 Eight generation-2 contracts are deployed on ROAX.
 **Issuance and verification still run entirely on the generation-1 contracts**, deliberately - so a
@@ -780,7 +973,7 @@ Before this walk it had emitted nothing; §2.4 changed that.
 
 ---
 
-## 8. What this guide does not cover
+## 9. What this guide does not cover
 
 **Anything needing the phone app.**
 The DogTag holder app carries a compiled Rust core and bundled proving artifacts and is not built by
@@ -795,16 +988,21 @@ The DogTag holder app carries a compiled Rust core and bundled proving artifacts
   All are phone surfaces.
   The rendered result rows additionally cannot be verified on a dev machine at all, because the directory
   host is a fixed production constant with no debug override.
-
-**Government issuance (§4.2)** - disabled on a stock stack; needs `scripts/demo-provision-government.sh`,
-which needs `contracts/.env` in the repo root.
+- **The groomer's owner-hidden consent export (§4.6, "Export on chain").**
+  The QR is minted; the owner approves on their phone, which is the half that was not performed.
 
 **The three blocked provider flows (§2.5, §2.6, §2.7)** - each needs a registrar action that has no admin
 surface.
 
-**The groomer's shop CRM** - clients, pets, appointments, the calendar and its `.ics` feed, and the
-microchip cross-check.
-The groomer portal was opened and its provider page walked (§2.2); its CRM was not.
+**The microchip MATCH and MISMATCH outcomes (§4.3).**
+Only the neutral *not compared* state was walked.
+Reaching the other two needs the shop to hold a credential for that tag, which arrives through **Import
+from user** - and that form wants a customer JWT a receptionist has no way to obtain, so it was not
+walked either.
+
+**The government's EU_HEALTH_CERT record type.**
+Only `TRAVEL_CLEARANCE` was provisioned and issued; `EU_HEALTH_CERT` has no clone on this deployment and
+`/health` reports it as `null`.
 
 **A note on the Playwright suites.**
 Do not run them unfiltered.
@@ -812,7 +1010,7 @@ Several are unmocked live-portal drivers that create real records and anchor the
 
 ---
 
-## 9. Evidence: what was walked, when, and against what
+## 10. Evidence: what was walked, when, and against what
 
 Walked on **2026-08-02**, against commit **`657bcde`**, on a live stack on ROAX chainId 135, booted from
 `scripts/demo-up.sh` with `MONGO_URI` set.
@@ -833,14 +1031,22 @@ Every result quoted above as walked was observed in a browser or over `curl`/`ca
   their failing check.
 - **§3** - register pet through to the minted QR, with the `/p/` endpoint resolved to confirm what the
   phone would receive; issue a record through to **Verified on-chain**.
-- **§4.1** - government verification of the vet's credential, block-pinned, including the issuer-name
+- **§4** - the whole groomer role: client and pet created, the pet opened, DogTag `1` linked and the
+  microchip cross-check's neutral state observed, an appointment booked and seen on the calendar, the
+  `.ics` diary published and fetched, and the vet's credential checked to **pass** from the groomer's own
+  verification page. Then the groomer backend was restarted by PID and the data, the operator session and
+  the re-locked custody were each checked individually.
+- **§5.1** - government verification of the vet's credential, block-pinned, including the issuer-name
   discrepancy.
-- **§5** - the owner wallet receiving that same credential and reporting integrity and anchoring.
-- **§6** - the bench on the genuine credential (nine rows); one mutation applied and caught; the eleven
+- **§5.2** - `demo-provision-government.sh` run, the backend restarted onto `canSign: true`, a
+  `TRAVEL_CLEARANCE` issued and anchored (block **326677**, `isValid` true), and both the JSON and HTML
+  public status pages fetched and confirmed PII-free.
+- **§6** - the owner wallet receiving the vet's credential and reporting integrity and anchoring.
+- **§7** - the bench on the genuine credential (nine rows); one mutation applied and caught; the eleven
   scenario catalogue run in full with no divergence.
-- **§7** - all four `cast` reads.
+- **§8** - all four `cast` reads.
 
-**Not walked, each with its reason stated in place:** everything in §8.
+**Not walked, each with its reason stated in place:** everything in §9.
 
 **One caveat about §2, stated because it affects how much weight to put on it.**
 The wallet used for the provider flows was a scripted EIP-6963 provider signing with the well-known
