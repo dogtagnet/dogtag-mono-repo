@@ -724,6 +724,18 @@ export const CONTACTS_ARE_ANCHORED_NOT_SERVED =
  * provider clearing a typo would otherwise silently remove their pin. The provider stays listed and
  * contactable - withdrawing content is not leaving the directory.
  */
+/**
+ * The two-step dependency this flow sits behind, said BEFORE a provider fills the form in.
+ *
+ * The directory twin of {@link DOMAIN_REGISTER_NEEDS_TURNING_ON}, and permanent for the same
+ * reason: `setResolverApproved` is `onlyOwner` and `setDirectoryResolver` reverts
+ * `ResolverNotApproved` until it has run, so the first half is DogTag's however the chain reads
+ * today. Stated here rather than left to the check, because a provider who has typed five contact
+ * fields and a coordinate before being refused has already paid for the surprise.
+ */
+export const DIRECTORY_NEEDS_TURNING_ON =
+  "Publishing a listing needs the provider directory switched on for your provider record, in two steps: DogTag approves the directory, and only then can it be selected for your record. Neither has a page here yet, so if this stops at the directory check, that is why - what you have filled in is not the problem.";
+
 export const WITHDRAW_LOCATION_NOTICE =
   "Taking your location down leaves your listing and your contact details in place. You stop appearing in the nearby list, and you can publish a location again later. Clearing the latitude and longitude fields does NOT do this - it only means this publication carries no location.";
 

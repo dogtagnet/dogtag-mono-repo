@@ -93,6 +93,29 @@ describe("deploy preflight", () => {
     expect(plan.nextStep).toMatch(/different contract number/i);
   });
 
+  it("says what a taken number MEANS, not only that the check failed", async () => {
+    // "Already exists" on its own reads as an error the provider made. It is not one: each number
+    // produces exactly one address, so a used number simply has nothing left to give - and the
+    // remedy is a different number rather than anything about their record.
+    const plan = await planCloneDeployment(deployBase, ok({ isFactoryClone: async () => true }));
+    const finding = plan.checks.find((c) => c.id === "clone-provenance")!.finding;
+    expect(finding).toMatch(/one fixed address/i);
+    expect(finding).toMatch(/cannot share/i);
+    expect(finding).toMatch(/choose another number/i);
+    // Says the provider record is fine, because a bare refusal here sends people to re-check a
+    // standing and an approval that both passed one line above.
+    expect(plan.nextStep).toMatch(/nothing is wrong with your provider record/i);
+  });
+
+  it("describes a taken number as a storage fact, never as a transaction outcome", async () => {
+    // This is `isFactoryClone` - the factory's own record of what it has deployed. Nothing was
+    // sent, so calling it a revert would assert the result of a transaction nobody submitted, which
+    // is the conflation every could-not-run state in this module exists to prevent.
+    const plan = await planCloneDeployment(deployBase, ok({ isFactoryClone: async () => true }));
+    const finding = plan.checks.find((c) => c.id === "clone-provenance")!.finding;
+    expect(finding).not.toMatch(/revert|rejected|would fail/i);
+  });
+
   it("refuses when the provider is not cleared, naming the standing", async () => {
     const plan = await planCloneDeployment(
       deployBase,

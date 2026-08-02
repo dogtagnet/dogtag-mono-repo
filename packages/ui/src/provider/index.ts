@@ -42,6 +42,7 @@ export {
 
 export {
   assessCandidateClone,
+  ATTACHMENT_IS_A_DOGTAG_STEP,
   nextStepFor,
   REPOINT_SCOPE_NOTICE,
   type CloneAssessment,
@@ -59,6 +60,7 @@ export {
   assessDomainClaim,
   canWithdraw,
   describeDisposition,
+  DOMAIN_REGISTER_NEEDS_TURNING_ON,
   MAX_DOMAIN_LENGTH,
   validateDomain,
   type DomainClaimAssessment,
@@ -69,6 +71,7 @@ export {
   CONTACT_ONLY_NOTICE,
   CONTACTS_ARE_ANCHORED_NOT_SERVED,
   COORDINATE_SCALE,
+  DIRECTORY_NEEDS_TURNING_ON,
   MAX_SCANNED_LOCATION_NUMBERS,
   mirrorPublicationRefusal,
   planDirectoryPublication,

@@ -35,6 +35,41 @@ import type {
 } from "../provider";
 
 // -------------------------------------------------------------------------------------------------
+// Progressive disclosure
+// -------------------------------------------------------------------------------------------------
+
+/**
+ * A short question, and the mechanism behind it one click away.
+ *
+ * This page has to explain itself to a first-time provider, and the two obvious ways of doing that
+ * both fail: a bare field with no hint costs a question, and a paragraph beside every field is a
+ * wall nobody reads - which fails the same way, just less visibly. So the inline hint stays one
+ * plain sentence and the *why* lives here, closed by default.
+ *
+ * Native `<details>`, deliberately. It needs no state, so it cannot interact with the no-`act()`
+ * rule the mounted suites in this package are written under, and it carries its own keyboard and
+ * screen-reader behaviour rather than a re-implementation of it.
+ */
+export function WhyThisExists({
+  question,
+  children,
+  testId,
+}: {
+  question: string;
+  children: ReactNode;
+  testId?: string;
+}): ReactNode {
+  return (
+    <details className="mt-1 text-xs text-muted-foreground" data-testid={testId}>
+      <summary className="cursor-pointer select-none underline decoration-dotted underline-offset-2">
+        {question}
+      </summary>
+      <div className="mt-1.5 flex flex-col gap-1.5 border-l-2 border-border pl-3">{children}</div>
+    </details>
+  );
+}
+
+// -------------------------------------------------------------------------------------------------
 // Check rows
 // -------------------------------------------------------------------------------------------------
 
@@ -242,9 +277,21 @@ export function DeployPlanCard({
         <ProviderVerdictBadge verdict={plan.verdict} retired={retired} />
       </header>
       {plan.predictedAddress ? (
-        <p className="mt-2 break-all font-mono text-xs" data-testid="predicted-address">
-          {plan.predictedAddress}
-        </p>
+        // Labelled, because an unlabelled address on a page that has not deployed anything yet
+        // reads as something that already exists. This is a PREDICTION, and it is exact: the
+        // factory computes the address from the same three inputs whether it is asked to predict
+        // or to deploy, so saying so is what turns Check from "did my form validate" into "this is
+        // the contract I am about to create".
+        <>
+          <p className="mt-2 text-xs text-muted-foreground">The address this will deploy to:</p>
+          <p className="break-all font-mono text-xs" data-testid="predicted-address">
+            {plan.predictedAddress}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="predicted-address-caption">
+            Worked out before anything is sent, and exact - deploying produces this address, not a
+            similar one. Nothing has been created yet.
+          </p>
+        </>
       ) : (
         // NOT a blank. A blank where a provider expects an address reads as "no address yet", which
         // is a different and wrong fact from "we could not compute it".

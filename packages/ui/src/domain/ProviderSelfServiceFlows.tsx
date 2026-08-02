@@ -69,6 +69,7 @@ import {
 import { blankContactFields } from "../directory/registration";
 import { DEMO_PROVIDER_LISTING } from "../schema/demoData";
 import {
+  ATTACHMENT_IS_A_DOGTAG_STEP,
   ATTACHMENT_IS_NOT_SELF_SERVICE,
   assessCandidateClone,
   assessDomainClaim,
@@ -76,6 +77,8 @@ import {
   CONTACT_ONLY_NOTICE,
   CONTACTS_ARE_ANCHORED_NOT_SERVED,
   createLiveProviderReader,
+  DIRECTORY_NEEDS_TURNING_ON,
+  DOMAIN_REGISTER_NEEDS_TURNING_ON,
   mayContinueAfter,
   mirrorPublicationRefusal,
   outcomeFromReceiptStatus,
@@ -108,6 +111,7 @@ import {
   DirectoryPublicationCard,
   PublishedListingCard,
   DomainClaimCard,
+  WhyThisExists,
   type PlanRetirement,
 } from "./ProviderSelfServicePanel";
 
@@ -154,6 +158,31 @@ export interface ProviderSelfServiceFlowsProps {
  * is a spinner that never resolves and a provider who cannot tell whether anything happened.
  */
 const RECEIPT_TIMEOUT_MS = 90_000;
+
+/**
+ * That a flow waits on a step DogTag takes, said before the provider tries it.
+ *
+ * Deliberately not styled as a failure. It states a DEPENDENCY, which is permanent and true whether
+ * or not the step has happened yet - so it must not read as "this is broken", and it must not go
+ * stale the day the step is taken. What it does buy is the thing a wall never tells you: that
+ * hitting it is not something you did.
+ */
+function DependencyNotice({
+  children,
+  testId,
+}: {
+  children: ReactNode;
+  testId: string;
+}): ReactNode {
+  return (
+    <p
+      className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+      data-testid={testId}
+    >
+      {children}
+    </p>
+  );
+}
 
 /**
  * A plan plus the inputs it was computed FROM, and whether it has already been acted on.
@@ -466,6 +495,15 @@ export function ProviderSelfServiceFlows({
                 A provider id is 20 bytes: 0x followed by 40 hex characters.
               </p>
             ) : null}
+            {/* Why this page is shorter here than a vet's. Without it a groomer sees a page with
+                one card and no way to tell whether the rest is missing, hidden, or broken. */}
+            {!capabilities.issuance ? (
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="listing-only-note">
+                Your listing is the whole of this page for you. Issuing contracts, and the domain
+                that belongs to one, apply to businesses that issue credentials - you verify them,
+                so there is nothing here for you to deploy.
+              </p>
+            ) : null}
           </div>
           {capabilities.issuance ? (
             <div>
@@ -497,7 +535,8 @@ export function ProviderSelfServiceFlows({
             <CardHeader>
               <CardTitle>1. Deploy your own contract</CardTitle>
               <CardDescription>
-                You deploy it and you own it. DogTag does not deploy it for you.
+                You deploy it and you own it - DogTag does not deploy it for you. Check first: it
+                shows you the exact address you are about to create, before anything is sent.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
@@ -510,9 +549,30 @@ export function ProviderSelfServiceFlows({
                   inputMode="numeric"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  You can have more than one contract per record type. The number is what gives you
-                  somewhere to move to later.
+                  This number is the only part of your contract&apos;s address that you choose.
+                  Leave it at 0 for your first one.
                 </p>
+                {/* The question the captain actually asked, answered where he asked it. The old
+                    hint said what the number lets you DO and never why it exists, which is the
+                    half that makes it make sense. */}
+                <WhyThisExists question="Why is there a number at all?" testId="why-contract-number">
+                  <p>
+                    Your contract&apos;s address is not assigned to you - it is worked out in
+                    advance from exactly three things: the record type, the wallet you deploy from,
+                    and this number.
+                  </p>
+                  <p>
+                    The first two are already fixed, so this number is the only one you can vary.
+                    Without it every wallet would have exactly one possible address per record type,
+                    for good - and if that contract ever had to be replaced, there would be nowhere
+                    to move to.
+                  </p>
+                  <p>
+                    That is what step 2 is for: deploy a contract under a new number, then select it
+                    there. Use a new number if a key is compromised or you need to start fresh;
+                    otherwise 0 is the answer.
+                  </p>
+                </WhyThisExists>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -575,6 +635,9 @@ export function ProviderSelfServiceFlows({
               <CardDescription>{REPOINT_SCOPE_NOTICE}</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
+              <DependencyNotice testId="repoint-dependency">
+                {ATTACHMENT_IS_A_DOGTAG_STEP}
+              </DependencyNotice>
               <div>
                 <Label htmlFor="candidate">Contract address</Label>
                 <Input
@@ -585,9 +648,22 @@ export function ProviderSelfServiceFlows({
                   className="font-mono"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Only a contract deployed by the DogTag issuer factory can be entered here. Anything
-                  else is refused, whoever asks.
+                  Paste the address step 1 deployed. Only a contract deployed by the DogTag issuer
+                  factory can be entered here - anything else is refused, whoever asks.
                 </p>
+                {/* A DISABLED BUTTON MUST SAY WHY. `!candidate` gates this Check and had no
+                    rendered reason, so an empty field produced a dead button and silence - which is
+                    worse than a refusal, because a refusal at least names itself. The other two
+                    terms already had one (the amber not-connected line, the red malformed-id line);
+                    this closes the odd one out. */}
+                {!candidate ? (
+                  <p
+                    className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+                    data-testid="candidate-required-repoint"
+                  >
+                    Enter a contract address to check.
+                  </p>
+                ) : null}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -640,11 +716,28 @@ export function ProviderSelfServiceFlows({
             <CardHeader>
               <CardTitle>3. Your domain</CardTitle>
               <CardDescription>
-                Publishing no domain, and never having said, are different things here - and both are
-                recorded as themselves.
+                A domain belongs to one of your contracts, so this acts on the contract address you
+                entered in step 2. Publishing no domain, and never having said, are different things
+                here - and both are recorded as themselves.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
+              <DependencyNotice testId="domain-dependency">
+                {DOMAIN_REGISTER_NEEDS_TURNING_ON}
+              </DependencyNotice>
+              {/* THE ONE THAT COST THE MOST. This Check is gated on `candidate` - step 2's field -
+                  and not on the domain beside it, so typing a domain here and finding the button
+                  still dead is the page's most confusing state, and nothing said a word about it.
+                  Named where it is felt rather than only in the description above. */}
+              {!candidate ? (
+                <p
+                  className="text-xs text-amber-700 dark:text-amber-400"
+                  data-testid="candidate-required-domain"
+                >
+                  Enter your contract address in step 2 first - a domain is published for a
+                  contract, so there is nothing to check until this page knows which one.
+                </p>
+              ) : null}
               <div>
                 <Label htmlFor="domain">Domain</Label>
                 <Input
@@ -760,6 +853,9 @@ export function ProviderSelfServiceFlows({
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
+            <DependencyNotice testId="directory-dependency">
+              {DIRECTORY_NEEDS_TURNING_ON}
+            </DependencyNotice>
             <div className="grid gap-3 sm:grid-cols-2">
               {PROVIDER_CONTACT_CHANNELS.map((channel) => (
                 // Five channels in a two-column grid, so the last would sit half-width alone. A URL
