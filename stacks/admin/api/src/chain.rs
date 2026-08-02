@@ -335,6 +335,8 @@ struct MemChainInner {
     /// Registries whose reads are forced to fail, so a route's could-not-run arm is reachable. A fake
     /// that cannot fail cannot exercise the state that exists for failure.
     failing_reads: std::collections::HashSet<String>,
+    /// Registries whose APPROVAL LOG read alone is forced to fail, leaving `provider()` answering.
+    failing_approval_log_reads: std::collections::HashSet<String>,
     nonce: u64,
 }
 
@@ -413,9 +415,42 @@ impl MemChain {
         }
     }
 
+    /// Fail ONLY the `ServiceCreationApprovalSet` log read, leaving `provider()` answering.
+    ///
+    /// A SEPARATE switch, not a mode of the one above, for the same reason vet-api needs
+    /// `set_fail_find_pets_by_dog_tag_reads` beside its sibling: a shared switch cannot express
+    /// "the provider read is fine and only this one fails", because whichever read comes first
+    /// short-circuits and the route never reaches the arm under test.
+    ///
+    /// It is also the REALISTIC failure rather than a contrived one. `provider()` is an `eth_call`
+    /// while this is an `eth_getLogs` from genesis to latest, and a rate-limited or range-capping
+    /// peer refuses exactly the second while answering the first - the same asymmetry this repo
+    /// records for the issuer-whitelist pillar's unbounded log reads.
+    pub fn set_failing_approval_log_reads(&self, registry_addr: &str, failing: bool) {
+        let mut g = self.inner.lock().unwrap();
+        if failing {
+            g.failing_approval_log_reads
+                .insert(registry_addr.to_lowercase());
+        } else {
+            g.failing_approval_log_reads
+                .remove(&registry_addr.to_lowercase());
+        }
+    }
+
     fn provider_reads_fail(g: &MemChainInner, registry_addr: &str) -> Result<(), ChainError> {
         if g.failing_reads.contains(&registry_addr.to_lowercase()) {
             return Err(ChainError::Rpc("provider read failed (seeded)".into()));
+        }
+        Ok(())
+    }
+
+    fn approval_log_reads_fail(g: &MemChainInner, registry_addr: &str) -> Result<(), ChainError> {
+        if g.failing_approval_log_reads
+            .contains(&registry_addr.to_lowercase())
+        {
+            return Err(ChainError::Rpc(
+                "eth_getLogs failed: query returned more than 10000 results (seeded)".into(),
+            ));
         }
         Ok(())
     }
@@ -750,6 +785,7 @@ impl ChainClient for MemChain {
     ) -> Result<Vec<(String, bool)>, ChainError> {
         let g = self.inner.lock().unwrap();
         Self::provider_reads_fail(&g, registry_addr)?;
+        Self::approval_log_reads_fail(&g, registry_addr)?;
         Ok(g.approval_log
             .get(&(registry_addr.to_lowercase(), provider_id.to_lowercase()))
             .cloned()

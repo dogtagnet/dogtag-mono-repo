@@ -116,10 +116,17 @@ async fn the_registrar_can_walk_register_activate_and_approve() {
     assert_eq!(entries[0]["recordType"], "VACCINATION");
 }
 
-/// The load-bearing distinction: an unreadable approval log is NOT an empty approval set.
+/// THE headline claim of this surface, pinned at the ROUTE layer that produces it: an unreadable
+/// approval log is its own state, never an empty approval set.
 ///
 /// Collapsing them would tell an admin a provider is approved for nothing on the strength of a read
 /// that never happened - and the two have different remedies.
+///
+/// Only the LOG read is failed, which is both what makes the case reachable and what makes it
+/// realistic. `provider()` is an `eth_call` and this is an `eth_getLogs` from genesis to latest, so
+/// a rate-limited or range-capping peer refuses exactly the second while answering the first. A
+/// shared failure switch could not drive this at all: the provider read comes first and would
+/// short-circuit the route into a 502 before the arm under test is ever built.
 #[tokio::test]
 async fn an_unreadable_approval_log_is_reported_as_unavailable_not_as_no_approvals() {
     let (st, chain, _v, _b) = hermetic_state();
@@ -129,16 +136,62 @@ async fn an_unreadable_approval_log_is_reported_as_unavailable_not_as_no_approva
     let (s, _) = register(&app, &tok, PID).await;
     assert_eq!(s, StatusCode::OK);
 
-    // Sanity: while readable, the empty log resolves to an empty (but ANSWERED) set.
-    let (_, b) = call(
-        &app,
-        "GET",
-        &format!("/v1/admin/providers/{PID}"),
-        Some(&tok),
-        None,
-    )
-    .await;
+    let detail = |tok: String| {
+        let app = app.clone();
+        async move {
+            call(
+                &app,
+                "GET",
+                &format!("/v1/admin/providers/{PID}"),
+                Some(&tok),
+                None,
+            )
+            .await
+        }
+    };
+
+    // While readable, an empty log RESOLVES: that is a real answer about the provider.
+    let (s, b) = detail(tok.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
     assert_eq!(b["approvals"]["state"], "resolved");
+    assert_eq!(b["approvals"]["entries"].as_array().unwrap().len(), 0);
+
+    chain.set_failing_approval_log_reads(PROVIDER_REGISTRY, true);
+    let (s, b) = detail(tok.clone()).await;
+    // A 200 whose approvals block is the `unavailable` arm - NOT a 502 (the provider read succeeded,
+    // so the view is answerable) and emphatically NOT a resolved-but-empty set.
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["provider"]["registered"], serde_json::json!(true));
+    assert_eq!(b["approvals"]["state"], "unavailable");
+    // The reason is part of the contract: an unexplained could-not-read is indistinguishable from a
+    // surface that simply forgot to look.
+    assert!(b["approvals"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("could not be read"));
+    // `entries` must be ABSENT, not empty - a present-but-empty array is exactly what a consumer
+    // would spread into a list and render as "approved for nothing".
+    assert!(
+        b["approvals"].get("entries").is_none(),
+        "the unavailable arm must carry no entries field: {b}"
+    );
+
+    // ...and it recovers rather than latching.
+    chain.set_failing_approval_log_reads(PROVIDER_REGISTRY, false);
+    let (_, b) = detail(tok).await;
+    assert_eq!(b["approvals"]["state"], "resolved");
+}
+
+/// The neighbouring failure, kept separate because it is a different fact with a different remedy:
+/// when the PROVIDER read itself fails there is no answerable view at all, so the route refuses with
+/// a 502 rather than rendering a provider record it could not read.
+#[tokio::test]
+async fn an_unreadable_provider_read_refuses_the_whole_view() {
+    let (st, chain, _v, _b) = hermetic_state();
+    chain.set_factory_owner(PROVIDER_REGISTRY, "0x00000000000000000000000000000000000000ad");
+    let app = router(st);
+    let tok = admin_token(&app).await;
+    assert_eq!(register(&app, &tok, PID).await.0, StatusCode::OK);
 
     chain.set_failing_provider_reads(PROVIDER_REGISTRY, true);
     let (s, b) = call(
@@ -149,39 +202,12 @@ async fn an_unreadable_approval_log_is_reported_as_unavailable_not_as_no_approva
         None,
     )
     .await;
-    // The provider read fails first, so the whole view is a 502 rather than a view with a silently
-    // empty approvals block - either way, the one thing that must not happen is a 200 reporting no
-    // approvals.
     assert_eq!(s, StatusCode::BAD_GATEWAY, "{b}");
     assert!(b["error"].as_str().unwrap().contains("provider("));
-}
 
-/// The approval read is genuinely tri-state at the type level, and the route renders the
-/// `unavailable` arm rather than an empty list. Driven by failing ONLY the log read.
-#[tokio::test]
-async fn the_view_renders_the_unavailable_arm_when_only_the_log_read_fails() {
-    use admin_api::chain::ChainClient;
-    use admin_api::provider_registry::{fold_approvals, ApprovalsRead};
-
-    let (_st, chain, _v, _b) = hermetic_state();
-    chain.set_failing_provider_reads(PROVIDER_REGISTRY, true);
-    let log = chain
-        .service_creation_approval_log(PROVIDER_REGISTRY, PID)
-        .await;
-    assert!(log.is_err(), "the seeded failure must actually fail the read");
-
-    // What the route builds from that error, and what it must never build instead.
-    let unavailable = ApprovalsRead::Unavailable {
-        reason: "seeded".into(),
-    };
-    let rendered = serde_json::to_value(&unavailable).unwrap();
-    assert_eq!(rendered["state"], "unavailable");
-    assert!(rendered.get("entries").is_none());
-
-    let empty = ApprovalsRead::Resolved {
-        entries: fold_approvals(&[], &|_| None),
-    };
-    assert_eq!(serde_json::to_value(&empty).unwrap()["state"], "resolved");
+    // The list surface fails the same way rather than answering with a short list.
+    let (s, b) = call(&app, "GET", "/v1/admin/providers", Some(&tok), None).await;
+    assert_eq!(s, StatusCode::BAD_GATEWAY, "{b}");
 }
 
 /// A `providerId` is permanent: re-registering one is refused before any gas is spent, because the

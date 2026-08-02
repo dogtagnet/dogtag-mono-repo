@@ -5380,7 +5380,19 @@ a second instance started to exercise a change silently tried to bind over the c
 on `:39742`, and had that bind won the race it is the LIVE one that would have failed. It now reads
 `PORT` like `vet-api`, `government-api` and `indexer-api`.
 
-**`MemChain` DECODES and APPLIES the three registrar writes** (`apply_provider_registry_calldata`),
+****The approval-log failure needs its OWN switch, and a shared one cannot drive the case.**
+`provider()` is an `eth_call` and the approval read is an `eth_getLogs` from genesis to latest, so
+the realistic failure is the second refused while the first answers - a rate-limited or
+range-capping peer, the same asymmetry recorded for the issuer-whitelist pillar's unbounded reads.
+A single failure switch fails the provider read first and short-circuits the route into a 502, so
+the `unavailable` arm is never built and the headline claim goes unpinned at the layer that
+produces it. Hence `set_failing_approval_log_reads` beside `set_failing_provider_reads`, exactly as
+vet-api needs `set_fail_find_pets_by_dog_tag_reads` beside its sibling. The route test asserts a
+**200** whose `approvals.state == "unavailable"` and whose `entries` key is ABSENT; the 502 is a
+separate, separately named test about the provider read. A hand-constructed `ApprovalsRead` that
+never goes through the route is a test of `serde`, not of the surface.
+
+`MemChain` DECODES and APPLIES the three registrar writes** (`apply_provider_registry_calldata`),
 modelling `AlreadyRegistered`, `NoChange`, `RetiredStanding` and the PENDING-on-registration rule, so
 `tests/provider_registrar.rs` walks register -> activate -> approve and reads it back through the
 code path production reads. A fake that merely counted transactions could not catch a route sending
