@@ -40,8 +40,11 @@ itself** - it only re-exports whatever `contracts/.env` happens to carry, while 
 Ask the running process, which is the only place the answer actually is:
 
 ```
-ps eww "$(lsof -nP -iTCP:41874 -sTCP:LISTEN -t)" | tr ' ' '\n' | grep -c '^MONGO_URI='
-# 1 = persistent MongoStore, 0 = ephemeral MemStore.   Groomer is :43618.
+ps eww "$(lsof -nP -iTCP:41874 -sTCP:LISTEN -t)" | tr ' ' '\n' | grep '^MONGO_URI='
+# Read the VALUE, not a yes/no - `build_store` trims, so a blank counts as unset:
+#   nothing printed, or a bare `MONGO_URI=`  ->  ephemeral MemStore
+#   `MONGO_URI=mongodb://...`                ->  persistent MongoStore
+# Groomer is :43618.
 ```
 
 **Do not try to answer this from the backend log.** vet-api builds its filter with
