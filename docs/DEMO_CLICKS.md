@@ -38,21 +38,36 @@ stack comes up, every portal loads, and you find out later. Each is handled belo
 Handing `MONGO_URI` to a binary built without the `mongo` cargo feature does **not** quietly fall back to
 MemStore. Every backend refuses to start instead, loudly. §0.1 has the detail.
 
-### 0.1 Choose your store before you boot
+### 0.1 Know which store you are getting before you boot
 
-There are two paths, and the difference is whether the shop data you create survives a restart. Decide
-now rather than finding out after a morning of testing.
-
-**Path 1, the plain `scripts/demo-up.sh` walk: the vet and groomer stores are IN-MEMORY.**
+**Walking this guide means `scripts/demo-up.sh`, and that means the vet and groomer stores are
+IN-MEMORY.**
 The script sets `MONGO_URI` nowhere, and `build_store` returns an ephemeral `MemStore` whenever that
-variable is unset or empty. So on this path **every client, pet, appointment and issued record you create
-is lost the moment those backends restart.** Nothing warns you. This is the one genuinely silent case,
-because `build_store` returns `MemStore` before the cargo feature is ever consulted.
-That is still a perfectly good stack for walking this guide start to finish, it needs no database at all,
-and it is what you get unless you deliberately choose otherwise. It is only a problem if you expected the
-data to still be there tomorrow.
+variable is unset or empty. So **every client, pet, appointment and issued record you create is lost the
+moment those backends restart.** Nothing warns you. This is the one genuinely silent case, because
+`build_store` returns `MemStore` before the cargo feature is ever consulted.
+That is still a perfectly good stack for walking this guide start to finish, and it needs no database at
+all. It is only a problem if you expected the data to still be there tomorrow.
 
-**Path 2, the persistent option: the per-stack compose files.**
+**The honest conclusion, stated here rather than left for you to discover: there is currently NO
+supported local path that gives BOTH persistent shop stores AND the `localhost` portals this guide is
+written around.** The two options each give up one of those, so pick knowing that:
+
+- **Walking this guide** means `demo-up.sh` and in-memory shop data.
+- **Persistence locally** means hand-wiring `MONGO_URI` onto the two shop backends yourself, which
+  produces the shared-database custody collision documented at the end of this section unless you also
+  give each shop its own `MONGO_DB`. The captain's own long-running stack is in exactly that hand-wired
+  state, which is how that defect became live rather than hypothetical.
+
+#### The compose stacks are the persistent topology, and they are NOT this walkthrough
+
+`stacks/vet/docker-compose.yml` and `stacks/groomer/docker-compose.yml` are the self-hosted **deployment**
+stacks. Their persistence property is real and worth knowing: each brings **its own `mongo` service**, on
+its own network and its own volume (`vetdata`, `groomerdata`) with no host port mapping, so the two shops
+get **genuinely separate databases by construction** and the custody collision below cannot occur. Each
+image is also built with `FEATURES: mongo`, so the refuse-to-start arm below never fires there.
+
+Recorded so a reader deploying for real knows where to look, **not as a step in this walkthrough**:
 
 ```
 docker compose -f stacks/vet/docker-compose.yml up -d
@@ -60,25 +75,32 @@ docker compose -f stacks/groomer/docker-compose.yml up -d
 ```
 
 (`make up-vet` and `make up-groomer` run the same thing from each stack's own directory.)
-These are the self-hosted deployment stacks rather than a flag on the demo script, so each reads its own
-`stacks/<role>/.env` (copy the `.env.example` beside it) and brings its own web and caddy containers.
-Path 2 covers the two shop stacks only: admin, government, the oversight indexer, the prover service and
-the owner wallet still come from `demo-up.sh`, and the compose stacks publish the same backend ports it
-uses (`41874`, `43618`), so the two cannot serve the same role at once.
-This guide's walk was done on path 1.
 
-**Why this is the persistent path rather than a hand-wired `MONGO_URI`**, which is the obvious-looking
-alternative and is worse in three separate ways:
+**Do not run those on a laptop expecting this guide to work against them.** Three blockers, all of them
+in the compose files themselves:
 
-- **Each compose stack brings its own `mongo` service**, on its own network and its own volume
-  (`vetdata`, `groomerdata`), so the two shops get **separate databases by construction**. A single
-  hand-set `MONGO_URI` does not, and that is a correctness bug rather than an inconvenience. See the
-  box below.
-- **Each image is built with `FEATURES: mongo`**, so the refuse-to-start arm below can never fire there.
-- **Nothing about a shared script has to change.** `demo-up.sh` is depended on by every other path, so
-  editing what it compiles to serve one walkthrough is the wrong trade.
+1. **The two stacks cannot both run on one host.** Each gives its `caddy` service `ports: - "80:80"` and
+   `- "443:443"`. Separate compose projects still share host port bindings, so whichever comes up second
+   fails with a port-already-allocated error.
+2. **They are a public deployment topology.** Caddy terminates TLS with automatic Let's Encrypt
+   certificates, which needs a real public DNS name pointing at the host and reachable inbound 80 and
+   443 (`deploy/Caddyfile` states both requirements at the top). `DOMAIN` has no default in either
+   compose file, and both `.env.example` files ship an RFC-2606 placeholder. On a laptop that does not
+   resolve, so caddy never serves.
+3. **The portals are not on their usual ports at all, which is the decisive one.** The `web` service in
+   both files has **no host `ports:` mapping** and says so in its own comment ("No host `ports:` -
+   internal only. Caddy reaches it as `web:80`"). Only the API port is published, `41874` for vet and
+   `43618` for groomer. So `http://localhost:41873` and `http://localhost:43617`, the URLs this entire
+   guide is written around, **do not exist** on the compose path.
 
-> **Do not add `MONGO_URI` to `contracts/.env` to get persistence on path 1.**
+Custody is out of reach there too: both api services set `ADMIN_LOOPBACK_ONLY: "1"`, which moves
+`/admin/*` onto a `127.0.0.1:PORT+1` listener **inside the container** that neither compose file
+publishes, and `deploy/Caddyfile` separately answers `403` for `/api/admin/*` by default. So §0.3's
+unlock and §B's Setup wizard cannot be performed against a compose stack.
+
+This guide was walked on `demo-up.sh`.
+
+> **Do not add `MONGO_URI` to `contracts/.env` to get persistence.**
 > `demo-up.sh` does `set -a; source contracts/.env`, so anything in that file reaches **every** backend it
 > launches, and it builds admin-api, government-api and indexer-api without the `mongo` feature. Those
 > processes then refuse to start, taking the whole admin portal (§A, §E, §G, §K1) and the prover service
@@ -105,9 +127,12 @@ fearing; a process that refuses to start tells you at once.
 > custody**. A groomer silently signing with vet custody is a correctness bug, and §0.3's "unlock both"
 > would then be unlocking the same key twice.
 > This is not hypothetical: it is the live state of any hand-wired stack where both processes carry
-> `MONGO_URI=mongodb://127.0.0.1:27018` with `MONGO_DB` unset.
-> The compose files avoid it by construction, which is the third reason path 2 is the recommended
-> persistent option.
+> `MONGO_URI=mongodb://127.0.0.1:27018` with `MONGO_DB` unset, which the captain's own long-running
+> stack is.
+> **So if you do hand-wire persistence, give each shop its own `MONGO_DB` as well as the URI.** That is
+> the whole remedy on this path. The compose stacks avoid it by construction, by giving each shop its
+> own `mongo` service rather than its own database name, but they are not runnable as this walkthrough
+> (see above).
 
 ### 0.2 Boot the stack
 
@@ -150,9 +175,8 @@ are prefilled in demo mode, so it is one click on **Unlock and continue**.
 
 ### 0.4 Verify the stack is actually up
 
-Running the start commands is not proof. Run this, from the repo root. It probes the **path 1** stack;
-on path 2 the two shop backends are containers, so ask `docker compose ps` and `docker compose logs api`
-in `stacks/vet` and `stacks/groomer` instead.
+Running the start commands is not proof. Run this, from the repo root. It probes the `demo-up.sh` stack,
+which is the one this guide is walked against.
 
 ```
 for p in 39741 39742 41873 41874 41875 43617 43618 44831 44832 45931 46001; do
@@ -176,9 +200,7 @@ fi
 
 A healthy stack answers:
 
-- **all eleven ports `up`** on path 1. Any `DOWN` means that service failed to start; read
-  `.demo/<name>.log`. (On path 2 the vet and groomer *portals* are served by caddy rather than on 41873
-  and 43617, so that pair reads `DOWN` there and is not a fault.)
+- **all eleven ports `up`.** Any `DOWN` means that service failed to start; read `.demo/<name>.log`.
 - **`government: chainId 135 canSign True backend live`.** `canSign False` means no funded
   `GOV_SIGNER_KEY`, so §E1's issuance will only dry-run.
 - **`indexer: simulated True chainId null`** after a stock `demo-up.sh`, or
@@ -189,7 +211,7 @@ A healthy stack answers:
 
 | feature line | process line | what you have |
 |---|---|---|
-| `mongo feature OFF` | `no MONGO_URI -> MemStore` | **Path 1, and correct.** Shop data is in memory and does not survive a restart of those backends. |
+| `mongo feature OFF` | `no MONGO_URI -> MemStore` | **A stock `demo-up.sh` stack, and correct.** Shop data is in memory and does not survive a restart of those backends. |
 | `mongo feature ON` | `MONGO_URI=mongodb://...` | A **MongoStore**, so shop data persists. |
 | `mongo feature OFF` | `MONGO_URI=...` printed | Cannot happen at runtime: that process would have refused to start, so port 41874 reads `DOWN` and `.demo/vet-api.log` carries the reason. |
 
@@ -214,9 +236,9 @@ persists across a backend restart. Set without the feature is neither: the proce
 (§0.1).
 
 **Which one you have is invisible in every portal, and `scripts/demo-up.sh` does not set the variable
-itself**, while the `stacks/{vet,groomer}/docker-compose.yml` stacks always do. So a plain `demo-up.sh`
-boot is **in-memory**, and the persistent path is those compose stacks rather than a hand-set variable -
-§0.1 covers the choice and why it is made that way.
+itself**, while the `stacks/{vet,groomer}/docker-compose.yml` stacks always do. So the stack this guide
+is walked against is **in-memory**, and there is no local option that is both persistent and served on
+these `localhost` portals - §0.1 states that conclusion and what each option costs.
 Ask the running process, which is the only place the answer actually is:
 
 ```
