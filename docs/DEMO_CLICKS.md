@@ -42,6 +42,7 @@ MemStore. Every backend refuses to start instead, loudly. §0.1 has the detail.
 
 **Walking this guide means `scripts/demo-up.sh`, and that means the vet and groomer stores are
 IN-MEMORY.**
+**This guide was walked on `demo-up.sh`**, so that is the path every step below is evidence for.
 The script sets `MONGO_URI` nowhere, and `build_store` returns an ephemeral `MemStore` whenever that
 variable is unset or empty. So **every client, pet, appointment and issued record you create is lost the
 moment those backends restart.** Nothing warns you. This is the one genuinely silent case, because
@@ -98,8 +99,6 @@ Custody is out of reach there too: both api services set `ADMIN_LOOPBACK_ONLY: "
 `/admin/*` onto a `127.0.0.1:PORT+1` listener **inside the container** that neither compose file
 publishes, and `deploy/Caddyfile` separately answers `403` for `/api/admin/*` by default. So §0.3's
 unlock and §B's Setup wizard cannot be performed against a compose stack.
-
-This guide was walked on `demo-up.sh`.
 
 > **Do not add `MONGO_URI` to `contracts/.env` to get persistence.**
 > `demo-up.sh` does `set -a; source contracts/.env`, so anything in that file reaches **every** backend it
@@ -190,9 +189,13 @@ done | paste -sd' ' -
 curl -s localhost:44832/health | python3 -c "import sys,json;d=json.load(sys.stdin);print('government: chainId',d['chainId'],'canSign',d['canSign'],'backend',d['backend'])"
 curl -s localhost:46001/health | python3 -c "import sys,json;d=json.load(sys.stdin);print('indexer:    simulated',d['simulated'],'chainId',d['chainId'])"
 
-strings target/release/vet-api | grep -q 'connected to MongoStore' \
-  && echo 'vet-api binary: mongo feature ON' \
-  || echo 'vet-api binary: mongo feature OFF'
+if [ ! -f target/release/vet-api ]; then
+  echo 'vet-api binary: NOT BUILT in this checkout - run cargo build --release -p vet-api'
+elif strings target/release/vet-api | grep -q 'connected to MongoStore'; then
+  echo 'vet-api binary: mongo feature ON'
+else
+  echo 'vet-api binary: mongo feature OFF'
+fi
 
 VETPID="$(lsof -nP -iTCP:41874 -sTCP:LISTEN -t || true)"
 if [ -z "$VETPID" ]; then
@@ -218,11 +221,17 @@ A healthy stack answers:
 | `mongo feature OFF` | `no MONGO_URI -> MemStore` | **A stock `demo-up.sh` stack, and correct.** Shop data is in memory and does not survive a restart of those backends. |
 | `mongo feature ON` | `MONGO_URI=mongodb://...` | A **MongoStore**, so shop data persists. |
 | `mongo feature OFF` | `MONGO_URI=...` printed | Cannot happen at runtime: that process would have refused to start, so port 41874 reads `DOWN` and `.demo/vet-api.log` carries the reason. |
+| `NOT BUILT in this checkout` | anything | **No verdict about the store.** This checkout has not built vet-api, so there is nothing here to inspect; whatever is answering on 41874 was built somewhere else. Build it, then re-run this block. |
 
-**Both halves are required, which is why they are one answer rather than two.** The feature check proves
-the binary *can* use Mongo; the process check proves it was *told* to. Either alone will report success
-on a stack quietly running the other store, which is precisely the confusion this section exists to
-prevent.
+**Neither half answers on its own, which is why they are read as a pair.** The feature check proves the
+binary *can* use Mongo; the process check proves it was *told* to. Either alone will report success on a
+stack quietly running the other store, which is precisely the confusion this section exists to prevent.
+
+**Read the pair as complete only on the first three rows.** The feature line describes the binary in
+*this* checkout, while the process line describes whatever process is actually listening. A `NOT BUILT`
+answer means those are not the same thing, so the pair says nothing about the running store at all: this
+monorepo is checked out many times over, and a stack hand-booted from another checkout answers the
+process line perfectly while leaving this one with no binary to inspect.
 
 ---
 
