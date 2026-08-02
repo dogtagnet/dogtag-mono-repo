@@ -26,66 +26,90 @@ Demo passwords (prefilled): operator `operator`, admin `admin`. Record type in t
 
 Everything after this section assumes a running stack. This section brings one up from nothing.
 
-**`scripts/demo-up.sh` on its own is not enough**, and the three ways it falls short are all silent: the
+**`scripts/demo-up.sh` on its own is not enough**, and the two ways it falls short are both silent: the
 stack comes up, every portal loads, and you find out later. Each is handled below, in order.
 
 | Trap | What happens if you miss it |
 |---|---|
-| `demo-up.sh` never sets `MONGO_URI` | vet and groomer run an ephemeral **MemStore**. Every client, pet and appointment you create vanishes on the next restart. |
-| `demo-up.sh` builds vet-api **without** `--features mongo` | `MONGO_URI` is read and then **silently ignored**, so setting it is not sufficient on its own. |
+| `demo-up.sh` never sets `MONGO_URI` | vet and groomer run an ephemeral **MemStore**. Every client, pet and appointment you create vanishes on the next restart of those backends. |
 | `demo-up.sh` boots the indexer with `INDEXER_DEMO_MODE=1` | You get the **simulated** indexer, which makes §K and §O behave completely differently from the live one. |
 
-### 0.1 Start MongoDB
+**A third thing that looks like a trap is not one**, and knowing that up front saves you chasing it.
+Handing `MONGO_URI` to a binary built without the `mongo` cargo feature does **not** quietly fall back to
+MemStore. Every backend refuses to start instead, loudly. §0.1 has the detail.
+
+### 0.1 Choose your store before you boot
+
+There are two paths, and the difference is whether the shop data you create survives a restart. Decide
+now rather than finding out after a morning of testing.
+
+**Path 1, the plain `scripts/demo-up.sh` walk: the vet and groomer stores are IN-MEMORY.**
+The script sets `MONGO_URI` nowhere, and `build_store` returns an ephemeral `MemStore` whenever that
+variable is unset or empty. So on this path **every client, pet, appointment and issued record you create
+is lost the moment those backends restart.** Nothing warns you. This is the one genuinely silent case,
+because `build_store` returns `MemStore` before the cargo feature is ever consulted.
+That is still a perfectly good stack for walking this guide start to finish, it needs no database at all,
+and it is what you get unless you deliberately choose otherwise. It is only a problem if you expected the
+data to still be there tomorrow.
+
+**Path 2, the persistent option: the per-stack compose files.**
 
 ```
-docker start dogtag-mongo
-docker ps --filter name=dogtag-mongo --format '{{.Names}} {{.Status}} {{.Ports}}'
+docker compose -f stacks/vet/docker-compose.yml up -d
+docker compose -f stacks/groomer/docker-compose.yml up -d
 ```
 
-Expect `dogtag-mongo  Up ...  0.0.0.0:27018->27017/tcp`.
-If the container does not exist yet, create it once:
-`docker run -d --name dogtag-mongo -p 27018:27017 mongo:7`.
+(`make up-vet` and `make up-groomer` run the same thing from each stack's own directory.)
+These are the self-hosted deployment stacks rather than a flag on the demo script, so each reads its own
+`stacks/<role>/.env` (copy the `.env.example` beside it) and brings its own web and caddy containers.
+Path 2 covers the two shop stacks only: admin, government, the oversight indexer, the prover service and
+the owner wallet still come from `demo-up.sh`, and the compose stacks publish the same backend ports it
+uses (`41874`, `43618`), so the two cannot serve the same role at once.
+This guide's walk was done on path 1.
 
-### 0.2 Put `MONGO_URI` in `contracts/.env`
+**Why this is the persistent path rather than a hand-wired `MONGO_URI`**, which is the obvious-looking
+alternative and is worse in three separate ways:
 
-`demo-up.sh` does `set -a; source contracts/.env`, so anything in that file is exported to every backend
-it starts. That is the supported way to get the variable to vet-api and groomer-api, because the script
-sets it nowhere itself:
+- **Each compose stack brings its own `mongo` service**, on its own network and its own volume
+  (`vetdata`, `groomerdata`), so the two shops get **separate databases by construction**. A single
+  hand-set `MONGO_URI` does not, and that is a correctness bug rather than an inconvenience. See the
+  box below.
+- **Each image is built with `FEATURES: mongo`**, so the refuse-to-start arm below can never fire there.
+- **Nothing about a shared script has to change.** `demo-up.sh` is depended on by every other path, so
+  editing what it compiles to serve one walkthrough is the wrong trade.
 
-```
-grep -q '^MONGO_URI=' contracts/.env || echo 'MONGO_URI=mongodb://127.0.0.1:27018' >> contracts/.env
-```
+> **Do not add `MONGO_URI` to `contracts/.env` to get persistence on path 1.**
+> `demo-up.sh` does `set -a; source contracts/.env`, so anything in that file reaches **every** backend it
+> launches, and it builds admin-api, government-api and indexer-api without the `mongo` feature. Those
+> processes then refuse to start, taking the whole admin portal (§A, §E, §G, §K1) and the prover service
+> (§F) down with them.
 
-### 0.3 Make the build include the mongo feature
+**The refuse-to-start behaviour, stated correctly, because it is easy to assume the opposite.**
+`mongo` is a **non-default** cargo feature (`default = []`, `mongo = ["dep:mongodb"]`), and `build_store`
+only reaches its MongoStore branch under `#[cfg(feature = "mongo")]`. When `MONGO_URI` is set and
+non-empty but the binary lacks that feature, `build_store` does **not** fall through to MemStore. It logs
+*"MONGO_URI is set but this binary was built WITHOUT the `mongo` feature; rebuild with --features mongo or
+unset MONGO_URI. Refusing to start."* and calls `std::process::exit(1)`
+(`stacks/vet/api/src/main.rs`, `stacks/admin/api/src/main.rs`).
+**That is better behaviour than a silent fallback, not worse.** It is loud and self-diagnosing: the
+process is simply not there, and the reason is in `.demo/<name>.log`. It is logged at ERROR, which is the
+one level these backends do print by default. A store you did not ask for is the failure mode worth
+fearing; a process that refuses to start tells you at once.
 
-**This is the trap that defeats §0.2 on its own.** `mongo` is a **non-default** cargo feature of vet-api
-(`default = []`, `mongo = ["dep:mongodb"]`), and `build_store` only reaches its MongoStore branch under
-`#[cfg(feature = "mongo")]`. A binary built without it reads `MONGO_URI`, finds the feature absent, and
-falls through to MemStore without complaint.
+> **One `MONGO_URI` for both shops merges their CUSTODY, not just their CRM rows.**
+> vet-api and groomer-api are the same binary, both default `MONGO_DB` to `dogtag`, and `demo-up.sh` sets
+> `MONGO_DB` for neither. So one hand-set `MONGO_URI` puts **both shops in one database**.
+> The sharp consequence is custody. `main.rs` hydrates its seal file only
+> `if store.get_custody().await.is_none()`, so whichever backend boots second finds the first one's
+> custody blob already present, **skips hydrating its own seal, and comes up running on the other shop's
+> custody**. A groomer silently signing with vet custody is a correctness bug, and §0.3's "unlock both"
+> would then be unlocking the same key twice.
+> This is not hypothetical: it is the live state of any hand-wired stack where both processes carry
+> `MONGO_URI=mongodb://127.0.0.1:27018` with `MONGO_DB` unset.
+> The compose files avoid it by construction, which is the third reason path 2 is the recommended
+> persistent option.
 
-`demo-up.sh` builds the backends with no features at all:
-
-```
-cargo build -q --release -p admin-api -p vet-api -p government-api -p indexer-api
-```
-
-so it will **rebuild over** a mongo-enabled binary every time you run it. Building with the feature
-beforehand does not survive. The fix is a one-line local edit to `scripts/demo-up.sh`, adding the feature
-to that line:
-
-```
-cargo build -q --release -p admin-api -p government-api -p indexer-api
-cargo build -q --release -p vet-api --features mongo
-```
-
-(Leave the separate `--features prover` build below it alone. It writes to its own `target/prover` dir on
-purpose, so the vet and groomer instances stay on a binary that cannot accept a proving witness.)
-
-> This edit is not committed in the repo. It is called out here rather than made silently because
-> changing what `demo-up.sh` compiles is a behaviour change to a shared script, and the durable fix
-> belongs in its own change rather than riding along with a documentation update.
-
-### 0.4 Boot the stack
+### 0.2 Boot the stack
 
 ```
 scripts/demo-up.sh
@@ -114,7 +138,7 @@ and §O), stop that one process and start it against the chain with an authored 
 registry - see "Which stack am I on?" below for how to tell the two apart, and note that a live indexer
 with an empty scope registry fails every oversight query closed by design.
 
-### 0.5 Unlock custody on the two shop backends
+### 0.3 Unlock custody on the two shop backends
 
 **Custody re-locks on every restart, on both vet and groomer.** The sealed key survives in
 `.demo/*-custody.json`; the decrypted seed does not. Nothing issues or signs until you unlock.
@@ -124,9 +148,11 @@ For each of the vet portal (http://localhost:41873) and the groomer portal
 simply take the first action that needs custody and answer the prompt that appears in place. Both fields
 are prefilled in demo mode, so it is one click on **Unlock and continue**.
 
-### 0.6 Verify the stack is actually up
+### 0.4 Verify the stack is actually up
 
-Running the start commands is not proof. Run this, from the repo root:
+Running the start commands is not proof. Run this, from the repo root. It probes the **path 1** stack;
+on path 2 the two shop backends are containers, so ask `docker compose ps` and `docker compose logs api`
+in `stacks/vet` and `stacks/groomer` instead.
 
 ```
 for p in 39741 39742 41873 41874 41875 43617 43618 44831 44832 45931 46001; do
@@ -138,26 +164,39 @@ curl -s localhost:46001/health | python3 -c "import sys,json;d=json.load(sys.std
 
 strings target/release/vet-api | grep -q 'connected to MongoStore' \
   && echo 'vet-api binary: mongo feature ON' \
-  || echo 'vet-api binary: mongo feature OFF -> MONGO_URI is IGNORED'
+  || echo 'vet-api binary: mongo feature OFF'
 
-ps eww "$(lsof -nP -iTCP:41874 -sTCP:LISTEN -t)" | tr ' ' '\n' | grep '^MONGO_URI=' \
-  || echo '(no MONGO_URI handed to the process -> MemStore)'
+VETPID="$(lsof -nP -iTCP:41874 -sTCP:LISTEN -t || true)"
+if [ -z "$VETPID" ]; then
+  echo 'vet-api process: NOT RUNNING - read .demo/vet-api.log, do not read this as MemStore'
+else
+  ps eww "$VETPID" | tr ' ' '\n' | grep '^MONGO_URI=' || echo 'vet-api process: no MONGO_URI -> MemStore'
+fi
 ```
 
 A healthy stack answers:
 
-- **all eleven ports `up`.** Any `DOWN` means that service failed to start; read `.demo/<name>.log`.
+- **all eleven ports `up`** on path 1. Any `DOWN` means that service failed to start; read
+  `.demo/<name>.log`. (On path 2 the vet and groomer *portals* are served by caddy rather than on 41873
+  and 43617, so that pair reads `DOWN` there and is not a fault.)
 - **`government: chainId 135 canSign True backend live`.** `canSign False` means no funded
   `GOV_SIGNER_KEY`, so §E1's issuance will only dry-run.
 - **`indexer: simulated True chainId null`** after a stock `demo-up.sh`, or
   **`simulated False chainId 135`** if you started a live one. Either is fine; it decides what §K and §O
   do.
-- **`vet-api binary: mongo feature ON`** and **`MONGO_URI=mongodb://127.0.0.1:27018`**.
+- **the two store lines, which together tell you which path you are actually on.** There is no single
+  healthy answer here, so read them as a pair:
 
-**Those last two are one answer, not two, and both halves are required.** The feature check proves the
-binary *can* use Mongo; the process check proves it was *told* to. Either one alone will report success
-on a stack that is quietly running MemStore, which is precisely the failure this section exists to
-prevent. If the feature line says OFF, go back to §0.3 - it means `demo-up.sh` rebuilt over your binary.
+| feature line | process line | what you have |
+|---|---|---|
+| `mongo feature OFF` | `no MONGO_URI -> MemStore` | **Path 1, and correct.** Shop data is in memory and does not survive a restart of those backends. |
+| `mongo feature ON` | `MONGO_URI=mongodb://...` | A **MongoStore**, so shop data persists. |
+| `mongo feature OFF` | `MONGO_URI=...` printed | Cannot happen at runtime: that process would have refused to start, so port 41874 reads `DOWN` and `.demo/vet-api.log` carries the reason. |
+
+**Both halves are required, which is why they are one answer rather than two.** The feature check proves
+the binary *can* use Mongo; the process check proves it was *told* to. Either alone will report success
+on a stack quietly running the other store, which is precisely the confusion this section exists to
+prevent.
 
 ---
 
@@ -168,14 +207,16 @@ Both change how you read everything below, and neither was stated when this guid
 ### 1. Whether shop data survives a restart depends on the store the backend was handed
 
 vet-api and groomer-api choose their store from **`MONGO_URI`** (`build_store` in
-`stacks/vet/api/src/main.rs`). Set and non-empty gives a persistent **MongoStore**, and
-**clients, pets, appointments and issued records then persist across a backend restart**.
-Unset or empty gives an ephemeral **MemStore**, and all of that is lost on restart.
+`stacks/vet/api/src/main.rs`). Unset or empty gives an ephemeral **MemStore**, and clients, pets,
+appointments and issued records are all lost on restart. Set and non-empty gives a persistent
+**MongoStore** *provided the binary was built with the `mongo` cargo feature*, and that data then
+persists across a backend restart. Set without the feature is neither: the process refuses to start
+(§0.1).
 
 **Which one you have is invisible in every portal, and `scripts/demo-up.sh` does not set the variable
-itself** - it only re-exports whatever `contracts/.env` happens to carry, while the
-`stacks/{vet,groomer}/docker-compose.yml` stacks always set it. So a bare `demo-up.sh` boot is
-**in-memory** unless your own `contracts/.env` supplies a `MONGO_URI`.
+itself**, while the `stacks/{vet,groomer}/docker-compose.yml` stacks always do. So a plain `demo-up.sh`
+boot is **in-memory**, and the persistent path is those compose stacks rather than a hand-set variable -
+§0.1 covers the choice and why it is made that way.
 Ask the running process, which is the only place the answer actually is:
 
 ```
@@ -191,6 +232,8 @@ ps eww "$(lsof -nP -iTCP:41874 -sTCP:LISTEN -t)" | tr ' ' '\n' | grep '^MONGO_UR
 `connected to MongoStore` startup line is never printed - an empty log there means "this backend says
 nothing at this level", not "no Mongo". (government-api defaults itself to `info` and does not have this
 problem; the comment at `stacks/government/api/src/main.rs` records why.)
+The refusal described in §0.1 is the opposite case and **does** reach the log, because it is logged at
+ERROR. So the log is silent about success and loud about that failure.
 
 Earlier revisions of this guide assumed the in-memory case everywhere, so read their restart-wipes-it
 notes against whichever store you actually have.
@@ -1059,8 +1102,8 @@ Two consequences worth stating so they are not mistaken for defects:
   answers `GET /v1/businesses` with *"provider directory has no successful source snapshot yet"*, which is
   a 503 and honest: never-loaded is not the same as empty.
 - **The mandatory issuer-whitelist pillar (§E) does not answer for a generation-2 root.** It asks the
-  generation-1 registry. Since nothing issues through generation 2, nothing is exposed by this today, but
-  it is a cutover blocker rather than a wiring detail.
+  generation-1 registry. Nothing is exposed by this for as long as nothing has issued through generation
+  2, which the factory's own logs tell you (§N0), but it is a cutover blocker rather than a wiring detail.
 
 ---
 
@@ -1182,7 +1225,8 @@ edge:
 **N5. Deploy your own issuer clone. Status: BLOCKED (needs N1 and N2).**
 The page previews the deterministic clone address before committing and then calls the generation-2
 factory. The eligibility read behind the button is `canCreateService`, which folds the provider's
-registration, its standing, and the N2 approval, so with no provider registered it answers no.
+registration, its standing, and the N2 approval together, so it answers no until all three hold. N1 and
+N2 are what make them hold, and neither has a surface to perform it on.
 One sharp edge worth knowing if you ever debug this: that read must be made **as the factory**
 (`msg.sender` matters), and a plain `eth_call` with no `from` answers `false` for every provider on earth.
 The portal passes the factory account on exactly that one read.
@@ -1199,10 +1243,11 @@ the older contract for now.
 
 **N8. Publish your listing - contacts, location pin, profile, logo. Status: BLOCKED (needs N1, plus a
 registrar approval of the directory resolver).**
-This is the step that puts a provider in the searchable directory. Two independent blockers: a typed
-resolver answers nothing until the registrar approves it **and** the provider selects it, so while
-`ProviderDirectory.resolverApproved()` reads false every directory store stays empty (check it with the
-command in the two-facts section); and there is no provider to publish under.
+This is the step that puts a provider in the searchable directory. Two independent gates, and both must
+open: a typed resolver answers nothing until the registrar approves it **and** the provider selects it,
+so while `ProviderDirectory.resolverApproved()` reads false every directory store stays empty (check it
+with the command in the two-facts section); and there is nothing to publish under until N1 has given you
+a provider record, which N1 has no surface to do.
 Two properties of this step are worth remembering for when it does become walkable:
 
 - **A blank location publishes NO pin at all.** It does not publish `0,0`. That is a real coordinate off
@@ -1443,7 +1488,8 @@ no divergence; admin **Activity** reporting the indexer unconfigured; government
 **Checked directly on chain** on that date: the provenance router resolving two factory generations, the
 typed directory resolver not approved, no domain bound, no provider registered, and no logs of any kind
 on `DogTagIssuerFactoryV2`. Every one of those is mutable, so read them as a dated record of what that
-walk saw rather than as the current state - which is why the rest of this guide prints none of them.
+walk saw rather than as the current state. That is why the rule everywhere else in this guide is to hand
+you the command rather than the answer.
 Re-read them with the commands in the two-facts section and §N0.
 
 **One of them has since moved, and it is worth knowing about:** a provider was registered on chain about
