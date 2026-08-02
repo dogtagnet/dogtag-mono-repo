@@ -5814,3 +5814,77 @@ with `"fields": {}` and then asserts `!html.contains("Zagara")` to prove the PUB
 no Section A. That assertion only bites BECAUSE the default is `Zagara`; swap the literal without
 repointing it and the PII-leak guard silently stops guarding, which is a worse outcome than the
 hazard. Fixing this properly means moving both together and re-running `cargo test -p government-api`.
+
+## `demo-up.sh` and Mongo: the store is a DECISION, and one variable cannot express it
+
+`scripts/demo-up.sh` sets no `MONGO_URI`, so out of the box every backend runs its ephemeral MemStore.
+Making it persistent needs TWO things, and each fails differently if you miss it.
+
+**The `mongo` cargo feature is not a default**, and a binary built without it does not fall back - it
+`exit(1)`s with `MONGO_URI is set but this binary was built WITHOUT the 'mongo' feature`. Verified
+empirically by running `target/prover/release/vet-api` (built `--features prover` only) with
+`MONGO_URI` set: it refuses, and boots silently with the variable unset. `demo-up.sh` therefore
+appends `${MONGO_URI:+--features mongo}` to its own build line, so opting into Mongo opts into the
+feature automatically.
+
+**A single exported `MONGO_DB` is WRONG, and silently so.** vet and groomer are the SAME binary
+differing only by `BUSINESS_TYPE`, so one database means the second to boot adopts the first's custody
+blob and two businesses share one signing identity, with nothing on any screen saying so. The script
+therefore passes a per-service database (`MONGO_DB_ADMIN`/`_VET`/`_GROOMER`/`_GOVERNMENT`, defaulting
+to `dogtag`/`dogtag_vet`/`dogtag_groomer`/`dogtag_government`).
+
+**The prover instance is pinned to `MONGO_URI=""` deliberately, and that pin is load-bearing.**
+`contracts/.env` is sourced with `set -a`, so a `MONGO_URI` from there - or from the caller's
+environment - is EXPORTED and reaches every child the script spawns. The prover line sets no
+`MONGO_DB`, so without the pin it would connect to Mongo under the default database name `dogtag`,
+i.e. the ADMIN's. Note the neighbouring hazard is NOT real on this bash: prefix assignments to a
+shell FUNCTION (`run`) do not persist after it returns - checked directly (`X=inner f; echo $X` prints
+`outer`) - so the leak is via the exported environment, not via assignment persistence. Do not
+"simplify" the pin away on the grounds that the function-scope worry was unfounded.
+
+**Verify by listing databases AND by reading the live process**, never by assuming:
+`ps eww $(lsof -nP -iTCP:41874 -sTCP:LISTEN -t) | tr ' ' '\n' | grep '^MONGO_'`. A database absent from
+`listDatabases` may simply not have been written to yet - Mongo creates them lazily.
+
+## Driving a wagmi/AppKit portal headlessly needs the wallet to exist BEFORE app boot
+
+The provider self-service page (and any other wallet-gated surface) gates every control - including the
+read-only preflight buttons - on `ready = !busy && !!reader && isConnected && !!caller`. So a headless
+walk of those flows needs a real EIP-1193 provider, and `chrome-devtools-axi` has no
+`Page.addScriptToEvaluateOnNewDocument`.
+
+**Injecting the shim with `eval` after load does not reliably connect.** AppKit's modal will discover an
+EIP-6963 provider announced late and will even render it and show the account and balance, but wagmi's
+React `isConnected` can stay false - the "Connect wallet" button remains, and every gated control stays
+disabled. Do not read "the modal shows my account" as "the app is connected"; read the button.
+
+What works is making the provider exist before the app's first render, e.g. a temporary
+`<script type="module">` in that portal's `index.html` ahead of `/src/main.tsx`. viem is importable
+straight from the dev server (`/node_modules/viem/_esm/index.js`), so the shim is ~40 lines:
+`privateKeyToAccount` + `createWalletClient`, a `request` switch handling `eth_requestAccounts`,
+`eth_chainId`, `eth_sendTransaction` and `personal_sign`, everything else forwarded to a public client,
+and an `eip6963:announceProvider` dispatch. **Revert it before committing** - it is a walk harness, not
+product code.
+
+Use the PUBLIC anvil account-0 key for this, never a real one: it is printed by every anvil start, so
+it is not a secret, and the governance key must never enter a browser page. That address starts with
+zero balance on ROAX, so fund it first from the governance signer.
+
+## The generation-2 provider journey stops at ATTACH, and that is an admin gap rather than a provider one
+
+Walked 2026-08-02 end to end. The admin registrar surface covers register -> activate -> approve and
+**nothing else**; `attachService` has no call site anywhere outside contracts and their tests (it
+appears only in explanatory comments in `packages/ui/src/provider/*` and
+`ProviderSelfServicePanel.tsx`). Consequences, all observed on screen:
+
+- **Deploy WORKS.** A provider registered and approved through the portal can deploy its own
+  generation-2 clone from the self-service page; the predicted address is exact, and the resulting
+  contract's `owner()`, `recordType()` and factory `isClone` all check out.
+- **Repoint is refused with `Has DogTag attached this contract to your provider record? FAILED`**, and
+  the page names the remedy - send the address to DogTag - which no admin screen can currently perform.
+- **Domain and listing are refused by the typed-resolver gate**, which needs a registrar approval AND a
+  per-provider selection. `ProviderDirectory.resolverApproved()` reads `false`.
+
+So three of the four provider flows are blocked by registrar actions with no surface, and none of them
+is a misconfiguration the provider can fix. State it that way rather than as "the provider journey does
+not work".

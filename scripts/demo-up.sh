@@ -50,6 +50,18 @@ PROVIDER_REGISTRY="${PROVIDER_REGISTRY_ADDR:-$(ledger_addr ProviderRegistry)}"
 : "${FACTORY:?set FACTORY_ADDR, or add DogTagIssuerFactory to contracts/deployments/roax.json}"
 
 HMAC=dev-central-hmac-secret
+# PERSISTENT STORE (optional). Unset MONGO_URI - the default - leaves every backend on its ephemeral
+# MemStore, exactly as before. Set it and each backend gets its OWN database, which is the part that
+# cannot be left to a single exported variable: vet and groomer are the SAME binary, so pointing both
+# at one database makes the second to boot adopt the first's custody blob, and two businesses then
+# silently share one signing identity. The names are overridable but must stay distinct.
+# NOTE the binaries must be built WITH the `mongo` cargo feature (see the build step below); with
+# MONGO_URI set, a binary built without it refuses to start rather than falling back to MemStore.
+MONGO_URI="${MONGO_URI:-}"
+MONGO_DB_ADMIN="${MONGO_DB_ADMIN:-dogtag}"
+MONGO_DB_VET="${MONGO_DB_VET:-dogtag_vet}"
+MONGO_DB_GROOMER="${MONGO_DB_GROOMER:-dogtag_groomer}"
+MONGO_DB_GOVERNMENT="${MONGO_DB_GOVERNMENT:-dogtag_government}"
 # LAN IP so the share/verify QR points at a host the PHONE can reach (localhost is the phone itself).
 # Override with: LAN_IP=192.168.x.x scripts/demo-up.sh
 LAN_IP="${LAN_IP:-172.24.230.152}"
@@ -189,7 +201,7 @@ echo
 : > .demo/pids
 
 echo "Building backend binaries (release for speed)…"
-cargo build -q --release -p admin-api -p vet-api -p government-api -p indexer-api
+cargo build -q --release ${MONGO_URI:+--features mongo} -p admin-api -p vet-api -p government-api -p indexer-api
 # The PROVER SERVICE is the SAME vet-api binary but compiled WITH the `prover` feature (which mounts
 # `/prove-consent`). We build it to a SEPARATE target dir so the vet/groomer instances stay on the
 # feature-OFF binary and therefore cannot accept a proving witness.
@@ -215,6 +227,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
   SBT_ADDR=$SBT FACTORY_ADDR=$FACTORY PROVIDER_REGISTRY_ADDR=$PROVIDER_REGISTRY \
   ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR PORT=39742 \
+  MONGO_URI="$MONGO_URI" MONGO_DB="$MONGO_DB_ADMIN" \
   ADMIN_PROPOSE_ONLY="$ADMIN_PROPOSE_ONLY" \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
 # Every verifier/issuance process receives the same owner-hidden pair. PROFILE_ISSUER is a real
@@ -229,6 +242,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Seaport Vet" ISSUER_DOMAIN=vet.local \
   BUSINESS_ID=biz-vet CONFIRMATIONS=1 PORT=41874 DEPLOYMENT_URL="${VET_PUBLIC_URL:-http://$LAN_IP:41874}" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
+  MONGO_URI="$MONGO_URI" MONGO_DB="$MONGO_DB_VET" \
   CUSTODY_SEAL_PATH="$ROOT/.demo/vet-custody.json" \
   run vet-api ":41874" "$ROOT/target/release/vet-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
@@ -237,6 +251,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Pampered Paws" ISSUER_DOMAIN=groomer.local \
   BUSINESS_ID=biz-groomer BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=43618 DEPLOYMENT_URL="${GROOMER_PUBLIC_URL:-http://$LAN_IP:43618}" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
+  MONGO_URI="$MONGO_URI" MONGO_DB="$MONGO_DB_GROOMER" \
   CUSTODY_SEAL_PATH="$ROOT/.demo/groomer-custody.json" \
   run groomer-api ":43618" "$ROOT/target/release/vet-api"
 # PROVER SERVICE — the trusted 64-bit prover a 32-bit-only Android phone queries for its consent proof
@@ -252,6 +267,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="DogTag Prover" ISSUER_DOMAIN=prover.local \
   BUSINESS_ID=biz-prover CONFIRMATIONS=1 PORT=41875 DEPLOYMENT_URL="${PROVER_PUBLIC_URL:-http://$LAN_IP:41875}" \
   CIRCUITS_BUILD_DIR="$ROOT/circuits/build" \
+  MONGO_URI="" MONGO_DB="" \
   CUSTODY_SEAL_PATH="$ROOT/.demo/prover-custody.json" \
   run prover-api ":41875" "$ROOT/target/prover/release/vet-api"
 
@@ -288,6 +304,7 @@ ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority"
   GOV_CHAIN_BACKEND="$GOV_CHAIN_BACKEND" \
   TRAVEL_CLEARANCE_ISSUER_ADDR="$TRAVEL_CLEARANCE_ISSUER_ADDR" GOV_SIGNER_KEY="$GOV_SIGNER_KEY" \
   GOV_API_TOKEN="${GOV_API_TOKEN:-dogtag-gov-demo-token}" \
+  MONGO_URI="$MONGO_URI" MONGO_DB="$MONGO_DB_GOVERNMENT" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_OVERSIGHT_TOKEN=dogtag-indexer-oversight-demo-token \
   run government-api ":44832" "$ROOT/target/release/government-api"
 
