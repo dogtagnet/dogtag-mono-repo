@@ -223,11 +223,11 @@ Not every repoint in this inventory is live when it is merged, and the differenc
 **Takes effect on deploy or restart** - every `.env.example`-driven service (vet, groomer, government, admin, indexer), because these are values an operator sets and the process reads at boot.
 Reversible: reads are reversible, which is why C-9 precedes C-10 and C-11.
 
-**Takes effect on the next web build** - `packages/ui/src/wallet/contracts.ts` and the three `VITE_*` portal templates.
+**Takes effect on the next web build** - `packages/ui/src/wallet/contracts.ts` and the `VITE_*` portal templates.
 A portal is rebuilt and redeployed; no user action is required.
 Note `VITE_DOGTAG_ISSUER_FACTORY_ADDR` **falls back to the SDK default** when unset (`packages/ui/src/wallet/verificationBench.ts`), so leaving it unset after the cutover does not disable the bench's anchor check - it silently keeps reading generation 1.
-`VITE_ISSUER_DOMAIN_REGISTRY_ADDR` has no fallback and fails closed instead.
-Two adjacent lines with opposite failure modes; the fallback one is the one that can lie.
+A fallback-free key fails closed instead, so check which kind you are editing: the fallback one is the one that can lie.
+`VITE_ISSUER_DOMAIN_REGISTRY_ADDR` used to be this paragraph's fail-closed example and **no longer exists** - the bench's two issuer-domain rows were removed once `IssuerDomainRegistry` was confirmed empty (`boundCloneCount()` reads 0), so there is one fewer web key to repoint at C-9.
 
 **Needs an app rebuild AND a reinstall on each handset** - `apps/ios/DogTag/roax.json` and `apps/android/app/src/main/assets/roax.json`.
 These are compile-time bundles.
