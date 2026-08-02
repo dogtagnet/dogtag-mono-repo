@@ -1733,6 +1733,35 @@ fn provider_registry_authority(registry: &str) -> Authority {
 /// way would tell an admin a provider is approved for nothing on the strength of a read that never
 /// happened - and the remedy for the two differs entirely.
 async fn provider_view(st: &AppState, registry: &str, provider_id: &str) -> Result<Value, Resp> {
+    let approvals = match st
+        .chain
+        .service_creation_approval_log(registry, provider_id)
+        .await
+    {
+        Ok(events) => ApprovalsRead::Resolved {
+            entries: fold_approvals(&events, &|k| record_type_label(k)),
+        },
+        Err(e) => approvals_unavailable(&e.to_string()),
+    };
+    provider_view_with_approvals(st, registry, provider_id, approvals).await
+}
+
+/// The `Unavailable` arm's one spelling, so the list and detail paths cannot describe the same
+/// failure two ways.
+fn approvals_unavailable(reason: &str) -> ApprovalsRead {
+    ApprovalsRead::Unavailable {
+        reason: format!("the ServiceCreationApprovalSet log could not be read: {reason}"),
+    }
+}
+
+/// `provider_view` with the approvals already read, which is what lets the list path serve a whole
+/// page from ONE registry-wide log scan instead of one scan per provider.
+async fn provider_view_with_approvals(
+    st: &AppState,
+    registry: &str,
+    provider_id: &str,
+    approvals: ApprovalsRead,
+) -> Result<Value, Resp> {
     let record = st
         .chain
         .provider_record(registry, provider_id)
@@ -1747,18 +1776,6 @@ async fn provider_view(st: &AppState, registry: &str, provider_id: &str) -> Resu
         }
     } else {
         Value::Null
-    };
-    let approvals = match st
-        .chain
-        .service_creation_approval_log(registry, provider_id)
-        .await
-    {
-        Ok(events) => ApprovalsRead::Resolved {
-            entries: fold_approvals(&events, &|k| record_type_label(k)),
-        },
-        Err(e) => ApprovalsRead::Unavailable {
-            reason: format!("the ServiceCreationApprovalSet log could not be read: {e}"),
-        },
     };
     Ok(json!({
         "provider": record,
@@ -1800,9 +1817,29 @@ async fn providers_list(State(st): State<AppState>, headers: HeaderMap) -> Resp 
         cursor = next;
     }
 
+    // ONE registry-wide log scan for the whole page. A per-provider scan cost an unbounded
+    // `eth_getLogs` each AND could leave the page MIXED - early providers resolved, later ones
+    // `Unavailable` once a rate-limiting or range-capping peer starts refusing - which reads as a
+    // fact about those particular providers rather than the uniform "we could not check" it is.
+    let approvals_by_provider = st
+        .chain
+        .service_creation_approval_log_by_provider(&registry)
+        .await;
+
     let mut providers = Vec::with_capacity(ids.len());
     for id in &ids {
-        match provider_view(&st, &registry, id).await {
+        let approvals = match &approvals_by_provider {
+            // A provider the resolved log mentions nowhere has been approved for nothing. That IS an
+            // answer, so it is an empty `Resolved` and never a could-not-check.
+            Ok(by_provider) => ApprovalsRead::Resolved {
+                entries: fold_approvals(
+                    by_provider.get(&id.to_lowercase()).map_or(&[][..], |e| &e[..]),
+                    &|k| record_type_label(k),
+                ),
+            },
+            Err(e) => approvals_unavailable(&e.to_string()),
+        };
+        match provider_view_with_approvals(&st, &registry, id, approvals).await {
             Ok(v) => providers.push(v),
             Err(e) => return e,
         }

@@ -295,6 +295,22 @@ pub trait ChainClient: Send + Sync {
         registry_addr: &str,
         provider_id: &str,
     ) -> Result<Vec<(String, bool)>, ChainError>;
+
+    /// The same log for EVERY provider on one registry, grouped by `providerId`, each group in
+    /// ascending `(block, logIndex)` order.
+    ///
+    /// One unbounded `eth_getLogs` for the whole registry rather than one PER PROVIDER. That is not
+    /// only a cost argument: a per-provider scan can leave a page MIXED - early providers resolved,
+    /// later ones `Unavailable` after a rate-limiting or range-capping peer starts refusing - which
+    /// reads as a fact about those particular providers when the truth is one uniform "we could not
+    /// check". With a single read the whole page resolves or the whole page does not.
+    ///
+    /// A provider absent from the returned map has no log entries, which IS an answer (the read
+    /// resolved and mentions it nowhere), never a could-not-check.
+    async fn service_creation_approval_log_by_provider(
+        &self,
+        registry_addr: &str,
+    ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError>;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -792,6 +808,23 @@ impl ChainClient for MemChain {
             .unwrap_or_default())
     }
 
+    async fn service_creation_approval_log_by_provider(
+        &self,
+        registry_addr: &str,
+    ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        // ONE read, so the same switch that fails the per-provider log fails this one - which is what
+        // makes the whole page uniformly `Unavailable` rather than mixed.
+        Self::approval_log_reads_fail(&g, registry_addr)?;
+        let registry = registry_addr.to_lowercase();
+        Ok(g.approval_log
+            .iter()
+            .filter(|((r, _), _)| *r == registry)
+            .map(|((_, id), events)| (id.clone(), events.clone()))
+            .collect())
+    }
+
     async fn is_clone(&self, factory_addr: &str, addr: &str) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
         Ok(g.clones
@@ -959,6 +992,15 @@ fn parse_b160(h: &str) -> FixedBytes<20> {
         }
     }
     FixedBytes::<20>::from(out)
+}
+
+/// The topic word for an indexed `bytes20 providerId`: LEFT-aligned, per Solidity's encoding of a
+/// short fixed-bytes value. Right-aligning it (the address convention) matches no log at all, which
+/// reads exactly like "this provider has never been approved for anything".
+fn provider_id_topic(provider_id: &str) -> [u8; 32] {
+    let mut topic = [0u8; 32];
+    topic[..20].copy_from_slice(parse_b160(provider_id).as_slice());
+    topic
 }
 
 // --------------------------------------------------------------------------------------------
@@ -1367,6 +1409,47 @@ impl ChainClient for AlloyChain {
         registry_addr: &str,
         provider_id: &str,
     ) -> Result<Vec<(String, bool)>, ChainError> {
+        let by_provider = self
+            .approval_log_ordered(registry_addr, Some(provider_id))
+            .await?;
+        Ok(by_provider
+            .get(&provider_id.to_lowercase())
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn service_creation_approval_log_by_provider(
+        &self,
+        registry_addr: &str,
+    ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError> {
+        self.approval_log_ordered(registry_addr, None).await
+    }
+}
+
+impl AlloyChain {
+    /// The one `ServiceCreationApprovalSet` reader both approval methods share, so the topic
+    /// alignment, the decode and the ORDERING rule below cannot drift into two versions.
+    ///
+    /// `provider_id` narrows the filter to one provider (the detail path); `None` reads the whole
+    /// registry in a single scan (the list path).
+    ///
+    /// ## Order is established here, never assumed
+    ///
+    /// `fold_approvals` takes the LAST write per record type, so its ascending-`(block, logIndex)`
+    /// precondition decides whether a withdrawal or the grant before it is reported as current. A
+    /// node's `eth_getLogs` ordering is not part of that contract, so the pair is READ off each log
+    /// and sorted here rather than trusted.
+    ///
+    /// A log carrying NEITHER position may be neither placed nor dropped - the same rule this repo
+    /// applies to the issuer-whitelist pillar's `log_point`. Placing it at `(0, 0)` sorts it ahead of
+    /// every real event, which can turn a withdrawal into an approval; dropping it discards the event
+    /// that may itself have been the withdrawal. Both invent an answer, so an unpositioned log makes
+    /// the whole read fail, which the caller renders as `Unavailable`.
+    async fn approval_log_ordered(
+        &self,
+        registry_addr: &str,
+        provider_id: Option<&str>,
+    ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError> {
         use alloy::providers::{Provider, ProviderBuilder};
         use alloy::rpc::types::Filter;
         use alloy::sol_types::{SolEvent, SolValue};
@@ -1375,37 +1458,91 @@ impl ChainClient for AlloyChain {
             .on_builtin(&self.rpc_url)
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        // topic1 is the indexed `bytes20 providerId`. Solidity left-aligns a short fixed-bytes value
-        // in its topic word, so the filter word is the id followed by 12 zero bytes - right-aligning
-        // it (the address convention) matches no log at all, which would read exactly like "this
-        // provider has never been approved for anything".
-        let mut topic1 = [0u8; 32];
-        topic1[..20].copy_from_slice(parse_b160(provider_id).as_slice());
-        let filter = Filter::new()
+        let mut filter = Filter::new()
             .address(parse_addr(registry_addr))
             .event_signature(IProviderRegistry::ServiceCreationApprovalSet::SIGNATURE_HASH)
-            .topic1(B256::from(topic1))
             .from_block(0u64);
+        if let Some(id) = provider_id {
+            // topic1 is the indexed `bytes20 providerId`. Solidity left-aligns a short fixed-bytes
+            // value in its topic word, so the filter word is the id followed by 12 zero bytes -
+            // right-aligning it (the address convention) matches no log at all, which would read
+            // exactly like "this provider has never been approved for anything".
+            filter = filter.topic1(B256::from(provider_id_topic(id)));
+        }
         let logs = provider
             .get_logs(&filter)
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
 
-        let mut out = Vec::with_capacity(logs.len());
+        let mut entries = Vec::with_capacity(logs.len());
         for log in logs {
-            // topic2 is the indexed `bytes32 recordType`; `allowed` is the sole unindexed member.
-            let Some(record_type) = log.topics().get(2) else {
+            // topic1 is the indexed `bytes20 providerId`, topic2 the indexed `bytes32 recordType`;
+            // `allowed` is the sole unindexed member.
+            let (Some(id_topic), Some(record_type)) = (log.topics().get(1), log.topics().get(2))
+            else {
                 continue;
             };
             let allowed = bool::abi_decode(log.data().data.as_ref(), true)
                 .map_err(|e| ChainError::Other(format!("approval log decode: {e}")))?;
-            out.push((
-                format!("0x{}", hex::encode(record_type.as_slice())),
+            entries.push(ApprovalLogEntry {
+                block_number: log.block_number,
+                log_index: log.log_index,
+                // The topic is the LEFT-aligned `bytes20`, so the id is its leading 20 bytes.
+                provider_id: format!("0x{}", hex::encode(&id_topic.as_slice()[..20])),
+                record_type_key: format!("0x{}", hex::encode(record_type.as_slice())),
                 allowed,
-            ));
+            });
         }
-        Ok(out)
+        order_approval_log(entries)
     }
+}
+
+/// One decoded `ServiceCreationApprovalSet` log, before ordering.
+struct ApprovalLogEntry {
+    block_number: Option<u64>,
+    log_index: Option<u64>,
+    provider_id: String,
+    record_type_key: String,
+    allowed: bool,
+}
+
+/// Sort a decoded approval log into ascending `(blockNumber, logIndex)` and group it by provider.
+///
+/// Extracted from the `eth_getLogs` call so it is reachable by a test: this rule lives on the Alloy
+/// path alone and `MemChain` is a different `ChainClient`, so nothing driving the fake can pin it -
+/// the same reason the issuer-whitelist pillar's error classifier is a free function.
+///
+/// An entry missing EITHER position fails the whole read. Placing it at `(0, 0)` would sort it ahead
+/// of every real event, which can present a superseded grant as current; dropping it would discard
+/// the event that may itself have been the withdrawal. Both fabricate an answer, and this repo's
+/// standing rule is that a positionless log is neither placed nor dropped.
+fn order_approval_log(
+    mut entries: Vec<ApprovalLogEntry>,
+) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError> {
+    if entries
+        .iter()
+        .any(|e| e.block_number.is_none() || e.log_index.is_none())
+    {
+        return Err(ChainError::Other(
+            "a ServiceCreationApprovalSet log carried no (blockNumber, logIndex), so the approvals \
+             could not be ordered - the last write per record type is what makes this the current \
+             state, and an unpositioned log can be neither placed nor dropped without inventing an \
+             answer"
+                .into(),
+        ));
+    }
+    // Sorting rather than trusting the node: `fold_approvals` takes the LAST write per record type,
+    // so ordering decides whether a withdrawal or the grant before it is reported as current, and
+    // `eth_getLogs` ordering is not part of that contract.
+    entries.sort_by_key(|e| (e.block_number, e.log_index));
+
+    let mut out: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+    for e in entries {
+        out.entry(e.provider_id.to_ascii_lowercase())
+            .or_default()
+            .push((e.record_type_key, e.allowed));
+    }
+    Ok(out)
 }
 
 /// Helper: normalize a record-type string into its keccak256 bytes32 (the whitelist / issuer key).
@@ -1462,6 +1599,111 @@ pub fn verify_key(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RT_A: &str = "0x00000000000000000000000000000000000000000000000000000000000000aa";
+    const RT_B: &str = "0x00000000000000000000000000000000000000000000000000000000000000bb";
+    const PROVIDER_A: &str = "0x00000000000000000000000000000000000000a1";
+    const PROVIDER_B: &str = "0x00000000000000000000000000000000000000b2";
+
+    fn approval_entry(
+        block: Option<u64>,
+        index: Option<u64>,
+        provider_id: &str,
+        record_type_key: &str,
+        allowed: bool,
+    ) -> ApprovalLogEntry {
+        ApprovalLogEntry {
+            block_number: block,
+            log_index: index,
+            provider_id: provider_id.to_string(),
+            record_type_key: record_type_key.to_string(),
+            allowed,
+        }
+    }
+
+    /// The read establishes order rather than trusting the node's. `fold_approvals` takes the LAST
+    /// write per record type, so a peer returning the withdrawal before the grant it superseded
+    /// would otherwise render a withdrawn record type as approved - and the route's `NoChange`
+    /// pre-check would then refuse the corrective write.
+    #[test]
+    fn approval_logs_are_ordered_by_block_and_log_index_not_by_arrival() {
+        let out = order_approval_log(vec![
+            approval_entry(Some(9), Some(0), PROVIDER_A, RT_A, false),
+            approval_entry(Some(2), Some(1), PROVIDER_A, RT_A, true),
+        ])
+        .expect("both logs carry a position");
+        assert_eq!(
+            out.get(PROVIDER_A).unwrap(),
+            &vec![(RT_A.to_string(), true), (RT_A.to_string(), false)],
+            "the earlier grant must fold first, so the later withdrawal wins"
+        );
+        // Same block, so only `logIndex` can sequence the pair.
+        let out = order_approval_log(vec![
+            approval_entry(Some(7), Some(3), PROVIDER_A, RT_A, false),
+            approval_entry(Some(7), Some(1), PROVIDER_A, RT_A, true),
+        ])
+        .expect("both logs carry a position");
+        assert!(
+            !out.get(PROVIDER_A).unwrap().last().unwrap().1,
+            "logIndex must break a same-block tie"
+        );
+    }
+
+    /// A log carrying no position may be NEITHER placed nor dropped: `(0, 0)` sorts it ahead of every
+    /// real event (turning a superseded grant into the current state) and dropping it discards the
+    /// event that may itself have been the withdrawal. The whole read fails, which the route renders
+    /// as `Unavailable` rather than as an approval answer.
+    #[test]
+    fn an_unpositioned_approval_log_fails_the_whole_read() {
+        for entry in [
+            approval_entry(None, Some(0), PROVIDER_A, RT_A, true),
+            approval_entry(Some(4), None, PROVIDER_A, RT_A, true),
+        ] {
+            let out = order_approval_log(vec![
+                approval_entry(Some(1), Some(0), PROVIDER_A, RT_A, false),
+                entry,
+            ]);
+            assert!(
+                out.is_err(),
+                "a positionless log must fail the read, never be silently placed or dropped"
+            );
+        }
+    }
+
+    /// The whole-registry read groups by provider, so one scan can serve a page without leaking one
+    /// provider's approvals into another's row.
+    #[test]
+    fn the_registry_wide_read_groups_by_provider() {
+        let out = order_approval_log(vec![
+            approval_entry(Some(1), Some(0), PROVIDER_A, RT_A, true),
+            approval_entry(Some(2), Some(0), PROVIDER_B, RT_B, true),
+            approval_entry(Some(3), Some(0), PROVIDER_A, RT_B, false),
+        ])
+        .expect("every log carries a position");
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            out.get(PROVIDER_A).unwrap(),
+            &vec![(RT_A.to_string(), true), (RT_B.to_string(), false)]
+        );
+        assert_eq!(out.get(PROVIDER_B).unwrap(), &vec![(RT_B.to_string(), true)]);
+    }
+
+    /// The indexed `bytes20 providerId` is LEFT-aligned in its topic word. Right-aligning it (the
+    /// address convention) matches no log at all, which reads exactly like "this provider has never
+    /// been approved for anything".
+    #[test]
+    fn the_provider_id_topic_is_left_aligned() {
+        let topic = provider_id_topic(PROVIDER_A);
+        assert_eq!(
+            format!("0x{}", hex::encode(&topic[..20])),
+            PROVIDER_A,
+            "the id must occupy the LEADING 20 bytes of the topic word"
+        );
+        assert!(
+            topic[20..].iter().all(|b| *b == 0),
+            "the trailing 12 bytes must be the padding"
+        );
+    }
 
     /// `verify_key` must byte-match the on-chain `_verifyKey` + the demo-bootstrap value the vet stack
     /// produces for "boarding_intake" — the verifier-onboarding whitelist parity guard (plan A3).

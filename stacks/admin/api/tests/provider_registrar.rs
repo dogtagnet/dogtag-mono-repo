@@ -182,6 +182,97 @@ async fn an_unreadable_approval_log_is_reported_as_unavailable_not_as_no_approva
     assert_eq!(b["approvals"]["state"], "resolved");
 }
 
+/// The same headline claim on the LIST route, which reads the log a DIFFERENT way - one
+/// registry-wide scan rather than one per provider - so the detail test above pins nothing about it.
+///
+/// The list route is also where the claim is easiest to get wrong, because a page has more than one
+/// row: every row must land on `unavailable` together. A per-provider scan could leave the page
+/// MIXED once a rate-limiting peer starts refusing part way through, and a half-resolved page reads
+/// as a fact about those particular providers rather than the uniform "we could not check" it is.
+#[tokio::test]
+async fn an_unreadable_approval_log_makes_the_whole_page_unavailable_rather_than_part_of_it() {
+    const PID2: &str = "0x1d4e0a7b2c9f6538e0a4b7c1d2e3f40516273849";
+    let (st, chain, _v, _b) = hermetic_state();
+    chain.set_factory_owner(PROVIDER_REGISTRY, "0x00000000000000000000000000000000000000ad");
+    let app = router(st);
+    let tok = admin_token(&app).await;
+    assert_eq!(register(&app, &tok, PID).await.0, StatusCode::OK);
+    assert_eq!(register(&app, &tok, PID2).await.0, StatusCode::OK);
+
+    let list = |tok: String| {
+        let app = app.clone();
+        async move { call(&app, "GET", "/v1/admin/providers", Some(&tok), None).await }
+    };
+
+    // Readable, and only ONE provider is approved for anything: the registry-wide read must group by
+    // provider, so one provider's approvals can never surface on another's row.
+    for pid in [PID, PID2] {
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                &format!("/v1/admin/providers/{pid}/standing"),
+                Some(&tok),
+                Some(serde_json::json!({ "standing": "active" })),
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/v1/admin/providers/{PID}/service-approval"),
+            Some(&tok),
+            Some(serde_json::json!({ "recordType": "VACCINATION", "allowed": true })),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    let (s, b) = list(tok.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let rows = b["providers"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(row["approvals"]["state"], "resolved");
+        let approved = row["provider"]["providerId"] == PID;
+        let entries = row["approvals"]["entries"].as_array().unwrap();
+        assert_eq!(
+            entries.len(),
+            usize::from(approved),
+            "a provider the log never mentions must resolve to NOTHING, and must not inherit its \
+             neighbour's approvals: {row}"
+        );
+    }
+
+    chain.set_failing_approval_log_reads(PROVIDER_REGISTRY, true);
+    let (s, b) = list(tok).await;
+    // Still a 200 - the provider reads answered, so each row is renderable - but EVERY row's
+    // approvals block is the `unavailable` arm, with no `entries` key to spread into a list.
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let rows = b["providers"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(row["provider"]["registered"], serde_json::json!(true));
+        assert_eq!(
+            row["approvals"]["state"], "unavailable",
+            "no row may resolve while the one read behind the page did not: {row}"
+        );
+        assert!(row["approvals"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("could not be read"));
+        assert!(
+            row["approvals"].get("entries").is_none(),
+            "the unavailable arm must carry no entries field: {row}"
+        );
+    }
+}
+
 /// The neighbouring failure, kept separate because it is a different fact with a different remedy:
 /// when the PROVIDER read itself fails there is no answerable view at all, so the route refuses with
 /// a 502 rather than rendering a provider record it could not read.
