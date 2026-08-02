@@ -10,9 +10,13 @@ import { env } from "../lib/env";
  *  e.g. `importerLastName` → credentialSubject.importer.lastName).
  *
  *  `placeholder` documents the backend's own fallback for a BLANK field; `demo` is what the
- *  demo-only "Fill demo data" button types in. They coincide for everything except the dates, which
- *  float relative to today so a filled form is always inside a sensible window (the backend's
- *  hardcoded defaults go stale). A field with neither falls back to an empty string. */
+ *  demo-only "Fill demo data" button types in. They are SEPARATE on purpose and diverge wherever a
+ *  realistic hint would make a bad demo record: every Section A field that NAMES OR IDENTIFIES a
+ *  person, plus the animal name and the examining veterinarian, carries an unmistakably fake `demo`
+ *  (see the Section A note below). Categorical Section A fields - role, ID type, ID jurisdiction -
+ *  identify nobody, so they need none. The dates also diverge: they float relative to today so a
+ *  filled form is always inside a sensible window (the backend's hardcoded defaults go stale).
+ *  A field with no `demo` falls back to its `placeholder`, and one with neither to an empty string. */
 interface FieldSpec {
   key: string;
   label: string;

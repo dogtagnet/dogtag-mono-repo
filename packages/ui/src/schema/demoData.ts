@@ -405,8 +405,11 @@ export const DEMO_CRM_APPOINTMENT: DemoCrmAppointment = {
  * `providerId` is deliberately ABSENT: it is registrar-assigned and opaque, so any value here would
  * name a provider that does not exist. The operator pastes the id the admin registrar screen minted.
  *
- * Contacts are folded over the shared channel list rather than restated, so a channel added to
- * `PROVIDER_CONTACT_CHANNELS` appears here instead of being silently left blank.
+ * Contacts derive from the shared channel list rather than restating it, and are typed
+ * `ContactChannelRecord` so a channel added to `PROVIDER_CONTACT_CHANNELS` FAILS TO COMPILE here
+ * until it is given a demo value. A widened `Record<string, string>` with a `?? ""` fallback would
+ * accept the addition silently and fill the new field with a blank - which is the exact silence
+ * `channels.ts` exists to make impossible.
  */
 export interface DemoProviderListing {
   recordType: string;
@@ -416,7 +419,7 @@ export interface DemoProviderListing {
   contacts: ContactChannelRecord<string>;
 }
 
-const DEMO_LISTING_CONTACTS: Record<string, string> = {
+const DEMO_LISTING_CONTACTS: ContactChannelRecord<string> = {
   phone: "+65 6000 0000",
   whatsapp: "+65 6000 0000",
   telegram: "demoprovider",
@@ -432,6 +435,6 @@ export const DEMO_PROVIDER_LISTING: DemoProviderListing = {
   lat: "1.290270",
   lng: "103.851959",
   contacts: Object.fromEntries(
-    PROVIDER_CONTACT_CHANNELS.map((c) => [c, DEMO_LISTING_CONTACTS[c] ?? ""]),
+    PROVIDER_CONTACT_CHANNELS.map((c) => [c, DEMO_LISTING_CONTACTS[c]]),
   ) as ContactChannelRecord<string>,
 };

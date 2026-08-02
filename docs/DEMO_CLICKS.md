@@ -396,7 +396,7 @@ There is **no** central registration and **no** "Central API URL" setting; every
 
 1. **Sign in** (admin password prefilled).
 2. Go to **Onboard issuer** (the wizard).
-3. Click **Vet preset** (top-right) - fills all three steps with the vet demo data
+3. Click **Fill demo data (vet)** (top-right) - fills all three steps with the vet demo data
    (record types incl. `VACCINATION` + `DOG_PROFILE`).
 4. Step 1 **Register business** → **Register business**.
 5. Step 2 **Submit issuer application** → **Submit application**.
@@ -404,7 +404,7 @@ There is **no** central registration and **no** "Central API URL" setting; every
    - **Issuer** approval whitelists the issuance record-types per address; when the record types
      include `DOG_PROFILE`, Approve **also grants `DogTagSBTConsent.ISSUER_ROLE`** (the custodial
      mint capability) to the signer.
-   - For a **groomer/verifier** application (Groomer preset), Approve instead whitelists each
+   - For a **groomer/verifier** application (**Fill demo data (groomer)**), Approve instead whitelists each
      `VERIFY:<purpose>` on-chain (from the application's **verify purposes** field) - see §F and the
      Groomer variant.
 
@@ -689,8 +689,8 @@ beside it rather than folded into it.
 The chain records anchoring and revocation and has **no concept of a validity window**, so an expired
 credential really is on-chain-valid.
 The verifier's verdict is integrity, on-chain status and the issuer pillar; expiry, the configured-registry
-row and the two domain rows are reported next to it so you can see them without them silently changing
-the answer.
+row and the advisory grant-at-issuance row are reported next to it so you can see them without them
+silently changing the answer.
 
 For the opposite case, revoke the record and bench it again: *"Has the issuer revoked this credential?"*
 turns **Fail** and the verdict goes **not valid**.
@@ -1452,7 +1452,7 @@ Same as B + F, but the groomer onboards as a **verifier** via apply→approve:
    **verify purposes** field (`grooming_intake/boarding_intake/daycare_access`) → **Submit application**.
 2. Fund the relayer signer: `scripts/demo-bootstrap.sh 0x<groomerSignerAddress>` (a groomer is a
    verifier/relayer - no `ISSUER_ROLE` needed; the script funds PLASMA + re-grants the VERIFY whitelist).
-3. Admin portal → step A.3 click **Groomer preset** → **Approve** → this whitelists each
+3. Admin portal → step A.3 click **Fill demo data (groomer)** → **Approve** → this whitelists each
    `VERIFY:<purpose>` on-chain (`key = keccak256(abi.encode("VERIFY:", keccak256(label) mod r))`,
    `whitelistFor(verifyKey, groomerRelayer)`).
 
