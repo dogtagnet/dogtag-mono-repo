@@ -12,7 +12,14 @@ use admin_api::indexer::{DisabledFeed, HttpOversightFeed, OversightFeed};
 use admin_api::store::{MemStore, Store};
 use tower_http::cors::CorsLayer;
 
-const PORT: u16 = 39742;
+/// The default listen port. Overridable with `PORT`, like every sibling stack.
+///
+/// It used to be a compile-time constant, which made admin-api the ONE service you cannot run a
+/// second instance of. That is not a theoretical inconvenience: a captain's stack is routinely live
+/// on this port, so a second instance started to exercise a change silently attempted to bind over
+/// it — and had that bind succeeded first, the live console would have been the thing that failed.
+/// `vet-api`, `government-api` and `indexer-api` all read `PORT`; this one now does too.
+const DEFAULT_PORT: u16 = 39742;
 
 #[tokio::main]
 async fn main() {
@@ -24,6 +31,10 @@ async fn main() {
         .init();
 
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
     let rpc_url = env("ROAX_RPC", "http://127.0.0.1:8545");
     // CHAIN_ID is env-driven so a different/production chain is a pure config swap (default 135 = ROAX).
     let chain_id: u64 = std::env::var("CHAIN_ID")
@@ -35,7 +46,7 @@ async fn main() {
     // stores only the hash (audit L4).
     let admin_password = env("ADMIN_PASSWORD", "admin-pw");
     let cfg = Config {
-        deployment_url: env("DEPLOYMENT_URL", &format!("http://localhost:{PORT}")),
+        deployment_url: env("DEPLOYMENT_URL", &format!("http://localhost:{port}")),
         rpc_url: rpc_url.clone(),
         issuer_registry_addr: env(
             "ISSUER_REGISTRY_ADDR",
@@ -212,21 +223,21 @@ async fn main() {
     // CORS: explicit allowlist when CORS_ALLOW_ORIGINS is set (prod), else permissive (demo).
     let cors = build_cors();
 
-    // Admin-router loopback isolation (ADMIN_LOOPBACK_ONLY): when truthy, the public 0.0.0.0:PORT
+    // Admin-router loopback isolation (ADMIN_LOOPBACK_ONLY): when truthy, the public 0.0.0.0:<port>
     // listener omits the admin-console routes, which are served on a separate 127.0.0.1:ADMIN_PORT
-    // listener (default PORT+1). Default (unset): everything on one listener exactly as today.
+    // listener (default port+1). Default (unset): everything on one listener exactly as today.
     let admin_loopback = matches!(env("ADMIN_LOOPBACK_ONLY", "").as_str(), "1" | "true");
 
     if admin_loopback {
         let admin_port: u16 = std::env::var("ADMIN_PORT")
             .ok()
             .and_then(|s| s.parse::<u16>().ok())
-            .unwrap_or(PORT + 1);
+            .unwrap_or(port + 1);
 
         let public_app = admin_api::public_router(state.clone()).layer(cors.clone());
         let admin_app = admin_api::admin_router(state).layer(cors);
 
-        let public_addr = std::net::SocketAddr::from(([0, 0, 0, 0], PORT));
+        let public_addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
         let admin_addr = std::net::SocketAddr::from(([127, 0, 0, 1], admin_port));
         tracing::info!(%public_addr, %admin_addr, "admin-api public + loopback-only admin console listening");
 
@@ -250,7 +261,7 @@ async fn main() {
         b.expect("serve admin");
     } else {
         let app = admin_api::router(state).layer(cors);
-        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], PORT));
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
         tracing::info!(%addr, "admin-api listening");
         let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
         axum::serve(
