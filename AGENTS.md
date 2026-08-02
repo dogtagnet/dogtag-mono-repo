@@ -5055,6 +5055,37 @@ Also: `pnpm --filter <pkg> dev -- --port N` does NOT reach vite (the `--` is pas
 and `strictPort` then fails on the config's own port). Run `./node_modules/.bin/vite --port N` from the
 package directory instead.
 
+### The bench's issuer-domain rows were REMOVED, and the two neighbours that were NOT
+
+`packages/ui/src/wallet/verificationBench.ts` no longer has `issuer-domain-claim` /
+`issuer-domain-dns`, `contracts.ts` no longer has `issuerDomainClaimOf`, and
+`VITE_ISSUER_DOMAIN_REGISTRY_ADDR` is gone from `stacks/admin/web`. Do not reinstate any of them, and
+in particular **do not "fix" this by repointing the bench at `ServiceDomainResolver`** - that is the
+C-9 repoint, and it would restore two permanently unanswered rows under a newer address.
+
+Both rows were dead, each for its own reason, and neither ever fed the verdict:
+`IssuerDomainRegistry` is deployed and EMPTY (`boundCloneCount()` reads 0 - re-check it before
+believing any of this), so the on-chain row could only ever report "published no domain claim"; and
+the DNS row was `could-not-run` BY CONSTRUCTION, since a TXT lookup is resolved server-side and the
+bench runs in a browser.
+
+**Three things that survive and are easy to delete by accident when chasing the word "domain":**
+
+- **`packages/ui/src/domain/issuerDomainBinding.ts` is a DIFFERENT THING and is LIVE.** It is the
+  six-state DISPLAY model backed by `crates/dogtag-dns-rs`, consumed by the government Verify page,
+  the admin issuer-application DNS-confirm dialog, `DomainBindingBadge`, and
+  `directory/types.ts` (which derives `DirectoryObservation` from it). None of them read the removed
+  address. Removing the registry's READS is not removing the binding.
+- **`government-api` still reads `ISSUER_DOMAIN_REGISTRY_ADDR`** (`stacks/government/.env.example`,
+  `chain.rs`, `routes.rs`). It is a backend, not a web app, and it was deliberately left alone.
+- **The two mobile bundles still carry the address** (`apps/*/roax.json`). They are COMPILE-TIME, so
+  changing them is a rebuild-and-reinstall (C-10), not an edit.
+
+**`make check-cutover-consumers` did NOT flag this, and that is not a bug in the gate.** The manifest
+declares CONSUMER FILES, not a per-address file list, and `stacks/admin/web/.env.example` still
+carries other moving addresses - so dropping one address from a still-declared file leaves the tree
+and the manifest in agreement. Do not read a green gate as proof that an address is untouched.
+
 ### The issuer↔domain DNS binding — read `docs/ISSUER_DOMAIN_BINDING.md` before touching it
 
 The normative convention, the three-link verification chain, the six states and the display rules all
@@ -5696,3 +5727,37 @@ ingest, and the hostile host is the real threat model anyway. **That case needs 
 hostile path with nothing substituted, which must render - and the control earned its place: the first
 run had both cases publishing the same logo bytes, so they shared an address and the substitution hit
 both. The control caught it.
+
+
+## The demo-fill affordance: ONE label, ONE mechanism, and the three forms that deliberately lack it
+
+`packages/ui/src/schema/demoData.ts` is the only demo-fill mechanism; never add a second. Every button
+reads **`Fill demo data`** (a parenthesised variant where one form offers several, e.g.
+`Fill demo data (vet)`). It shipped as three different names - `Fill sample`, `Demo (vet)`,
+`Vet preset` - and `stacks/{vet,groomer}/web/e2e/unlock.spec.ts:125` asserts `/Fill demo data/i`, so
+that is the spelling the tree already depended on. Every button is gated on `env.demoMode`, and
+`ProviderSelfServiceFlows` takes a `demoMode` prop defaulting to **false** because it is shared by two
+production portals - a shared component must not decide it is in demo mode on its own.
+
+**MERGE a preset into existing state; never replace the state object.** `DemoBusiness`'s own comment
+already records why (a key missing from the preset silently blanks that field), and the groomer client
+form is the sharp case: its payload REPLACES the owner's whole pet list, so filling by replacement
+drops `petId` and orphans every existing pet from its links. `Clients.tsx` fills the FIRST pet row in
+place and keeps the rest.
+
+**Three forms deliberately have NO button, because a fill there would produce a failure or a lie:**
+
+- **vet/groomer `ImportFromUser`** - it needs a *Customer JWT*, which no demo can mint, so any preset
+  fills a form that then fails to submit. (This panel is also the one the captain asked to remove; see
+  the note below on why it is still here.)
+- **owner `Settings`** - the only field is the ROAX RPC URL. The bundled default is what the existing
+  **Reset** button already restores, and any other URL deliberately fails the `eth_chainId` probe.
+- **government `Verify`** and the shared `CredentialVerifyPanel` - these render a PASS/FAIL verdict
+  over three pillars, and the only credential a preset could paste is one that was never anchored, so
+  the button would teach a red verdict. The documented zero-typing path is already Issue →
+  **Copy wrapped document** → Verify, which produces a genuinely anchored credential.
+
+The admin **verification bench** DOES have one, and the distinction is principled rather than
+hair-splitting: its product is *which checks could and could not run*, `could-not-run` is a
+first-class explained state there, and its toast says plainly that the control record was never
+anchored on this chain. A red VERDICT and an explained could-not-run are not the same claim.

@@ -1099,6 +1099,42 @@ still the issuer's **name and domain**, the same gap §E3's third mutation demon
 direction.
 
 ---
+
+### L1. Two things the same sweep deliberately did NOT remove
+
+Both were on the removal list, both were checked against the chain and the tree, and both were left in
+place on purpose. They are recorded here so that finding them still present does not read as an
+oversight.
+
+**The generation-1 `ProtocolRegistry` discovery reads STAY, and removing them would break the phone.**
+The brief called them superseded by `ProtocolRegistryV2`. They are not, yet. Verified against ROAX:
+
+```
+cast call 0xf5492A671E69b1A13f7Fd123C021830eB1ea8081 \
+  "getContractSet(bytes32)" $(cast keccak "dogtag-levelb/1") --rpc-url https://devrpc.roax.net
+#   -> a full record whose last word is 0x…01, i.e. active: true
+
+cast call 0xe98BFf66367F74F413414228adD91c16A24F7fdb \
+  "getDiscoverySet(bytes32)" $(cast keccak "dogtag-levelb/2") --rpc-url https://devrpc.roax.net
+#   -> execution reverted: unknown discovery set   (and the same for the levelb/1 key)
+```
+
+So generation 1 is published and ACTIVE while generation 2 is deployed and EMPTY - C-8 deployed the
+contract, and nothing has been published on it. The only readers are the native `runLevelBFlow` on both
+phones (`ScanScreen.swift` / `Net.swift` and the Android twins); **no web surface reads them at all**,
+so there was nothing to remove in the web apps in the first place. Removing them would leave
+`validateDiscovery`'s anti-redirect trip with no anchor to compare a platform's claim against.
+
+**The vet/groomer "Import from user" panel STAYS, because three other surfaces route to it.** The
+brief's own condition was to report rather than remove if anything depended on it, and something does:
+`PetTagCredentials.tsx` links to `/import` twice (the "ask the owner to share a record" and "Ask them
+to share one" remedies) and `TagDiscoveryPanel.tsx` navigates there from its discovery result's
+**Import** action. Removing the page would leave three dead links and strip the only remedy that copy
+offers. The complaint about it is still correct - its form wants a Customer JWT no receptionist can
+obtain, which is the same reason §J could not walk the microchip match - so removing it means deciding
+what those three call sites should offer instead, which is a product call rather than a deletion.
+
+---
 ## M. The generation-2 contracts are live, and nothing reads them
 
 This section exists so that a tester who has heard "the registry cutover shipped" does not misread every
