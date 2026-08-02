@@ -4022,10 +4022,44 @@ practical consequence, seen for real: an assertion that could never pass sat in 
 pipeline's test step did not catch it. Every e2e assertion on these portals is only as good as
 someone remembering to run it by hand, so run the relevant spec before claiming it passes.
 
+### A RUNNING stack is not necessarily a `demo-up.sh` stack, and the difference is invisible in the UI
+
+Before documenting or diagnosing any behaviour of a live demo stack, establish **how it was booted**.
+The captain routinely hand-starts the backends from the primary checkout rather than through
+`scripts/demo-up.sh`, and the two produce materially different behaviour on surfaces whose failure mode
+is a plausible-looking empty state. Confirm with `ps eww <pid>` on the process, never by assuming.
+
+The sharpest divergence is the **oversight indexer**, and one command settles it:
+`curl -s localhost:46001/health` reports `simulated` and `chainId` on BOTH paths (that symmetry is
+deliberate, so an absent flag can never be read as "live").
+
+- `simulated:true` is the `demo-up.sh` shape (`INDEXER_DEMO_MODE=1`): scripted rows carrying placeholder
+  hashes like `0x0800`, the two well-known oversight tokens work, and `mirror_ingest_token(demo)` returns
+  the well-known demo token so `PUT /v1/content/:address` accepts uploads.
+- `simulated:false` is a hand-booted live indexer. If `INDEXER_SCOPES` is empty the scope registry is
+  empty and **every oversight query 401s by design**, while the vet/groomer/government backends are still
+  presenting the demo tokens - so government Oversight renders `indexer returned 401` above zeroed
+  counters and the words "No on-chain activity yet.". And `MIRROR_INGEST_TOKEN` is typically unset, so the
+  mirror write route answers 503 rather than accepting content.
+
+Two consequences worth carrying. Documentation that asserts one of these outcomes is wrong for anyone on
+the other stack, so **branch on the observable rather than picking a side** - `docs/DEMO_CLICKS.md` does
+this in its "Which stack am I on?" section. And a per-portal `VITE_*` gap behaves the same way: a
+hand-started `vite dev` for `stacks/admin/web` typically carries only `VITE_DEMO_MODE=1`, which makes the
+Whitelist page report `VITE_ISSUER_REGISTRY_ADDR is not set` and the verification bench's issuer-domain
+row report itself unconfigured, while `demo-up.sh` passes both (the domain-registry address resolved from
+the ledger, which now HAS an `IssuerDomainRegistry` entry). Neither is a chain fault or a data fault.
+
+Also note the tunnels are **per backend and rotate on every restart** (`VET_PUBLIC_URL` /
+`GROOMER_PUBLIC_URL` / the government stack's own `DEPLOYMENT_URL`), so a hostname copied out of a doc or
+an older note is always stale. Government publishes its current one at `/health` as `deploymentUrl`; for
+vet and groomer it is the host printed inside whatever QR that backend mints.
+
 ### Rendering a portal against YOUR OWN backend, with the proxy trap disarmed
 
-The safe counterpart to the section above, and the cheaper way to verify a portal surface end-to-end
-when the spec you would otherwise run is unmocked (or, as for `stacks/admin/web`, does not exist).
+The safe counterpart to "Running the portal Playwright specs by hand WRITES to a live backend" above, and
+the cheaper way to verify a portal surface end-to-end when the spec you would otherwise run is unmocked
+(or, as for `stacks/admin/web`, does not exist).
 
 Every portal has an **absolute API-base override**, which is strictly better than pointing the proxy at
 a dead port: an absolute base takes `/api` out of the picture entirely, so `server.proxy` is never
