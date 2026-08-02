@@ -1003,6 +1003,18 @@ fn provider_id_topic(provider_id: &str) -> [u8; 32] {
     topic
 }
 
+/// The inverse: recover the `bytes20 providerId` from its topic word, taking the LEADING 20 bytes.
+///
+/// Named beside its forward twin rather than inlined at the call site because THIS is the direction
+/// the whole-registry read depends on - that read passes no `providerId`, so it never builds a topic
+/// and the only thing assigning a log to a provider is this decode. Reading `[12..]` instead (the
+/// address convention) groups every log under a junk key, so every provider's approvals miss the
+/// lookup and every row renders as approved for nothing - a definite false claim about the provider,
+/// from a read that succeeded.
+fn provider_id_from_topic(topic: &B256) -> String {
+    format!("0x{}", hex::encode(&topic.as_slice()[..20]))
+}
+
 // --------------------------------------------------------------------------------------------
 // AlloyChain — real ROAX/anvil-backed client using a derived signer set.
 // --------------------------------------------------------------------------------------------
@@ -1487,8 +1499,7 @@ impl AlloyChain {
             entries.push(ApprovalLogEntry {
                 block_number: log.block_number,
                 log_index: log.log_index,
-                // The topic is the LEFT-aligned `bytes20`, so the id is its leading 20 bytes.
-                provider_id: format!("0x{}", hex::encode(&id_topic.as_slice()[..20])),
+                provider_id: provider_id_from_topic(id_topic),
                 record_type_key: format!("0x{}", hex::encode(record_type.as_slice())),
                 allowed,
             });
@@ -1702,6 +1713,43 @@ mod tests {
         assert!(
             topic[20..].iter().all(|b| *b == 0),
             "the trailing 12 bytes must be the padding"
+        );
+    }
+
+    /// The INVERSE, which is the direction the whole-registry read actually depends on: that read
+    /// passes no `providerId`, so it builds no topic and this decode is the only thing assigning a
+    /// log to a provider.
+    ///
+    /// Asserted against a hand-built topic word rather than only round-tripped, because a round trip
+    /// alone is satisfied by BOTH directions being wrong the same way - encode to `[12..]` and decode
+    /// from `[12..]` and the pair still agrees, while every real log decodes to a junk key.
+    #[test]
+    fn a_provider_id_is_recovered_from_the_leading_bytes_of_its_topic_word() {
+        let id_bytes = hex::decode(PROVIDER_A.trim_start_matches("0x")).unwrap();
+
+        let mut left_aligned = [0u8; 32];
+        left_aligned[..20].copy_from_slice(&id_bytes);
+        assert_eq!(
+            provider_id_from_topic(&B256::from(left_aligned)),
+            PROVIDER_A,
+            "a Solidity-encoded bytes20 topic carries the id in its LEADING 20 bytes"
+        );
+
+        // The address convention, and the exact mistake the surrounding comments warn about: it must
+        // not recover the id, or nothing distinguishes the two encodings.
+        let mut right_aligned = [0u8; 32];
+        right_aligned[12..].copy_from_slice(&id_bytes);
+        assert_ne!(
+            provider_id_from_topic(&B256::from(right_aligned)),
+            PROVIDER_A,
+            "reading the TRAILING 20 bytes is the address convention, not the bytes20 encoding"
+        );
+
+        // And the pair agrees, so the filter the detail path builds and the decode the list path
+        // performs cannot drift apart.
+        assert_eq!(
+            provider_id_from_topic(&B256::from(provider_id_topic(PROVIDER_A))),
+            PROVIDER_A
         );
     }
 
