@@ -2276,6 +2276,59 @@ generation-2 set is deployed but unwired, and a value shipped in a template opts
 copies it into reading generation 2 without anyone deciding to. The code has no fallback either, so a
 blank cannot fall through to a bundled constant.
 
+### The page must explain ITSELF; the click-through guide is the backup
+
+The captain walked this page and asked what the contract number was for, which is the whole finding:
+1,118 lines of flows carrying essentially no explanatory copy. Fixing only `docs/DEMO_CLICKS.md`
+would have been fixing the backup. Copy lives in the two places the repo already splits it - product
+sentences that make a CLAIM are exported constants beside their logic and are testable
+(`ATTACHMENT_IS_A_DOGTAG_STEP`, `DOMAIN_REGISTER_NEEDS_TURNING_ON`, `DIRECTORY_NEEDS_TURNING_ON`,
+beside `REPOINT_SCOPE_NOTICE` and the three in `directoryPlan.ts`), while presentational hints stay
+inline in the component. `WhyThisExists` (`ProviderSelfServicePanel.tsx`) is the progressive-disclosure
+primitive: native `<details>`, so no state and no interaction with this package's no-`act()` rule.
+
+- **A DEPENDENCY IS PERMANENT; A BLOCKAGE IS CURRENT, and only the first may be written into copy.**
+  "DogTag must attach this before you can select it" stays true after the gap closes; "this is
+  currently blocked" goes stale silently and would need a live read - which on a failed read would
+  render could-not-check as an accusation, the defect this page is built against. `attachService` is
+  `onlyOwner` and `setResolverApproved` is `onlyOwner` with `setDirectoryResolver`/`setDomainResolver`
+  reverting `ResolverNotApproved` until it has run, so the dependency and its ORDER are properties of
+  the contracts rather than of today's chain state. The checks report what is true now; the notice
+  reports what the flow needs. `providerSelfServiceExplains.test.tsx` pins that these notices contain
+  no "currently"/"is blocked" wording.
+- **A DISABLED CONTROL MUST RENDER A REASON, and one gate had none for its whole life.** Flow 3's
+  Check is gated on flow 2's **Contract address** (`!candidate`), not on the Domain field beside it,
+  so typing a domain and finding the button dead was the page's most confusing state with nothing
+  said. Its two siblings already had reasons (`!isConnected` an amber line, `!providerIdOk` a red
+  one), which is exactly why the odd one out survived review. Audit each Check button's disabled
+  terms against what is rendered when you add one.
+- **The `cloneNonce` explanation is the CREATE2 salt, and the contract already says so.**
+  `DogTagIssuerFactoryV2._salt = keccak256(abi.encode(recordType, business, cloneNonce))` with
+  `business == msg.sender`, so two of three inputs are fixed and the number is the only dial; without
+  it there is exactly one possible address per record type per owner, forever, and nothing to repoint
+  TO. That reasoning was already written in `DogTagIssuerFactoryV2.sol`'s header and in a
+  `deployPlan.ts` comment - both places no user will ever read.
+- **A refusal says what happened, what it MEANS, and what to do.** The taken-nonce case is
+  `isFactoryClone` - a STORAGE read of what the factory has already deployed - so it must be described
+  as "two contracts cannot share one address", never as a revert: nothing was sent, and asserting a
+  transaction outcome from a storage read is the conflation every could-not-run state here exists to
+  prevent. Pinned in both directions by `providerDomainAndDeploy.test.ts`.
+
+**A MUTATION HARNESS THAT RESTORES WITH `git checkout --` DESTROYS UNCOMMITTED WORK - COMMIT FIRST.**
+`scripts/verify-provider-selfservice-mutations.sh` and any ad-hoc equivalent take git as the pristine
+baseline, so running one over uncommitted edits reverts every file in its `TARGETS` and reports every
+subsequent mutation as INERT ("scrutinee absent"), which reads exactly like a harness bug rather than
+like your work having just been deleted. This happened during this slice; only files OUTSIDE `TARGETS`
+survived. The existing note that a target missing from `TARGETS` leaves the tree mutated is the
+inverse of the same hazard - both follow from that one `git checkout --`.
+
+**Two mutations from this slice are worth keeping as worked examples of an INERT mutation**, since
+both initially read as an unpinned claim. Appending text to a note cannot redden an assertion that the
+note's ELEMENT is absent - the mutation has to target the CONDITION. And deleting the three-input
+sentence from the contract-number disclosure left `/record type/` and `/wallet/` matching the
+paragraphs BELOW it, so the test survived removal of the thing it was named for; the fix was to assert
+the enumeration, not words scattered near it. Check the scrutinee, not just the diff.
+
 **Rendering a vet- or groomer-portal page locally without a backend:** seed
 `localStorage["vet.opToken"]` (or `"groomer.opToken"`) with any string - the Layout gates on its presence, so no login round trip is needed - and build with
 `VITE_VET_API_BASE` and `VITE_CENTRAL_API_BASE` set to an absolute dead host, which takes `/api` out of

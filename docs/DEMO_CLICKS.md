@@ -200,6 +200,50 @@ That last clause is literal: the prompt appears in place over whatever page you 
 form survives.
 Repeat for the groomer portal.
 
+### 0.6 Point the two shop portals at the generation-2 contracts
+
+**Do this now if you intend to walk §2. Skip it and §2 has nothing to show you.**
+It is setup rather than something the provider does, which is why it lives here and not in the middle
+of that role's walk.
+
+`demo-up.sh` deliberately leaves four addresses unset, so the provider self-service page reports
+itself unconfigured and checks nothing.
+That is not an oversight: pointing the shop portals at the generation-2 registry set is a deliberate
+step, and a demo script should not take it behind your back.
+Issuance and verification are untouched either way - they stay on the generation-1 contracts, and
+these four variables feed only that one page.
+
+Run this from the repository root, after `demo-up.sh` has finished.
+The addresses are the committed ones from `contracts/deployments/roax.json`; nothing here needs
+filling in except the provider id, which §1.2 gives you:
+
+```
+kill $(lsof -nP -iTCP:41873 -sTCP:LISTEN -t)     # the vet portal's dev server, by PID
+kill $(lsof -nP -iTCP:43617 -sTCP:LISTEN -t)     # the groomer's
+
+export VITE_DEMO_MODE=1 \
+  VITE_PROVIDER_REGISTRY_ADDR=0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 \
+  VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR=0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6 \
+  VITE_SERVICE_DOMAIN_RESOLVER_ADDR=0x4AB4a70CFa9CE9415B96dF543C218F90a2619c33 \
+  VITE_PROVIDER_DIRECTORY_ADDR=0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0 \
+  VITE_CONTENT_MIRROR_BASE=http://127.0.0.1:46001 \
+  VITE_CONTENT_MIRROR_TOKEN=dogtag-indexer-mirror-ingest-demo-token \
+  VITE_PROVIDER_ID=<the provider id from §1.2>
+
+(cd stacks/vet/web     && ./node_modules/.bin/vite --port 41873 --strictPort &)
+(cd stacks/groomer/web && ./node_modules/.bin/vite --port 43617 --strictPort &)
+```
+
+Three notes on that block:
+
+- **`VITE_PROVIDER_ID` is optional and saves you a paste.** It prefills the provider id field on the
+  page, so §2 has nothing to copy by hand. Leave it out and you simply type the id in yourself.
+- **`127.0.0.1` is right for the mirror.** That address is fetched by the browser, and your browser is
+  on this machine. A LAN IP is only needed if something off this machine has to read it.
+- **Kill the dev servers by the PID on the port, never by matching a path.** This repo is checked out
+  many times over and every checkout runs the same command; a pattern kill reaches whichever instance
+  it happens to hit.
+
 ---
 
 ## 1. Admin
@@ -317,16 +361,44 @@ simulated. Both were seen on this walk.
 
 ## 2. The provider sets themselves up
 
-**Vet portal → Provider self-service**, or the groomer portal's page of the same name (`/provider` on
-either).
-There is **no backend on this path at all**: every read and every write is made from the provider's own
-wallet, straight to the chain.
+The provider is the business the admin just registered - the vet clinic or the grooming shop itself.
+This is where they deploy their own issuing contract and try to finish setting themselves up.
 
-### 2.1 First, the refusal you will get on a stock stack
+**The page is meant to explain itself, and this section is the backup.**
+If something on screen is unclear, open the *"Why is there a number at all?"* style questions on the
+page before coming back here - they carry the mechanism, and they are closed by default so the page
+stays short.
 
-Open the page before configuring anything. Walked result - the whole page is replaced by:
+There is **no backend on this path at all**: every read and every write is made from the provider's
+own wallet, straight to the chain.
 
-> **Provider self-service is not configured**
+### Before you start
+
+Four things, and the middle two are the ones people arrive without:
+
+| | What you need | Where it comes from |
+|---|---|---|
+| 1 | The four generation-2 addresses set on the shop portals | §0.6 - do it now if you skipped it |
+| 2 | **Your provider id** | §1.2, on the row you registered |
+| 3 | **A browser wallet holding the controller address** | The address §1.2 registered as the controller |
+| 4 | **Testnet gas in that account** | Every action here is a transaction you sign |
+
+Items 3 and 4 are not optional and there is no way around them.
+This page has no backend, so there is no hosted key to act on your behalf - not for the writes, and
+not even for the read-only **Check** buttons, which are also made from your key.
+
+If your wallet holds a *different* account from the one §1.2 registered, every check will refuse you
+correctly, and the page will say your key is not approved.
+That is the right answer to the wrong key, not a fault.
+
+### 2.1 Open the page
+
+Go to the vet portal at http://localhost:41873 and click **Provider self-service** in the left nav
+(the groomer portal has the same item; either is `/provider`).
+
+**If the whole page is replaced by a box headed "Provider self-service is not configured"**, you
+skipped §0.6. It reads:
+
 > This page reads the generation-2 registry set, and the addresses are not set on this deployment.
 > **Nothing about your provider record has been checked.**
 > Set: `VITE_PROVIDER_REGISTRY_ADDR`, `VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR`,
@@ -334,69 +406,63 @@ Open the page before configuring anything. Walked result - the whole page is rep
 > There is deliberately no built-in default. The generation-2 contracts are deployed but no client reads
 > them yet, so a baked address here would repoint this deployment by accident.
 
-Two things to take from that.
-**"Nothing has been checked" is stated rather than implied** - the page does not render an empty provider
-record and let you assume it looked.
-And **`demo-up.sh` does not set those four variables on purpose**: pointing the shop portals at the
-generation-2 set is a deliberate step, not something a demo script should do behind your back.
+Worth reading rather than clicking past: **"Nothing has been checked" is stated rather than implied.**
+The page does not render an empty provider record and let you assume it looked and found nothing.
+Go back to §0.6, then return here.
 
-**To walk the rest of this section, restart the two shop portals with the four addresses set.**
-This changes nothing about issuance or verification, which stay on the generation-1 contracts - these
-four variables feed only this page:
+### 2.2 Notice that the vet and the groomer show different pages
 
-```
-kill $(lsof -nP -iTCP:41873 -sTCP:LISTEN -t)      # the vet portal's vite dev server, by PID
-kill $(lsof -nP -iTCP:43617 -sTCP:LISTEN -t)      # the groomer's
+Open both if you like - the difference is deliberate, and it is not a bug in either.
 
-led(){ python3 -c "import json;print(json.load(open('contracts/deployments/roax.json'))['$1'])"; }
-export VITE_DEMO_MODE=1 \
-  VITE_PROVIDER_REGISTRY_ADDR=$(led ProviderRegistry) \
-  VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR=$(led DogTagIssuerFactoryV2) \
-  VITE_SERVICE_DOMAIN_RESOLVER_ADDR=$(led ServiceDomainResolver) \
-  VITE_PROVIDER_DIRECTORY_ADDR=$(led ProviderDirectory) \
-  VITE_CONTENT_MIRROR_BASE=http://<your-lan-ip>:46001 \
-  VITE_CONTENT_MIRROR_TOKEN=dogtag-indexer-mirror-ingest-demo-token
-(cd stacks/vet/web     && ./node_modules/.bin/vite --port 41873 --strictPort &)
-(cd stacks/groomer/web && ./node_modules/.bin/vite --port 43617 --strictPort &)
-```
-
-Walked result after restarting: the page renders its numbered flows.
-
-### 2.2 The vet and the groomer see different pages, and that is deliberate
-
-Walked, on both portals:
-
-- **Vet**: all four flows - **1. Deploy your own contract**, **2. Choose which contract is current**,
+- **Vet**: four flows - **1. Deploy your own contract**, **2. Choose which contract is current**,
   **3. Your domain**, **4. Your listing**.
-- **Groomer**: **only the listing**, and it is not even numbered there - the page's headings are just
-  *Your provider record* and *Your listing*.
+- **Groomer**: **only the listing**, and it is not numbered there - the headings are just *Your
+  provider record* and *Your listing*. The page says why in a line under the provider id.
 
 A groomer verifies and does not issue, so it has no issuing contract at all; flows 1 to 3 are keyed by
 one and are not merely hidden but inapplicable.
 Flow 4 is keyed by the provider record, so a groomer appears in the directory exactly as a vet does.
 The rest of what a groomer does has its own section - §4.
 
-### 2.3 Connect the wallet - a real gate, not a formality
+**The rest of §2 assumes the vet portal**, since that is where all four flows are.
 
-Every control on this page, **including the read-only Check buttons**, is disabled until a wallet is
-connected.
-Filling in a valid, registered, active, approved provider id changes nothing on its own.
+### 2.3 Connect your wallet
 
-That is correct rather than an oversight: with no backend on this path, every action *and every preflight
-that reports whether an action would succeed* is made from the provider's own key.
-But it does mean this section needs a real browser wallet holding the **controller** address the admin
-registered in §1.2, and that account needs testnet gas.
+**Every control on this page is disabled until a wallet is connected - including the read-only Check
+buttons.** Filling in a valid, registered, active, approved provider id changes nothing on its own.
 
-Click **Connect wallet** and pick your wallet.
-Walked result once connected: the **Connect wallet** button disappears, and entering the provider id
-enables both **Check** buttons.
+That is correct rather than an oversight: with no backend on this path, every action *and every
+preflight that reports whether an action would succeed* is made from the provider's own key.
 
-### 2.4 Flow 1 - deploy your own contract. **Walked; it works.**
+1. Click **Connect wallet** in the **top-right of the portal header** - not on the page itself - and
+   pick your wallet.
+2. Make sure it is on ROAX. If the header shows a **Switch to ROAX** button rather than a green
+   **ROAX** badge, click it. *(That button is in the shared wallet header component; this walk
+   connected an already-ROAX wallet and did not see it fire.)*
+3. Paste your provider id from §1.2 into **Provider id**, unless §0.6's `VITE_PROVIDER_ID` already
+   filled it.
+4. Leave **Record type** at `VACCINATION` - that is the record type §1.2 approved.
 
-Enter your provider id. Leave **Contract number** at `0`. Click **Check what this would deploy**.
+**You should see:** the **Connect wallet** button disappears, your address appears under the provider
+id field, and both **Check** buttons come alive.
 
-Walked result: verdict **Ready**, the predicted contract address shown before anything is committed, and
-two checks:
+> **Careful with Fill demo data.** It fills the record type, a domain, a location and the contact
+> fields - but deliberately **not** the provider id, because a made-up provider id is one that does not
+> exist. That one is always yours to paste.
+
+### 2.4 Flow 1 - deploy your own contract
+
+**What you are about to do:** create the contract that will anchor your credentials.
+You send the transaction and you own the result - DogTag does not deploy it for you.
+
+1. Leave **Contract number** at `0`.
+   (If you want to know why there is a number at all, open *"Why is there a number at all?"*
+   underneath it. Short version: your contract's address is computed in advance from the record type,
+   your wallet and this number, so it is the only part of the address you get to choose.)
+2. Click **Check what this would deploy**.
+
+**You should see** verdict **Ready**, the exact address this will deploy to shown *before* anything is
+sent, and two checks:
 
 | Check | Result |
 |---|---|
@@ -406,14 +472,20 @@ two checks:
 with the note: *"Ready to deploy. You will own the contract. DogTag then attaches it to your provider
 record before you can select it."*
 
-Click **Deploy**.
+The address under **The address this will deploy to** is a prediction and it is exact - deploying
+produces that address and not a similar one.
+Nothing has been created yet.
 
-Walked result: the transaction goes to the generation-2 factory and mines.
-On this walk the contract deployed at exactly the address the preview named,
+3. Click **Deploy** and confirm in your wallet.
+
+**You should see** the transaction go to the generation-2 factory and mine.
+On this walk the contract deployed at exactly the address the preview had named,
 `0x0505Ac77cb3244936d50665A3636090f05Ef0CC1`, in transaction
 `0xf67cc7d1cb3c6d599e7f1d13b4c027724bb218f7f31b59fe148e937943a27f73`, block **326280**.
 Confirmed independently from the chain: `owner()` is the controller key, `recordType()` equals
 `keccak("VACCINATION")`, and the factory's own `isClone` answers `true`.
+
+**Copy the deployed address.** Flow 2 needs it, and so does flow 3.
 
 The plan card then relabels itself:
 
@@ -425,13 +497,28 @@ The verdict badge is struck through with an amber *"Superseded"* beside it.
 The answers stay on screen rather than vanishing, which is the point: what you checked before sending is
 exactly what you want to see after sending.
 
+**If it refuses:** the most likely reason is *"Contract number 0 has already been used"* - you have
+deployed here before.
+That is not an error you made; each number produces one fixed address and two contracts cannot share
+one, so that number simply has nothing left to give.
+Put `1` in **Contract number** and check again.
+
 > **Data note.** This is a real contract on the testnet, owned by the controller key.
 
-### 2.5 Flow 2 - choose which contract is current. **Walked; it stops here.**
+### 2.5 Flow 2 - choose which contract is current
 
-Paste the address you just deployed and click **Check this contract**.
+**What you are about to do:** tell your provider record that the contract you just deployed is the one
+new credentials should anchor to.
 
-Walked result: verdict **Not allowed**, with three checks:
+**This flow stops, and the page tells you so before you click.** A notice at the top of the card reads
+that DogTag has to attach the contract to your provider record first, that the step is theirs rather
+than yours, and that there is no page for it yet.
+Do it anyway - the checks are worth seeing, and the first two pass.
+
+1. Paste the address you deployed in flow 1 into **Contract address**.
+2. Click **Check this contract**.
+
+**You should see** verdict **Not allowed**, with three checks:
 
 | Check | Result |
 |---|---|
@@ -447,18 +534,32 @@ and the remedy, in the product's own words:
 
 **This is where the provider journey genuinely stops, and the blocker is on the admin side.**
 Attaching a contract to a provider record is a registrar action, and **it has no admin surface**: the
-registrar page built in §1.2 covers register, activate and approve, and nothing else.
+registrar page in §1.2 covers register, activate and approve, and nothing else.
 Searched across the portal, backend and shared-client sources, the attach call appears only in
 explanatory comments, never as a call - so there is no button to press and no route to post to.
 Until that surface exists, a provider can deploy a contract and can go no further.
 
-### 2.6 Flow 3 - your domain. **Walked; refused, for a different reason.**
+**Leave the contract address in the field.** Flow 3 reads it.
 
-Type a domain and click **Check the domain record**.
+### 2.6 Flow 3 - claim your domain
 
-Walked result: verdict **Not allowed**, and the state is reported as *"No domain has been published for
-this contract, and none has been declined either. Nobody has said."* - publishing no domain and never
-having said are kept apart.
+**What you are about to do:** publish the domain your clinic is known by, against the contract from
+flow 2.
+
+**This one also stops, for a different reason**, and the card says so up front: publishing a domain
+needs the domain register switched on for your contract, which is DogTag approving it and only then it
+being selected - and neither has a page here yet.
+
+1. **Check the Contract address in step 2 is still filled in.** This is the trap on this page: the
+   **Check the domain record** button is gated on *that* field, not on the Domain field beside it, so
+   with step 2 empty the button stays dead however much you type here. The page now says so in amber
+   where you would notice it.
+2. Type a domain, e.g. `clinic.example.sg`.
+3. Click **Check the domain record**.
+
+**You should see** verdict **Not allowed**, and the state reported as *"No domain has been published
+for this contract, and none has been declined either. Nobody has said."*
+Publishing no domain and never having said are kept apart, deliberately.
 Three checks, all failing:
 
 | Check | Result |
@@ -468,14 +569,22 @@ Three checks, all failing:
 | May your key publish a domain for this contract? | **FAILED** |
 
 The first is the root cause: a typed resolver answers nothing until DogTag approves it **and** the
-provider selects it.
+contract selects it.
 Neither has happened, and neither has an admin surface.
 
-### 2.7 Flow 4 - your listing. **Walked; four of five checks pass.**
+### 2.7 Flow 4 - publish your listing
 
-Click **Fill demo data**, then **Check what this would publish**.
+**What you are about to do:** publish your contact details, and optionally a location, so owners can
+find you.
 
-Walked result: verdict **Not allowed**, with:
+**This stops too**, and again the card says so first: the provider directory has to be approved by
+DogTag and then selected for your record, and neither has a page here yet.
+Four of the five checks still pass, which makes it the most informative refusal on the page.
+
+1. Click **Fill demo data** to populate the contacts and a Singapore location.
+2. Click **Check what this would publish**.
+
+**You should see** verdict **Not allowed**, with:
 
 | Check | Result |
 |---|---|
@@ -485,7 +594,8 @@ Walked result: verdict **Not allowed**, with:
 | What is already published for your provider record? | **PASSED** - *"You have never published contact details…"* |
 | Is there anything to publish? | **PASSED** |
 
-Again a single registrar gate. Confirm it yourself - it is one call, and it reads `false`:
+Again a single registrar gate.
+Confirm it yourself if you like - it is one call, and it reads `false`:
 
 ```
 cast call 0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0 "resolverApproved()(bool)" --rpc-url https://devrpc.roax.net
@@ -510,8 +620,8 @@ Two properties of this flow are worth knowing for when it does open:
 | 4. Your listing | **Blocked** - the provider directory is neither approved nor selected. |
 
 All three blockers are the same shape: a registrar step with no admin surface yet.
-None of them is a misconfiguration you can fix from the provider's side, and the product says so on each
-screen rather than failing obscurely.
+None of them is a misconfiguration you can fix from the provider's side, and both the product and this
+section say so at the point you hit them rather than leaving you to work it out.
 
 ---
 
@@ -1054,6 +1164,24 @@ public anvil test key, not a consumer wallet extension.
 The product code exercised is identical - the same connect path, the same preflights, the same
 transactions - but the wallet's own UI was not exercised, so a wallet-specific problem would not have
 shown up.
+
+**A second caveat about §2, and it is the sharper one.**
+The observations above were walked on 2026-08-02.
+§2 was then **rewritten as instructions rather than as a report**, and the provider self-service page
+itself gained explanatory copy in the same change: the *"Why is there a number at all?"* disclosure,
+the label and caption on the predicted address, the notices on flows 2, 3 and 4 naming the DogTag step
+they wait on, the amber lines that say why a Check button is disabled, the sentence telling a groomer
+why its page is shorter, and a rewritten refusal for a contract number that is already used.
+
+**None of that new on-page copy was walked in a browser.**
+It is covered by mounted tests that render the real component and assert what reaches the screen
+(`packages/ui/test/providerSelfServiceExplains.test.tsx`), each verified by mutation - but a mounted
+test is not a person looking at a page, and the two can disagree about layout, wrapping and whether
+something is findable.
+Read every quotation of that new copy as *"this is what the component renders"*, not as *"this was seen
+on a live stack"*.
+The walked observations from 2026-08-02 - the verdicts, the check tables, the transaction hashes and
+blocks - are unchanged and remain browser-observed.
 
 **There is no CI for any of these paths.**
 The two mobile workflows are dispatch-only and no workflow runs the Rust test suite, so a local walk is
