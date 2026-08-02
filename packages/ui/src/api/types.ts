@@ -797,7 +797,7 @@ export interface WhitelistRevokeResp {
 /**
  * `ProviderRegistry.Standing`. Shared by providers and services.
  *
- * `registerProvider` writes `pending`, and only `active` satisfies `canWriteProvider` — so a freshly
+ * `registerProvider` writes `pending`, and only `active` satisfies `canWriteProvider` - so a freshly
  * registered provider can do nothing until the registrar raises its standing. `retired` is terminal.
  * Only `active`/`suspended`/`retired` are settable; the contract refuses the other two.
  */
@@ -811,7 +811,7 @@ export interface RegistryProvider {
   controllerEpoch: number;
   standing: ProviderStanding;
   /**
-   * `provider()` does not revert for an unknown id — it answers a zero-filled struct — so this
+   * `provider()` does not revert for an unknown id - it answers a zero-filled struct - so this
    * (`controller != 0`) is the existence answer. Never read `standing` for it.
    */
   registered: boolean;
@@ -836,7 +836,7 @@ export interface ServiceCreationApproval {
 }
 
 /**
- * The service-creation approvals for one provider — deliberately tri-state at the type level.
+ * The service-creation approvals for one provider - deliberately tri-state at the type level.
  *
  * `_serviceCreationApprovals` is private with no getter, so the only direct evidence is the
  * `ServiceCreationApprovalSet` log. A read that FAILED is `unavailable` and carries NO `entries`
@@ -849,7 +849,7 @@ export type ProviderApprovalsRead =
 
 export interface ProviderRegistrarView {
   provider: RegistryProvider;
-  /** Null for an id that is not registered — no anchor is invented for one that has none. */
+  /** Null for an id that is not registered - no anchor is invented for one that has none. */
   identityAnchor: ProviderIdentityAnchor | { unavailable: string } | null;
   approvals: ProviderApprovalsRead;
 }
@@ -861,7 +861,7 @@ export interface ProvidersResp {
   /**
    * Who holds the registry's `Ownable2Step` owner, read LIVE. Stated up front so the screen can say
    * whether a write will execute or come back as an unsigned proposal BEFORE a form is filled in.
-   * `heldByHosted` is null when either side could not be established — never guess.
+   * `heldByHosted` is null when either side could not be established - never guess.
    */
   authority: {
     target: string;
@@ -886,7 +886,7 @@ export interface RegisterProviderResp {
   identityDigest: string;
   identitySchema: number;
   identitySchemaId: string;
-  /** Always `pending` — registration alone does not let the provider act. */
+  /** Always `pending` - registration alone does not let the provider act. */
   standingAfterRegistration: ProviderStanding;
   nextStep: string;
   actions: GovernanceDisposition[];

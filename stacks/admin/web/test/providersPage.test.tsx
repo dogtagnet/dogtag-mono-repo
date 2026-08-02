@@ -5,8 +5,8 @@
 // Two of the three properties this page exists to hold are properties of what an admin can REACH,
 // not of any pure function, so only mounting can see them:
 //
-//   1. An approval log that could not be READ renders as its own state with its reason — never as
-//      "approved for nothing" — and the record-type toggles are disabled, because the contract
+//   1. An approval log that could not be READ renders as its own state with its reason - never as
+//      "approved for nothing" - and the record-type toggles are disabled, because the contract
 //      refuses a redundant write and we do not know the current bit.
 //   2. A reviewed registration loses its authority to send the moment an input changes, while
 //      STAYING VISIBLE with its verdict struck through. `shown` and `fresh` answer different
@@ -98,7 +98,7 @@ function byId(id: string) {
   return el;
 }
 
-/** Match on the button's own trimmed label, exactly — "Register" must not find "Register provider". */
+/** Match on the button's own trimmed label, exactly - "Register" must not find "Register provider". */
 function buttonWithText(text: string) {
   return [...document.body.querySelectorAll("button")].find(
     (b) => (b.textContent ?? "").trim().toLowerCase() === text.toLowerCase(),
@@ -124,7 +124,7 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-describe("Providers — the approvals column", () => {
+describe("Providers - the approvals column", () => {
   it("says a provider is approved for nothing only when the log actually resolved", async () => {
     vi.stubGlobal("fetch", listReturning({ state: "resolved", entries: [] }));
     await mount();
@@ -170,7 +170,7 @@ describe("Providers — the approvals column", () => {
 
   /**
    * A withdrawn approval is a different fact from one that never existed, and only the log can tell
-   * them apart — so it is rendered rather than filtered out.
+   * them apart - so it is rendered rather than filtered out.
    */
   it("shows a withdrawn approval rather than dropping it", async () => {
     vi.stubGlobal(
@@ -190,7 +190,7 @@ describe("Providers — the approvals column", () => {
   });
 });
 
-describe("Providers — a PENDING provider is visibly inert", () => {
+describe("Providers - a PENDING provider is visibly inert", () => {
   /**
    * `registerProvider` writes PENDING and `canWriteProvider` admits only ACTIVE, so a provider left
    * here can do nothing at all. On a badge alone that is indistinguishable from ACTIVE.
@@ -209,7 +209,7 @@ describe("Providers — a PENDING provider is visibly inert", () => {
   });
 });
 
-describe("Providers — the registration review", () => {
+describe("Providers - the registration review", () => {
   async function openDialogAndReview() {
     vi.stubGlobal("fetch", listReturning({ state: "resolved", entries: [] }));
     await mount();
@@ -246,7 +246,7 @@ describe("Providers — the registration review", () => {
 
   /**
    * THE property this discipline exists for. Editing an input after review must retire the plan's
-   * authority to send — here the mistake is unrecoverable, because a providerId cannot be reassigned
+   * authority to send - here the mistake is unrecoverable, because a providerId cannot be reassigned
    * and the identity anchor's revision only moves forward.
    */
   it("retires the review when an input changes, while keeping it visible and marked superseded", async () => {
@@ -282,7 +282,7 @@ describe("Providers — the registration review", () => {
   });
 });
 
-describe("Providers — the authority banner", () => {
+describe("Providers - the authority banner", () => {
   it("says up front that the hosted key will execute directly", async () => {
     vi.stubGlobal("fetch", listReturning({ state: "resolved", entries: [] }));
     await mount();
@@ -316,7 +316,7 @@ describe("Providers — the authority banner", () => {
   });
 });
 
-describe("Providers — a failed read", () => {
+describe("Providers - a failed read", () => {
   /**
    * An unreadable registry must not fall through to an empty list, which would read as the definite
    * "no providers exist" about a registry we never successfully asked.

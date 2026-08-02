@@ -2,7 +2,7 @@
 //!
 //! `MemChain` DECODES and APPLIES the three registrar writes (see `apply_provider_registry_calldata`),
 //! so these tests walk register -> standing -> approve and read the result back through exactly the
-//! code path production reads — including the contract's own `AlreadyRegistered`, `NoChange` and
+//! code path production reads - including the contract's own `AlreadyRegistered`, `NoChange` and
 //! `RetiredStanding` guards. A fake that merely counted transactions could not catch a route that
 //! sends one the chain will refuse.
 
@@ -14,7 +14,7 @@ use common::*;
 use admin_api::chain::record_type_key;
 use admin_api::routes::router;
 
-/// A plausible opaque KYC id. Not derived from anything — that is the point of `providerId`.
+/// A plausible opaque KYC id. Not derived from anything - that is the point of `providerId`.
 const PID: &str = "0x7a1c9f3b0e5d4a28c6b1f0937de4a5b2c8017f36";
 const CONTROLLER: &str = "0x0000000000000000000000000000000000c07701";
 const DIGEST: &str = "0x9f2b7c1d3e4a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4";
@@ -35,7 +35,7 @@ async fn register(app: &axum::Router, tok: &str, pid: &str) -> (StatusCode, serd
 }
 
 /// The whole captain-facing journey, in the order the contracts force: register (which lands
-/// PENDING), raise standing to ACTIVE, then approve a record type — and the read surface reflects
+/// PENDING), raise standing to ACTIVE, then approve a record type - and the read surface reflects
 /// each step.
 #[tokio::test]
 async fn the_registrar_can_walk_register_activate_and_approve() {
@@ -45,7 +45,7 @@ async fn the_registrar_can_walk_register_activate_and_approve() {
     let app = router(st);
     let tok = admin_token(&app).await;
 
-    // Nothing exists yet — and an empty list is a real answer, distinct from an unreadable one.
+    // Nothing exists yet - and an empty list is a real answer, distinct from an unreadable one.
     let (s, b) = call(&app, "GET", "/v1/admin/providers", Some(&tok), None).await;
     assert_eq!(s, StatusCode::OK, "{b}");
     assert_eq!(b["providers"].as_array().unwrap().len(), 0);
@@ -78,7 +78,7 @@ async fn the_registrar_can_walk_register_activate_and_approve() {
     assert_eq!(b["identityAnchor"]["schema"], serde_json::json!(1));
     assert_eq!(b["identityAnchor"]["hashAlgorithm"], serde_json::json!(0x1b));
 
-    // 2. Activate — the step the two named calls do not cover, without which the provider is inert.
+    // 2. Activate - the step the two named calls do not cover, without which the provider is inert.
     let (s, b) = call(
         &app,
         "POST",
@@ -119,7 +119,7 @@ async fn the_registrar_can_walk_register_activate_and_approve() {
 /// The load-bearing distinction: an unreadable approval log is NOT an empty approval set.
 ///
 /// Collapsing them would tell an admin a provider is approved for nothing on the strength of a read
-/// that never happened — and the two have different remedies.
+/// that never happened - and the two have different remedies.
 #[tokio::test]
 async fn an_unreadable_approval_log_is_reported_as_unavailable_not_as_no_approvals() {
     let (st, chain, _v, _b) = hermetic_state();
@@ -150,7 +150,7 @@ async fn an_unreadable_approval_log_is_reported_as_unavailable_not_as_no_approva
     )
     .await;
     // The provider read fails first, so the whole view is a 502 rather than a view with a silently
-    // empty approvals block — either way, the one thing that must not happen is a 200 reporting no
+    // empty approvals block - either way, the one thing that must not happen is a 200 reporting no
     // approvals.
     assert_eq!(s, StatusCode::BAD_GATEWAY, "{b}");
     assert!(b["error"].as_str().unwrap().contains("provider("));
@@ -272,13 +272,13 @@ async fn standing_refuses_a_no_op_and_treats_retired_as_terminal() {
     assert_eq!(s, StatusCode::CONFLICT, "{b}");
     assert!(b["error"].as_str().unwrap().contains("terminal"));
 
-    // PENDING and NONE are not settable — the contract reverts `InvalidStanding()`.
+    // PENDING and NONE are not settable - the contract reverts `InvalidStanding()`.
     let (s, b) = set("pending").await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
 }
 
 /// The authority is read live from `owner()`, so a registry the hosted key does not own yields an
-/// unsigned proposal rather than a broadcast — and the response says which key was checked.
+/// unsigned proposal rather than a broadcast - and the response says which key was checked.
 #[tokio::test]
 async fn a_registry_the_hosted_key_does_not_own_proposes_rather_than_broadcasting() {
     let (st, chain, _v, _b) = hermetic_state();
@@ -302,7 +302,7 @@ async fn a_registry_the_hosted_key_does_not_own_proposes_rather_than_broadcastin
 }
 
 /// An unset `PROVIDER_REGISTRY_ADDR` fails LOUDLY. A zero address would otherwise read back as
-/// "no providers exist" — a definite claim about a registry that was never asked.
+/// "no providers exist" - a definite claim about a registry that was never asked.
 #[tokio::test]
 async fn an_unconfigured_registry_refuses_loudly_rather_than_reporting_an_empty_registry() {
     use std::sync::Arc;
@@ -350,7 +350,7 @@ async fn an_unconfigured_registry_refuses_loudly_rather_than_reporting_an_empty_
 /// Every route is admin-session gated.
 ///
 /// Each POST carries a WELL-FORMED body on purpose. `Json<T>` is an extractor, so it runs before the
-/// handler and answers 422 for a malformed body — an empty `{}` would never reach `require_admin`
+/// handler and answers 422 for a malformed body - an empty `{}` would never reach `require_admin`
 /// and the test would pass while pinning nothing about authorization.
 #[tokio::test]
 async fn the_registrar_surface_requires_an_admin_session() {
@@ -394,7 +394,7 @@ async fn malformed_registration_inputs_are_refused_before_any_transaction() {
         async move { call(&app, "POST", "/v1/admin/providers", Some(&tok), Some(body)).await }
     };
 
-    // Zero providerId — `ZeroProviderId()`.
+    // Zero providerId - `ZeroProviderId()`.
     let (s, _) = post(serde_json::json!({
         "providerId": "0x0000000000000000000000000000000000000000",
         "controller": CONTROLLER, "identityDigest": DIGEST
@@ -402,14 +402,14 @@ async fn malformed_registration_inputs_are_refused_before_any_transaction() {
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 
-    // Wrong width — a bytes20 id is 40 hex, not an address-shaped guess of some other length.
+    // Wrong width - a bytes20 id is 40 hex, not an address-shaped guess of some other length.
     let (s, _) = post(serde_json::json!({
         "providerId": "0xdeadbeef", "controller": CONTROLLER, "identityDigest": DIGEST
     }))
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 
-    // Zero controller — `ZeroAddress()`, and it is also the contract's existence sentinel.
+    // Zero controller - `ZeroAddress()`, and it is also the contract's existence sentinel.
     let (s, _) = post(serde_json::json!({
         "providerId": PID,
         "controller": "0x0000000000000000000000000000000000000000",
@@ -418,7 +418,7 @@ async fn malformed_registration_inputs_are_refused_before_any_transaction() {
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 
-    // Zero digest — `BadIdentityAnchor()`. An anchor is the registrar's assertion; an empty one
+    // Zero digest - `BadIdentityAnchor()`. An anchor is the registrar's assertion; an empty one
     // asserts nothing.
     let (s, b) = post(serde_json::json!({
         "providerId": PID, "controller": CONTROLLER,

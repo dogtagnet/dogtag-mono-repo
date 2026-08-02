@@ -88,7 +88,7 @@ sol! {
             returns (bytes20[] memory values, uint256 nextCursor);
         function owner() external view returns (address);
 
-        // The ONLY direct evidence of what a provider is approved for — `_serviceCreationApprovals`
+        // The ONLY direct evidence of what a provider is approved for - `_serviceCreationApprovals`
         // is private with no getter. Both leading args are indexed.
         event ServiceCreationApprovalSet(bytes20 indexed providerId, bytes32 indexed recordType, bool allowed);
     }
@@ -270,8 +270,8 @@ pub trait ChainClient: Send + Sync {
         limit: u64,
     ) -> Result<(Vec<String>, u64), ChainError>;
 
-    /// `ProviderRegistry.provider(providerId)`. Does NOT revert for an unknown id — it answers a
-    /// zero-filled struct — so `ProviderRecord::registered` (`controller != 0`) is the existence
+    /// `ProviderRegistry.provider(providerId)`. Does NOT revert for an unknown id - it answers a
+    /// zero-filled struct - so `ProviderRecord::registered` (`controller != 0`) is the existence
     /// test, never the standing.
     async fn provider_record(
         &self,
@@ -279,7 +279,7 @@ pub trait ChainClient: Send + Sync {
         provider_id: &str,
     ) -> Result<ProviderRecord, ChainError>;
 
-    /// `ProviderRegistry.publicIdentityAnchor(providerId)` — the registrar's own identity assertion.
+    /// `ProviderRegistry.publicIdentityAnchor(providerId)` - the registrar's own identity assertion.
     async fn provider_identity_anchor(
         &self,
         registry_addr: &str,
@@ -712,7 +712,7 @@ impl ChainClient for MemChain {
             .get(&(registry_addr.to_lowercase(), provider_id.to_lowercase()))
             .cloned()
             // An unknown id reads back zero-filled rather than reverting, exactly as the contract
-            // does — `registered: false` is the existence answer, never the standing.
+            // does - `registered: false` is the existence answer, never the standing.
             .unwrap_or_else(|| ProviderRecord {
                 provider_id: provider_id.to_lowercase(),
                 controller: zero_addr(),
@@ -912,7 +912,7 @@ pub fn set_service_creation_approval_calldata(
 }
 
 /// Parse a `bytes20` provider id. A malformed value yields zero, which every registrar write then
-/// refuses on-chain with `ZeroProviderId()` — but the routes validate the shape first, so a
+/// refuses on-chain with `ZeroProviderId()` - but the routes validate the shape first, so a
 /// malformed id is a 400 rather than a wasted transaction.
 fn parse_b160(h: &str) -> FixedBytes<20> {
     let s = h.strip_prefix("0x").or_else(|| h.strip_prefix("0X")).unwrap_or(h);
@@ -958,7 +958,7 @@ impl AlloyChain {
     /// contract instance cannot be constructed (its `provider(bytes20)` collides with alloy's own
     /// instance accessor).
     ///
-    /// Sending no `from` is correct for every read this is used for — they are all pure functions of
+    /// Sending no `from` is correct for every read this is used for - they are all pure functions of
     /// their arguments. It would be WRONG for `canCreateService`, whose first term is
     /// `generationOfFactory[msg.sender]` and which therefore answers false for everyone when asked
     /// with no caller; that read is deliberately not made here.
@@ -1297,8 +1297,8 @@ impl ChainClient for AlloyChain {
             pending_controller: format!("{:#x}", p.pendingController),
             controller_epoch: p.controllerEpoch,
             standing: Standing::from_u8(p.standing),
-            // `provider()` does not revert for an unknown id, so a zero controller — the contract's
-            // own existence sentinel (`_requireProvider`) — is what "not registered" means here.
+            // `provider()` does not revert for an unknown id, so a zero controller - the contract's
+            // own existence sentinel (`_requireProvider`) - is what "not registered" means here.
             registered: !p.controller.is_zero(),
         })
     }
@@ -1340,7 +1340,7 @@ impl ChainClient for AlloyChain {
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         // topic1 is the indexed `bytes20 providerId`. Solidity left-aligns a short fixed-bytes value
-        // in its topic word, so the filter word is the id followed by 12 zero bytes — right-aligning
+        // in its topic word, so the filter word is the id followed by 12 zero bytes - right-aligning
         // it (the address convention) matches no log at all, which would read exactly like "this
         // provider has never been approved for anything".
         let mut topic1 = [0u8; 32];

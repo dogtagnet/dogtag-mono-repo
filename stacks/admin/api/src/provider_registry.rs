@@ -1,16 +1,16 @@
-//! The `ProviderRegistry` REGISTRAR surface — the admin-side half of the generation-2 provider
+//! The `ProviderRegistry` REGISTRAR surface - the admin-side half of the generation-2 provider
 //! journey (registry plan C-2, the part `docs/CUTOVER_REHEARSAL.md` records as still outstanding).
 //!
 //! `registerProvider` and `setServiceCreationApproval` were callable only from contracts and tests:
 //! no portal called either, so `providerCount()` was 0 and every provider self-service action
-//! refused. This module is the pure core of the surface that closes that — the value types, the
-//! calldata builders, and the approval fold — with the chain I/O in `chain.rs` and the HTTP routes
+//! refused. This module is the pure core of the surface that closes that - the value types, the
+//! calldata builders, and the approval fold - with the chain I/O in `chain.rs` and the HTTP routes
 //! in `routes.rs`.
 //!
 //! ## Three registrar steps, not two
 //!
 //! `registerProvider` writes `standing: Standing.PENDING` (`ProviderRegistry.sol:300`), and
-//! `canWriteProvider` returns false for anything but `ACTIVE` (`:458`) — which `canCreateService`
+//! `canWriteProvider` returns false for anything but `ACTIVE` (`:458`) - which `canCreateService`
 //! folds (`:834`). So registering and approving a record type is NOT sufficient: without
 //! `setProviderStanding(providerId, ACTIVE)` the provider's own deploy preflight reads
 //! `provider-standing: fail` forever and no clone can be created. The standing transition is
@@ -20,8 +20,8 @@
 //! ## The approval bit has NO getter, and that shapes the read surface
 //!
 //! `_serviceCreationApprovals` is `private` with no accessor (`ProviderRegistry.sol:137`). The only
-//! on-chain read is `canCreateService`, which is an AGGREGATE of four terms — a registered factory
-//! as `msg.sender`, an active generation, the approval bit, and `canWriteProvider` — so a `false`
+//! on-chain read is `canCreateService`, which is an AGGREGATE of four terms - a registered factory
+//! as `msg.sender`, an active generation, the approval bit, and `canWriteProvider` - so a `false`
 //! from it is unattributable and is emphatically NOT "this record type is not approved". The raw bit
 //! is therefore reconstructed from `ServiceCreationApprovalSet` logs, where both `providerId` and
 //! `recordType` are indexed. A log read that FAILS is `ApprovalsRead::Unavailable`, never an empty
@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 /// `ProviderRegistry.Standing` (`ProviderRegistry.sol:58-64`), shared by providers and services.
 ///
 /// `NONE` is also what a zero-filled struct reads back as for an unregistered id, so standing alone
-/// cannot distinguish "never registered" from "registered as NONE" — existence is `controller != 0`.
+/// cannot distinguish "never registered" from "registered as NONE" - existence is `controller != 0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Standing {
@@ -93,7 +93,7 @@ pub struct ProviderRecord {
     #[serde(rename = "controllerEpoch")]
     pub controller_epoch: u64,
     pub standing: Standing,
-    /// `controller != 0` is the existence sentinel — `provider()` does not revert for an unknown id.
+    /// `controller != 0` is the existence sentinel - `provider()` does not revert for an unknown id.
     pub registered: bool,
 }
 
@@ -102,7 +102,7 @@ pub struct ProviderRecord {
 /// Deliberately NOT the same thing as `ProviderDirectory`'s `ProfileAnchor`: that one is
 /// PROVIDER-written content (contacts, logo, address text), this one is the REGISTRAR's own
 /// assertion about who it cleared. They live on different contracts under different schema
-/// namespaces and must never be conflated — see `PROVIDER_IDENTITY_SCHEMA`.
+/// namespaces and must never be conflated - see `PROVIDER_IDENTITY_SCHEMA`.
 #[derive(Clone, Debug, Serialize)]
 pub struct IdentityAnchor {
     pub digest: String,
@@ -120,7 +120,7 @@ pub struct IdentityAnchor {
 /// This is the `ProviderRegistry.publicIdentityAnchor` schema namespace, which is SEPARATE from
 /// `ProviderDirectory`'s `ProfileAnchor` schema namespace (where `2` already means
 /// `dogtag/provider-profile/2`, S-17). Two different contracts, two different mappings, two
-/// different authors — a registrar assertion must never be published under a provider-written
+/// different authors - a registrar assertion must never be published under a provider-written
 /// schema, because a consumer would then read the registrar's clearance as the provider's own claim.
 /// An anchor is only ever obtained by calling one of those two contracts, so the namespaces cannot
 /// be reached ambiguously; the distinct name and value are what keep them from being conflated by
@@ -128,7 +128,7 @@ pub struct IdentityAnchor {
 pub const PROVIDER_IDENTITY_SCHEMA: u32 = 1;
 pub const PROVIDER_IDENTITY_SCHEMA_ID: &str = "dogtag/provider-identity/1";
 
-/// keccak-256's multicodec code — the repo's existing spelling for "this digest is a keccak256".
+/// keccak-256's multicodec code - the repo's existing spelling for "this digest is a keccak256".
 /// Naming sha2-256 (`0x12`) because it is the commoner constant would make a verifier recompute the
 /// wrong hash and call a genuine statement altered.
 pub const HASH_ALGORITHM_KECCAK256: u8 = 0x1b;
@@ -145,7 +145,7 @@ pub struct ApprovalEntry {
     #[serde(rename = "recordTypeKey")]
     pub record_type_key: String,
     /// The human label when the key is one of the record types this deployment knows, else `null`.
-    /// keccak is one-way, so an unknown key genuinely has no recoverable label — never invent one.
+    /// keccak is one-way, so an unknown key genuinely has no recoverable label - never invent one.
     #[serde(rename = "recordType")]
     pub record_type: Option<String>,
     pub allowed: bool,
@@ -165,7 +165,7 @@ pub enum ApprovalsRead {
 }
 
 impl ApprovalsRead {
-    /// The entries when the read resolved. `None` when it did not — callers must branch rather than
+    /// The entries when the read resolved. `None` when it did not - callers must branch rather than
     /// defaulting to empty.
     pub fn entries(&self) -> Option<&[ApprovalEntry]> {
         match self {
@@ -183,8 +183,8 @@ impl ApprovalsRead {
                 .iter()
                 .find(|e| e.record_type_key.eq_ignore_ascii_case(record_type_key))
                 .map(|e| e.allowed)
-                // A record type the log never mentions has never been approved. That IS an answer —
-                // the log resolved and contains no grant — so it is a definite `false`, not `None`.
+                // A record type the log never mentions has never been approved. That IS an answer -
+                // the log resolved and contains no grant - so it is a definite `false`, not `None`.
                 .unwrap_or(false),
         )
     }
@@ -217,7 +217,7 @@ pub fn fold_approvals(
 }
 
 /// The record-type labels this deployment can name. keccak is one-way, so a key outside this list
-/// is rendered as the raw key — never as a guessed label.
+/// is rendered as the raw key - never as a guessed label.
 pub const KNOWN_RECORD_TYPES: &[&str] = &[
     "DOG_PROFILE",
     "VACCINATION",
@@ -235,7 +235,7 @@ pub fn record_type_label(key: &str) -> Option<String> {
         .map(|label| (*label).to_string())
 }
 
-/// `providerId` is `bytes20` — 40 hex characters. Zero is the one value the contract refuses
+/// `providerId` is `bytes20` - 40 hex characters. Zero is the one value the contract refuses
 /// (`ZeroProviderId()`, `ProviderRegistry.sol:288`); there is deliberately no format, checksum or
 /// derivation rule, because the id is an opaque KYC registrar assignment.
 pub fn is_valid_provider_id(s: &str) -> bool {
@@ -349,7 +349,7 @@ mod tests {
         ));
     }
 
-    /// The identity schema must not silently be S-17's provider-profile schema — that anchor is
+    /// The identity schema must not silently be S-17's provider-profile schema - that anchor is
     /// provider-written content and this one is a registrar assertion.
     #[test]
     fn the_identity_schema_is_its_own_namespace_and_is_non_zero() {

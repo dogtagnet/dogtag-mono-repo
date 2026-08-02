@@ -243,21 +243,21 @@ export function createCentralClient(opts: CentralClientOptions) {
       request<WhitelistRevokeResp>("POST", "/v1/admin/whitelist/revoke", body),
 
     // ---- the generation-2 ProviderRegistry registrar surface (registry plan C-2) ----
-    /** GET /v1/admin/providers — every registered provider, its standing, anchor and approvals. */
+    /** GET /v1/admin/providers - every registered provider, its standing, anchor and approvals. */
     listProviders: () => request<ProvidersResp>("GET", "/v1/admin/providers"),
-    /** GET /v1/admin/providers/:providerId — one provider's registrar view. */
+    /** GET /v1/admin/providers/:providerId - one provider's registrar view. */
     getProvider: (providerId: string) =>
       request<ProviderRegistrarView>("GET", `/v1/admin/providers/${providerId}`),
-    /** POST /v1/admin/providers — register a provider (the KYC gate), via GovernanceAction. */
+    /** POST /v1/admin/providers - register a provider (the KYC gate), via GovernanceAction. */
     registerProvider: (body: RegisterProviderReq) =>
       request<RegisterProviderResp>("POST", "/v1/admin/providers", body),
     /**
-     * POST /v1/admin/providers/:providerId/standing — move a provider's standing.
+     * POST /v1/admin/providers/:providerId/standing - move a provider's standing.
      * Required after registration: a provider is PENDING until this makes it ACTIVE.
      */
     setProviderStanding: (providerId: string, body: ProviderStandingReq) =>
       request<ProviderStandingResp>("POST", `/v1/admin/providers/${providerId}/standing`, body),
-    /** POST /v1/admin/providers/:providerId/service-approval — approve/withdraw one record type. */
+    /** POST /v1/admin/providers/:providerId/service-approval - approve/withdraw one record type. */
     setServiceCreationApproval: (providerId: string, body: ServiceApprovalReq) =>
       request<ServiceApprovalResp>(
         "POST",

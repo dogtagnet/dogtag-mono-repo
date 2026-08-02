@@ -5329,12 +5329,12 @@ PROVIDER ON EARTH.** Its first term is `generationOfFactory[msg.sender]`, so a p
 (`msg.sender == 0x0`) matches no generation. Confirmed empirically on ROAX against the live provider
 below: `--from <DogTagIssuerFactoryV2>` -> `true`, the identical call without `--from` -> `false`.
 This is the same `msg.sender` shape `docs/CLIENT_REPOINT.md` records for `isWhitelistedFor`, failing
-in the opposite direction — there it renders genuine issuers as forged, here it renders every
+in the opposite direction - there it renders genuine issuers as forged, here it renders every
 eligible provider as unapproved. **The registrar surface therefore never makes this read at all**:
 it would be an aggregate of four terms, so a `false` is unattributable and is emphatically not "this
 record type is not approved".
 
-**THE APPROVAL BIT HAS NO GETTER, so the read surface is the LOG — and a failed log read is its own
+**THE APPROVAL BIT HAS NO GETTER, so the read surface is the LOG - and a failed log read is its own
 state.** `_serviceCreationApprovals` is `private` (`ProviderRegistry.sol:137`) with no accessor. The
 raw bit is reconstructed from `ServiceCreationApprovalSet`, where both leading args are indexed;
 `fold_approvals` takes the LAST write per record type, and an explicit `false` is KEPT rather than
@@ -5344,7 +5344,7 @@ spread into a list as `[]`: an empty resolved log says the registrar approved no
 one says we could not ask, and only the first is a statement about the provider.
 **The `topic1` filter word is LEFT-aligned**, because `providerId` is `bytes20` and Solidity
 left-aligns a short fixed-bytes value in its topic word. Right-aligning it (the address convention)
-matches no log at all — which reads exactly like "this provider has never been approved for
+matches no log at all - which reads exactly like "this provider has never been approved for
 anything".
 
 **The identity anchor is the REGISTRAR's assertion and lives in its own schema namespace.**
@@ -5355,19 +5355,19 @@ multicodec, so a verifier recomputes the right function), empty `contenthash`. D
 publishing a registrar assertion under a provider's schema would let a consumer read one as the
 other. `registerProvider` refuses a zero digest, zero schema or zero hashAlgorithm
 (`BadIdentityAnchor()`); `codec` is NOT validated, so do not gate on it.
-**The statement TEXT is never sent to the backend and is stored nowhere** — only its keccak256
+**The statement TEXT is never sent to the backend and is stored nowhere** - only its keccak256
 reaches the chain. That is deliberate (inventing a KYC PII store is captain territory), so the screen
 says so and makes both the canonical text and the digest copyable. Stated limitation, not an
 oversight.
 
 **`providerId` is CSPRNG-generated and means nothing**, per `ProviderRegistry.sol`'s own header. The
-screen says it is arbitrary and permanent, and offers it through the shared `CopyButton` — it is
+screen says it is arbitrary and permanent, and offers it through the shared `CopyButton` - it is
 truncated on screen, cannot be reassigned, and the provider needs it to use the self-service portal
 (that page takes it as a TYPED field, so it is handed over out of band). The generator retries past
 an all-zero draw rather than shipping an unreachable branch: zero is the one id the contract refuses.
 
 **`PROVIDER_REGISTRY_ADDR` fails LOUDLY when unset** (503 naming the variable), in admin-api's
-`FACTORY_ADDR not configured` shape rather than vet-api's silent degrade — a zero address would
+`FACTORY_ADDR not configured` shape rather than vet-api's silent degrade - a zero address would
 otherwise read back as "no providers exist", a definite claim about a registry never asked. It is a
 NEW variable for a new surface, **not a repoint**: no generation-1 consumer moves onto it, so it does
 not touch the C-9/C-10 rules in `stacks/admin/.env.example`.
@@ -5375,7 +5375,7 @@ not touch the C-9/C-10 rules in `stacks/admin/.env.example`.
 **Two traps in the code itself.** `sol!` with `#[sol(rpc)]` generates a contract-instance
 `provider()` accessor that COLLIDES with this contract's own `provider(bytes20)` (E0592); the name is
 fixed by the deployed ABI, so the reads use the generated `SolCall` types over a raw `eth_call`
-instead. And **admin-api's listen port was a compile-time `const`** — the only stack where it was, so
+instead. And **admin-api's listen port was a compile-time `const`** - the only stack where it was, so
 a second instance started to exercise a change silently tried to bind over the captain's live console
 on `:39742`, and had that bind won the race it is the LIVE one that would have failed. It now reads
 `PORT` like `vet-api`, `government-api` and `indexer-api`.
@@ -5402,7 +5402,7 @@ configured (not `missingConfig`) and waits on a wallet connection, which is the 
 
 Evidence: `cargo test -p admin-api` (11 in `tests/provider_registrar.rs`, 9 lib), `pnpm --filter
 @dogtag/admin-web test` (13 pure + 13 mounted). Eight mutations were applied, run and reverted, each
-reddening its own named test — and a ninth was REJECTED as inert (`unwrap_or(false)` ->
+reddening its own named test - and a ninth was REJECTED as inert (`unwrap_or(false)` ->
 `unwrap_or_default()` is the same value for `bool`, so its "red" would have proven nothing). Note the
 `approved()` claim is pinned by the LIB suite, not the integration target: point the mutation at
 `--lib`, or it matches no test and reports a green.

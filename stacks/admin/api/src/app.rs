@@ -28,7 +28,7 @@ pub struct Config {
     /// DogTagIssuerFactory address — the `createIssuer`/`predictIssuer` target + the Ownable owner whose
     /// key gates deploys (plan PR-A). Empty (zero) until `FACTORY_ADDR` is configured.
     pub factory_addr: String,
-    /// Generation-2 `ProviderRegistry` — the registrar surface's target and the `Ownable2Step` owner
+    /// Generation-2 `ProviderRegistry` - the registrar surface's target and the `Ownable2Step` owner
     /// whose key gates every write on it (registry plan C-2). Empty (zero) until
     /// `PROVIDER_REGISTRY_ADDR` is configured, which every provider route reports LOUDLY rather than
     /// degrading: a registrar screen that silently read nothing would say "no providers exist" about a

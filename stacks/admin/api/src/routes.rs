@@ -1684,7 +1684,7 @@ async fn governance_authority(State(st): State<AppState>, headers: HeaderMap) ->
 // `registerProvider` and `setServiceCreationApproval` had no caller outside contracts and tests, so
 // `providerCount()` was 0 and every provider self-service action refused. These routes are the admin
 // half of that journey. Like every other privileged admin write they go through `GovernanceAction`,
-// which reads `owner()` LIVE and composes the chain's own predicate rather than re-deriving it — so
+// which reads `owner()` LIVE and composes the chain's own predicate rather than re-deriving it - so
 // an action flips executed→proposed by construction the moment the registry's owner moves off the
 // hosted key, and the UI is never stricter than the contract.
 //
@@ -1695,7 +1695,7 @@ async fn governance_authority(State(st): State<AppState>, headers: HeaderMap) ->
 /// Refuse LOUDLY when `PROVIDER_REGISTRY_ADDR` is unset, in admin-api's existing shape (the
 /// `FACTORY_ADDR not configured` precedent) rather than vet-api's silent degrade.
 ///
-/// A registrar screen fed a zero address would answer "no providers exist" — a definite statement
+/// A registrar screen fed a zero address would answer "no providers exist" - a definite statement
 /// about a registry it never asked. This is our own misconfiguration, and it must not be reported as
 /// a fact about the chain.
 fn provider_registry_addr(st: &AppState) -> Result<String, Resp> {
@@ -1703,7 +1703,7 @@ fn provider_registry_addr(st: &AppState) -> Result<String, Resp> {
     if addr.is_empty() || is_zero_addr(addr) {
         return Err(err(
             StatusCode::SERVICE_UNAVAILABLE,
-            "PROVIDER_REGISTRY_ADDR not configured — the provider registrar surface cannot read or \
+            "PROVIDER_REGISTRY_ADDR not configured - the provider registrar surface cannot read or \
              write without it. Set it to the deployed ProviderRegistry (deployments/roax.json key \
              `ProviderRegistry`) and restart.",
         ));
@@ -1731,7 +1731,7 @@ fn provider_registry_authority(registry: &str) -> Authority {
 /// getter, so the only direct evidence is the `ServiceCreationApprovalSet` log; a log read that FAILS
 /// yields `Unavailable` with its reason and never an empty approval set. Reporting the two the same
 /// way would tell an admin a provider is approved for nothing on the strength of a read that never
-/// happened — and the remedy for the two differs entirely.
+/// happened - and the remedy for the two differs entirely.
 async fn provider_view(st: &AppState, registry: &str, provider_id: &str) -> Result<Value, Resp> {
     let record = st
         .chain
@@ -1767,7 +1767,7 @@ async fn provider_view(st: &AppState, registry: &str, provider_id: &str) -> Resu
     }))
 }
 
-/// `GET /v1/admin/providers` — every registered provider with its standing, controller, identity
+/// `GET /v1/admin/providers` - every registered provider with its standing, controller, identity
 /// anchor and service-creation approvals. `_providerIds` is append-only so paging is stable.
 async fn providers_list(State(st): State<AppState>, headers: HeaderMap) -> Resp {
     if let Err(e) = require_admin(&st, &headers).await {
@@ -1833,7 +1833,7 @@ async fn providers_list(State(st): State<AppState>, headers: HeaderMap) -> Resp 
     }))
 }
 
-/// `GET /v1/admin/providers/:providerId` — one provider's registrar view.
+/// `GET /v1/admin/providers/:providerId` - one provider's registrar view.
 async fn provider_detail(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -1866,15 +1866,15 @@ struct RegisterProviderReq {
     /// The key that will act AS this provider on the self-service portal.
     controller: String,
     /// keccak256 of the registrar's identity statement. The statement text itself is never sent to
-    /// this backend or written on chain — the digest is a commitment to what the registrar asserted.
+    /// this backend or written on chain - the digest is a commitment to what the registrar asserted.
     #[serde(rename = "identityDigest")]
     identity_digest: String,
 }
 
-/// `POST /v1/admin/providers` — register a provider (`onlyOwner`, via `GovernanceAction`).
+/// `POST /v1/admin/providers` - register a provider (`onlyOwner`, via `GovernanceAction`).
 ///
 /// This is the real-world KYC gate: the caller is asserting it has cleared this entity. The contract
-/// checks only that the ids are non-zero and the anchor is well-formed — everything meaningful about
+/// checks only that the ids are non-zero and the anchor is well-formed - everything meaningful about
 /// the assertion is the registrar's own.
 async fn provider_register(
     State(st): State<AppState>,
@@ -1924,7 +1924,7 @@ async fn provider_register(
             return err_json(
                 StatusCode::CONFLICT,
                 json!({
-                    "error": "this providerId is already registered — a providerId is permanent and \
+                    "error": "this providerId is already registered - a providerId is permanent and \
                               cannot be reassigned",
                     "providerId": provider_id,
                     "controller": rec.controller,
@@ -1963,7 +1963,7 @@ async fn provider_register(
         // Registration lands the provider at PENDING (ProviderRegistry.sol:300), and
         // `canWriteProvider` admits only ACTIVE - so this alone does NOT let the provider act.
         "standingAfterRegistration": Standing::Pending,
-        "nextStep": "setProviderStanding(ACTIVE) — a newly registered provider is PENDING, and \
+        "nextStep": "setProviderStanding(ACTIVE) - a newly registered provider is PENDING, and \
                      canCreateService folds canWriteProvider, which requires ACTIVE",
         "actions": results,
         "outcome": outcome,
@@ -1978,7 +1978,7 @@ struct ProviderStandingReq {
     standing: String,
 }
 
-/// `POST /v1/admin/providers/:providerId/standing` — move a provider's standing (`onlyOwner`).
+/// `POST /v1/admin/providers/:providerId/standing` - move a provider's standing (`onlyOwner`).
 ///
 /// Required for the journey, not optional: `registerProvider` writes PENDING and `canWriteProvider`
 /// admits only ACTIVE, so without this the provider's own deploy preflight reads `provider-standing:
@@ -2006,7 +2006,7 @@ async fn provider_set_standing(
     let Some(next) = Standing::parse(&body.standing) else {
         return err(
             StatusCode::BAD_REQUEST,
-            "standing must be one of active, suspended, retired — the contract refuses none and \
+            "standing must be one of active, suspended, retired - the contract refuses none and \
              pending with InvalidStanding()",
         );
     };
@@ -2017,14 +2017,14 @@ async fn provider_set_standing(
         if !rec.registered {
             return err(
                 StatusCode::NOT_FOUND,
-                "this providerId is not registered — register it before setting a standing",
+                "this providerId is not registered - register it before setting a standing",
             );
         }
         if rec.standing == next {
             return err_json(
                 StatusCode::CONFLICT,
                 json!({
-                    "error": format!("this provider is already {:?} — the contract refuses a no-op \
+                    "error": format!("this provider is already {:?} - the contract refuses a no-op \
                                       standing change with NoChange()", next),
                     "standing": rec.standing,
                 }),
@@ -2034,7 +2034,7 @@ async fn provider_set_standing(
             return err_json(
                 StatusCode::CONFLICT,
                 json!({
-                    "error": "RETIRED is terminal — the contract refuses every further transition \
+                    "error": "RETIRED is terminal - the contract refuses every further transition \
                               with RetiredStanding()",
                     "standing": rec.standing,
                 }),
@@ -2073,7 +2073,7 @@ struct ServiceApprovalReq {
     allowed: bool,
 }
 
-/// `POST /v1/admin/providers/:providerId/service-approval` — pre-authorize a provider to ask the
+/// `POST /v1/admin/providers/:providerId/service-approval` - pre-authorize a provider to ask the
 /// self-service factory for a clone of one record type (`onlyOwner`).
 ///
 /// This grants no issuance and attaches no clone; it is the gate the provider's `createIssuer` is
@@ -2109,7 +2109,7 @@ async fn provider_set_service_approval(
     if key.trim_start_matches("0x").chars().all(|c| c == '0') {
         return err(
             StatusCode::BAD_REQUEST,
-            "recordType resolves to the zero key — the contract refuses it with \
+            "recordType resolves to the zero key - the contract refuses it with \
              InvalidServiceMetadata()",
         );
     }
@@ -2118,7 +2118,7 @@ async fn provider_set_service_approval(
         if !rec.registered {
             return err(
                 StatusCode::NOT_FOUND,
-                "this providerId is not registered — register it before approving a record type",
+                "this providerId is not registered - register it before approving a record type",
             );
         }
     }
@@ -2140,7 +2140,7 @@ async fn provider_set_service_approval(
                     StatusCode::CONFLICT,
                     json!({
                         "error": format!(
-                            "this provider's {label} approval is already {} — the contract refuses a \
+                            "this provider's {label} approval is already {} - the contract refuses a \
                              no-op with NoChange()",
                             body.allowed
                         ),

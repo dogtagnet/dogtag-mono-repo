@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 /// It used to be a compile-time constant, which made admin-api the ONE service you cannot run a
 /// second instance of. That is not a theoretical inconvenience: a captain's stack is routinely live
 /// on this port, so a second instance started to exercise a change silently attempted to bind over
-/// it — and had that bind succeeded first, the live console would have been the thing that failed.
+/// it - and had that bind succeeded first, the live console would have been the thing that failed.
 /// `vet-api`, `government-api` and `indexer-api` all read `PORT`; this one now does too.
 const DEFAULT_PORT: u16 = 39742;
 

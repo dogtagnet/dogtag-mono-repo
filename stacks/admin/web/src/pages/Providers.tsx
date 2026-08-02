@@ -13,7 +13,7 @@
  *    the provider side: `providerId` cannot be reassigned and the identity anchor's revision only
  *    moves forward, so a send of unreviewed values is not correctable.
  *  - A submitted transaction is not a completed one. The backend awaits the receipt and errors on a
- *    reverted status, so `outcome: "executed"` genuinely means mined-and-succeeded — and the two
+ *    reverted status, so `outcome: "executed"` genuinely means mined-and-succeeded - and the two
  *    "nothing was broadcast" outcomes stay apart, because a designed proposal and a wrong hosted key
  *    have different remedies.
  *  - Three states, never two. An approval log that could not be READ is rendered as its own state
@@ -97,15 +97,15 @@ const STANDING_TONE: Record<ProviderStanding, "neutral" | "warning" | "success" 
  * What a standing MEANS for the provider's ability to act, in the registrar's terms.
  *
  * `pending` is the one worth spelling out: it is what registration produces, it looks benign, and it
- * is indistinguishable from `active` on a badge alone — while `canWriteProvider` refuses everything
+ * is indistinguishable from `active` on a badge alone - while `canWriteProvider` refuses everything
  * but `active`, so a provider left here can do nothing and the self-service page will say so.
  */
 const STANDING_MEANING: Record<ProviderStanding, string> = {
   none: "Not registered.",
-  pending: "Registered but INERT — every self-service action refuses until this is Active.",
+  pending: "Registered but INERT - every self-service action refuses until this is Active.",
   active: "Cleared to act.",
   suspended: "Frozen. Reversible.",
-  retired: "Terminal — no further standing change is possible.",
+  retired: "Terminal - no further standing change is possible.",
 };
 
 /** The outcome of a send, reported from the receipt rather than from the submission. */
@@ -128,7 +128,7 @@ function OutcomeNote({ result }: { result: SendResult }) {
       <div className="font-medium">
         {result.outcome === "executed"
           ? `Mined: ${result.summary}`
-          : "Nothing was broadcast — on-chain state is unchanged."}
+          : "Nothing was broadcast - on-chain state is unchanged."}
       </div>
       {result.warning ? <p className="mt-1 text-muted-foreground">{result.warning}</p> : null}
       <div className="mt-2 space-y-1">
@@ -149,7 +149,7 @@ function OutcomeNote({ result }: { result: SendResult }) {
 }
 
 /**
- * The approvals cell — three states, and the third is NOT a neighbour of the other two.
+ * The approvals cell - three states, and the third is NOT a neighbour of the other two.
  *
  * "The registrar has approved nothing" is a fact about the provider. "The approval log could not be
  * read" is a fact about us, and rendering it as the first would tell the admin something about a
@@ -223,7 +223,7 @@ export function Providers() {
     : spent
       ? "This registration was submitted. Review again to send another."
       : checkedKey !== currentKey
-        ? "An input changed after this was reviewed — review again before sending."
+        ? "An input changed after this was reviewed - review again before sending."
         : null;
 
   const load = useCallback(async () => {
@@ -293,7 +293,7 @@ export function Providers() {
       if (resp.outcome === "executed") {
         toast({
           title: "Provider registered",
-          description: "It is PENDING and can do nothing yet — set its standing to Active next.",
+          description: "It is PENDING and can do nothing yet - set its standing to Active next.",
         });
       } else {
         toast({ title: "Nothing was broadcast", description: resp.warning ?? "", variant: "danger" });
@@ -380,14 +380,14 @@ export function Providers() {
           data-testid="registrar-authority"
         >
           {authority.heldByHosted === true ? (
-            <>The hosted admin key holds this registry — registrar actions execute directly.</>
+            <>The hosted admin key holds this registry - registrar actions execute directly.</>
           ) : authority.heldByHosted === false ? (
             <>
               The hosted admin key does NOT own this registry, so actions come back as unsigned
               calldata for {shortAddr(authority.owner ?? "the owner")} to execute out of band.
             </>
           ) : (
-            <>Could not establish who owns this registry — an action may execute or may be proposed.</>
+            <>Could not establish who owns this registry - an action may execute or may be proposed.</>
           )}
         </div>
       ) : null}
@@ -459,7 +459,7 @@ export function Providers() {
                       <TableCell className="align-top">
                         <div className="flex items-center gap-1">
                           <span className="font-mono text-xs">{shortAddr(pid)}</span>
-                          {/* Permanent, opaque, and truncated on screen — so it must stay
+                          {/* Permanent, opaque, and truncated on screen - so it must stay
                               recoverable without hovering. */}
                           <CopyButton value={pid} label="provider id" />
                         </div>
@@ -577,7 +577,7 @@ export function Providers() {
                 <CopyButton value={providerId} label="provider id" />
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                Arbitrary and permanent. It is generated at random and deliberately means nothing —
+                Arbitrary and permanent. It is generated at random and deliberately means nothing -
                 it must not be derived from the provider&apos;s name, domain, address or keys. Copy it
                 now: the provider needs it to use the self-service portal, and it cannot be changed
                 later.
@@ -594,7 +594,7 @@ export function Providers() {
                 onChange={(e) => setController(e.target.value)}
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                The wallet that will act AS this provider on the self-service portal — the
+                The wallet that will act AS this provider on the self-service portal - the
                 provider&apos;s own key, not yours. If this is wrong, the provider cannot do anything
                 and correcting it needs a separate controller-transfer.
               </p>
@@ -603,7 +603,7 @@ export function Providers() {
             <fieldset className="rounded-md border p-3">
               <legend className="px-1 text-sm font-medium">Identity statement</legend>
               <p className="mb-3 text-xs text-muted-foreground">
-                What you are asserting. Only its keccak256 digest is written on chain — the text below
+                What you are asserting. Only its keccak256 digest is written on chain - the text below
                 is never sent to the backend and is not stored anywhere, so keep your own copy.
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
@@ -676,9 +676,9 @@ export function Providers() {
                 data-testid="registration-review"
               >
                 <div className="flex items-center gap-2 text-sm font-medium">
-                  <span className={fresh ? "" : "line-through opacity-70"}>Reviewed — ready to send</span>
+                  <span className={fresh ? "" : "line-through opacity-70"}>Reviewed - ready to send</span>
                   {!fresh ? (
-                    <span className="text-amber-700 dark:text-amber-500">Superseded — {staleReason}</span>
+                    <span className="text-amber-700 dark:text-amber-500">Superseded - {staleReason}</span>
                   ) : null}
                 </div>
                 <pre className="mt-2 whitespace-pre-wrap rounded bg-background/60 p-2 text-xs">

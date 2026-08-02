@@ -92,7 +92,7 @@ describe("identity statement", () => {
     expect(identityDigest({ ...STATEMENT, notes: "nothing checked" })).not.toBe(base);
   });
 
-  it("is a well-formed non-zero bytes32 — the contract refuses a zero digest", () => {
+  it("is a well-formed non-zero bytes32 - the contract refuses a zero digest", () => {
     const d = identityDigest(STATEMENT);
     expect(d).toMatch(/^0x[0-9a-f]{64}$/);
     expect(d).not.toBe(`0x${"0".repeat(64)}`);
@@ -100,14 +100,14 @@ describe("identity statement", () => {
 
   /**
    * An anchor over an empty statement asserts nothing while looking exactly like one that asserts
-   * something — and it would still be a perfectly valid non-zero digest, so the contract cannot
+   * something - and it would still be a perfectly valid non-zero digest, so the contract cannot
    * catch it.
    */
   it("refuses a statement with nothing asserted", () => {
     expect(identityStatementProblem(EMPTY_IDENTITY_STATEMENT)).toMatch(/legal entity name/i);
     expect(identityStatementProblem({ ...STATEMENT, jurisdiction: "" })).toMatch(/jurisdiction/i);
     expect(identityStatementProblem({ ...STATEMENT, verifiedOn: "yesterday" })).toMatch(/YYYY-MM-DD/);
-    // The optional fields really are optional — not every jurisdiction issues a number.
+    // The optional fields really are optional - not every jurisdiction issues a number.
     expect(identityStatementProblem({ ...STATEMENT, registrationNumber: "", notes: "" })).toBeNull();
   });
 });
@@ -125,7 +125,7 @@ describe("the checked registration", () => {
 
   /**
    * The staleness key is what retires a plan when an input moves. Every input the plan depends on
-   * must be in it, or a send could carry a value nobody reviewed — permanently, since a providerId
+   * must be in it, or a send could carry a value nobody reviewed - permanently, since a providerId
    * cannot be reassigned.
    */
   it("changes its key when ANY input it depends on changes", () => {
