@@ -4,9 +4,9 @@ The exact buttons to press, in order, against the **live ROAX deployment** (chai
 The demo buttons fill every form, and all passwords are prefilled, so the operator **types nothing** except the `dogTagId` handle in §C.
 (Testnet only.) For the full runbook + phone networking + gotchas see **[DEMO.md](./DEMO.md)**.
 
-Boot first: `scripts/demo-up.sh` (or with a public tunnel on corporate Wi-Fi:
-`VET_PUBLIC_URL=https://<sub>.trycloudflare.com scripts/demo-up.sh` - see DEMO.md §6).
-This also boots the **prover-service** on **:41875** (`POST /prove-consent`, the trusted server-prove fallback - see §F) and the browser-based **pet-owner (holder) wallet** on **:45931** (a phone-free way to receive/hold/share records; owner-hidden proving stays on the native apps - see [`stacks/owner/web/README.md`](../stacks/owner/web/README.md)).
+**Bringing the stack up from cold is §0, and it is not just `scripts/demo-up.sh`.** That script alone
+produces a stack that looks healthy and silently loses your shop data. Start there, not here.
+The boot also brings up the **prover-service** on **:41875** (`POST /prove-consent`, the trusted server-prove fallback - see §F) and the browser-based **pet-owner (holder) wallet** on **:45931** (a phone-free way to receive/hold/share records; owner-hidden proving stays on the native apps - see [`stacks/owner/web/README.md`](../stacks/owner/web/README.md)).
 Automated equivalents: `scripts/e2e-smoke.sh` (credential lifecycle, 7 steps) and `scripts/e2e-zk.sh` (the owner-hidden consent proof, end to end with a real proof).
 
 > **You do not need to rebuild anything for the browser sections.**
@@ -19,6 +19,145 @@ Automated equivalents: `scripts/e2e-smoke.sh` (credential lifecycle, 7 steps) an
 Portals: **admin** http://localhost:39741 · **vet** http://localhost:41873 · **groomer** http://localhost:43617 · **government** http://localhost:44831 · **owner wallet** http://localhost:45931
 Backends: admin `:39742` · vet `:41874` · prover `:41875` · groomer `:43618` · government `:44832` · oversight indexer `:46001`
 Demo passwords (prefilled): operator `operator`, admin `admin`. Record type in the vet flow: **VACCINATION**.
+
+---
+
+## 0. Bring the stack up (from cold)
+
+Everything after this section assumes a running stack. This section brings one up from nothing.
+
+**`scripts/demo-up.sh` on its own is not enough**, and the three ways it falls short are all silent: the
+stack comes up, every portal loads, and you find out later. Each is handled below, in order.
+
+| Trap | What happens if you miss it |
+|---|---|
+| `demo-up.sh` never sets `MONGO_URI` | vet and groomer run an ephemeral **MemStore**. Every client, pet and appointment you create vanishes on the next restart. |
+| `demo-up.sh` builds vet-api **without** `--features mongo` | `MONGO_URI` is read and then **silently ignored**, so setting it is not sufficient on its own. |
+| `demo-up.sh` boots the indexer with `INDEXER_DEMO_MODE=1` | You get the **simulated** indexer, which makes §K and §O behave completely differently from the live one. |
+
+### 0.1 Start MongoDB
+
+```
+docker start dogtag-mongo
+docker ps --filter name=dogtag-mongo --format '{{.Names}} {{.Status}} {{.Ports}}'
+```
+
+Expect `dogtag-mongo  Up ...  0.0.0.0:27018->27017/tcp`.
+If the container does not exist yet, create it once:
+`docker run -d --name dogtag-mongo -p 27018:27017 mongo:7`.
+
+### 0.2 Put `MONGO_URI` in `contracts/.env`
+
+`demo-up.sh` does `set -a; source contracts/.env`, so anything in that file is exported to every backend
+it starts. That is the supported way to get the variable to vet-api and groomer-api, because the script
+sets it nowhere itself:
+
+```
+grep -q '^MONGO_URI=' contracts/.env || echo 'MONGO_URI=mongodb://127.0.0.1:27018' >> contracts/.env
+```
+
+### 0.3 Make the build include the mongo feature
+
+**This is the trap that defeats §0.2 on its own.** `mongo` is a **non-default** cargo feature of vet-api
+(`default = []`, `mongo = ["dep:mongodb"]`), and `build_store` only reaches its MongoStore branch under
+`#[cfg(feature = "mongo")]`. A binary built without it reads `MONGO_URI`, finds the feature absent, and
+falls through to MemStore without complaint.
+
+`demo-up.sh` builds the backends with no features at all:
+
+```
+cargo build -q --release -p admin-api -p vet-api -p government-api -p indexer-api
+```
+
+so it will **rebuild over** a mongo-enabled binary every time you run it. Building with the feature
+beforehand does not survive. The fix is a one-line local edit to `scripts/demo-up.sh`, adding the feature
+to that line:
+
+```
+cargo build -q --release -p admin-api -p government-api -p indexer-api
+cargo build -q --release -p vet-api --features mongo
+```
+
+(Leave the separate `--features prover` build below it alone. It writes to its own `target/prover` dir on
+purpose, so the vet and groomer instances stay on a binary that cannot accept a proving witness.)
+
+> This edit is not committed in the repo. It is called out here rather than made silently because
+> changing what `demo-up.sh` compiles is a behaviour change to a shared script, and the durable fix
+> belongs in its own change rather than riding along with a documentation update.
+
+### 0.4 Boot the stack
+
+```
+scripts/demo-up.sh
+```
+
+On corporate or VPN Wi-Fi, where a phone cannot reach your Mac's LAN address, pass public tunnels
+instead (see DEMO.md §6):
+
+```
+VET_PUBLIC_URL=https://<sub>.trycloudflare.com \
+GROOMER_PUBLIC_URL=https://<sub>.trycloudflare.com \
+scripts/demo-up.sh
+```
+
+Tear down later with `scripts/demo-down.sh`, which kills the PIDs the script recorded in `.demo/pids`.
+**Never `pkill -f` a binary path to stop a service here.** This monorepo is checked out many times over
+and every checkout builds to the same relative path, so a pattern kill reaches whichever instance it
+happens to hit, including a live one somebody else is using.
+
+**Which indexer this gives you: the SIMULATED one.** `demo-up.sh` starts it with `INDEXER_DEMO_MODE=1`,
+so §K shows scripted rows with placeholder transaction hashes, all correctly labelled
+"not chain-addressable", and §O's content mirror accepts uploads under the well-known demo token.
+That is a perfectly good stack for walking this guide.
+**If you want the live indexer instead** (real chain events, and the 401/503 behaviour described in §K
+and §O), stop that one process and start it against the chain with an authored `INDEXER_SCOPES`
+registry - see "Which stack am I on?" below for how to tell the two apart, and note that a live indexer
+with an empty scope registry fails every oversight query closed by design.
+
+### 0.5 Unlock custody on the two shop backends
+
+**Custody re-locks on every restart, on both vet and groomer.** The sealed key survives in
+`.demo/*-custody.json`; the decrypted seed does not. Nothing issues or signs until you unlock.
+
+For each of the vet portal (http://localhost:41873) and the groomer portal
+(http://localhost:43617): **Sign in**, then either click **Unlock** in the banner across the top, or
+simply take the first action that needs custody and answer the prompt that appears in place. Both fields
+are prefilled in demo mode, so it is one click on **Unlock and continue**.
+
+### 0.6 Verify the stack is actually up
+
+Running the start commands is not proof. Run this, from the repo root:
+
+```
+for p in 39741 39742 41873 41874 41875 43617 43618 44831 44832 45931 46001; do
+  printf '%s %s\n' "$p" "$(lsof -nP -iTCP:$p -sTCP:LISTEN -t >/dev/null 2>&1 && echo up || echo DOWN)"
+done | paste -sd' ' -
+
+curl -s localhost:44832/health | python3 -c "import sys,json;d=json.load(sys.stdin);print('government: chainId',d['chainId'],'canSign',d['canSign'],'backend',d['backend'])"
+curl -s localhost:46001/health | python3 -c "import sys,json;d=json.load(sys.stdin);print('indexer:    simulated',d['simulated'],'chainId',d['chainId'])"
+
+strings target/release/vet-api | grep -q 'connected to MongoStore' \
+  && echo 'vet-api binary: mongo feature ON' \
+  || echo 'vet-api binary: mongo feature OFF -> MONGO_URI is IGNORED'
+
+ps eww "$(lsof -nP -iTCP:41874 -sTCP:LISTEN -t)" | tr ' ' '\n' | grep '^MONGO_URI=' \
+  || echo '(no MONGO_URI handed to the process -> MemStore)'
+```
+
+A healthy stack answers:
+
+- **all eleven ports `up`.** Any `DOWN` means that service failed to start; read `.demo/<name>.log`.
+- **`government: chainId 135 canSign True backend live`.** `canSign False` means no funded
+  `GOV_SIGNER_KEY`, so §E1's issuance will only dry-run.
+- **`indexer: simulated True chainId null`** after a stock `demo-up.sh`, or
+  **`simulated False chainId 135`** if you started a live one. Either is fine; it decides what §K and §O
+  do.
+- **`vet-api binary: mongo feature ON`** and **`MONGO_URI=mongodb://127.0.0.1:27018`**.
+
+**Those last two are one answer, not two, and both halves are required.** The feature check proves the
+binary *can* use Mongo; the process check proves it was *told* to. Either one alone will report success
+on a stack that is quietly running MemStore, which is precisely the failure this section exists to
+prevent. If the feature line says OFF, go back to §0.3 - it means `demo-up.sh` rebuilt over your binary.
 
 ---
 
@@ -72,19 +211,35 @@ Deployed is not the same as wired: repointing clients is a separate, captain-aut
 not happened. So when you see a generation-1 address in a portal, that is correct and not a stale
 config.
 
-**Generation 2 is also completely empty, and its admin half is not built yet.** `providerCount()` is 0,
-the generation-2 factory has created zero clones, and the two registrar calls that would create a
-provider have no portal surface anywhere - a separate crew (`dogtag-registrar-r9`) is building that now.
+**Its admin half is also not built yet.** The two registrar calls that would create a provider have no
+portal surface anywhere, and a separate crew (`dogtag-registrar-r9`) is building that now.
 **§N is the full journey**, with every step marked walkable or blocked and the blocker named. It is worth
 reading before you try any generation-2 flow, because exactly one of its steps can be performed today.
 
-Verified on chain while writing this guide:
+Read the current state off the chain rather than off this page:
 
 ```
-cast call 0xf374f4cA5ebBBAFf0dFcE48D8Cda2e47F9D5da01 "generationCount()(uint256)" --rpc-url https://devrpc.roax.net   # 2
-cast call 0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0 "resolverApproved()(bool)"   --rpc-url https://devrpc.roax.net   # false
-cast call 0xD3B121FEaCde93b95288912EAdbB10824550FdBF "boundCloneCount()(uint256)" --rpc-url https://devrpc.roax.net   # 0
+cast call 0xf374f4cA5ebBBAFf0dFcE48D8Cda2e47F9D5da01 "generationCount()(uint256)" --rpc-url https://devrpc.roax.net
+cast call 0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0 "resolverApproved()(bool)"   --rpc-url https://devrpc.roax.net
+cast call 0xD3B121FEaCde93b95288912EAdbB10824550FdBF "boundCloneCount()(uint256)" --rpc-url https://devrpc.roax.net
+cast call 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 "providerCount()(uint256)"   --rpc-url https://devrpc.roax.net
 ```
+
+How to read those four:
+
+- **`generationCount`** is how many factory generations the provenance router resolves through. Two or
+  more means generation 2 has been appended, which is the cutover state described above.
+- **`resolverApproved`** false means the registrar has not approved the typed directory resolver, so every
+  directory store stays empty and §N8 cannot proceed. True means that gate has opened.
+- **`boundCloneCount`** zero means no issuing contract has bound a domain yet, which is what makes §L's
+  on-chain row report "published no domain claim". Non-zero means at least one has.
+- **`providerCount`** zero means no provider has been registered yet. Non-zero means providers now exist;
+  list them from the registry's own logs to see which (the command is in §N0).
+
+> **This guide deliberately does not print what those four currently return.** They are mutable on-chain
+> values, so any number written here is guaranteed to be wrong the moment somebody changes it, and a
+> reader who trusts the printed value over the command gets exactly the "the step does not match what
+> happens" failure this guide exists to remove. Run the commands.
 
 ---
 
@@ -843,8 +998,9 @@ wrong.**
 
 **`IssuerDomainRegistry` IS deployed on ROAX**, at `0xD3B121FEaCde93b95288912EAdbB10824550FdBF`, and it is
 in `contracts/deployments/roax.json`. Earlier revisions said it was absent from the ledger and undeployed.
-Deploying it published no claims, though: `boundCloneCount()` is **0**, so no issuing contract has bound a
-domain yet.
+Deploying it published no claims, though. Read `boundCloneCount()` (the command is in the two-facts
+section near the top): zero means no issuing contract has bound a domain yet, which is the state that
+produces the wording below.
 
 So read the row's own **finding line** to know which of two situations you are in. They both say "Could
 not run", and they mean different things:
@@ -857,7 +1013,7 @@ not run", and they mean different things:
 - *"This issuer has published no domain claim."* The address **is** configured, the registry **was** read,
   and it holds no binding for this contract. The reason line spells out the consequence: the document's
   claimed domain "cannot be corroborated or contradicted". This is the normal day-one state, and it is
-  what a correctly-configured stack shows today, given `boundCloneCount() == 0`.
+  what a correctly-configured stack shows while `boundCloneCount()` still reads zero.
 
 The DNS half is unchanged and will not move until a verifier backend is in the loop:
 *"The TXT lookup is resolved server-side by the verifier backends; this bench runs in the browser and
@@ -933,25 +1089,34 @@ each carries its own status, because most of them cannot be performed today.
 > Read every step below in that light. Steps are marked **WALKABLE**, **BLOCKED (no admin surface)** or
 > **BLOCKED (needs an earlier step)**, and nothing marked BLOCKED is written as an instruction to follow.
 
-Verified on chain while writing this, which is the state Act 1 has to move:
+Read the state Act 1 has to move, rather than trusting a number printed here:
 
 ```
-cast call 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 "providerCount()(uint256)" --rpc-url https://devrpc.roax.net   # 0
+cast call 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 "providerCount()(uint256)" --rpc-url https://devrpc.roax.net
 
 curl -s -X POST https://devrpc.roax.net -H 'content-type: application/json' --data \
   '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6","fromBlock":"0x0","toBlock":"latest"}]}'
-# -> {"jsonrpc":"2.0","id":1,"result":[]}
 ```
 
-**Generation 2 is completely empty.** Zero providers are registered, and the generation-2 factory has
-emitted no logs whatsoever, so it has created zero clones. Nothing has ever been issued through it.
+**How to read them.**
+`providerCount` zero means no provider has been registered yet, so Act 1 has not run for anyone.
+Non-zero means providers now exist; that is Act 1 landing, and it does **not** by itself make the rest of
+this section walkable, because a registered provider is still not an approved, attached, clone-owning one.
+To see which providers exist, read the registry's own `ProviderRegistered(bytes20,address)` logs:
 
-> **Use raw JSON-RPC for that second check, not `cast logs`.** This repo has already been bitten by it:
+```
+curl -s -X POST https://devrpc.roax.net -H 'content-type: application/json' --data \
+  '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9","fromBlock":"0x0","toBlock":"latest"}]}'
+```
+
+An empty `result` from the second command in the first block means the generation-2 factory has emitted
+no logs at all, so it has created no clones and nothing has ever been issued through it. A non-empty
+result means clones now exist.
+
+> **Use raw JSON-RPC for those log queries, not `cast logs`.** This repo has already been bitten by it:
 > `cast logs` renders extra rows for the same query and is misleading here, so an empty result from it is
-> weak evidence for the strongest claim in this section. `DogTagIssuerFactoryV2` exposes no clone counter
-> to read instead, so the log query is the direct check - just make it the honest way.
-> `providerCount() == 0` independently implies the same thing, since a clone can only be created by a
-> registered, approved provider.
+> weak evidence for a strong claim. `DogTagIssuerFactoryV2` exposes no clone counter to read instead, so
+> the log query is the direct check - just make it the honest way.
 
 ---
 
@@ -962,7 +1127,7 @@ All three steps are `onlyOwner` registrar work on `ProviderRegistry`, held by th
 **N1. Register the provider. Status: BLOCKED (no admin surface).**
 `registerProvider` mints the provider's `bytes20 providerId` and records its identity anchor, KYC standing
 and controller/owner/admin keys.
-This is the step that makes a provider exist at all, and it is where `providerCount()` goes from 0 to 1.
+This is the step that makes a provider exist at all, and it is what advances `providerCount()`.
 Note it will refuse a zero identity digest, schema or hash algorithm (`BadIdentityAnchor`), so it cannot
 be performed with placeholder data - a real identity statement is a precondition, not a formality.
 
@@ -1032,7 +1197,8 @@ the older contract for now.
 **N8. Publish your listing - contacts, location pin, profile, logo. Status: BLOCKED (needs N1, plus a
 registrar approval of the directory resolver).**
 This is the step that puts a provider in the searchable directory. Two independent blockers:
-`ProviderDirectory.resolverApproved()` is **false** (verified in §M), and a typed resolver answers nothing
+`ProviderDirectory.resolverApproved()` reads false (check it with the command in the two-facts section),
+and a typed resolver answers nothing
 until the registrar approves it **and** the provider selects it; and there is no provider to publish under.
 Two properties of this step are worth remembering for when it does become walkable:
 
@@ -1063,7 +1229,7 @@ clones from the real self-service factory, and both typed resolvers - no mocks, 
 about how those compose.)
 
 **You will know Act 1 has landed** when an admin-portal page appears for registering a provider, and when
-`providerCount()` stops returning 0:
+`providerCount()` starts returning a non-zero value:
 
 ```
 cast call 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 "providerCount()(uint256)" --rpc-url https://devrpc.roax.net
@@ -1234,11 +1400,12 @@ absence is not mistaken for it being missing from the product.
 - **The whole generation-2 provider journey (§N).** The admin half (register a provider, approve it to
   create a service) has **no portal surface at all** - those two calls exist only in the contract and its
   tests - so a provider cannot become registered, and every provider-side action refuses. `dogtag-registrar-r9`
-  is building that admin surface. Generation 2 is empty today: `providerCount()` is 0 and the generation-2
-  factory has emitted no logs, so it has created zero clones. The one walkable step is N4, opening the
-  page and reading its refusal.
+  is building that admin surface. Check the current generation-2 state with the commands in §N0 rather
+  than assuming; whatever `providerCount()` reads, the later steps stay blocked until that surface exists.
+  The one walkable step is N4, opening the page and reading its refusal.
 - **The verified-logo state (§O)** - needs a published profile anchor, which needs the above.
-- **The issuer domain binding's passing state (§L)** - needs a domain bound; `boundCloneCount()` is 0.
+- **The issuer domain binding's passing state (§L)** - needs a domain bound, which `boundCloneCount()`
+  tells you whether anyone has done.
 - **The real-chain delisting pair (§G)** - possible, but it delists a live signer. Use the scripted
   scenarios instead.
 
@@ -1270,10 +1437,15 @@ no divergence; admin **Activity** reporting the indexer unconfigured; government
 **not compared** outcome; **Provider self-service** refusing with its four named variables; and
 **Settings → Blockchain endpoint** rejecting a chain-1 endpoint with a rendered verdict.
 
-**Checked directly on chain:** `CloneProvenanceRouter.generationCount() == 2`,
-`ProviderDirectory.resolverApproved() == false`, `IssuerDomainRegistry.boundCloneCount() == 0`,
-`ProviderRegistry.providerCount() == 0`, and **no logs of any kind** on `DogTagIssuerFactoryV2`
-(so it has created zero clones).
+**Checked directly on chain** on that date: the provenance router resolving two factory generations, the
+typed directory resolver not approved, no domain bound, no provider registered, and no logs of any kind
+on `DogTagIssuerFactoryV2`. Those are all mutable, so this section deliberately records that they were
+checked rather than what they returned. Re-read them with the commands in the two-facts section and §N0.
+
+**One of them has since moved, and it is worth knowing about:** a provider was registered on chain about
+six minutes after this guide's final authoring commit, by the sibling `dogtag-registrar-r9` crew building
+the admin registrar surface. Generation 2 is therefore no longer empty. That is expected progress, not a
+defect in this guide, and it is exactly why the counts above are no longer printed as literals.
 
 **Checked in the source tree:** `registerProvider` and `setServiceCreationApproval` appear only in
 `contracts/src/ProviderRegistry.sol` and its Foundry tests. A search across `packages/*/src`,
