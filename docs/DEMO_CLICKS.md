@@ -89,9 +89,10 @@ in the compose files themselves:
    resolve, so caddy never serves.
 3. **The portals are not on their usual ports at all, which is the decisive one.** The `web` service in
    both files has **no host `ports:` mapping** and says so in its own comment ("No host `ports:` -
-   internal only. Caddy reaches it as `web:80`"). Only the API port is published, `41874` for vet and
-   `43618` for groomer. So `http://localhost:41873` and `http://localhost:43617`, the URLs this entire
-   guide is written around, **do not exist** on the compose path.
+   internal only. Caddy reaches it as `web:80`"). Of the web and api pair, only the API port is
+   published, `41874` for vet and `43618` for groomer. So `http://localhost:41873` and
+   `http://localhost:43617`, the URLs this entire guide is written around, **do not exist** on the
+   compose path.
 
 Custody is out of reach there too: both api services set `ADMIN_LOOPBACK_ONLY: "1"`, which moves
 `/admin/*` onto a `127.0.0.1:PORT+1` listener **inside the container** that neither compose file
@@ -129,10 +130,13 @@ fearing; a process that refuses to start tells you at once.
 > This is not hypothetical: it is the live state of any hand-wired stack where both processes carry
 > `MONGO_URI=mongodb://127.0.0.1:27018` with `MONGO_DB` unset, which the captain's own long-running
 > stack is.
-> **So if you do hand-wire persistence, give each shop its own `MONGO_DB` as well as the URI.** That is
-> the whole remedy on this path. The compose stacks avoid it by construction, by giving each shop its
-> own `mongo` service rather than its own database name, but they are not runnable as this walkthrough
-> (see above).
+> **So if you do hand-wire persistence, all three of these are required together:** the URI, a distinct
+> `MONGO_DB` per shop, and a binary built `--features mongo`. Drop the third and the process refuses to
+> start rather than merging anything, as described just above.
+> That means starting those two backends yourself rather than through `demo-up.sh`: its build line
+> compiles without the feature, and every environment route into it reaches all of its backends at once.
+> The compose stacks avoid the collision by construction, by giving each shop its own `mongo` service
+> rather than its own database name, but they are not runnable as this walkthrough (see above).
 
 ### 0.2 Boot the stack
 
