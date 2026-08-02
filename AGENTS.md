@@ -5737,9 +5737,27 @@ both. The control caught it.
 reads **`Fill demo data`** (a parenthesised variant where one form offers several, e.g.
 `Fill demo data (vet)`). It shipped as three different names - `Fill sample`, `Demo (vet)`,
 `Vet preset` - and `stacks/{vet,groomer}/web/e2e/unlock.spec.ts:125` asserts `/Fill demo data/i`, so
-that is the spelling the tree already depended on. Every button is gated on `env.demoMode`, and
-`ProviderSelfServiceFlows` takes a `demoMode` prop defaulting to **false** because it is shared by two
-production portals - a shared component must not decide it is in demo mode on its own.
+that is the spelling the tree already depended on.
+
+**A DEMO-FILL AFFORDANCE MUST NOT RENDER IN PRODUCTION, and in a SHARED component the default is what
+enforces that.** A fill button live on a real deployment invites fabricated data into a real system, so
+every portal button is gated on that portal's `env.demoMode`, and every shared component takes the
+decision as a prop that defaults to **false**: `ProviderSelfServiceFlows.demoMode`, and
+`VerifyFlow.showDemo`, which defaulted to `true` and so rendered live on the groomer Verify page.
+Fail-closed is the whole point - a call site added later inherits "no demo button" rather than
+inheriting one, which is the safe direction to be wrong in.
+`VerifyFlow` has exactly TWO call sites, **both in the groomer portal** and both now explicit:
+`pages/Verify.tsx` passes `env.demoMode`, and `pages/AppointmentDetail.tsx` passes `false` (an
+appointment-linked verification takes its purpose from the booking). The vet Verify page is NOT one of
+them - it renders its own local `OwnerHiddenVerifyFlow` and never imports this component, so do not go
+looking for a third caller to gate.
+
+**One exception, and it is structural rather than an oversight: `stacks/owner/web` has no
+`env.demoMode` at all**, so its two Receive buttons cannot be gated this way. That is the pet-owner
+wallet - a zero-backend, self-custodial holder app whose whole product is pasting a credential in, so a
+"paste this sample instead" affordance is closer to a first-run aid than to seeding a real system, and
+nothing it fills reaches any server. Gating them means introducing a demo-mode flag to that app first,
+which is a product call rather than a cleanup.
 
 **MERGE a preset into existing state; never replace the state object.** `DemoBusiness`'s own comment
 already records why (a key missing from the preset silently blanks that field), and the groomer client
@@ -5763,3 +5781,36 @@ The admin **verification bench** DOES have one, and the distinction is principle
 hair-splitting: its product is *which checks could and could not run*, `could-not-run` is a
 first-class explained state there, and its toast says plainly that the control record was never
 anchored on this chain. A red VERDICT and an explained could-not-run are not the same claim.
+
+### DEMO VALUES MUST BE UNMISTAKABLY FAKE, and one carrier of the old identity is still live
+
+A demo value that reads like a real person is how a fake record gets mistaken for a real one, so every
+preset that fills a person field uses an obviously-fake register: `Demo` / `Importer (sample)` /
+`DEMO-ID-000000` / `1990-01-01` / `demo.importer@example.com` / `+65 6000 0000`. Categorical fields
+(role, ID type, ID jurisdiction) identify nobody and are deliberately left realistic.
+Two carriers were cleaned: the government Issue form's `demo` values (its PLACEHOLDERS are untouched -
+they are UI hints, and `government/web`'s own e2e fills its own values), and
+`stacks/owner/web/src/lib/sampleDoc.ts`.
+**Changing a value in `sampleDoc.ts` is NOT a text edit** - the leaves are `salt:tag:value` and the
+committed `merkleRoot` is genuine, so the root must be REGENERATED through the SDK. The way to do that
+without producing a self-consistent lie: reproduce the CURRENT root from the unmodified document
+first (`flattenData` -> `leafFromPacked` -> `buildMerkle`), and only then substitute values and take
+the new root, keeping every salt and type tag byte-identical. A pipeline that cannot reproduce the
+committed root will happily emit a new one that means nothing. `stacks/owner/web/e2e/owner.spec.ts`
+pins the root in THREE places and the Section A values in four, and that suite is not in CI, so grep
+the whole e2e directory for every replaced value rather than the two the reviewer happened to name.
+
+**KNOWN HAZARD, RECORDED RATHER THAN FIXED - `build_gov_vc` still injects the retired identity as its
+per-field DEFAULTS.** `stacks/government/api/src/app.rs` (Section A of the `TRAVEL_CLEARANCE` branch)
+falls back to `Dominic` / `Zagara` / `887524355` / `1997-02-13` / `dom.zagara@example.com` /
+`216-533-5925` whenever Section A arrives blank - which `scripts/e2e-roles.sh` does on every hermetic
+run, since it posts only `animalName` and `countryOfDeparture`. So a demo-issued `TRAVEL_CLEARANCE`
+still commits that identity into its Merkle root.
+It was left for two reasons, and the second is the one that matters. It is not a demo preset: these
+defaults are what a REAL government deployment writes into a REAL credential on a blank Section A, so
+changing them is a behaviour change to an issuance path, outside this branch's diff.
+And it is coupled to a test that would go vacuous: `stacks/government/api/tests/share_qr.rs` issues
+with `"fields": {}` and then asserts `!html.contains("Zagara")` to prove the PUBLIC receipt page leaks
+no Section A. That assertion only bites BECAUSE the default is `Zagara`; swap the literal without
+repointing it and the PII-leak guard silently stops guarding, which is a worse outcome than the
+hazard. Fixing this properly means moving both together and re-running `cargo test -p government-api`.

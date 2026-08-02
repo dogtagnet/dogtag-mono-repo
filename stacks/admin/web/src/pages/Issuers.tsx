@@ -27,7 +27,7 @@ import {
   type CreateIssuerResp,
   type GovernanceAuthorityResp,
   type IssuerCloneStat,
-  DEMO_ISSUER_DEPLOY,
+  demoIssuerDeploy,
 } from "@dogtag/ui";
 import { CheckCircle2, Copy, Factory, Plus, Send, ShieldCheck,
   Sparkles,
@@ -305,9 +305,10 @@ function DeployDialog({
               variant="outline"
               size="sm"
               onClick={() => {
-                setName(DEMO_ISSUER_DEPLOY.name);
-                setRecordType(DEMO_ISSUER_DEPLOY.recordType);
-                setBusiness(DEMO_ISSUER_DEPLOY.business);
+                const preset = demoIssuerDeploy();
+                setName(preset.name);
+                setRecordType(preset.recordType);
+                setBusiness(preset.business);
               }}
             >
               <Sparkles className="h-4 w-4" /> Fill demo data

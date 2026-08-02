@@ -276,13 +276,20 @@ export const DEMO_ADMIN_SIGNER = "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2";
 /**
  * Deploy-an-issuer-clone preset (admin Issuers/Factory).
  *
- * `recordType` is DELIBERATELY not `DEMO_RECORD_TYPE`. A clone's CREATE2 salt is
- * `keccak256(recordType, business)`, so re-using VACCINATION with the same business would collide
- * with the clone already deployed and the submit would revert - a demo button that fills a form
- * which then fails is worse than no button. A demo-only record type keeps the salt fresh.
+ * A FUNCTION, not a const, and the reason is the CREATE2 salt. A clone's salt is
+ * `keccak256(recordType, business)` and `Clones.cloneDeterministic` reverts once a salt has been
+ * used, so a preset whose every term is fixed submits successfully EXACTLY ONCE against a given
+ * chain and then reverts with "Deploy failed" - a button that works on the first walk and silently
+ * does nothing on the second, which is worse than no button. `business` is blank so the backend
+ * defaults it to the hosted signer (the single-authority topology every deployed clone uses), which
+ * leaves the RECORD TYPE as the only term that can vary, so the freshness has to live there.
  *
- * `business` is left blank on purpose: the backend defaults it to the hosted signer, which is the
- * single-authority topology every deployed clone already uses.
+ * Sibling precedent: the provider-registration preset leaves `providerId` blank and the screen mints
+ * a CSPRNG id per click, for the same reason and against the same class of `AlreadyRegistered`.
+ *
+ * The suffix is 32 CSPRNG bits rather than a counter or a timestamp: a counter resets with the page
+ * and a same-millisecond timestamp does not separate two clicks, while `randomBytes` is injectable
+ * so a test can drive the value instead of observing a random one.
  */
 export interface DemoIssuerDeploy {
   name: string;
@@ -290,11 +297,26 @@ export interface DemoIssuerDeploy {
   business: string;
 }
 
-export const DEMO_ISSUER_DEPLOY: DemoIssuerDeploy = {
-  name: "Demo Issuer (testnet)",
-  recordType: "DEMO_VACCINATION",
-  business: "",
-};
+function defaultRandomBytes(n: number): Uint8Array {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  return b;
+}
+
+export function demoIssuerDeploy(
+  randomBytes: (n: number) => Uint8Array = defaultRandomBytes,
+): DemoIssuerDeploy {
+  const bytes = randomBytes(4);
+  if (bytes.length !== 4) throw new Error("demo record-type suffix needs exactly 4 random bytes");
+  const suffix = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+  return {
+    name: "Demo Issuer (testnet)",
+    recordType: `DEMO_VACCINATION_${suffix}`,
+    business: "",
+  };
+}
 
 /**
  * Grant-a-capability preset (admin Whitelist). Grants BOTH axes at once - the record-type issuance

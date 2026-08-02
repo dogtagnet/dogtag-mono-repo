@@ -56,6 +56,7 @@ export function Verify() {
       <VerifyFlow
         client={api}
         purposes={VERIFY_PURPOSES}
+        showDemo={env.demoMode}
         pollSession={async (id) => {
           const s = await api.verifySessionStatus(id);
           return { status: s.status, txHash: s.txHash ?? undefined };
