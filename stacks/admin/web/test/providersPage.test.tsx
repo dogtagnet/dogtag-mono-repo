@@ -83,6 +83,127 @@ function listReturning(approvals: unknown, standing = "active") {
   );
 }
 
+const PROPOSED_CALLDATA = `0xdeadbeef${"c7".repeat(100)}`;
+
+/** One provider row, active and approved for nothing, as the list route would ship it. */
+function oneProvider(over: Record<string, unknown> = {}) {
+  return {
+    provider: {
+      providerId: PID,
+      controller: CONTROLLER,
+      pendingController: `0x${"0".repeat(40)}`,
+      controllerEpoch: 1,
+      standing: "active",
+      registered: true,
+    },
+    identityAnchor: {
+      digest: `0x${"9".repeat(64)}`,
+      schema: 1,
+      codec: 0,
+      hashAlgorithm: 0x1b,
+      revision: 1,
+      updatedAtBlock: 10,
+    },
+    approvals: { state: "resolved", entries: [] },
+    ...over,
+  };
+}
+
+function listBody(providers: unknown[]) {
+  return {
+    registry: REGISTRY,
+    providers,
+    authority: {
+      target: REGISTRY,
+      owner: `0x${"ad".repeat(20)}`,
+      hostedSigner: `0x${"ad".repeat(20)}`,
+      heldByHosted: true,
+      capability: "registerProvider / setProviderStanding / setServiceCreationApproval",
+    },
+    identitySchema: { schema: 1, schemaId: "dogtag/provider-identity/1", hashAlgorithm: 0x1b },
+  };
+}
+
+/** The list route with one provider whose fields are overridden. */
+function listWith(over: Record<string, unknown>) {
+  return vi.fn(async () =>
+    new Response(JSON.stringify(listBody([oneProvider(over)])), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+}
+
+/**
+ * A fetch that answers BOTH the list read and the three registrar writes.
+ *
+ * Writes default to the `proposed_by_design` outcome, because that is the configuration these cases
+ * are about: nothing is broadcast, so the returned calldata is the whole deliverable.
+ */
+function routing(opts: {
+  providers: unknown[];
+  outcome?: string;
+  listFailsAfter?: () => boolean;
+}) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    if ((init?.method ?? "GET") === "GET") {
+      if (opts.listFailsAfter?.()) return json({ error: "rpc unreachable" }, 502);
+      return json(listBody(opts.providers));
+    }
+    const executed = opts.outcome === "executed";
+    return json({
+      outcome: opts.outcome ?? "proposed_by_design",
+      executed,
+      warning: executed ? null : "the hosted key does not own this registry",
+      actions: [
+        executed
+          ? {
+              disposition: "executed",
+              txHash: `0x${"e1".repeat(32)}`,
+              holder: `0x${"ad".repeat(20)}`,
+              summary: "registrar action",
+            }
+          : {
+              disposition: "proposed",
+              holder: `0x${"ad".repeat(20)}`,
+              target: REGISTRY,
+              calldata: PROPOSED_CALLDATA,
+              authority: "owner",
+              summary: "registrar action",
+            },
+      ],
+      ...(url.includes("/service-approval") ? { recordType: "X" } : {}),
+    });
+  });
+}
+
+/** Every value written to the clipboard this case, in order. Installed by `beforeEach`. */
+let copied: string[] = [];
+
+/**
+ * Click the `CopyButton` for `label` and return what it put on the clipboard.
+ *
+ * Asserting on the CLIPBOARD rather than on rendered text is the point: `shortAddr`/`slice`
+ * truncation removes the elided characters from the DOM entirely, so for a value that has to be
+ * signed somewhere else, copy is the operator's only route to it - a rendered prefix proves nothing.
+ */
+async function copyValueFor(scope: Element, label: string): Promise<string | undefined> {
+  const btn = [...scope.querySelectorAll("button")].find((b) =>
+    (b.getAttribute("aria-label") ?? "").includes(label),
+  );
+  if (!btn) return undefined;
+  const before = copied.length;
+  btn.click();
+  await settle();
+  return copied[before];
+}
+
 function type(el: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   setter.call(el, value);
@@ -110,11 +231,38 @@ function reviewPanel() {
   return document.body.querySelector('[data-testid="registration-review"]');
 }
 
+/** Open the register dialog, fill a complete statement, review it and send. Assumes a mounted page. */
+async function registerOnce() {
+  buttonWithText("Register provider")!.click();
+  await settle();
+  type(byId("ctrl"), CONTROLLER);
+  type(byId("legalName"), "Seaport Veterinary Clinic Pte Ltd");
+  type(byId("jurisdiction"), "Singapore");
+  type(byId("verifiedOn"), "2026-08-02");
+  await settle();
+  buttonWithText("Review")!.click();
+  await settle();
+  buttonWithText("Register")!.click();
+  await settle();
+}
+
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   window.localStorage.setItem("admin.token", "test-token");
+  // jsdom ships no clipboard, and `CopyButton` falls back to `execCommand`, which jsdom does not
+  // implement either - so without this a copy reports FAILED and the assertion would be about the
+  // environment rather than about the value being reachable.
+  copied = [];
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: {
+      writeText: async (v: string) => {
+        copied.push(v);
+      },
+    },
+  });
 });
 
 afterEach(() => {
@@ -332,5 +480,126 @@ describe("Providers - a failed read", () => {
     expect(container.textContent).toContain("could not be read");
     expect(container.textContent).toContain("PROVIDER_REGISTRY_ADDR not configured");
     expect(container.textContent).not.toContain("No providers are registered");
+  });
+});
+
+describe("Providers - the identity anchor on the row", () => {
+  /**
+   * The identity statement is never sent to the backend and is stored nowhere, so the on-chain
+   * digest is the only thing an admin can check a kept copy against. Reading it costs no extra
+   * chain call - the list response already carries it.
+   */
+  it("renders the on-chain identity digest so a kept statement can be checked against it", async () => {
+    vi.stubGlobal("fetch", listReturning({ state: "resolved", entries: [] }));
+    await mount();
+    const anchor = container.querySelector('[data-testid="identity-anchor"]');
+    expect(anchor).not.toBeNull();
+    expect(anchor!.textContent).toContain("rev 1");
+    // Truncated on screen, so it must be offered whole - the elided characters are not in the DOM.
+    const copy = [...anchor!.querySelectorAll("button")].find((b) =>
+      (b.getAttribute("aria-label") ?? "").includes("identity digest"),
+    );
+    expect(copy).toBeDefined();
+  });
+
+  /** Three states, as everywhere else: an anchor that could not be READ is not a missing one. */
+  it("renders an unreadable anchor as its own state rather than as absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      listWith({ identityAnchor: { unavailable: "publicIdentityAnchor reverted" } }),
+    );
+    await mount();
+    expect(container.textContent).toContain("Identity anchor could not be read");
+    expect(container.textContent).toContain("publicIdentityAnchor reverted");
+    expect(container.querySelector('[data-testid="identity-anchor"]')).toBeNull();
+  });
+});
+
+describe("Providers - a dispatched action is a durable record", () => {
+  /**
+   * THE defect this log exists for. A proposed REGISTRATION broadcasts nothing, so the provider id
+   * never reaches `_providerIds`, the list stays empty and the table is not rendered at all. With the
+   * payload living in a table row, the unsigned calldata the operator must sign out of band was
+   * unreachable - which made a propose-only deployment, the posture a cautious operator would choose,
+   * the one configuration in which a registration could not be completed.
+   */
+  it("renders a proposed registration's calldata even though no provider row exists", async () => {
+    vi.stubGlobal("fetch", routing({ providers: [] }));
+    await mount();
+    await registerOnce();
+
+    // The premise: nothing was broadcast, so there is genuinely no row to hang a payload on.
+    expect(container.textContent).toContain("No providers are registered");
+    const log = container.querySelector('[data-testid="dispatch-log"]');
+    expect(log).not.toBeNull();
+    expect(log!.textContent).toContain("Nothing was broadcast");
+    // Offered WHOLE: a truncated calldata is not a smaller deliverable, it is no deliverable.
+    expect(await copyValueFor(log!, "calldata")).toBe(PROPOSED_CALLDATA);
+    expect(await copyValueFor(log!, "target")).toBe(REGISTRY);
+  });
+
+  /**
+   * Keyed by the ACTION, not by the provider: approving one record type and then another in a
+   * propose-only deployment leaves the operator holding TWO payloads to sign, and losing the first
+   * is silent - they may never learn it existed.
+   */
+  it("keeps both payloads when two record types are approved for one provider", async () => {
+    vi.stubGlobal("fetch", routing({ providers: [oneProvider()] }));
+    await mount();
+
+    buttonWithText("VACCINATION")!.click();
+    await settle();
+    buttonWithText("GROOMING")!.click();
+    await settle();
+
+    const log = container.querySelector('[data-testid="dispatch-log"]')!;
+    expect(log.textContent).toContain("approved VACCINATION");
+    expect(log.textContent).toContain("approved GROOMING");
+    expect(log.querySelectorAll('[data-testid="dispatch-record"]').length).toBe(2);
+  });
+
+  /**
+   * A reload that fails replaces the table with the read-error panel. The payload must not go with
+   * it: the send already happened, and the operator still has to act on what it returned.
+   */
+  it("survives a failed reload that replaces the provider table", async () => {
+    let listCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      routing({
+        providers: [oneProvider()],
+        // The reload AFTER the send fails, which is the ordering that used to take the payload.
+        listFailsAfter: () => ++listCalls > 1,
+      }),
+    );
+    await mount();
+
+    buttonWithText("VACCINATION")!.click();
+    await settle();
+
+    expect(container.textContent).toContain("The provider registry could not be read");
+    const log = container.querySelector('[data-testid="dispatch-log"]');
+    expect(log).not.toBeNull();
+    expect(await copyValueFor(log!, "calldata")).toBe(PROPOSED_CALLDATA);
+  });
+
+  /**
+   * The success path's half of the file's own rule: what was reviewed stays readable after the send.
+   * The statement is never sent to the backend and stored nowhere, and the dialog closes - so the
+   * record IS the only remaining copy, and the screen asked the operator to keep theirs on the
+   * strength of it being here.
+   */
+  it("keeps the reviewed identity statement after the dialog closes", async () => {
+    vi.stubGlobal("fetch", routing({ providers: [], outcome: "executed" }));
+    await mount();
+    await registerOnce();
+
+    // The dialog is gone...
+    expect(reviewPanel()).toBeNull();
+    // ...and the statement it committed to is not.
+    const log = container.querySelector('[data-testid="dispatch-log"]')!;
+    expect(log.textContent).toContain("Seaport Veterinary Clinic Pte Ltd");
+    expect(await copyValueFor(log, "statement")).toContain("Seaport Veterinary Clinic Pte Ltd");
+    expect(await copyValueFor(log, "identity digest")).toMatch(/^0x[0-9a-f]{64}$/);
   });
 });

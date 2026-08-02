@@ -18,6 +18,9 @@
  *    have different remedies.
  *  - Three states, never two. An approval log that could not be READ is rendered as its own state
  *    with its reason, never as "approved for nothing".
+ *  - A dispatch is a RECORD, not a transient. Nothing broadcast means the operator holds unsigned
+ *    calldata they must sign out of band, so it outlives the send, the provider row, and a failed
+ *    reload - see `DispatchLog`.
  */
 
 import {
@@ -57,6 +60,7 @@ import {
 import {
   AlertTriangle,
   BadgeCheck,
+  ClipboardList,
   Dices,
   HelpCircle,
   Plus,
@@ -65,7 +69,7 @@ import {
   ShieldOff,
   UserPlus,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../app/AppContext";
 import { AddressRef } from "../components/ChainRef";
 import { shortAddr } from "../lib/format";
@@ -108,42 +112,173 @@ const STANDING_MEANING: Record<ProviderStanding, string> = {
   retired: "Terminal - no further standing change is possible.",
 };
 
-/** The outcome of a send, reported from the receipt rather than from the submission. */
-interface SendResult {
+/**
+ * One dispatched registrar action, kept as a RECORD rather than as the latest state of a slot.
+ *
+ * A `proposed` disposition broadcasts nothing, so the unsigned calldata IS the deliverable: the
+ * operator must carry it to the holder before the action exists at all. Three things follow, and the
+ * previous single-slot-per-provider shape held none of them - which made a propose-only deployment,
+ * the posture a cautious operator would choose, the one that could not complete a registration.
+ *
+ *  - It is keyed by the ACTION it came from, so approving VACCINATION and then GROOMING keeps both.
+ *  - It is never destroyed by a later, unrelated action.
+ *  - It renders outside the provider table, so it survives a failed reload AND the case where no row
+ *    exists at all - which is exactly the proposed REGISTRATION, since nothing was broadcast and the
+ *    id is therefore absent from `_providerIds`.
+ */
+interface DispatchRecord {
+  key: string;
+  providerId: string;
+  summary: string;
   outcome: WhitelistOutcome;
   warning?: string | null;
   actions: GovernanceDisposition[];
-  summary: string;
+  /**
+   * The registrar's identity statement as REVIEWED, carried here on a registration.
+   *
+   * The text is never sent to the backend and is stored nowhere, so once the dialog closes this is
+   * the only copy that exists - and the screen asked the operator to keep their own on the strength
+   * of it still being here to copy.
+   */
+  reviewed?: { canonical: string; digest: string } | null;
 }
 
-function OutcomeNote({ result }: { result: SendResult }) {
+/**
+ * A dispatched action, with everything the operator needs to finish it.
+ *
+ * The calldata is shown truncated but offered WHOLE through `CopyButton`: middle-truncation removes
+ * the elided characters from the DOM entirely, so for a value that must be signed elsewhere a
+ * truncated rendering with no copy affordance is not a smaller version of the deliverable - it is
+ * the absence of one.
+ */
+function DispatchEntry({ record }: { record: DispatchRecord }) {
   const tone =
-    result.outcome === "executed"
+    record.outcome === "executed"
       ? "border-emerald-500/40 bg-emerald-500/10"
-      : result.outcome === "proposed_by_design"
+      : record.outcome === "proposed_by_design"
         ? "border-amber-500/40 bg-amber-500/10"
         : "border-destructive/40 bg-destructive/10";
   return (
-    <div className={`mt-3 rounded-md border p-3 text-sm ${tone}`}>
-      <div className="font-medium">
-        {result.outcome === "executed"
-          ? `Mined: ${result.summary}`
-          : "Nothing was broadcast - on-chain state is unchanged."}
+    <div className={`rounded-md border p-3 text-sm ${tone}`} data-testid="dispatch-record">
+      <div className="flex flex-wrap items-center gap-2 font-medium">
+        <span>
+          {record.outcome === "executed"
+            ? `Mined: ${record.summary}`
+            : `Nothing was broadcast - ${record.summary}`}
+        </span>
+        <span className="font-mono text-xs font-normal">{shortAddr(record.providerId)}</span>
+        <CopyButton value={record.providerId} label="provider id" />
       </div>
-      {result.warning ? <p className="mt-1 text-muted-foreground">{result.warning}</p> : null}
-      <div className="mt-2 space-y-1">
-        {result.actions.map((a, i) => (
+      {record.warning ? <p className="mt-1 text-muted-foreground">{record.warning}</p> : null}
+      <div className="mt-2 space-y-2">
+        {record.actions.map((a, i) => (
           <div key={i} className="text-xs">
             {a.disposition === "executed" ? (
               <TxRef event={{ txHash: a.txHash }} href={txExplorerHref({ txHash: a.txHash })} />
             ) : (
-              <span className="font-mono break-all">
-                → {shortAddr(a.holder ?? "")} : {a.calldata?.slice(0, 26)}…
-              </span>
+              <div className="space-y-1">
+                <div className="flex items-center gap-1">
+                  <span className="text-muted-foreground">sign as</span>
+                  <span className="font-mono">{shortAddr(a.holder ?? "")}</span>
+                  {a.holder ? <CopyButton value={a.holder} label="holder" /> : null}
+                  <span className="text-muted-foreground">to</span>
+                  <span className="font-mono">{shortAddr(a.target)}</span>
+                  <CopyButton value={a.target} label="target" />
+                </div>
+                <div className="flex items-start gap-1">
+                  <span className="shrink-0 text-muted-foreground">calldata</span>
+                  <span className="font-mono break-all">{a.calldata.slice(0, 26)}…</span>
+                  <CopyButton value={a.calldata} label="calldata" />
+                </div>
+              </div>
             )}
           </div>
         ))}
       </div>
+      {record.reviewed ? (
+        <div className="mt-2 border-t pt-2">
+          <div className="flex items-center gap-1 text-xs">
+            <span className="text-muted-foreground">identity digest</span>
+            <span className="font-mono break-all">{record.reviewed.digest}</span>
+            <CopyButton value={record.reviewed.digest} label="identity digest" />
+          </div>
+          <div className="mt-1 flex items-center gap-1 text-xs">
+            <span className="text-muted-foreground">statement as reviewed</span>
+            <CopyButton value={record.reviewed.canonical} label="statement" />
+          </div>
+          <pre className="mt-1 whitespace-pre-wrap rounded bg-background/60 p-2 text-xs">
+            {record.reviewed.canonical}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The durable log, rendered independently of the provider table.
+ *
+ * Deliberately OUTSIDE the card that branches on loading / read-error / empty: every one of those
+ * branches replaces the table, and a payload that lived inside it went with them.
+ */
+function DispatchLog({ records }: { records: DispatchRecord[] }) {
+  if (records.length === 0) return null;
+  const outstanding = records.filter((r) => r.outcome !== "executed").length;
+  return (
+    <Card data-testid="dispatch-log">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ClipboardList className="h-4 w-4" />
+          Registrar actions this session
+        </CardTitle>
+        <CardDescription>
+          {outstanding > 0 ? (
+            <>
+              <span className="font-medium">
+                {outstanding} action{outstanding === 1 ? "" : "s"} broadcast nothing
+              </span>{" "}
+              - the unsigned calldata below is the whole deliverable, and it is not stored anywhere
+              once this page is left.
+            </>
+          ) : (
+            <>What was sent from this page, kept so a payload is never lost to a later action.</>
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {[...records].reverse().map((r) => (
+          <DispatchEntry key={r.key} record={r} />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The registrar's own identity assertion for a provider, as it stands ON CHAIN.
+ *
+ * Three states, the same discipline as the approvals cell: an anchor that could not be read is its
+ * own state and never a missing one. This is what makes the statement-is-stored-nowhere limitation
+ * survivable - an admin who kept their copy can compare its digest against what the chain holds.
+ */
+function IdentityAnchor({ anchor }: { anchor: ProviderRegistrarView["identityAnchor"] }) {
+  if (anchor === null) {
+    return <p className="mt-1 text-xs text-muted-foreground">No identity anchor.</p>;
+  }
+  if ("unavailable" in anchor) {
+    return (
+      <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
+        Identity anchor could not be read.{" "}
+        <span className="text-muted-foreground">{anchor.unavailable}</span>
+      </p>
+    );
+  }
+  return (
+    <div className="mt-1 flex items-center gap-1 text-xs" data-testid="identity-anchor">
+      <span className="text-muted-foreground">identity</span>
+      <span className="font-mono">{shortAddr(anchor.digest)}</span>
+      <CopyButton value={anchor.digest} label="identity digest" />
+      <span className="text-muted-foreground">rev {anchor.revision}</span>
     </div>
   );
 }
@@ -197,7 +332,16 @@ export function Providers() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
-  const [results, setResults] = useState<Record<string, SendResult>>({});
+  const [dispatches, setDispatches] = useState<DispatchRecord[]>([]);
+  // A monotonic key, so two dispatches for the same provider AND the same record type are still two
+  // records. Deriving the key from the action alone would silently collapse a retry onto its
+  // predecessor, which is the overwrite this log exists to stop.
+  const dispatchSeq = useRef(0);
+  const recordDispatch = useCallback((r: Omit<DispatchRecord, "key">) => {
+    dispatchSeq.current += 1;
+    const key = `${dispatchSeq.current}`;
+    setDispatches((d) => [...d, { ...r, key }]);
+  }, []);
 
   // ---- register dialog state -------------------------------------------------------------------
   const [open, setOpen] = useState(false);
@@ -281,15 +425,17 @@ export function Providers() {
         controller: checked.controller,
         identityDigest: checked.digest,
       });
-      setResults((r) => ({
-        ...r,
-        [checked.providerId]: {
-          outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
-          warning: resp.warning,
-          actions: resp.actions,
-          summary: `registered ${shortAddr(checked.providerId)}`,
-        },
-      }));
+      recordDispatch({
+        providerId: checked.providerId,
+        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+        warning: resp.warning,
+        actions: resp.actions,
+        summary: "registration",
+        // The dialog is about to close and the statement is stored nowhere else, so it travels into
+        // the durable record. This is the success path honouring the same rule the review panel
+        // states: what was reviewed stays readable after the send, because it IS the record of it.
+        reviewed: { canonical: checked.canonical, digest: checked.digest },
+      });
       if (resp.outcome === "executed") {
         toast({
           title: "Provider registered",
@@ -316,15 +462,13 @@ export function Providers() {
     setBusy(`${pid}:standing`);
     try {
       const resp = await central.setProviderStanding(pid, { standing });
-      setResults((r) => ({
-        ...r,
-        [pid]: {
-          outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
-          warning: resp.warning,
-          actions: resp.actions,
-          summary: `standing → ${standing}`,
-        },
-      }));
+      recordDispatch({
+        providerId: pid,
+        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+        warning: resp.warning,
+        actions: resp.actions,
+        summary: `standing → ${standing}`,
+      });
       await load();
     } catch (e) {
       toast({
@@ -341,15 +485,13 @@ export function Providers() {
     setBusy(`${pid}:${recordType}`);
     try {
       const resp = await central.setServiceCreationApproval(pid, { recordType, allowed });
-      setResults((r) => ({
-        ...r,
-        [pid]: {
-          outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
-          warning: resp.warning,
-          actions: resp.actions,
-          summary: `${allowed ? "approved" : "withdrew"} ${recordType}`,
-        },
-      }));
+      recordDispatch({
+        providerId: pid,
+        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+        warning: resp.warning,
+        actions: resp.actions,
+        summary: `${allowed ? "approved" : "withdrew"} ${recordType}`,
+      });
       await load();
     } catch (e) {
       toast({
@@ -391,6 +533,10 @@ export function Providers() {
           )}
         </div>
       ) : null}
+
+      {/* ABOVE the table on purpose: an action that broadcast nothing is a call to action, and the
+          table is exactly what a failed reload replaces. */}
+      <DispatchLog records={dispatches} />
 
       <Card>
         <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
@@ -450,7 +596,6 @@ export function Providers() {
               <TableBody>
                 {data?.providers.map((p: ProviderRegistrarView) => {
                   const pid = p.provider.providerId;
-                  const result = results[pid];
                   const approved = (rt: string) =>
                     p.approvals.state === "resolved" &&
                     p.approvals.entries.some((e) => e.recordType === rt && e.allowed);
@@ -463,7 +608,7 @@ export function Providers() {
                               recoverable without hovering. */}
                           <CopyButton value={pid} label="provider id" />
                         </div>
-                        {result ? <OutcomeNote result={result} /> : null}
+                        <IdentityAnchor anchor={p.identityAnchor} />
                       </TableCell>
                       <TableCell className="align-top">
                         <Badge variant={STANDING_TONE[p.provider.standing]}>
@@ -604,7 +749,9 @@ export function Providers() {
               <legend className="px-1 text-sm font-medium">Identity statement</legend>
               <p className="mb-3 text-xs text-muted-foreground">
                 What you are asserting. Only its keccak256 digest is written on chain - the text below
-                is never sent to the backend and is not stored anywhere, so keep your own copy.
+                is never sent to the backend and is not stored anywhere, so keep your own copy. After
+                you send, it stays readable under &ldquo;Registrar actions this session&rdquo; on this
+                page, but only until you leave it.
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
