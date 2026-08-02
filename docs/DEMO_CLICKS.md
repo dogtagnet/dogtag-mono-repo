@@ -47,7 +47,13 @@ Eight generation-2 contracts were deployed live on ROAX on 2026-08-01 (`_s14_cut
 **Every portal, every backend and both phone apps still read the generation-1 set, deliberately.**
 Deployed is not the same as wired: repointing clients is a separate, captain-authorised step that has
 not happened. So when you see a generation-1 address in a portal, that is correct and not a stale
-config. §N walks the one surface that tells you this out loud.
+config.
+
+**Generation 2 is also completely empty, and its admin half is not built yet.** `providerCount()` is 0,
+the generation-2 factory has created zero clones, and the two registrar calls that would create a
+provider have no portal surface anywhere - a separate crew (`dogtag-registrar-r9`) is building that now.
+**§N is the full journey**, with every step marked walkable or blocked and the blocker named. It is worth
+reading before you try any generation-2 flow, because exactly one of its steps can be performed today.
 
 Verified on chain while writing this guide:
 
@@ -870,16 +876,89 @@ Two consequences worth stating so they are not mistaken for defects:
 
 ---
 
-## N. Provider self-service - vet and groomer portals
+## N. The generation-2 provider journey - admin approves a provider, the provider sets up
+
+This is the act the generation-2 contracts exist for, in two halves: **as admin, approve a provider**,
+then **as that provider, set up their platform**. The steps below are in the order they must happen, and
+each carries its own status, because most of them cannot be performed today.
+
+### N0. Read this before following any step in this section
+
+> **ACT 1 (steps N1 to N3, the admin registrar half) CANNOT BE PERFORMED AT ALL TODAY, because the admin
+> surface for it DOES NOT EXIST YET.**
+> `ProviderRegistry.registerProvider` and `ProviderRegistry.setServiceCreationApproval` are the two calls
+> that create a provider and let it create a service. They are called **only from the contract itself and
+> from its Foundry tests**: a search across the portal, backend and shared-client sources
+> (`packages/*/src`, `stacks/*/web/src`, `stacks/*/api/src`, `crates/*/src`) finds no call site at all.
+> So there is no page to open and no route to post to.
+> **The blocker is being worked right now by a separate crew, `dogtag-registrar-r9`, which is building
+> that admin registrar surface.** Until it lands, a provider cannot become registered.
+>
+> **ACT 2 (steps N4 to N8, the provider half) IS ROUTED AND REACHABLE, but every action refuses.**
+> The **Provider self-service** page really is wired into both the vet and the groomer portals at
+> `/provider`, and it is in both navs. You can open it today. What you cannot do is complete any action
+> on it, because each one is gated on a provider record that Act 1 would have created.
+>
+> Read every step below in that light. Steps are marked **WALKABLE**, **BLOCKED (no admin surface)** or
+> **BLOCKED (needs an earlier step)**, and nothing marked BLOCKED is written as an instruction to follow.
+
+Verified on chain while writing this, which is the state Act 1 has to move:
+
+```
+cast call 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 "providerCount()(uint256)" --rpc-url https://devrpc.roax.net   # 0
+
+curl -s -X POST https://devrpc.roax.net -H 'content-type: application/json' --data \
+  '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6","fromBlock":"0x0","toBlock":"latest"}]}'
+# -> {"jsonrpc":"2.0","id":1,"result":[]}
+```
+
+**Generation 2 is completely empty.** Zero providers are registered, and the generation-2 factory has
+emitted no logs whatsoever, so it has created zero clones. Nothing has ever been issued through it.
+
+> **Use raw JSON-RPC for that second check, not `cast logs`.** This repo has already been bitten by it:
+> `cast logs` renders extra rows for the same query and is misleading here, so an empty result from it is
+> weak evidence for the strongest claim in this section. `DogTagIssuerFactoryV2` exposes no clone counter
+> to read instead, so the log query is the direct check - just make it the honest way.
+> `providerCount() == 0` independently implies the same thing, since a clone can only be created by a
+> registered, approved provider.
+
+---
+
+### Act 1 - Admin registers and approves the provider
+
+All three steps are `onlyOwner` registrar work on `ProviderRegistry`, held by the governance signer.
+
+**N1. Register the provider. Status: BLOCKED (no admin surface).**
+`registerProvider` mints the provider's `bytes20 providerId` and records its identity anchor, KYC standing
+and controller/owner/admin keys.
+This is the step that makes a provider exist at all, and it is where `providerCount()` goes from 0 to 1.
+Note it will refuse a zero identity digest, schema or hash algorithm (`BadIdentityAnchor`), so it cannot
+be performed with placeholder data - a real identity statement is a precondition, not a formality.
+
+**N2. Approve the provider to create a service of a record type. Status: BLOCKED (no admin surface, and
+needs N1).**
+`setServiceCreationApproval(providerId, recordType, allowed)` is what later lets that provider deploy its
+own clone in N5.
+It is a distinct grant from N1: being registered does not by itself permit creating a service.
+
+**N3. Attach the provider's service (its issuer clone) to the registry. Status: BLOCKED (no admin surface),
+and for the five EXISTING clones it is not merely unbuilt but impossible.**
+`attachService` binds a clone to a provider, which is what makes the clone's issuance authority resolvable.
+It reads `owner()` off the service, and a generation-1 `DogTagIssuer` has no owner at all, so every
+existing clone reverts `InvalidServiceMetadata`. The generation-1 fleet cannot be migrated by attaching it;
+the plan's own recommendation is to retire and re-issue. So in practice N3 applies to a clone the provider
+deploys in N5, not to anything that exists today.
+
+---
+
+### Act 2 - The provider sets up their platform
 
 **Vet portal → Provider self-service**, or **groomer portal → Provider self-service** (`/provider` on
-either). A new nav item since the last revision of this guide.
+either). Every write on this page is a wallet transaction to a contract the provider owns; there is **no
+backend on this path at all**, which is the same posture as the owner wallet and for the same reason.
 
-This is the provider-facing surface for the generation-2 set: deploy your own issuer clone, choose which
-of your contracts is current, claim a domain, and publish your listing (pins, contacts, profile). Every
-write is a wallet transaction to a contract the provider owns; there is no backend on this path at all.
-
-**Walked result: the page refuses to start, and the refusal is the useful part.** It reads:
+**N4. Open the page. Status: WALKABLE, and worth doing.**
+Walked result: it refuses to start, and the refusal is the useful part. It reads:
 
 > **Provider self-service is not configured.**
 > This page reads the generation-2 registry set, and the addresses are not set on this deployment.
@@ -893,27 +972,75 @@ Three things to take from that, because each is a deliberate design decision rat
 edge:
 
 - **"Nothing has been checked" is stated explicitly.** The page does not render an empty provider record
-  and let you assume it looked. A surface that cannot check says so.
+  and let you assume it looked. A surface that cannot check says so, which is the same rule as the
+  bench's "could not run".
 - **The four variables ship blank in both portals' `.env.example`, with no code fallback.** Read a blank
   fallback-free variable as *stronger* evidence of being unwired than a missing one: a missing key can be
   added and silently pick up a bundled constant, and this one cannot.
-- **Filling them in is not enough to make the flows work.** See the box below.
+- **Setting the four addresses does NOT unblock the steps below.** It only moves the page from "not
+  configured" to "configured, and you are not a registered provider". Act 1 is the blocker, not the config.
 
-> **THE SEND PATHS CANNOT BE WALKED TODAY, even with the four addresses set, and this is not a portal
-> bug.** Three independent things are missing on chain:
-> 1. **No provider is registered.** `registerProvider` is registrar-only KYC work that has not been done,
->    so there is no provider record for the page to read or write.
-> 2. **The typed directory resolver is not approved.** `ProviderDirectory.resolverApproved()` is `false`
->    (verified above), and a typed resolver answers nothing until the registrar approves it **and** each
->    provider selects it. Every store on it is empty.
-> 3. **Generation-1 clones cannot be attached at all.** `ProviderRegistry.attachService` reads `owner()`
->    off the service, and a generation-1 `DogTagIssuer` has no owner, so all five existing clones revert.
->
-> So the buttons on this page have never been executed against a chain by anyone. What is testable today
-> is the preflight logic and the refusals, which is what you are seeing.
-> The contract-level journeys are covered by `cd contracts && forge test --match-path
-> 'test/ProviderSelfService.t.sol'` (23 tests against the real core, router, both factory generations and
-> both typed resolvers).
+**N5. Deploy your own issuer clone. Status: BLOCKED (needs N1 and N2).**
+The page previews the deterministic clone address before committing and then calls the generation-2
+factory. The eligibility read behind the button is `canCreateService`, which folds the provider's
+registration, its standing, and the N2 approval, so with no provider registered it answers no.
+One sharp edge worth knowing if you ever debug this: that read must be made **as the factory**
+(`msg.sender` matters), and a plain `eth_call` with no `from` answers `false` for every provider on earth.
+The portal passes the factory account on exactly that one read.
+
+**N6. Choose which of your contracts is current. Status: BLOCKED (needs N5).**
+`repointService` moves the provider's current pointer to a clone it owns. It refuses a contract that is
+not a genuine clone of the named generation, and it refuses one that is already current (`NoChange`).
+
+**N7. Claim a domain. Status: BLOCKED (needs N3 and N5).**
+`ServiceDomainResolver` records the domain claim for a service. It needs three things to be true at once:
+the resolver is still fleet-approved, this service still selects it, and the caller may write this
+service's records. It is also the successor to `IssuerDomainRegistry`, which is why §L's rows are about
+the older contract for now.
+
+**N8. Publish your listing - contacts, location pin, profile, logo. Status: BLOCKED (needs N1, plus a
+registrar approval of the directory resolver).**
+This is the step that puts a provider in the searchable directory. Two independent blockers:
+`ProviderDirectory.resolverApproved()` is **false** (verified in §M), and a typed resolver answers nothing
+until the registrar approves it **and** the provider selects it; and there is no provider to publish under.
+Two properties of this step are worth remembering for when it does become walkable:
+
+- **A blank location publishes NO pin at all.** It does not publish `0,0`. That is a real coordinate off
+  the coast of Ghana, and a blank address once rendered there as a confident pin. The portal is the only
+  place that rule can live, because the chain cannot tell a placeholder from a real coordinate.
+- **Re-publishing is not append-only.** Correcting a mistyped coordinate rewrites the existing pin rather
+  than adding a second one, which is what stops one provider appearing in two places at once.
+
+---
+
+### What you can actually walk today, and how you will know when that changes
+
+**Today:** step N4 only. Open **Provider self-service** in either portal and read the refusal. That single
+screen demonstrates the whole generation-2 posture better than any other surface in the product: the
+contracts are deployed, no client reads them, and the page says so in those words rather than guessing.
+
+**The buttons on this page have never been executed against a chain by anyone**, so nothing below N4 has
+end-to-end evidence. What is tested is the preflight logic and the refusals, plus the contract-level
+journeys:
+
+```
+cd contracts && forge test --match-path 'test/ProviderSelfService.t.sol'
+```
+
+(23 tests walking all four flows against the real core, the real router, both factory generations, real
+clones from the real self-service factory, and both typed resolvers - no mocks, because the claims are
+about how those compose.)
+
+**You will know Act 1 has landed** when an admin-portal page appears for registering a provider, and when
+`providerCount()` stops returning 0:
+
+```
+cast call 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 "providerCount()(uint256)" --rpc-url https://devrpc.roax.net
+```
+
+That work is `dogtag-registrar-r9`. When it merges, re-walk this section from N1 and replace the status
+markers rather than leaving them - a step still marked BLOCKED after its blocker cleared is the same
+defect as a step that reads as followable when it is not.
 
 ---
 
@@ -957,7 +1084,8 @@ depends on the stack, per "Which stack am I on?":
 
 > **The verified-logo state could not be walked, and could not be walked by anyone right now.** Rendering
 > a verified logo needs a published profile anchor to name it, which needs the typed directory resolver to
-> be approved and a provider to be registered - the same three blockers as §N. The mirror's read and write
+> be approved and a provider to be registered - the same blockers §N sets out, and the provider half of
+> that cannot even begin until the admin registrar surface exists. The mirror's read and write
 > routes were walked; the rendering was not.
 > The store is in-memory, so a restart empties it. That is honest rather than convenient: content
 > addressing makes a lost object re-publishable byte for byte, and a missing address answers 404 rather
@@ -1072,8 +1200,12 @@ absence is not mistaken for it being missing from the product.
 
 **Needs an on-chain step that has not been taken:**
 
-- **The provider self-service send paths (§N)** - no registered provider, the typed resolver is not
-  approved, and generation-1 clones cannot be attached.
+- **The whole generation-2 provider journey (§N).** The admin half (register a provider, approve it to
+  create a service) has **no portal surface at all** - those two calls exist only in the contract and its
+  tests - so a provider cannot become registered, and every provider-side action refuses. `dogtag-registrar-r9`
+  is building that admin surface. Generation 2 is empty today: `providerCount()` is 0 and the generation-2
+  factory has emitted no logs, so it has created zero clones. The one walkable step is N4, opening the
+  page and reading its refusal.
 - **The verified-logo state (§O)** - needs a published profile anchor, which needs the above.
 - **The issuer domain binding's passing state (§L)** - needs a domain bound; `boundCloneCount()` is 0.
 - **The real-chain delisting pair (§G)** - possible, but it delists a live signer. Use the scripted
@@ -1107,7 +1239,14 @@ no divergence; admin **Activity** reporting the indexer unconfigured; government
 **Settings → Blockchain endpoint** rejecting a chain-1 endpoint with a rendered verdict.
 
 **Checked directly on chain:** `CloneProvenanceRouter.generationCount() == 2`,
-`ProviderDirectory.resolverApproved() == false`, `IssuerDomainRegistry.boundCloneCount() == 0`.
+`ProviderDirectory.resolverApproved() == false`, `IssuerDomainRegistry.boundCloneCount() == 0`,
+`ProviderRegistry.providerCount() == 0`, and **no logs of any kind** on `DogTagIssuerFactoryV2`
+(so it has created zero clones).
+
+**Checked in the source tree:** `registerProvider` and `setServiceCreationApproval` appear only in
+`contracts/src/ProviderRegistry.sol` and its Foundry tests. A search across `packages/*/src`,
+`stacks/*/web/src`, `stacks/*/api/src` and `crates/*/src` finds **no call site at all**, which is what
+establishes that the admin registrar half of §N has no surface rather than merely an unfinished one.
 
 **Not walked, with the reason stated at each step:** everything in the list above.
 
