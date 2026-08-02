@@ -13,6 +13,8 @@ use alloy::primitives::{Address, Bytes, FixedBytes, B256, U256};
 use alloy::sol;
 use async_trait::async_trait;
 
+use crate::provider_registry::{IdentityAnchor, ProviderRecord, Standing};
+
 pub const ROAX_CHAIN_ID: u64 = 135;
 
 sol! {
@@ -49,6 +51,70 @@ sol! {
         function hasRole(bytes32 role, address account) external view returns (bool);
         function defaultAdmin() external view returns (address);
         function pendingDefaultAdmin() external view returns (address newAdmin, uint48 acceptSchedule);
+    }
+
+    // The generation-2 `ProviderRegistry` REGISTRAR surface (registry plan C-2). Every write here is
+    // `onlyOwner` and routes through `GovernanceAction` like every other privileged admin write, so
+    // the authority is read live from `owner()` rather than assumed.
+    //
+    // NOTE the reads are deliberately the ones that answer a REGISTRAR's question. `canCreateService`
+    // is NOT among them: its first term is `generationOfFactory[msg.sender]`, so a plain `eth_call`
+    // with no `from` answers false for every provider on earth, and even spoofed it folds four terms
+    // into one unattributable bool. The raw approval bit comes from the event log below.
+    //
+    // Deliberately NOT `#[sol(rpc)]`: that generates a contract-instance `provider()` accessor which
+    // collides with this contract's OWN `provider(bytes20)` function (E0592). The name is fixed by the
+    // deployed ABI - the selector derives from it - so the call cannot be renamed; the reads use the
+    // generated `SolCall` types over a raw `eth_call` instead.
+    contract IProviderRegistry {
+        function registerProvider(
+            bytes20 providerId,
+            address controller,
+            bytes32 publicIdentityDigest,
+            uint32 publicIdentitySchema,
+            uint16 codec,
+            uint8 hashAlgorithm,
+            bytes contenthash
+        ) external;
+        function setProviderStanding(bytes20 providerId, uint8 newStanding) external;
+        function setServiceCreationApproval(bytes20 providerId, bytes32 recordType, bool allowed) external;
+
+        function provider(bytes20 providerId) external view returns (Provider memory);
+        function publicIdentityAnchor(bytes20 providerId) external view returns (PublicIdentityAnchor memory);
+        function providerCount() external view returns (uint256);
+        function providerPage(uint256 cursor, uint256 limit)
+            external
+            view
+            returns (bytes20[] memory values, uint256 nextCursor);
+        function owner() external view returns (address);
+
+        // The ONLY direct evidence of what a provider is approved for - `_serviceCreationApprovals`
+        // is private with no getter. Both leading args are indexed.
+        event ServiceCreationApprovalSet(bytes20 indexed providerId, bytes32 indexed recordType, bool allowed);
+    }
+
+    // `ProviderRegistry.Provider` (ProviderRegistry.sol:71-80) and `PublicIdentityAnchor` (:84-92).
+    // Declared as bare structs so the `sol!` return decoding above matches the deployed ABI exactly;
+    // a member out of order decodes silently into the wrong field.
+    struct Provider {
+        address controller;
+        address pendingController;
+        bool pendingControllerAccepted;
+        bool pendingControllerRequestedByRegistrar;
+        address directoryResolver;
+        uint64 controllerEpoch;
+        uint64 controllerRequestNonce;
+        uint8 standing;
+    }
+
+    struct PublicIdentityAnchor {
+        bytes32 digest;
+        uint32 schema;
+        uint16 codec;
+        uint8 hashAlgorithm;
+        bytes contenthash;
+        uint64 revision;
+        uint64 updatedAtBlock;
     }
 }
 
@@ -193,6 +259,58 @@ pub trait ChainClient: Send + Sync {
     /// Phase-2 DEFAULT_ADMIN → governance handover surfaces here (newAdmin = governance signer, schedule
     /// = unix ETA). `(zero addr, 0)` when no transfer is pending.
     async fn pending_default_admin(&self, addr: &str) -> Result<(String, u64), ChainError>;
+
+    /// `ProviderRegistry.providerPage(cursor, limit)` → `(providerIds, nextCursor)`.
+    /// `_providerIds` is append-only, so the page is stable. `limit` must be in `[1, MAX_PAGE_SIZE]`
+    /// and `cursor > length` reverts `BadPage()`.
+    async fn provider_page(
+        &self,
+        registry_addr: &str,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<(Vec<String>, u64), ChainError>;
+
+    /// `ProviderRegistry.provider(providerId)`. Does NOT revert for an unknown id - it answers a
+    /// zero-filled struct - so `ProviderRecord::registered` (`controller != 0`) is the existence
+    /// test, never the standing.
+    async fn provider_record(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+    ) -> Result<ProviderRecord, ChainError>;
+
+    /// `ProviderRegistry.publicIdentityAnchor(providerId)` - the registrar's own identity assertion.
+    async fn provider_identity_anchor(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+    ) -> Result<IdentityAnchor, ChainError>;
+
+    /// The `ServiceCreationApprovalSet` log for one provider, in ascending `(block, logIndex)` order,
+    /// as `(recordTypeKey, allowed)` pairs. The raw approval mapping is private with no getter, so
+    /// this log is the only direct evidence of what a provider is approved for; a read that FAILS
+    /// must surface as an error and never as an empty approval set.
+    async fn service_creation_approval_log(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError>;
+
+    /// The same log for EVERY provider on one registry, grouped by `providerId`, each group in
+    /// ascending `(block, logIndex)` order.
+    ///
+    /// One unbounded `eth_getLogs` for the whole registry rather than one PER PROVIDER. That is not
+    /// only a cost argument: a per-provider scan can leave a page MIXED - early providers resolved,
+    /// later ones `Unavailable` after a rate-limiting or range-capping peer starts refusing - which
+    /// reads as a fact about those particular providers when the truth is one uniform "we could not
+    /// check". With a single read the whole page resolves or the whole page does not.
+    ///
+    /// A provider absent from the returned map has no log entries, which IS an answer (the read
+    /// resolved and mentions it nowhere), never a could-not-check.
+    async fn service_creation_approval_log_by_provider(
+        &self,
+        registry_addr: &str,
+    ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError>;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -221,6 +339,20 @@ struct MemChainInner {
     clones: std::collections::HashSet<(String, String)>,
     /// (factory_addr, root) -> issuing clone (write-once).
     root_issuer: HashMap<(String, String), String>,
+    /// (provider_registry_addr, provider_id) -> the registered provider record.
+    providers: HashMap<(String, String), ProviderRecord>,
+    /// Registration order per registry, mirroring the contract's append-only `_providerIds`.
+    provider_ids: HashMap<String, Vec<String>>,
+    /// (provider_registry_addr, provider_id) -> identity anchor.
+    identity_anchors: HashMap<(String, String), IdentityAnchor>,
+    /// (provider_registry_addr, provider_id) -> the ordered `ServiceCreationApprovalSet` log. A log
+    /// rather than a map, because the fold that turns it into current state is what production reads.
+    approval_log: HashMap<(String, String), Vec<(String, bool)>>,
+    /// Registries whose reads are forced to fail, so a route's could-not-run arm is reachable. A fake
+    /// that cannot fail cannot exercise the state that exists for failure.
+    failing_reads: std::collections::HashSet<String>,
+    /// Registries whose APPROVAL LOG read alone is forced to fail, leaving `provider()` answering.
+    failing_approval_log_reads: std::collections::HashSet<String>,
     nonce: u64,
 }
 
@@ -286,11 +418,173 @@ impl MemChain {
             .pending_default_admin
             .insert(target.to_lowercase(), (new_admin.to_lowercase(), schedule));
     }
+
+    /// Force every `ProviderRegistry` read against `registry_addr` to fail, so a route's
+    /// could-not-run arm is reachable in a test. Default off; a store that cannot fail cannot
+    /// exercise the one state the three-way split exists for.
+    pub fn set_failing_provider_reads(&self, registry_addr: &str, failing: bool) {
+        let mut g = self.inner.lock().unwrap();
+        if failing {
+            g.failing_reads.insert(registry_addr.to_lowercase());
+        } else {
+            g.failing_reads.remove(&registry_addr.to_lowercase());
+        }
+    }
+
+    /// Fail ONLY the `ServiceCreationApprovalSet` log read, leaving `provider()` answering.
+    ///
+    /// A SEPARATE switch, not a mode of the one above, for the same reason vet-api needs
+    /// `set_fail_find_pets_by_dog_tag_reads` beside its sibling: a shared switch cannot express
+    /// "the provider read is fine and only this one fails", because whichever read comes first
+    /// short-circuits and the route never reaches the arm under test.
+    ///
+    /// It is also the REALISTIC failure rather than a contrived one. `provider()` is an `eth_call`
+    /// while this is an `eth_getLogs` from genesis to latest, and a rate-limited or range-capping
+    /// peer refuses exactly the second while answering the first - the same asymmetry this repo
+    /// records for the issuer-whitelist pillar's unbounded log reads.
+    pub fn set_failing_approval_log_reads(&self, registry_addr: &str, failing: bool) {
+        let mut g = self.inner.lock().unwrap();
+        if failing {
+            g.failing_approval_log_reads
+                .insert(registry_addr.to_lowercase());
+        } else {
+            g.failing_approval_log_reads
+                .remove(&registry_addr.to_lowercase());
+        }
+    }
+
+    fn provider_reads_fail(g: &MemChainInner, registry_addr: &str) -> Result<(), ChainError> {
+        if g.failing_reads.contains(&registry_addr.to_lowercase()) {
+            return Err(ChainError::Rpc("provider read failed (seeded)".into()));
+        }
+        Ok(())
+    }
+
+    fn approval_log_reads_fail(g: &MemChainInner, registry_addr: &str) -> Result<(), ChainError> {
+        if g.failing_approval_log_reads
+            .contains(&registry_addr.to_lowercase())
+        {
+            return Err(ChainError::Rpc(
+                "eth_getLogs failed: query returned more than 10000 results (seeded)".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Deterministic clone-address preview for MemChain: last 20 bytes of `keccak256(recordType ++
 /// business ++ factory)`. NOT the real CREATE2 address (AlloyChain reads the exact on-chain
 /// `predictIssuer`), but stable across predict/create so the in-memory flow is coherent and testable.
+/// Apply a `ProviderRegistry` registrar write to `MemChain` state, modelling the contract's own
+/// guards. Anything that is not one of the three registrar selectors is ignored, so this is a no-op
+/// for every other `send_action` caller (whitelist grants, factory deploys).
+///
+/// The reverts are emulated because they are exactly what a route must not provoke: the contract
+/// refuses a redundant `setServiceCreationApproval` with `NoChange()`, and a fake that silently
+/// accepted it would let a route ship that sends a pointless transaction and reports it as success.
+fn apply_provider_registry_calldata(
+    g: &mut MemChainInner,
+    target: &str,
+    calldata: &str,
+) -> Result<(), ChainError> {
+    use alloy::sol_types::SolCall;
+
+    let Ok(data) = hex::decode(calldata.strip_prefix("0x").unwrap_or(calldata)) else {
+        return Ok(());
+    };
+    if data.len() < 4 {
+        return Ok(());
+    }
+    let registry = target.to_lowercase();
+
+    if let Ok(c) = IProviderRegistry::registerProviderCall::abi_decode(&data, true) {
+        let id = format!("0x{}", hex::encode(c.providerId.as_slice()));
+        if c.providerId.is_zero() {
+            return Err(ChainError::Other("tx reverted: ZeroProviderId".into()));
+        }
+        if c.controller.is_zero() {
+            return Err(ChainError::Other("tx reverted: ZeroAddress".into()));
+        }
+        if g.providers.contains_key(&(registry.clone(), id.clone())) {
+            return Err(ChainError::Other("tx reverted: AlreadyRegistered".into()));
+        }
+        if c.publicIdentityDigest.is_zero() || c.publicIdentitySchema == 0 || c.hashAlgorithm == 0 {
+            return Err(ChainError::Other("tx reverted: BadIdentityAnchor".into()));
+        }
+        g.providers.insert(
+            (registry.clone(), id.clone()),
+            ProviderRecord {
+                provider_id: id.clone(),
+                controller: format!("{:#x}", c.controller),
+                pending_controller: zero_addr(),
+                controller_epoch: 1,
+                // The contract registers at PENDING, never ACTIVE. Modelling this is what makes the
+                // missing standing step visible in a test rather than only on a live chain.
+                standing: Standing::Pending,
+                registered: true,
+            },
+        );
+        g.provider_ids.entry(registry.clone()).or_default().push(id.clone());
+        g.identity_anchors.insert(
+            (registry, id),
+            IdentityAnchor {
+                digest: format!("0x{}", hex::encode(c.publicIdentityDigest.as_slice())),
+                schema: c.publicIdentitySchema,
+                codec: c.codec,
+                hash_algorithm: c.hashAlgorithm,
+                revision: 1,
+                updated_at_block: 1,
+            },
+        );
+        return Ok(());
+    }
+
+    if let Ok(c) = IProviderRegistry::setProviderStandingCall::abi_decode(&data, true) {
+        let id = format!("0x{}", hex::encode(c.providerId.as_slice()));
+        let rec = g
+            .providers
+            .get_mut(&(registry, id))
+            .ok_or_else(|| ChainError::Other("tx reverted: UnknownProvider".into()))?;
+        let next = Standing::from_u8(c.newStanding);
+        if !next.is_settable() {
+            return Err(ChainError::Other("tx reverted: InvalidStanding".into()));
+        }
+        if rec.standing == Standing::Retired {
+            return Err(ChainError::Other("tx reverted: RetiredStanding".into()));
+        }
+        if rec.standing == next {
+            return Err(ChainError::Other("tx reverted: NoChange".into()));
+        }
+        rec.standing = next;
+        return Ok(());
+    }
+
+    if let Ok(c) = IProviderRegistry::setServiceCreationApprovalCall::abi_decode(&data, true) {
+        let id = format!("0x{}", hex::encode(c.providerId.as_slice()));
+        if !g.providers.contains_key(&(registry.clone(), id.clone())) {
+            return Err(ChainError::Other("tx reverted: UnknownProvider".into()));
+        }
+        if c.recordType.is_zero() {
+            return Err(ChainError::Other("tx reverted: InvalidServiceMetadata".into()));
+        }
+        let key = format!("0x{}", hex::encode(c.recordType.as_slice()));
+        let log = g.approval_log.entry((registry, id)).or_default();
+        let current = log
+            .iter()
+            .rev()
+            .find(|(k, _)| k.eq_ignore_ascii_case(&key))
+            .map(|(_, allowed)| *allowed)
+            .unwrap_or(false);
+        if current == c.allowed {
+            return Err(ChainError::Other("tx reverted: NoChange".into()));
+        }
+        log.push((key, c.allowed));
+        return Ok(());
+    }
+
+    Ok(())
+}
+
 fn mem_predict_clone(factory_addr: &str, record_type: &str, business: &str) -> String {
     use alloy::primitives::keccak256;
     let mut buf = Vec::new();
@@ -408,14 +702,20 @@ impl ChainClient for MemChain {
     async fn send_action(
         &self,
         account_index: u32,
-        _target: &str,
-        _calldata: &str,
+        target: &str,
+        calldata: &str,
     ) -> Result<SentTx, ChainError> {
         let mut g = self.inner.lock().unwrap();
         g.signers
             .get(&account_index)
             .cloned()
             .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
+        // A ProviderRegistry registrar write is APPLIED rather than merely counted, so a test can walk
+        // register -> standing -> approve and read the result back through the same code path
+        // production reads. Its guards (`AlreadyRegistered`, `NoChange`, `RetiredStanding`) are
+        // modelled too - a fake that accepts every write cannot catch a route that sends a redundant
+        // one, and `setServiceCreationApproval` really does revert on a no-op toggle.
+        apply_provider_registry_calldata(&mut g, target, calldata)?;
         let tx_hash = Self::next_tx(&mut g);
         Ok(SentTx { tx_hash })
     }
@@ -427,6 +727,102 @@ impl ChainClient for MemChain {
         business: &str,
     ) -> Result<String, ChainError> {
         Ok(mem_predict_clone(factory_addr, record_type, business))
+    }
+
+    async fn provider_page(
+        &self,
+        registry_addr: &str,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<(Vec<String>, u64), ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        let ids = g
+            .provider_ids
+            .get(&registry_addr.to_lowercase())
+            .cloned()
+            .unwrap_or_default();
+        let len = ids.len() as u64;
+        // Mirrors `_checkPage` (ProviderRegistry.sol:1156): `cursor == length` is legal and returns
+        // an empty page, which is the caller's terminate condition.
+        if limit == 0 || limit > 100 || cursor > len {
+            return Err(ChainError::Other("tx reverted: BadPage".into()));
+        }
+        let end = (cursor + limit).min(len);
+        Ok((ids[cursor as usize..end as usize].to_vec(), end))
+    }
+
+    async fn provider_record(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+    ) -> Result<ProviderRecord, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        Ok(g.providers
+            .get(&(registry_addr.to_lowercase(), provider_id.to_lowercase()))
+            .cloned()
+            // An unknown id reads back zero-filled rather than reverting, exactly as the contract
+            // does - `registered: false` is the existence answer, never the standing.
+            .unwrap_or_else(|| ProviderRecord {
+                provider_id: provider_id.to_lowercase(),
+                controller: zero_addr(),
+                pending_controller: zero_addr(),
+                controller_epoch: 0,
+                standing: Standing::None,
+                registered: false,
+            }))
+    }
+
+    async fn provider_identity_anchor(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+    ) -> Result<IdentityAnchor, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        Ok(g.identity_anchors
+            .get(&(registry_addr.to_lowercase(), provider_id.to_lowercase()))
+            .cloned()
+            .unwrap_or_else(|| IdentityAnchor {
+                digest: format!("0x{}", hex::encode([0u8; 32])),
+                schema: 0,
+                codec: 0,
+                hash_algorithm: 0,
+                revision: 0,
+                updated_at_block: 0,
+            }))
+    }
+
+    async fn service_creation_approval_log(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        Self::approval_log_reads_fail(&g, registry_addr)?;
+        Ok(g.approval_log
+            .get(&(registry_addr.to_lowercase(), provider_id.to_lowercase()))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn service_creation_approval_log_by_provider(
+        &self,
+        registry_addr: &str,
+    ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        // ONE read, so the same switch that fails the per-provider log fails this one - which is what
+        // makes the whole page uniformly `Unavailable` rather than mixed.
+        Self::approval_log_reads_fail(&g, registry_addr)?;
+        let registry = registry_addr.to_lowercase();
+        Ok(g.approval_log
+            .iter()
+            .filter(|((r, _), _)| *r == registry)
+            .map(|((_, id), events)| (id.clone(), events.clone()))
+            .collect())
     }
 
     async fn is_clone(&self, factory_addr: &str, addr: &str) -> Result<bool, ChainError> {
@@ -533,6 +929,92 @@ pub fn create_issuer_calldata(name: &str, record_type: &str, business: &str) -> 
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
+/// `ProviderRegistry.registerProvider(...)` calldata. Every argument is the registrar's own
+/// assertion; the contract validates only that `providerId` and `controller` are non-zero and that
+/// the anchor's digest/schema/hashAlgorithm are non-zero (`BadIdentityAnchor()`).
+pub fn register_provider_calldata(
+    provider_id: &str,
+    controller: &str,
+    identity_digest: &str,
+    schema: u32,
+    codec: u16,
+    hash_algorithm: u8,
+) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IProviderRegistry::registerProviderCall {
+        providerId: parse_b160(provider_id),
+        controller: parse_addr(controller),
+        publicIdentityDigest: parse_b256(identity_digest),
+        publicIdentitySchema: schema,
+        codec,
+        hashAlgorithm: hash_algorithm,
+        // The registrar publishes no content for the identity statement, so there is nothing to
+        // address. An identifier for bytes nobody serves is a claim that cannot be checked.
+        contenthash: Bytes::new(),
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// `ProviderRegistry.setProviderStanding(providerId, newStanding)` calldata.
+pub fn set_provider_standing_calldata(provider_id: &str, standing: Standing) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IProviderRegistry::setProviderStandingCall {
+        providerId: parse_b160(provider_id),
+        newStanding: standing.as_u8(),
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// `ProviderRegistry.setServiceCreationApproval(providerId, recordType, allowed)` calldata.
+pub fn set_service_creation_approval_calldata(
+    provider_id: &str,
+    record_type_key: &str,
+    allowed: bool,
+) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IProviderRegistry::setServiceCreationApprovalCall {
+        providerId: parse_b160(provider_id),
+        recordType: parse_b256(record_type_key),
+        allowed,
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// Parse a `bytes20` provider id. A malformed value yields zero, which every registrar write then
+/// refuses on-chain with `ZeroProviderId()` - but the routes validate the shape first, so a
+/// malformed id is a 400 rather than a wasted transaction.
+fn parse_b160(h: &str) -> FixedBytes<20> {
+    let s = h.strip_prefix("0x").or_else(|| h.strip_prefix("0X")).unwrap_or(h);
+    let mut out = [0u8; 20];
+    if let Ok(b) = hex::decode(s) {
+        if b.len() == 20 {
+            out.copy_from_slice(&b);
+        }
+    }
+    FixedBytes::<20>::from(out)
+}
+
+/// The topic word for an indexed `bytes20 providerId`: LEFT-aligned, per Solidity's encoding of a
+/// short fixed-bytes value. Right-aligning it (the address convention) matches no log at all, which
+/// reads exactly like "this provider has never been approved for anything".
+fn provider_id_topic(provider_id: &str) -> [u8; 32] {
+    let mut topic = [0u8; 32];
+    topic[..20].copy_from_slice(parse_b160(provider_id).as_slice());
+    topic
+}
+
+/// The inverse: recover the `bytes20 providerId` from its topic word, taking the LEADING 20 bytes.
+///
+/// Named beside its forward twin rather than inlined at the call site because THIS is the direction
+/// the whole-registry read depends on - that read passes no `providerId`, so it never builds a topic
+/// and the only thing assigning a log to a provider is this decode. Reading `[12..]` instead (the
+/// address convention) groups every log under a junk key, so every provider's approvals miss the
+/// lookup and every row renders as approved for nothing - a definite false claim about the provider,
+/// from a read that succeeded.
+fn provider_id_from_topic(topic: &B256) -> String {
+    format!("0x{}", hex::encode(&topic.as_slice()[..20]))
+}
+
 // --------------------------------------------------------------------------------------------
 // AlloyChain — real ROAX/anvil-backed client using a derived signer set.
 // --------------------------------------------------------------------------------------------
@@ -560,6 +1042,31 @@ impl AlloyChain {
     }
     fn signer(&self, index: u32) -> Option<alloy::signers::local::PrivateKeySigner> {
         self.signers.lock().unwrap().get(&index).cloned()
+    }
+
+    /// A plain `eth_call` with NO `from`, used for the `ProviderRegistry` reads whose generated
+    /// contract instance cannot be constructed (its `provider(bytes20)` collides with alloy's own
+    /// instance accessor).
+    ///
+    /// Sending no `from` is correct for every read this is used for - they are all pure functions of
+    /// their arguments. It would be WRONG for `canCreateService`, whose first term is
+    /// `generationOfFactory[msg.sender]` and which therefore answers false for everyone when asked
+    /// with no caller; that read is deliberately not made here.
+    async fn raw_call(&self, to: &str, input: &[u8]) -> Result<Bytes, ChainError> {
+        use alloy::network::TransactionBuilder;
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::rpc::types::TransactionRequest;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let tx = TransactionRequest::default()
+            .with_to(parse_addr(to))
+            .with_input(Bytes::from(input.to_vec()));
+        provider
+            .call(&tx)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))
     }
 
     /// Sign+broadcast a tx FROM the signer at `account_index` to `to` with `calldata`. EIP-1559 with
@@ -837,6 +1344,216 @@ impl ChainClient for AlloyChain {
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok((format!("{:#x}", r.newAdmin), r.acceptSchedule.to::<u64>()))
     }
+
+    async fn provider_page(
+        &self,
+        registry_addr: &str,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<(Vec<String>, u64), ChainError> {
+        use alloy::sol_types::SolCall;
+        let call = IProviderRegistry::providerPageCall {
+            cursor: U256::from(cursor),
+            limit: U256::from(limit),
+        };
+        let out = self.raw_call(registry_addr, &call.abi_encode()).await?;
+        let r = IProviderRegistry::providerPageCall::abi_decode_returns(&out, true)
+            .map_err(|e| ChainError::Other(format!("providerPage decode: {e}")))?;
+        Ok((
+            r.values
+                .iter()
+                .map(|v| format!("0x{}", hex::encode(v.as_slice())))
+                .collect(),
+            r.nextCursor.to::<u64>(),
+        ))
+    }
+
+    async fn provider_record(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+    ) -> Result<ProviderRecord, ChainError> {
+        use alloy::sol_types::SolCall;
+        let call = IProviderRegistry::providerCall {
+            providerId: parse_b160(provider_id),
+        };
+        let out = self.raw_call(registry_addr, &call.abi_encode()).await?;
+        let p = IProviderRegistry::providerCall::abi_decode_returns(&out, true)
+            .map_err(|e| ChainError::Other(format!("provider decode: {e}")))?
+            ._0;
+        Ok(ProviderRecord {
+            provider_id: provider_id.to_lowercase(),
+            controller: format!("{:#x}", p.controller),
+            pending_controller: format!("{:#x}", p.pendingController),
+            controller_epoch: p.controllerEpoch,
+            standing: Standing::from_u8(p.standing),
+            // `provider()` does not revert for an unknown id, so a zero controller - the contract's
+            // own existence sentinel (`_requireProvider`) - is what "not registered" means here.
+            registered: !p.controller.is_zero(),
+        })
+    }
+
+    async fn provider_identity_anchor(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+    ) -> Result<IdentityAnchor, ChainError> {
+        use alloy::sol_types::SolCall;
+        let call = IProviderRegistry::publicIdentityAnchorCall {
+            providerId: parse_b160(provider_id),
+        };
+        let out = self.raw_call(registry_addr, &call.abi_encode()).await?;
+        let a = IProviderRegistry::publicIdentityAnchorCall::abi_decode_returns(&out, true)
+            .map_err(|e| ChainError::Other(format!("publicIdentityAnchor decode: {e}")))?
+            ._0;
+        Ok(IdentityAnchor {
+            digest: format!("0x{}", hex::encode(a.digest.as_slice())),
+            schema: a.schema,
+            codec: a.codec,
+            hash_algorithm: a.hashAlgorithm,
+            revision: a.revision,
+            updated_at_block: a.updatedAtBlock,
+        })
+    }
+
+    async fn service_creation_approval_log(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        let by_provider = self
+            .approval_log_ordered(registry_addr, Some(provider_id))
+            .await?;
+        Ok(by_provider
+            .get(&provider_id.to_lowercase())
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn service_creation_approval_log_by_provider(
+        &self,
+        registry_addr: &str,
+    ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError> {
+        self.approval_log_ordered(registry_addr, None).await
+    }
+}
+
+impl AlloyChain {
+    /// The one `ServiceCreationApprovalSet` reader both approval methods share, so the topic
+    /// alignment, the decode and the ORDERING rule below cannot drift into two versions.
+    ///
+    /// `provider_id` narrows the filter to one provider (the detail path); `None` reads the whole
+    /// registry in a single scan (the list path).
+    ///
+    /// ## Order is established here, never assumed
+    ///
+    /// `fold_approvals` takes the LAST write per record type, so its ascending-`(block, logIndex)`
+    /// precondition decides whether a withdrawal or the grant before it is reported as current. A
+    /// node's `eth_getLogs` ordering is not part of that contract, so the pair is READ off each log
+    /// and sorted here rather than trusted.
+    ///
+    /// A log carrying NEITHER position may be neither placed nor dropped - the same rule this repo
+    /// applies to the issuer-whitelist pillar's `log_point`. Placing it at `(0, 0)` sorts it ahead of
+    /// every real event, which can turn a withdrawal into an approval; dropping it discards the event
+    /// that may itself have been the withdrawal. Both invent an answer, so an unpositioned log makes
+    /// the whole read fail, which the caller renders as `Unavailable`.
+    async fn approval_log_ordered(
+        &self,
+        registry_addr: &str,
+        provider_id: Option<&str>,
+    ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError> {
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::rpc::types::Filter;
+        use alloy::sol_types::{SolEvent, SolValue};
+
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let mut filter = Filter::new()
+            .address(parse_addr(registry_addr))
+            .event_signature(IProviderRegistry::ServiceCreationApprovalSet::SIGNATURE_HASH)
+            .from_block(0u64);
+        if let Some(id) = provider_id {
+            // topic1 is the indexed `bytes20 providerId`. Solidity left-aligns a short fixed-bytes
+            // value in its topic word, so the filter word is the id followed by 12 zero bytes -
+            // right-aligning it (the address convention) matches no log at all, which would read
+            // exactly like "this provider has never been approved for anything".
+            filter = filter.topic1(B256::from(provider_id_topic(id)));
+        }
+        let logs = provider
+            .get_logs(&filter)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+
+        let mut entries = Vec::with_capacity(logs.len());
+        for log in logs {
+            // topic1 is the indexed `bytes20 providerId`, topic2 the indexed `bytes32 recordType`;
+            // `allowed` is the sole unindexed member.
+            let (Some(id_topic), Some(record_type)) = (log.topics().get(1), log.topics().get(2))
+            else {
+                continue;
+            };
+            let allowed = bool::abi_decode(log.data().data.as_ref(), true)
+                .map_err(|e| ChainError::Other(format!("approval log decode: {e}")))?;
+            entries.push(ApprovalLogEntry {
+                block_number: log.block_number,
+                log_index: log.log_index,
+                provider_id: provider_id_from_topic(id_topic),
+                record_type_key: format!("0x{}", hex::encode(record_type.as_slice())),
+                allowed,
+            });
+        }
+        order_approval_log(entries)
+    }
+}
+
+/// One decoded `ServiceCreationApprovalSet` log, before ordering.
+struct ApprovalLogEntry {
+    block_number: Option<u64>,
+    log_index: Option<u64>,
+    provider_id: String,
+    record_type_key: String,
+    allowed: bool,
+}
+
+/// Sort a decoded approval log into ascending `(blockNumber, logIndex)` and group it by provider.
+///
+/// Extracted from the `eth_getLogs` call so it is reachable by a test: this rule lives on the Alloy
+/// path alone and `MemChain` is a different `ChainClient`, so nothing driving the fake can pin it -
+/// the same reason the issuer-whitelist pillar's error classifier is a free function.
+///
+/// An entry missing EITHER position fails the whole read. Placing it at `(0, 0)` would sort it ahead
+/// of every real event, which can present a superseded grant as current; dropping it would discard
+/// the event that may itself have been the withdrawal. Both fabricate an answer, and this repo's
+/// standing rule is that a positionless log is neither placed nor dropped.
+fn order_approval_log(
+    mut entries: Vec<ApprovalLogEntry>,
+) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError> {
+    if entries
+        .iter()
+        .any(|e| e.block_number.is_none() || e.log_index.is_none())
+    {
+        return Err(ChainError::Other(
+            "a ServiceCreationApprovalSet log carried no (blockNumber, logIndex), so the approvals \
+             could not be ordered - the last write per record type is what makes this the current \
+             state, and an unpositioned log can be neither placed nor dropped without inventing an \
+             answer"
+                .into(),
+        ));
+    }
+    // Sorting rather than trusting the node: `fold_approvals` takes the LAST write per record type,
+    // so ordering decides whether a withdrawal or the grant before it is reported as current, and
+    // `eth_getLogs` ordering is not part of that contract.
+    entries.sort_by_key(|e| (e.block_number, e.log_index));
+
+    let mut out: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+    for e in entries {
+        out.entry(e.provider_id.to_ascii_lowercase())
+            .or_default()
+            .push((e.record_type_key, e.allowed));
+    }
+    Ok(out)
 }
 
 /// Helper: normalize a record-type string into its keccak256 bytes32 (the whitelist / issuer key).
@@ -893,6 +1610,148 @@ pub fn verify_key(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RT_A: &str = "0x00000000000000000000000000000000000000000000000000000000000000aa";
+    const RT_B: &str = "0x00000000000000000000000000000000000000000000000000000000000000bb";
+    const PROVIDER_A: &str = "0x00000000000000000000000000000000000000a1";
+    const PROVIDER_B: &str = "0x00000000000000000000000000000000000000b2";
+
+    fn approval_entry(
+        block: Option<u64>,
+        index: Option<u64>,
+        provider_id: &str,
+        record_type_key: &str,
+        allowed: bool,
+    ) -> ApprovalLogEntry {
+        ApprovalLogEntry {
+            block_number: block,
+            log_index: index,
+            provider_id: provider_id.to_string(),
+            record_type_key: record_type_key.to_string(),
+            allowed,
+        }
+    }
+
+    /// The read establishes order rather than trusting the node's. `fold_approvals` takes the LAST
+    /// write per record type, so a peer returning the withdrawal before the grant it superseded
+    /// would otherwise render a withdrawn record type as approved - and the route's `NoChange`
+    /// pre-check would then refuse the corrective write.
+    #[test]
+    fn approval_logs_are_ordered_by_block_and_log_index_not_by_arrival() {
+        let out = order_approval_log(vec![
+            approval_entry(Some(9), Some(0), PROVIDER_A, RT_A, false),
+            approval_entry(Some(2), Some(1), PROVIDER_A, RT_A, true),
+        ])
+        .expect("both logs carry a position");
+        assert_eq!(
+            out.get(PROVIDER_A).unwrap(),
+            &vec![(RT_A.to_string(), true), (RT_A.to_string(), false)],
+            "the earlier grant must fold first, so the later withdrawal wins"
+        );
+        // Same block, so only `logIndex` can sequence the pair.
+        let out = order_approval_log(vec![
+            approval_entry(Some(7), Some(3), PROVIDER_A, RT_A, false),
+            approval_entry(Some(7), Some(1), PROVIDER_A, RT_A, true),
+        ])
+        .expect("both logs carry a position");
+        assert!(
+            !out.get(PROVIDER_A).unwrap().last().unwrap().1,
+            "logIndex must break a same-block tie"
+        );
+    }
+
+    /// A log carrying no position may be NEITHER placed nor dropped: `(0, 0)` sorts it ahead of every
+    /// real event (turning a superseded grant into the current state) and dropping it discards the
+    /// event that may itself have been the withdrawal. The whole read fails, which the route renders
+    /// as `Unavailable` rather than as an approval answer.
+    #[test]
+    fn an_unpositioned_approval_log_fails_the_whole_read() {
+        for entry in [
+            approval_entry(None, Some(0), PROVIDER_A, RT_A, true),
+            approval_entry(Some(4), None, PROVIDER_A, RT_A, true),
+        ] {
+            let out = order_approval_log(vec![
+                approval_entry(Some(1), Some(0), PROVIDER_A, RT_A, false),
+                entry,
+            ]);
+            assert!(
+                out.is_err(),
+                "a positionless log must fail the read, never be silently placed or dropped"
+            );
+        }
+    }
+
+    /// The whole-registry read groups by provider, so one scan can serve a page without leaking one
+    /// provider's approvals into another's row.
+    #[test]
+    fn the_registry_wide_read_groups_by_provider() {
+        let out = order_approval_log(vec![
+            approval_entry(Some(1), Some(0), PROVIDER_A, RT_A, true),
+            approval_entry(Some(2), Some(0), PROVIDER_B, RT_B, true),
+            approval_entry(Some(3), Some(0), PROVIDER_A, RT_B, false),
+        ])
+        .expect("every log carries a position");
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            out.get(PROVIDER_A).unwrap(),
+            &vec![(RT_A.to_string(), true), (RT_B.to_string(), false)]
+        );
+        assert_eq!(out.get(PROVIDER_B).unwrap(), &vec![(RT_B.to_string(), true)]);
+    }
+
+    /// The indexed `bytes20 providerId` is LEFT-aligned in its topic word. Right-aligning it (the
+    /// address convention) matches no log at all, which reads exactly like "this provider has never
+    /// been approved for anything".
+    #[test]
+    fn the_provider_id_topic_is_left_aligned() {
+        let topic = provider_id_topic(PROVIDER_A);
+        assert_eq!(
+            format!("0x{}", hex::encode(&topic[..20])),
+            PROVIDER_A,
+            "the id must occupy the LEADING 20 bytes of the topic word"
+        );
+        assert!(
+            topic[20..].iter().all(|b| *b == 0),
+            "the trailing 12 bytes must be the padding"
+        );
+    }
+
+    /// The INVERSE, which is the direction the whole-registry read actually depends on: that read
+    /// passes no `providerId`, so it builds no topic and this decode is the only thing assigning a
+    /// log to a provider.
+    ///
+    /// Asserted against a hand-built topic word rather than only round-tripped, because a round trip
+    /// alone is satisfied by BOTH directions being wrong the same way - encode to `[12..]` and decode
+    /// from `[12..]` and the pair still agrees, while every real log decodes to a junk key.
+    #[test]
+    fn a_provider_id_is_recovered_from_the_leading_bytes_of_its_topic_word() {
+        let id_bytes = hex::decode(PROVIDER_A.trim_start_matches("0x")).unwrap();
+
+        let mut left_aligned = [0u8; 32];
+        left_aligned[..20].copy_from_slice(&id_bytes);
+        assert_eq!(
+            provider_id_from_topic(&B256::from(left_aligned)),
+            PROVIDER_A,
+            "a Solidity-encoded bytes20 topic carries the id in its LEADING 20 bytes"
+        );
+
+        // The address convention, and the exact mistake the surrounding comments warn about: it must
+        // not recover the id, or nothing distinguishes the two encodings.
+        let mut right_aligned = [0u8; 32];
+        right_aligned[12..].copy_from_slice(&id_bytes);
+        assert_ne!(
+            provider_id_from_topic(&B256::from(right_aligned)),
+            PROVIDER_A,
+            "reading the TRAILING 20 bytes is the address convention, not the bytes20 encoding"
+        );
+
+        // And the pair agrees, so the filter the detail path builds and the decode the list path
+        // performs cannot drift apart.
+        assert_eq!(
+            provider_id_from_topic(&B256::from(provider_id_topic(PROVIDER_A))),
+            PROVIDER_A
+        );
+    }
 
     /// `verify_key` must byte-match the on-chain `_verifyKey` + the demo-bootstrap value the vet stack
     /// produces for "boarding_intake" — the verifier-onboarding whitelist parity guard (plan A3).

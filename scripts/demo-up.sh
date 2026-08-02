@@ -42,6 +42,11 @@ ledger_addr(){
 # "FACTORY_ADDR not configured" while governance/authority reported factoryOwner.target = 0x0.
 # Resolved from env first, then the canonical ledger, so it is never a literal pinned in this script.
 FACTORY="${FACTORY_ADDR:-${DOGTAG_ISSUER_FACTORY_ADDR:-$(ledger_addr DogTagIssuerFactory)}}"
+# The generation-2 provider core, for the admin REGISTRAR screen only. Additive: no generation-1
+# consumer reads it, and nothing is repointed onto it (that is C-9/C-10). Resolved by ledger KEY NAME
+# so a stale literal cannot creep in; empty is tolerated here because admin-api refuses loudly on its
+# own when the registrar routes are used without it.
+PROVIDER_REGISTRY="${PROVIDER_REGISTRY_ADDR:-$(ledger_addr ProviderRegistry)}"
 : "${FACTORY:?set FACTORY_ADDR, or add DogTagIssuerFactory to contracts/deployments/roax.json}"
 
 HMAC=dev-central-hmac-secret
@@ -208,7 +213,7 @@ run indexer-api ":46001" env \
   "$ROOT/target/release/indexer-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
-  SBT_ADDR=$SBT FACTORY_ADDR=$FACTORY \
+  SBT_ADDR=$SBT FACTORY_ADDR=$FACTORY PROVIDER_REGISTRY_ADDR=$PROVIDER_REGISTRY \
   ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR PORT=39742 \
   ADMIN_PROPOSE_ONLY="$ADMIN_PROPOSE_ONLY" \
   run admin-api ":39742" "$ROOT/target/release/admin-api"

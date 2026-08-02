@@ -158,6 +158,7 @@ async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
         verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
         sbt_addr: sbt.to_lowercase(),
         factory_addr: "0x0000000000000000000000000000000000000000".to_string(),
+        provider_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
         admin_password_hash: admin_api::auth::hash_password(ADMIN_PW),
         admin_signer_index: 0,
         propose_only: false,

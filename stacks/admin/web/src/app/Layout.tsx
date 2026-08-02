@@ -11,6 +11,7 @@ import {
   Landmark,
   FlaskConical,
   Settings as SettingsIcon,
+  UserCog,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -20,6 +21,7 @@ const NAV: NavItem[] = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "activity", href: "/activity", label: "Activity", icon: Activity },
   { key: "issuers", href: "/issuers", label: "Issuers / Factory", icon: Factory },
+  { key: "providers", href: "/providers", label: "Providers", icon: UserCog },
   { key: "onboard", href: "/onboard", label: "Onboard issuer", icon: Rocket },
   { key: "businesses", href: "/businesses", label: "Business registry", icon: Building2 },
   { key: "applications", href: "/applications", label: "Issuer applications", icon: ListChecks },

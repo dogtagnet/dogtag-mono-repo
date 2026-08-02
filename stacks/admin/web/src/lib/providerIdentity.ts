@@ -1,0 +1,174 @@
+/**
+ * The registrar's side of a provider registration: the opaque `providerId`, and the identity
+ * statement whose digest becomes the on-chain `publicIdentityAnchor`.
+ *
+ * Pure and dependency-light on purpose - everything here is a decision the screen must be able to
+ * show the admin BEFORE they send a transaction that cannot be undone.
+ */
+
+import { keccak256, toBytes } from "viem";
+
+/**
+ * `providerId` is an OPAQUE KYC registrar assignment, and `ProviderRegistry.sol`'s own header
+ * forbids deriving it from a provider name, domain, controller, signer, service clone, factory salt
+ * or factory generation. So it is generated from the CSPRNG and from nothing else.
+ *
+ * Deriving it from something meaningful is the tempting mistake: it would make ids memorable and
+ * would quietly turn the identifier into a claim about the thing it was derived from - a claim that
+ * survives every later correction, because the id is permanent and cannot be reassigned.
+ */
+export function generateProviderId(
+  randomBytes: (n: number) => Uint8Array = defaultRandomBytes,
+): `0x${string}` {
+  // The contract refuses the zero id (`ZeroProviderId()`). Astronomically unlikely from a CSPRNG,
+  // but retrying is cheaper than shipping a branch nobody can reach and nobody has tested.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const bytes = randomBytes(20);
+    if (bytes.length !== 20) throw new Error("provider id needs exactly 20 random bytes");
+    if (bytes.some((b) => b !== 0)) {
+      return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+    }
+  }
+  throw new Error("could not generate a non-zero provider id");
+}
+
+function defaultRandomBytes(n: number): Uint8Array {
+  const out = new Uint8Array(n);
+  crypto.getRandomValues(out);
+  return out;
+}
+
+/** A `bytes20` provider id: 40 hex characters, non-zero (the one value the contract refuses). */
+export function isValidProviderId(value: string): boolean {
+  const t = value.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(t)) return false;
+  return !/^0x0{40}$/.test(t);
+}
+
+/** The registrar's KYC assertion, as the fields the screen collects. */
+export interface IdentityStatement {
+  /** The legal entity the registrar cleared. */
+  legalName: string;
+  /** Where that entity is registered. */
+  jurisdiction: string;
+  /** Company/licence number, if the jurisdiction issues one. */
+  registrationNumber: string;
+  /** ISO `YYYY-MM-DD` - when the registrar performed the check. */
+  verifiedOn: string;
+  /** What was actually checked, in the registrar's own words. */
+  notes: string;
+}
+
+export const EMPTY_IDENTITY_STATEMENT: IdentityStatement = {
+  legalName: "",
+  jurisdiction: "",
+  registrationNumber: "",
+  verifiedOn: "",
+  notes: "",
+};
+
+/**
+ * The canonical text the digest commits to.
+ *
+ * Deterministic by construction: a fixed schema line, a fixed field order, NFC normalisation and
+ * collapsed interior whitespace. Two registrars entering the same facts must produce the same
+ * digest, or the anchor commits to a formatting accident rather than to the assertion.
+ */
+export function canonicalIdentityStatement(s: IdentityStatement): string {
+  const field = (v: string) => v.normalize("NFC").trim().replace(/\s+/g, " ");
+  return [
+    "dogtag/provider-identity/1",
+    `legalName: ${field(s.legalName)}`,
+    `jurisdiction: ${field(s.jurisdiction)}`,
+    `registrationNumber: ${field(s.registrationNumber)}`,
+    `verifiedOn: ${field(s.verifiedOn)}`,
+    `notes: ${field(s.notes)}`,
+  ].join("\n");
+}
+
+/**
+ * keccak256 of the canonical statement - the value written to `publicIdentityDigest`.
+ *
+ * `hashAlgorithm` is published as keccak-256's multicodec (`0x1b`) precisely so a later verifier
+ * recomputes THIS function rather than guessing sha2-256 and calling a genuine statement altered.
+ */
+export function identityDigest(s: IdentityStatement): `0x${string}` {
+  return keccak256(toBytes(canonicalIdentityStatement(s)));
+}
+
+/**
+ * Whether a statement carries enough to be an assertion at all.
+ *
+ * `notes` and `registrationNumber` are optional - not every jurisdiction issues a number, and the
+ * structured fields already carry the claim. But an anchor over an EMPTY statement asserts nothing
+ * while looking exactly like one that asserts something, so the required fields are required.
+ */
+export function identityStatementProblem(s: IdentityStatement): string | null {
+  if (!s.legalName.trim()) return "A legal entity name is required - this is what you are asserting.";
+  if (!s.jurisdiction.trim()) return "A jurisdiction is required.";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s.verifiedOn.trim())) {
+    return "Verified-on must be a date in YYYY-MM-DD form.";
+  }
+  return null;
+}
+
+/**
+ * The exact values a registration was CHECKED against, carried to the send.
+ *
+ * A send addresses these rather than whatever the form holds when the button is pressed: the digest
+ * is computed from the statement, so editing a field after review would otherwise anchor a
+ * commitment to text nobody reviewed - permanently, since `providerId` cannot be reassigned and the
+ * anchor's revision only ever moves forward.
+ */
+export interface CheckedRegistration {
+  providerId: `0x${string}`;
+  controller: string;
+  statement: IdentityStatement;
+  canonical: string;
+  digest: `0x${string}`;
+}
+
+/**
+ * The key a checked registration is valid for. Any change to any input the plan depends on changes
+ * this key, which retires the plan - the S-15 stale-plan rule, applied to the one screen where the
+ * mistake is unrecoverable.
+ */
+export function registrationKey(providerId: string, controller: string, s: IdentityStatement): string {
+  // Joined on an ESCAPED NUL, which the canonical statement cannot contain, so two different field
+  // sets can never collide into one key. Written as `\u0000` rather than a literal: a raw NUL makes
+  // the source file binary to git, which costs every diff and review of it.
+  return [
+    providerId.trim().toLowerCase(),
+    controller.trim().toLowerCase(),
+    canonicalIdentityStatement(s),
+  ].join("\u0000");
+}
+
+/** Build the checked registration, or the reason it cannot be built. */
+export function checkRegistration(
+  providerId: string,
+  controller: string,
+  statement: IdentityStatement,
+): { ok: true; checked: CheckedRegistration } | { ok: false; problem: string } {
+  if (!isValidProviderId(providerId)) {
+    return { ok: false, problem: "Provider id must be a non-zero 0x-prefixed 20-byte value." };
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(controller.trim())) {
+    return { ok: false, problem: "Controller must be a 0x-prefixed 20-byte address." };
+  }
+  if (/^0x0{40}$/.test(controller.trim())) {
+    return { ok: false, problem: "Controller cannot be the zero address." };
+  }
+  const problem = identityStatementProblem(statement);
+  if (problem) return { ok: false, problem };
+  return {
+    ok: true,
+    checked: {
+      providerId: providerId.trim().toLowerCase() as `0x${string}`,
+      controller: controller.trim().toLowerCase(),
+      statement,
+      canonical: canonicalIdentityStatement(statement),
+      digest: identityDigest(statement),
+    },
+  };
+}

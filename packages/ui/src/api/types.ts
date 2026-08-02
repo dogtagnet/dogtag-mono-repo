@@ -792,6 +792,140 @@ export interface WhitelistRevokeResp {
   warning?: string | null;
 }
 
+// ---- the generation-2 ProviderRegistry registrar surface (registry plan C-2) ----
+
+/**
+ * `ProviderRegistry.Standing`. Shared by providers and services.
+ *
+ * `registerProvider` writes `pending`, and only `active` satisfies `canWriteProvider` - so a freshly
+ * registered provider can do nothing until the registrar raises its standing. `retired` is terminal.
+ * Only `active`/`suspended`/`retired` are settable; the contract refuses the other two.
+ */
+export type ProviderStanding = "none" | "pending" | "active" | "suspended" | "retired";
+
+/** A provider record as the registrar screen reads it. */
+export interface RegistryProvider {
+  providerId: string;
+  controller: string;
+  pendingController: string;
+  controllerEpoch: number;
+  standing: ProviderStanding;
+  /**
+   * `provider()` does not revert for an unknown id - it answers a zero-filled struct - so this
+   * (`controller != 0`) is the existence answer. Never read `standing` for it.
+   */
+  registered: boolean;
+}
+
+/** The registrar-written identity anchor. NOT `ProviderDirectory`'s provider-written ProfileAnchor. */
+export interface ProviderIdentityAnchor {
+  digest: string;
+  schema: number;
+  codec: number;
+  hashAlgorithm: number;
+  revision: number;
+  updatedAtBlock: number;
+}
+
+/** One `(recordType, allowed)` pair, as last written by the registrar. */
+export interface ServiceCreationApproval {
+  recordTypeKey: string;
+  /** The human label when the key round-trips to one this deployment knows, else null. */
+  recordType: string | null;
+  allowed: boolean;
+}
+
+/**
+ * The service-creation approvals for one provider - deliberately tri-state at the type level.
+ *
+ * `_serviceCreationApprovals` is private with no getter, so the only direct evidence is the
+ * `ServiceCreationApprovalSet` log. A read that FAILED is `unavailable` and carries NO `entries`
+ * field, so it cannot be spread into a list as `[]`: "we could not ask" and "nothing is approved"
+ * are different facts with different remedies, and only the second is a statement about the provider.
+ */
+export type ProviderApprovalsRead =
+  | { state: "resolved"; entries: ServiceCreationApproval[] }
+  | { state: "unavailable"; reason: string };
+
+export interface ProviderRegistrarView {
+  provider: RegistryProvider;
+  /** Null for an id that is not registered - no anchor is invented for one that has none. */
+  identityAnchor: ProviderIdentityAnchor | { unavailable: string } | null;
+  approvals: ProviderApprovalsRead;
+}
+
+/** GET /v1/admin/providers */
+export interface ProvidersResp {
+  registry: string;
+  providers: ProviderRegistrarView[];
+  /**
+   * Who holds the registry's `Ownable2Step` owner, read LIVE. Stated up front so the screen can say
+   * whether a write will execute or come back as an unsigned proposal BEFORE a form is filled in.
+   * `heldByHosted` is null when either side could not be established - never guess.
+   */
+  authority: {
+    target: string;
+    owner: string | null;
+    hostedSigner: string | null;
+    heldByHosted: boolean | null;
+    capability: string;
+  };
+  identitySchema: { schema: number; schemaId: string; hashAlgorithm: number };
+}
+
+/** POST /v1/admin/providers */
+export interface RegisterProviderReq {
+  providerId: string;
+  controller: string;
+  /** keccak256 of the registrar's canonical identity statement. The text itself is never sent. */
+  identityDigest: string;
+}
+export interface RegisterProviderResp {
+  providerId: string;
+  controller: string;
+  identityDigest: string;
+  identitySchema: number;
+  identitySchemaId: string;
+  /** Always `pending` - registration alone does not let the provider act. */
+  standingAfterRegistration: ProviderStanding;
+  nextStep: string;
+  actions: GovernanceDisposition[];
+  outcome?: WhitelistOutcome;
+  executed?: boolean;
+  warning?: string | null;
+}
+
+/** POST /v1/admin/providers/:providerId/standing */
+export interface ProviderStandingReq {
+  standing: Exclude<ProviderStanding, "none" | "pending">;
+}
+export interface ProviderStandingResp {
+  providerId: string;
+  standing: ProviderStanding;
+  actions: GovernanceDisposition[];
+  outcome?: WhitelistOutcome;
+  executed?: boolean;
+  warning?: string | null;
+}
+
+/** POST /v1/admin/providers/:providerId/service-approval */
+export interface ServiceApprovalReq {
+  /** A label ("VACCINATION") or an explicit `0x`+64-hex key. */
+  recordType: string;
+  /** The intended state, sent explicitly rather than as a toggle. */
+  allowed: boolean;
+}
+export interface ServiceApprovalResp {
+  providerId: string;
+  recordType: string;
+  recordTypeKey: string;
+  allowed: boolean;
+  actions: GovernanceDisposition[];
+  outcome?: WhitelistOutcome;
+  executed?: boolean;
+  warning?: string | null;
+}
+
 // ---- appointments (§4.4) ----
 export interface CentralAppointment {
   id: string;

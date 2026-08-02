@@ -5308,6 +5308,117 @@ That case must stub `navigator.clipboard` to `undefined` ITSELF rather than lean
 `beforeEach`, which installs a working one for the other cases; without the local override it never
 reaches the fallback and pins nothing.
 
+## The admin REGISTRAR surface, and the first live provider (C-2, partial)
+
+`stacks/admin/web/src/pages/Providers.tsx` over `POST|GET /v1/admin/providers*`
+(`stacks/admin/api/src/{provider_registry.rs,routes.rs}`). It closes the half of the provider journey
+that did not exist: `registerProvider` and `setServiceCreationApproval` were called only from
+contracts and tests, so `providerCount()` was 0 and **every** provider self-service action refused.
+
+**A REGISTRATION IS THREE STEPS, NOT TWO, AND THE MISSING ONE IS INVISIBLE FROM THE PLAN.**
+`registerProvider` writes `standing: Standing.PENDING` (`ProviderRegistry.sol:300`) and
+`canWriteProvider` returns false for anything but `ACTIVE` (`:458`), which `canCreateService` folds
+(`:834`). So register + approve leaves a provider that can do **nothing**, and the provider's own
+deploy preflight reads `provider-standing: fail` forever. `setProviderStanding(providerId, ACTIVE)`
+is part of this surface for that reason; a screen offering only the two named calls hands the captain
+an inert provider. Only `ACTIVE`/`SUSPENDED`/`RETIRED` are settable (`_requireSettableStanding`), and
+`RETIRED` is terminal.
+
+**`canCreateService` MUST be asked AS THE FACTORY, and with no `from` it answers FALSE FOR EVERY
+PROVIDER ON EARTH.** Its first term is `generationOfFactory[msg.sender]`, so a plain `eth_call`
+(`msg.sender == 0x0`) matches no generation. Confirmed empirically on ROAX against the live provider
+below: `--from <DogTagIssuerFactoryV2>` -> `true`, the identical call without `--from` -> `false`.
+This is the same `msg.sender` shape `docs/CLIENT_REPOINT.md` records for `isWhitelistedFor`, failing
+in the opposite direction - there it renders genuine issuers as forged, here it renders every
+eligible provider as unapproved. **The registrar surface therefore never makes this read at all**:
+it would be an aggregate of four terms, so a `false` is unattributable and is emphatically not "this
+record type is not approved".
+
+**THE APPROVAL BIT HAS NO GETTER, so the read surface is the LOG - and a failed log read is its own
+state.** `_serviceCreationApprovals` is `private` (`ProviderRegistry.sol:137`) with no accessor. The
+raw bit is reconstructed from `ServiceCreationApprovalSet`, where both leading args are indexed;
+`fold_approvals` takes the LAST write per record type, and an explicit `false` is KEPT rather than
+dropped ("approved then withdrawn" is a different fact from "never approved"). `ApprovalsRead` is
+`Resolved | Unavailable` and the `Unavailable` arm carries no `entries` field at all, so it cannot be
+spread into a list as `[]`: an empty resolved log says the registrar approved nothing, an unreadable
+one says we could not ask, and only the first is a statement about the provider.
+**The `topic1` filter word is LEFT-aligned**, because `providerId` is `bytes20` and Solidity
+left-aligns a short fixed-bytes value in its topic word. Right-aligning it (the address convention)
+matches no log at all - which reads exactly like "this provider has never been approved for
+anything".
+
+**The identity anchor is the REGISTRAR's assertion and lives in its own schema namespace.**
+`PROVIDER_IDENTITY_SCHEMA = 1` / `dogtag/provider-identity/1`, `hashAlgorithm = 0x1b` (keccak-256's
+multicodec, so a verifier recomputes the right function), empty `contenthash`. Deliberately NOT
+`ProviderDirectory`'s `ProfileAnchor` schema, where `2` already means `dogtag/provider-profile/2`
+(S-17): that anchor is provider-WRITTEN content, this one is what the registrar cleared, and
+publishing a registrar assertion under a provider's schema would let a consumer read one as the
+other. `registerProvider` refuses a zero digest, zero schema or zero hashAlgorithm
+(`BadIdentityAnchor()`); `codec` is NOT validated, so do not gate on it.
+**The statement TEXT is never sent to the backend and is stored nowhere** - only its keccak256
+reaches the chain. That is deliberate (inventing a KYC PII store is captain territory), so the screen
+says so and makes both the canonical text and the digest copyable. Stated limitation, not an
+oversight.
+
+**`providerId` is CSPRNG-generated and means nothing**, per `ProviderRegistry.sol`'s own header. The
+screen says it is arbitrary and permanent, and offers it through the shared `CopyButton` - it is
+truncated on screen, cannot be reassigned, and the provider needs it to use the self-service portal
+(that page takes it as a TYPED field, so it is handed over out of band). The generator retries past
+an all-zero draw rather than shipping an unreachable branch: zero is the one id the contract refuses.
+
+**`PROVIDER_REGISTRY_ADDR` fails LOUDLY when unset** (503 naming the variable), in admin-api's
+`FACTORY_ADDR not configured` shape rather than vet-api's silent degrade - a zero address would
+otherwise read back as "no providers exist", a definite claim about a registry never asked. It is a
+NEW variable for a new surface, **not a repoint**: no generation-1 consumer moves onto it, so it does
+not touch the C-9/C-10 rules in `stacks/admin/.env.example`.
+
+**Two traps in the code itself.** `sol!` with `#[sol(rpc)]` generates a contract-instance
+`provider()` accessor that COLLIDES with this contract's own `provider(bytes20)` (E0592); the name is
+fixed by the deployed ABI, so the reads use the generated `SolCall` types over a raw `eth_call`
+instead. And **admin-api's listen port was a compile-time `const`** - the only stack where it was, so
+a second instance started to exercise a change silently tried to bind over the captain's live console
+on `:39742`, and had that bind won the race it is the LIVE one that would have failed. It now reads
+`PORT` like `vet-api`, `government-api` and `indexer-api`.
+
+****The approval-log failure needs its OWN switch, and a shared one cannot drive the case.**
+`provider()` is an `eth_call` and the approval read is an `eth_getLogs` from genesis to latest, so
+the realistic failure is the second refused while the first answers - a rate-limited or
+range-capping peer, the same asymmetry recorded for the issuer-whitelist pillar's unbounded reads.
+A single failure switch fails the provider read first and short-circuits the route into a 502, so
+the `unavailable` arm is never built and the headline claim goes unpinned at the layer that
+produces it. Hence `set_failing_approval_log_reads` beside `set_failing_provider_reads`, exactly as
+vet-api needs `set_fail_find_pets_by_dog_tag_reads` beside its sibling. The route test asserts a
+**200** whose `approvals.state == "unavailable"` and whose `entries` key is ABSENT; the 502 is a
+separate, separately named test about the provider read. A hand-constructed `ApprovalsRead` that
+never goes through the route is a test of `serde`, not of the surface.
+
+`MemChain` DECODES and APPLIES the three registrar writes** (`apply_provider_registry_calldata`),
+modelling `AlreadyRegistered`, `NoChange`, `RetiredStanding` and the PENDING-on-registration rule, so
+`tests/provider_registrar.rs` walks register -> activate -> approve and reads it back through the
+code path production reads. A fake that merely counted transactions could not catch a route sending
+one the chain will refuse. `set_failing_provider_reads` is default-off fault injection, because a
+store that cannot fail cannot exercise the could-not-run arm.
+
+**LIVE ON ROAX 2026-08-02, driven entirely through the portal.** The first provider ever registered:
+`providerId 0x2ee0cd9517174eb28df3523bb5791767d18b4ecc`, controller
+`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266` (the well-known anvil account 0, chosen so anyone can
+act as it on a disposable testnet). `registerProvider` tx `0x71374d5e…024c3e` block 324312 ->
+`setProviderStanding(ACTIVE)` tx `0x775bebe7…6ac91d25` block 324315 ->
+`setServiceCreationApproval(VACCINATION, true)` tx `0xb4302721…76995e8e` block 324317. Verified after:
+`providerCount() == 1`, standing 2, anchor digest `0x4dedb55a…dc510` at revision 1, and the provider
+page's OWN preflight (`planCloneDeployment` + the real `createLiveProviderReader`) answers
+`verdict: ready, canDeploy: true` for VACCINATION and `refused` for the unapproved BOARDING.
+**What is NOT exercised end to end: the provider's `createIssuer` SEND**, which needs the
+controller's key in a browser wallet. The page renders all four flows with the generation-2 addresses
+configured (not `missingConfig`) and waits on a wallet connection, which is the honest state.
+
+Evidence: `cargo test -p admin-api` (11 in `tests/provider_registrar.rs`, 9 lib), `pnpm --filter
+@dogtag/admin-web test` (13 pure + 13 mounted). Eight mutations were applied, run and reverted, each
+reddening its own named test - and a ninth was REJECTED as inert (`unwrap_or(false)` ->
+`unwrap_or_default()` is the same value for `bool`, so its "red" would have proven nothing). Note the
+`approved()` claim is pinned by the LIB suite, not the integration target: point the mutation at
+`--lib`, or it matches no test and reports a green.
+
 ## The content-addressed profile and logo mirror (S-17) - and the one rule that defines it
 
 `stacks/indexer/api/src/mirror.rs` serves it, `packages/ui/src/mirror/` fetches and CHECKS it.
