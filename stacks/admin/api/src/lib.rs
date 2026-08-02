@@ -26,6 +26,7 @@ pub mod dns;
 pub mod erasure;
 pub mod governance;
 pub mod indexer;
+pub mod provider_registry;
 pub mod routes;
 pub mod startup;
 pub mod store;

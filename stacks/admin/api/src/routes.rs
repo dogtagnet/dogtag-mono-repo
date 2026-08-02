@@ -17,10 +17,17 @@ use crate::app::{AppState, DOG_PROFILE};
 use crate::auth::{self, keccak256_hex, ShareClaims};
 use crate::chain::{
     create_issuer_calldata, default_admin_role, delist_for_calldata, grant_issuer_role_calldata,
-    record_type_key, verify_key, whitelist_admin_role, whitelist_for_calldata,
+    record_type_key, register_provider_calldata, set_provider_standing_calldata,
+    set_service_creation_approval_calldata, verify_key, whitelist_admin_role,
+    whitelist_for_calldata,
 };
 use crate::crypto;
 use crate::governance::{self, Authority, GovernanceAction};
+use crate::provider_registry::{
+    fold_approvals, is_valid_provider_id, record_type_label, ApprovalsRead, Standing,
+    HASH_ALGORITHM_KECCAK256, IDENTITY_CODEC_NONE, PROVIDER_IDENTITY_SCHEMA,
+    PROVIDER_IDENTITY_SCHEMA_ID,
+};
 use crate::store::*;
 
 /// The all-zero address as lowercase `0x..` — an unset/absent contract-address sentinel.
@@ -1672,6 +1679,508 @@ async fn governance_authority(State(st): State<AppState>, headers: HeaderMap) ->
 }
 
 // ============================================================================================
+// The generation-2 `ProviderRegistry` REGISTRAR surface (registry plan C-2).
+//
+// `registerProvider` and `setServiceCreationApproval` had no caller outside contracts and tests, so
+// `providerCount()` was 0 and every provider self-service action refused. These routes are the admin
+// half of that journey. Like every other privileged admin write they go through `GovernanceAction`,
+// which reads `owner()` LIVE and composes the chain's own predicate rather than re-deriving it — so
+// an action flips executed→proposed by construction the moment the registry's owner moves off the
+// hosted key, and the UI is never stricter than the contract.
+//
+// `send_action` awaits the receipt and errors on a reverted status, so `Disposition::Executed`
+// means mined-and-succeeded rather than merely submitted.
+// ============================================================================================
+
+/// Refuse LOUDLY when `PROVIDER_REGISTRY_ADDR` is unset, in admin-api's existing shape (the
+/// `FACTORY_ADDR not configured` precedent) rather than vet-api's silent degrade.
+///
+/// A registrar screen fed a zero address would answer "no providers exist" — a definite statement
+/// about a registry it never asked. This is our own misconfiguration, and it must not be reported as
+/// a fact about the chain.
+fn provider_registry_addr(st: &AppState) -> Result<String, Resp> {
+    let addr = st.cfg.provider_registry_addr.trim();
+    if addr.is_empty() || is_zero_addr(addr) {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "PROVIDER_REGISTRY_ADDR not configured — the provider registrar surface cannot read or \
+             write without it. Set it to the deployed ProviderRegistry (deployments/roax.json key \
+             `ProviderRegistry`) and restart.",
+        ));
+    }
+    if !is_valid_addr(addr) {
+        return Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "PROVIDER_REGISTRY_ADDR is malformed (expected a 0x-prefixed 20-byte address)",
+        ));
+    }
+    Ok(addr.to_lowercase())
+}
+
+/// The `Authority` every registrar write is gated by: `ProviderRegistry` is `Ownable2Step` with ONE
+/// authority key and no independently grantable role (`hasRole` merely projects `owner()`).
+fn provider_registry_authority(registry: &str) -> Authority {
+    Authority::Owner {
+        owner_target: registry.to_string(),
+    }
+}
+
+/// Read one provider's full registrar view: record, identity anchor, and service-creation approvals.
+///
+/// The approvals arm is deliberately tri-state. `_serviceCreationApprovals` is private with no
+/// getter, so the only direct evidence is the `ServiceCreationApprovalSet` log; a log read that FAILS
+/// yields `Unavailable` with its reason and never an empty approval set. Reporting the two the same
+/// way would tell an admin a provider is approved for nothing on the strength of a read that never
+/// happened — and the remedy for the two differs entirely.
+async fn provider_view(st: &AppState, registry: &str, provider_id: &str) -> Result<Value, Resp> {
+    let record = st
+        .chain
+        .provider_record(registry, provider_id)
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("provider({provider_id}): {e}")))?;
+    // The anchor is only meaningful for a registered provider; for an unregistered id the contract
+    // answers a zero-filled struct, which would render as a real anchor with revision 0.
+    let anchor = if record.registered {
+        match st.chain.provider_identity_anchor(registry, provider_id).await {
+            Ok(a) => json!(a),
+            Err(e) => json!({ "unavailable": e.to_string() }),
+        }
+    } else {
+        Value::Null
+    };
+    let approvals = match st
+        .chain
+        .service_creation_approval_log(registry, provider_id)
+        .await
+    {
+        Ok(events) => ApprovalsRead::Resolved {
+            entries: fold_approvals(&events, &|k| record_type_label(k)),
+        },
+        Err(e) => ApprovalsRead::Unavailable {
+            reason: format!("the ServiceCreationApprovalSet log could not be read: {e}"),
+        },
+    };
+    Ok(json!({
+        "provider": record,
+        "identityAnchor": anchor,
+        "approvals": approvals,
+    }))
+}
+
+/// `GET /v1/admin/providers` — every registered provider with its standing, controller, identity
+/// anchor and service-creation approvals. `_providerIds` is append-only so paging is stable.
+async fn providers_list(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+
+    // Page to exhaustion rather than truncating: a registrar screen that silently showed the first
+    // page would render "the providers that exist" over a subset.
+    let mut ids: Vec<String> = Vec::new();
+    let mut cursor = 0u64;
+    loop {
+        let (page, next) = match st.chain.provider_page(&registry, cursor, 100).await {
+            Ok(p) => p,
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("providerPage(cursor={cursor}): {e}"),
+                )
+            }
+        };
+        let empty = page.is_empty();
+        ids.extend(page);
+        if empty || next <= cursor {
+            break;
+        }
+        cursor = next;
+    }
+
+    let mut providers = Vec::with_capacity(ids.len());
+    for id in &ids {
+        match provider_view(&st, &registry, id).await {
+            Ok(v) => providers.push(v),
+            Err(e) => return e,
+        }
+    }
+
+    let hosted = st.chain.signer_address(st.cfg.admin_signer_index).await;
+    let owner = st.chain.ownable_owner(&registry).await.ok();
+    ok(json!({
+        "registry": registry,
+        "providers": providers,
+        // Stated up front so the screen can say which path a write will take BEFORE the admin fills
+        // a form in, exactly as the Issuers page does for factory deploys.
+        "authority": {
+            "target": registry,
+            "owner": owner,
+            "hostedSigner": hosted.clone(),
+            "heldByHosted": match (&hosted, &owner) {
+                (Some(h), Some(o)) => Some(h.eq_ignore_ascii_case(o)),
+                _ => None,
+            },
+            "capability": "registerProvider / setProviderStanding / setServiceCreationApproval",
+        },
+        "identitySchema": {
+            "schema": PROVIDER_IDENTITY_SCHEMA,
+            "schemaId": PROVIDER_IDENTITY_SCHEMA_ID,
+            "hashAlgorithm": HASH_ALGORITHM_KECCAK256,
+        },
+    }))
+}
+
+/// `GET /v1/admin/providers/:providerId` — one provider's registrar view.
+async fn provider_detail(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    if !is_valid_provider_id(&provider_id) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "providerId must be a non-zero 0x-prefixed 20-byte value",
+        );
+    }
+    match provider_view(&st, &registry, &provider_id.to_lowercase()).await {
+        Ok(v) => ok(v),
+        Err(e) => e,
+    }
+}
+
+#[derive(Deserialize)]
+struct RegisterProviderReq {
+    /// The opaque KYC-assigned identifier. `bytes20`, non-zero, permanent.
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    /// The key that will act AS this provider on the self-service portal.
+    controller: String,
+    /// keccak256 of the registrar's identity statement. The statement text itself is never sent to
+    /// this backend or written on chain — the digest is a commitment to what the registrar asserted.
+    #[serde(rename = "identityDigest")]
+    identity_digest: String,
+}
+
+/// `POST /v1/admin/providers` — register a provider (`onlyOwner`, via `GovernanceAction`).
+///
+/// This is the real-world KYC gate: the caller is asserting it has cleared this entity. The contract
+/// checks only that the ids are non-zero and the anchor is well-formed — everything meaningful about
+/// the assertion is the registrar's own.
+async fn provider_register(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<RegisterProviderReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let provider_id = body.provider_id.trim().to_lowercase();
+    if !is_valid_provider_id(&provider_id) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "providerId must be a non-zero 0x-prefixed 20-byte value (the contract refuses zero with \
+             ZeroProviderId)",
+        );
+    }
+    let controller = body.controller.trim().to_lowercase();
+    if !is_valid_addr(&controller) || is_zero_addr(&controller) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "controller must be a valid non-zero 0x-prefixed 20-byte address",
+        );
+    }
+    let digest = body.identity_digest.trim().to_lowercase();
+    let digest_hex = digest.strip_prefix("0x").unwrap_or("");
+    let digest_well_formed =
+        digest_hex.len() == 64 && digest_hex.chars().all(|c| c.is_ascii_hexdigit());
+    if !digest_well_formed || digest_hex.chars().all(|c| c == '0') {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "identityDigest must be a non-zero 0x-prefixed 32-byte value (the contract refuses a zero \
+             digest with BadIdentityAnchor)",
+        );
+    }
+
+    // Refuse a re-registration before spending gas on a transaction the contract will revert with
+    // `AlreadyRegistered()`. A read that FAILS does not refuse - could-not-check may not stand in for
+    // a definite answer, so an unreadable registry still gets its attempt and the on-chain guard
+    // remains the real gate.
+    match st.chain.provider_record(&registry, &provider_id).await {
+        Ok(rec) if rec.registered => {
+            return err_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": "this providerId is already registered — a providerId is permanent and \
+                              cannot be reassigned",
+                    "providerId": provider_id,
+                    "controller": rec.controller,
+                    "standing": rec.standing,
+                }),
+            )
+        }
+        Ok(_) => {}
+        Err(_) => {}
+    }
+
+    let action = GovernanceAction {
+        target: registry.clone(),
+        calldata: register_provider_calldata(
+            &provider_id,
+            &controller,
+            &digest,
+            PROVIDER_IDENTITY_SCHEMA,
+            IDENTITY_CODEC_NONE,
+            HASH_ALGORITHM_KECCAK256,
+        ),
+        authority: provider_registry_authority(&registry),
+        summary: format!("registerProvider(providerId={provider_id}, controller={controller})"),
+    };
+    let results = match dispatch_all(&st, &[action]).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
+    ok(json!({
+        "providerId": provider_id,
+        "controller": controller,
+        "identityDigest": digest,
+        "identitySchema": PROVIDER_IDENTITY_SCHEMA,
+        "identitySchemaId": PROVIDER_IDENTITY_SCHEMA_ID,
+        // Registration lands the provider at PENDING (ProviderRegistry.sol:300), and
+        // `canWriteProvider` admits only ACTIVE - so this alone does NOT let the provider act.
+        "standingAfterRegistration": Standing::Pending,
+        "nextStep": "setProviderStanding(ACTIVE) — a newly registered provider is PENDING, and \
+                     canCreateService folds canWriteProvider, which requires ACTIVE",
+        "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
+    }))
+}
+
+#[derive(Deserialize)]
+struct ProviderStandingReq {
+    /// `active` | `suspended` | `retired`. The contract reverts `InvalidStanding()` on the other two.
+    standing: String,
+}
+
+/// `POST /v1/admin/providers/:providerId/standing` — move a provider's standing (`onlyOwner`).
+///
+/// Required for the journey, not optional: `registerProvider` writes PENDING and `canWriteProvider`
+/// admits only ACTIVE, so without this the provider's own deploy preflight reads `provider-standing:
+/// fail` forever.
+async fn provider_set_standing(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Json(body): Json<ProviderStandingReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let provider_id = provider_id.trim().to_lowercase();
+    if !is_valid_provider_id(&provider_id) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "providerId must be a non-zero 0x-prefixed 20-byte value",
+        );
+    }
+    let Some(next) = Standing::parse(&body.standing) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "standing must be one of active, suspended, retired — the contract refuses none and \
+             pending with InvalidStanding()",
+        );
+    };
+
+    // Same rule as registration: a definite read may refuse a doomed transaction, an unreadable one
+    // may not. `NoChange()` and `RetiredStanding()` are both real reverts worth not paying for.
+    if let Ok(rec) = st.chain.provider_record(&registry, &provider_id).await {
+        if !rec.registered {
+            return err(
+                StatusCode::NOT_FOUND,
+                "this providerId is not registered — register it before setting a standing",
+            );
+        }
+        if rec.standing == next {
+            return err_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": format!("this provider is already {:?} — the contract refuses a no-op \
+                                      standing change with NoChange()", next),
+                    "standing": rec.standing,
+                }),
+            );
+        }
+        if rec.standing == Standing::Retired {
+            return err_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": "RETIRED is terminal — the contract refuses every further transition \
+                              with RetiredStanding()",
+                    "standing": rec.standing,
+                }),
+            );
+        }
+    }
+
+    let action = GovernanceAction {
+        target: registry.clone(),
+        calldata: set_provider_standing_calldata(&provider_id, next),
+        authority: provider_registry_authority(&registry),
+        summary: format!("setProviderStanding(providerId={provider_id}, standing={next:?})"),
+    };
+    let results = match dispatch_all(&st, &[action]).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
+    ok(json!({
+        "providerId": provider_id,
+        "standing": next,
+        "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
+    }))
+}
+
+#[derive(Deserialize)]
+struct ServiceApprovalReq {
+    /// A record-type label ("VACCINATION") or an explicit `0x`+64-hex key.
+    #[serde(rename = "recordType")]
+    record_type: String,
+    /// The intended state, sent explicitly rather than as a toggle so the request says what it wants
+    /// rather than what it thinks is currently true.
+    allowed: bool,
+}
+
+/// `POST /v1/admin/providers/:providerId/service-approval` — pre-authorize a provider to ask the
+/// self-service factory for a clone of one record type (`onlyOwner`).
+///
+/// This grants no issuance and attaches no clone; it is the gate the provider's `createIssuer` is
+/// checked against.
+async fn provider_set_service_approval(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Json(body): Json<ServiceApprovalReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let provider_id = provider_id.trim().to_lowercase();
+    if !is_valid_provider_id(&provider_id) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "providerId must be a non-zero 0x-prefixed 20-byte value",
+        );
+    }
+    let label = body.record_type.trim();
+    if label.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "recordType is required (a label like VACCINATION, or an explicit 0x + 64 hex key)",
+        );
+    }
+    let key = to_record_type_key(label);
+    if key.trim_start_matches("0x").chars().all(|c| c == '0') {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "recordType resolves to the zero key — the contract refuses it with \
+             InvalidServiceMetadata()",
+        );
+    }
+
+    if let Ok(rec) = st.chain.provider_record(&registry, &provider_id).await {
+        if !rec.registered {
+            return err(
+                StatusCode::NOT_FOUND,
+                "this providerId is not registered — register it before approving a record type",
+            );
+        }
+    }
+    // `setServiceCreationApproval` reverts `NoChange()` on a redundant write, so a definite read of
+    // the current bit avoids paying for a doomed transaction. An UNAVAILABLE log deliberately does
+    // NOT refuse: we could not check, and could-not-check may not stand in for "already set" and
+    // block a legitimate approval. The contract's own guard remains the real gate.
+    match st
+        .chain
+        .service_creation_approval_log(&registry, &provider_id)
+        .await
+    {
+        Ok(events) => {
+            let read = ApprovalsRead::Resolved {
+                entries: fold_approvals(&events, &|k| record_type_label(k)),
+            };
+            if read.approved(&key) == Some(body.allowed) {
+                return err_json(
+                    StatusCode::CONFLICT,
+                    json!({
+                        "error": format!(
+                            "this provider's {label} approval is already {} — the contract refuses a \
+                             no-op with NoChange()",
+                            body.allowed
+                        ),
+                        "recordType": label,
+                        "recordTypeKey": key,
+                        "allowed": body.allowed,
+                    }),
+                );
+            }
+        }
+        Err(_) => { /* could-not-check: attempt the write rather than refusing it */ }
+    }
+
+    let verb = if body.allowed { "approve" } else { "withdraw" };
+    let action = GovernanceAction {
+        target: registry.clone(),
+        calldata: set_service_creation_approval_calldata(&provider_id, &key, body.allowed),
+        authority: provider_registry_authority(&registry),
+        summary: format!(
+            "setServiceCreationApproval({verb} providerId={provider_id}, recordType={label})"
+        ),
+    };
+    let results = match dispatch_all(&st, &[action]).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
+    ok(json!({
+        "providerId": provider_id,
+        "recordType": label,
+        "recordTypeKey": key,
+        "allowed": body.allowed,
+        "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
+    }))
+}
+
+// ============================================================================================
 // PR-E — direct whitelist management (grant / revoke) as a standalone control-plane action.
 // Promotes the read-only whitelist viewer to a management console: an operator whitelists or delists
 // an arbitrary (signer, capability) pair on demand — decoupled from the issuer-application lifecycle
@@ -2137,6 +2646,16 @@ pub fn admin_router(state: AppState) -> Router {
         .route("/v1/admin/factory/issuers", post(factory_create_issuer))
         .route("/v1/admin/governance/authority", get(governance_authority))
         // PR-E: direct whitelist management (grant / revoke) via GovernanceAction
+        .route("/v1/admin/providers", get(providers_list).post(provider_register))
+        .route("/v1/admin/providers/:providerId", get(provider_detail))
+        .route(
+            "/v1/admin/providers/:providerId/standing",
+            post(provider_set_standing),
+        )
+        .route(
+            "/v1/admin/providers/:providerId/service-approval",
+            post(provider_set_service_approval),
+        )
         .route("/v1/admin/whitelist/grant", post(whitelist_grant))
         .route("/v1/admin/whitelist/revoke", post(whitelist_revoke))
         // PR-B: unscoped oversight-indexer consumption + signer→business directory

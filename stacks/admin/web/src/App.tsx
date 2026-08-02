@@ -5,6 +5,7 @@ import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
 import { Activity } from "./pages/Activity";
 import { Issuers } from "./pages/Issuers";
+import { Providers } from "./pages/Providers";
 import { Businesses } from "./pages/Businesses";
 import { IssuerApplications } from "./pages/IssuerApplications";
 import { Whitelist } from "./pages/Whitelist";
@@ -23,6 +24,8 @@ export function App() {
       <Route path="/dashboard" element={<Layout title="Dashboard"><Dashboard /></Layout>} />
       <Route path="/activity" element={<Layout title="On-chain activity"><Activity /></Layout>} />
       <Route path="/issuers" element={<Layout title="Issuers / Factory"><Issuers /></Layout>} />
+
+      <Route path="/providers" element={<Layout title="Providers"><Providers /></Layout>} />
 
       <Route path="/onboard" element={<Layout title="Onboard issuer"><Wizard /></Layout>} />
       <Route path="/businesses" element={<Layout title="Business registry"><Businesses /></Layout>} />

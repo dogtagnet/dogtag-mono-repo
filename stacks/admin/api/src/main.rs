@@ -49,6 +49,10 @@ async fn main() {
         ),
         sbt_addr: env("SBT_ADDR", "0xBEbc45A838643D27004827b797b30A464b2b02c0"),
         factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
+        provider_registry_addr: env(
+            "PROVIDER_REGISTRY_ADDR",
+            "0x0000000000000000000000000000000000000000",
+        ),
         // Store a real password HASH, never the plaintext (audit L4) — admin_login verifies against
         // this with auth::verify_password. Optional `ADMIN_PASSWORD_HASH` ("<salt_hex>$<hash_hex>")
         // overrides; otherwise the ADMIN_PASSWORD plaintext (still required non-default in prod by the

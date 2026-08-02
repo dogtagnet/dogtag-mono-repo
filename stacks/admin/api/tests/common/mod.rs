@@ -23,6 +23,7 @@ pub const ADMIN_PW: &str = "admin-pw";
 pub const REGISTRY: &str = "0x00000000000000000000000000000000000000a1";
 pub const SBT: &str = "0x00000000000000000000000000000000000000b2";
 pub const FACTORY: &str = "0x00000000000000000000000000000000000000fa";
+pub const PROVIDER_REGISTRY: &str = "0x00000000000000000000000000000000000000c2";
 
 /// Build a fully hermetic AppState (MemChain/MemStore/MemVault + mock DNS/business). Returns the state
 /// plus typed handles to the chain/business/dns mocks for assertions.
@@ -40,6 +41,7 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
         sbt_addr: SBT.to_string(),
         factory_addr: FACTORY.to_string(),
+        provider_registry_addr: PROVIDER_REGISTRY.to_string(),
         admin_password_hash: admin_api::auth::hash_password(ADMIN_PW),
         admin_signer_index: 0,
         propose_only: false,
