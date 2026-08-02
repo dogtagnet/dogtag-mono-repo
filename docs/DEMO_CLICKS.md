@@ -24,18 +24,38 @@ Demo passwords (prefilled): operator `operator`, admin `admin`. Record type in t
 
 ## Two facts to hold before you start
 
-Both change how you read everything below, and neither was true when this guide was last revised.
+Both change how you read everything below, and neither was stated when this guide was last revised.
 
-### 1. The shop stores are backed by MongoDB, so shop data survives a restart
+### 1. Whether shop data survives a restart depends on the store the backend was handed
 
-vet-api and groomer-api are started with `MONGO_URI` (the demo uses `mongodb://127.0.0.1:27018`), so
-**clients, pets, appointments and issued records persist across a backend restart**.
-Earlier revisions of this guide were written when those lived in an in-memory store, and several notes
-implied a restart wipes them. It does not.
+vet-api and groomer-api choose their store from **`MONGO_URI`** (`build_store` in
+`stacks/vet/api/src/main.rs`). Set and non-empty gives a persistent **MongoStore**, and
+**clients, pets, appointments and issued records then persist across a backend restart**.
+Unset or empty gives an ephemeral **MemStore**, and all of that is lost on restart.
 
-What a restart *does* still reset: **operator sessions** and **custody** (see the box below), plus the
-**government** stack's own records, which run on an ephemeral `MemStore` in demo mode.
-So after a restart expect your clients and pets to still be there, and expect to sign in and unlock again.
+**Which one you have is invisible in every portal, and `scripts/demo-up.sh` does not set the variable
+itself** - it only re-exports whatever `contracts/.env` happens to carry, while the
+`stacks/{vet,groomer}/docker-compose.yml` stacks always set it. So a bare `demo-up.sh` boot is
+**in-memory** unless your own `contracts/.env` supplies a `MONGO_URI`.
+Ask the running process, which is the only place the answer actually is:
+
+```
+ps eww "$(lsof -nP -iTCP:41874 -sTCP:LISTEN -t)" | tr ' ' '\n' | grep -c '^MONGO_URI='
+# 1 = persistent MongoStore, 0 = ephemeral MemStore.   Groomer is :43618.
+```
+
+**Do not try to answer this from the backend log.** vet-api builds its filter with
+`EnvFilter::from_default_env()` and nothing sets `RUST_LOG`, so it logs at **ERROR** only and its
+`connected to MongoStore` startup line is never printed - an empty log there means "this backend says
+nothing at this level", not "no Mongo". (government-api defaults itself to `info` and does not have this
+problem; the comment at `stacks/government/api/src/main.rs` records why.)
+
+Earlier revisions of this guide assumed the in-memory case everywhere, so read their restart-wipes-it
+notes against whichever store you actually have.
+
+What a restart resets on **either** store: **operator sessions** and **custody** (see the box below),
+plus the **government** stack's own records, which run on an ephemeral `MemStore` in demo mode.
+So after a restart, expect to sign in and unlock again regardless.
 
 ### 2. Nothing is repointed to the generation-2 contracts
 
@@ -67,7 +87,7 @@ cast call 0xD3B121FEaCde93b95288912EAdbB10824550FdBF "boundCloneCount()(uint256)
 
 ## Which stack am I on? Check before reporting a bug
 
-Two sections below (§M oversight, §O the mirror) behave **completely differently** depending on how the
+Two sections below (§K oversight, §O the mirror) behave **completely differently** depending on how the
 oversight indexer was booted, and the difference is not visible in any portal.
 A stack booted by `scripts/demo-up.sh` is not the only shape you may meet: the indexer is often started
 by hand against the live chain instead. One command tells you which you have:
@@ -88,7 +108,7 @@ A build predating this reports neither key, which is exactly the ambiguity it re
 The tunnel hostnames are the other thing that moves.
 `demo-up.sh` gives **each backend its own** public URL, and they **rotate on every restart**, so never
 copy one out of this guide or out of an old note.
-Read the current one from the backend itself: government publishes it at `GET /v1/../health` as
+Read the current one from the backend itself: government publishes it at `GET /health` as
 `deploymentUrl`, and for vet and groomer it is whatever you passed as `VET_PUBLIC_URL` /
 `GROOMER_PUBLIC_URL` (otherwise `http://$LAN_IP:<port>`), which is also the host printed inside every QR
 that backend mints.
@@ -233,8 +253,10 @@ Setup is a linear wizard; each step auto-advances on success.
 1. Go to **Issue a record**.
 2. Click **Fill demo data** (valid rabies cert; recordType `VACCINATION`). This fills the cert fields
    but **leaves `dogTagId` blank** - the demo-fill no longer clobbers it (a fixed footgun).
-   It also fills a **microchip** number (`985112636323787` in the demo data). Note it: §I compares that
-   exact leaf against what the shop has on file for the pet.
+   It also fills a **microchip** number, **generated fresh on every fill** (`985112` plus a timestamp
+   tail), so yours will not be the value printed in this guide's evidence section. **Write down the
+   value your own form shows**: §I compares that exact leaf against what the shop has on file for the
+   pet, and typing a different one there produces a Mismatch, which refuses the DogTag link.
 3. **Set the `dogTagId` field = the dog tag's handle from §A1** (the numeric `dogTagId` the Register-pet
    wizard allocated). It **must match**: the credential's `dogTagId` leaf is what ties the record to
    the sealed tag (on-chain the tag key is `field_of_value(handle)`), and the phone attaches an
@@ -467,17 +489,23 @@ There is **no mode picker** - owner-hidden ZK consent is the only verify flow.
 
 ---
 
-## G. The attack catalogue - eleven complete frauds, each caught by a named check
+## G. The attack catalogue - eleven scripted records, each declaring the outcome it must produce
 
 **Admin portal → Verification bench**, the card below the mutation buttons: **The attack catalogue**.
 This is new since the last revision of this guide, and it is the fastest way to see the whole guarantee
 in one click.
 
 Unlike the §E3 buttons these need **no loaded record and make no network call**. Each is a complete
-fraudulent record with **its own scripted chain**, so they can pose chain states a live chain cannot be
-asked to produce: a signer delisted after it issued, a contract the factory never deployed vouching for a
-root, a registry that does not govern the clone.
-**Each scenario declares which check must refuse it, and a run that diverges from that declaration is
+record with **its own scripted chain**, so they can pose chain states a live chain cannot be asked to
+produce: a signer delisted after it issued, a contract the factory never deployed vouching for a root, a
+registry that does not govern the clone.
+
+**They are not all frauds, and that is deliberate.** Seven must come out **not valid**, **three must
+come out valid** (a genuine control, a genuine credential whose signer was delisted afterwards, and a
+genuine credential this client is mis-paired against) and one must produce **no verdict at all**. A
+catalogue of nothing but frauds looks perfect against a verifier that refuses everything, so
+over-refusal - honest credentials rendered as forgeries - is a failure this set is built to catch.
+**Each scenario declares its own expected outcome, and a run that diverges from that declaration is
 called out in red.**
 
 Click **Run the whole catalogue**. Walked result: all eleven matched their declarations, no red.
@@ -1226,7 +1254,8 @@ Revised **2026-08-02** against a live stack on ROAX chainId 135. Every result qu
 observed in a browser or over `curl`/`cast` on that date, not inferred from source.
 
 **Walked end to end:** the custody locked banner and the in-place unlock prompt; the vet Issue form
-(demo fill leaves `dogTagId` blank, fills microchip `985112636323787`) through **Sign & Issue** to a real
+(demo fill leaves `dogTagId` blank, and filled microchip `985112636323787` on that run - the value is
+generated per fill, so yours will differ) through **Sign & Issue** to a real
 anchored root with `isValid = true`; **Records** and its **QR** minting a fresh one-time share URL; the
 government **Issue** flow for `TRAVEL_CLEARANCE` through **Issue + anchor** to **✓ anchored on-chain**,
 independently confirmed with `cast` (`isValid` true, `rootIssuer` equal to the TRAVEL_CLEARANCE clone);
