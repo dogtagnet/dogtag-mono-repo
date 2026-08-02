@@ -244,6 +244,13 @@ Three notes on that block:
   many times over and every checkout runs the same command; a pattern kill reaches whichever instance
   it happens to hit.
 
+**These are exports for this session, and the `.env.example` files stay blank deliberately - do not
+"fix" them by writing these addresses in.**
+A value shipped in a template opts every deployment that copies it into reading the generation-2
+contracts without anyone deciding to, which is exactly the accident the blank is there to prevent.
+The consequence to expect: start the portals any other way and §2 reports itself unconfigured again.
+That is the setting working, not a regression.
+
 ---
 
 ## 1. Admin
@@ -436,9 +443,13 @@ preflight that reports whether an action would succeed* is made from the provide
 
 1. Click **Connect wallet** in the **top-right of the portal header** - not on the page itself - and
    pick your wallet.
-2. Make sure it is on ROAX. If the header shows a **Switch to ROAX** button rather than a green
-   **ROAX** badge, click it. *(That button is in the shared wallet header component; this walk
-   connected an already-ROAX wallet and did not see it fire.)*
+2. Make sure it is on ROAX.
+   If the header shows a **Switch to ROAX** button rather than a green **ROAX** badge, click it.
+   *(That button is in the shared wallet header component; this walk connected an already-ROAX wallet
+   and did not see it fire.)*
+   **Do this before you deploy, not after.** The **Check** buttons do not test which chain your wallet
+   is on - the reads go to the portal's own endpoint - so on the wrong chain every check still passes
+   and only the **Deploy** in §2.4 fails, as a wallet error that does not obviously name the cause.
 3. Paste your provider id from §1.2 into **Provider id**, unless §0.6's `VITE_PROVIDER_ID` already
    filled it.
 4. Leave **Record type** at `VACCINATION` - that is the record type §1.2 approved.
