@@ -14,12 +14,16 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  DEMO_CRM_PET,
 } from "@dogtag/ui";
 import type { ClientPetInput, CrmClient, CrmPet, PetCreateInput } from "@dogtag/ui";
-import { PawPrint, Plus, Search, Users } from "lucide-react";
+import { PawPrint, Plus, Search, Users,
+  Sparkles,
+} from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 import { ListPlaceholder, PAGE_SIZE, Pager, useAction, useDebounced, useList } from "../app/crm";
 
 /**
@@ -337,12 +341,35 @@ function PetForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: () 
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-base">New pet</CardTitle>
-        <CardDescription>
-          A pet belongs to an owner, so pick the owner first. Not in the book yet? Create the client,
-          then come back — or add the pet directly on their record.
-        </CardDescription>
+      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+        <div>
+          <CardTitle className="text-base">New pet</CardTitle>
+          <CardDescription>
+            A pet belongs to an owner, so pick the owner first. Not in the book yet? Create the client,
+            then come back — or add the pet directly on their record.
+          </CardDescription>
+        </div>
+        {env.demoMode && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              setPet((prev) => ({
+                ...prev,
+                name: DEMO_CRM_PET.name,
+                species: DEMO_CRM_PET.species,
+                breed: DEMO_CRM_PET.breed,
+                sex: DEMO_CRM_PET.sex,
+                dateOfBirth: DEMO_CRM_PET.dateOfBirth,
+                notes: DEMO_CRM_PET.notes,
+                microchipCode: DEMO_CRM_PET.microchipCode,
+              }))
+            }
+          >
+            <Sparkles className="h-4 w-4" /> Fill demo data
+          </Button>
+        )}
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="space-y-4">

@@ -713,13 +713,13 @@ The admin portal's `/bench` (`stacks/admin/web/src/pages/VerificationBench.tsx`,
 - **The engine never re-implements verification.** `runVerificationBench` (`packages/ui/src/wallet/verificationBench.ts`) calls the SAME `verifyCredentialOnchain` above and copies its verdict verbatim. A bench that computed its own answer would agree with itself and prove nothing, so if you add a check, source it from the verifier's response or from an observed read - never from a second copy of the rule.
 - **Per-check evidence comes from a recording decorator, not from changing the verifier.** The verifier reports fragments but not provenance: `issuerAddr` is `resolvedClone ?? documentStore`, so its response ALONE cannot say whether the factory resolved the clone or the document's own claim was the fallback - and that distinction is the whole issuer pillar. `recordingReader` wraps the `IssuerChainReader` seam and observes which contract was asked, what it answered, and at which block. It forwards arguments unchanged and re-throws the original error, so it can only observe; that transparency is what makes the log admissible as evidence about the VERIFIER's behaviour rather than the wrapper's.
 - **`could-not-run` is load-bearing, and the reason field is part of the contract.** `verifyCredentialOnchain` fails closed (a failed read rejects the whole promise, yielding no verdict), which is right for a verifier and useless for an operator trying to tell "this credential is bad" from "we could not ask". `BenchCheck.couldNotRunReason` is present if and ONLY if the outcome is `could-not-run`, and the row renders NEUTRAL - never a softened red, never a green. `BenchReport.verdict` is `null` rather than `false` when the verifier produced none.
-- **Distinctions that must not collapse** (each has a named test): the factory answering the zero address is a `fail` (we asked; that IS evidence about the credential) while a failed `rootIssuer` READ is `could-not-run` (we could not ask); an absent `validUntil` is `could-not-run`, not "not expired"; and the on-chain domain claim and the DNS half are SEPARATE rows, because the TXT lookup is server-side (`dogtag-dns-rs`) and unreachable from the browser - one merged green row would imply a lookup that never happened.
+- **Distinctions that must not collapse** (each has a named test): the factory answering the zero address is a `fail` (we asked; that IS evidence about the credential) while a failed `rootIssuer` READ is `could-not-run` (we could not ask); and an absent `validUntil` is `could-not-run`, not "not expired". The on-chain-domain-claim and DNS rows used to be a third example of this - kept SEPARATE because the TXT lookup is server-side (`dogtag-dns-rs`) and unreachable from the browser, so one merged green row would imply a lookup that never happened - but both rows were REMOVED; see "The bench's issuer-domain rows were REMOVED" below.
 - **Block pinning is additive across the seven `contracts.ts` readers + `roaxIssuerChainReader`.** Omitted still reads `latest`. A run whose head read fails reports itself unanchored rather than naming a block it never saw - do NOT read the head separately and stamp unpinned reads with it.
-- **`IssuerDomainRegistry` is read from config with NO fallback** (`VITE_ISSUER_DOMAIN_REGISTRY_ADDR`), unlike the factory/registry which fall back to the SDK defaults. The contract set is still being revised and that one may be folded away, so unset makes that single check report itself unavailable instead of reading a constant that may have moved.
-- **`gatesVerdict` says which rows the verifier folds in.** Its verdict is integrity + on-chain status + the issuer pillar; expiry and the two issuer-domain rows feed NONE of it, so an expired-but-anchored credential legitimately renders `verdict: true` above a red expiry row. That is a real property (the chain records anchoring and revocation and has no concept of a validity window), but unmarked it reads as a self-contradiction - so `GATES_VERDICT` is exhaustive over `BenchCheckId` and the page marks non-gating rows. If you add a check, decide whether the VERIFIER considers it; do not guess from whether it sounds important.
+- **The bench reads NO domain registry any more.** `IssuerDomainRegistry` used to be read from config with no fallback (`VITE_ISSUER_DOMAIN_REGISTRY_ADDR`); that variable and both rows it fed are gone - see "The bench's issuer-domain rows were REMOVED" below, and do not reinstate either.
+- **`gatesVerdict` says which rows the verifier folds in.** Its verdict is integrity + on-chain status + the issuer pillar; expiry, the configured-registry row and the advisory grant-at-issuance row feed NONE of it, so an expired-but-anchored credential legitimately renders `verdict: true` above a red expiry row. That is a real property (the chain records anchoring and revocation and has no concept of a validity window), but unmarked it reads as a self-contradiction - so `GATES_VERDICT` is exhaustive over `BenchCheckId` and the page marks non-gating rows. If you add a check, decide whether the VERIFIER considers it; do not guess from whether it sounds important.
 - **The adversarial half declares what will NOT catch each lie** (`packages/ui/src/wallet/benchMutations.ts`). Relabelling `issuer.name` trips **nothing** on this path - `caughtBy: []` - and that is the honest answer, not a gap to paper over: the on-chain `name()` comparison that does catch it lives in the government verify route, which is server-side. A mutation returns `null` rather than inventing a field the record lacks.
 - **Tests**: `packages/ui/test/verificationBench.test.ts` + `test/contractsBlockPinning.test.ts` + `test/benchScenarios.test.ts`. Every read in both chain fakes is keyed on the contract it is put to - the six issuer/factory getters on the CONTRACT address, and both registry reads (the grant log and `DogTagIssuer.registry()`) on the REGISTRY address - because a fake that ignores which contract it is asked about cannot model "the hostile contract answers `true` while the clone the factory named answers `false`", which is how forged-issuer tests pass for the wrong reason (see the `MockChain` note in `crates/dogtag-standard-rs/src/verify.rs`). **State that per-reader, never as a blanket "address-keyed throughout"**: this file and both suites once carried the blanket claim while `grants` discarded its registry argument, and the blanket wording is exactly why that survived review - it read as a property of the module rather than of each reader. Both suites now assert the registry keying DIRECTLY (a read against a registry that never recorded the grant must come back empty), because a fake that agrees with itself cannot be caught by any assertion about the resulting report. Block-pinning is covered by `vi.mock`-ing viem's `createPublicClient` and asserting what reaches `readContract`/`getLogs`; typecheck alone would accept a `blockNumber` threaded halfway and dropped before the call.
-- **Every reader defaults to a LIVE viem one, so a test must inject ALL of them.** `runVerificationBench` now takes four (`reader`, `authorityReader`, `grantHistoryReader`, `domainClaimReader`), and a suite that injected only the first would send real `eth_call`/`eth_getLogs` at ROAX from a unit test - slow, flaky, and (for a surface whose entire subject is what a chain answered) able to go green against state nobody in the repo wrote. Both suites inject through ONE helper each (`bench()`, `world()`) so a fifth reader is wired in one place.
+- **Every reader defaults to a LIVE viem one, so a test must inject ALL of them.** `runVerificationBench` takes three (`reader`, `authorityReader`, `grantHistoryReader` - the fourth, `domainClaimReader`, went with the issuer-domain rows), and a suite that injected only the first would send real `eth_call`/`eth_getLogs` at ROAX from a unit test - slow, flaky, and (for a surface whose entire subject is what a chain answered) able to go green against state nobody in the repo wrote. Both suites inject through ONE helper each (`bench()`, `world()`) so a fourth reader is wired in one place.
 
 ### The verification bench's ATTACK CATALOGUE, and the delisting divergence it found (`dogtag-vbench-v7`)
 
@@ -745,7 +745,7 @@ loaded record and can script chain states a live chain cannot be asked to produc
 - **Two scenarios record honest LIMITS rather than passes.** `unanchoredSelfConsistentForgery` produces a report INDISTINGUISHABLE from a genuine credential anchored under a superseded contract generation (both resolve `rootIssuer` to zero); the repo's own rule is that retiring the previous generation is intended and must not be diagnosed as a bug. `wrongChainEndpoint` asserts that NOT ONE row is a `fail` - the transport guard refuses to send an address-bound read to a peer reporting the wrong chain, so every on-chain row is `could-not-run` naming the mismatch and the verdict is `null`. "The factory has no record of this root" would be an accusation nobody was in a position to make.
 - **Verified by MUTATION, not by reading the diff.** Read this entry as HISTORICAL evidence from the slice that built the catalogue (#124), when the verifier still read the current-state getter. Two of its mutations no longer apply as written: "editing the delisted-after expectation down to match the bug" is moot now that the code agrees with the expectation, and the final clause's premise - that `isWhitelistedFor` already records the configured registry - is false, because the pillar no longer makes that read at all. Everything else still reproduces. Nine mutations in total, each reddening its own named tests. The original four: unfiltering the grant history from the issuance point, dropping the registry comparison, feeding the unanchored-forgery scenario an unreachable chain instead of an answering one, and editing the delisted-after expectation down to match the bug (six red). Named catchers include `distinguishes the two delisting cases - the check is not simply reading the current state`, `was refused by a factory that WAS reachable and answering`, and `MUST still verify - the scenario's expectation says so, and is not edited to match the code`. Five more, added with the governing-registry fix: reading the CONFIGURED registry for the grant history (3 red, incl. `foreign-registry`'s own vector); making either fake discard its registry argument (1 red, the direct fake-integrity guard); reverting the could-not-ask/answered-with-nothing split (2 red); turning the no-authority case back into a `fail` (2 red); and MISLABELLING the recorded `whitelistHistory` read's `contract` while leaving the call site correct (2 red) - that last one deliberately, because the citation is the only half no generic invariant test can police: `isWhitelistedFor` already records the configured registry, so a false citation would name a contract that IS in the read log and the "cites no contract absent from its own reads" test would pass over it. A catalogue whose assertions cannot fail certifies itself.
 - **`relabelledRecordType` covers "not whitelisted FOR THE TYPE CLAIMED", not the flat "never whitelisted".** The flat case is UNREACHABLE for a factory-resolved root by the same write-path argument, so scripting it would test a state the protocol cannot produce. The coverage test's label says so rather than implying the literal case was covered.
-- **The two issuer-domain rows are unwired across the whole catalogue BY CONSTRUCTION** (no scenario configures an `IssuerDomainRegistry`), so they read `could-not-run` everywhere. The card description says so explicitly, because a "could not run" whose real reason is "the catalogue never wired this" would otherwise read as a property of the RECORD.
+- **The two issuer-domain rows were REMOVED, and the catalogue's `expected` vectors lost them with the `BenchCheckId` union.** They were previously unwired across the whole catalogue by construction (no scenario configured an `IssuerDomainRegistry`), so they read `could-not-run` everywhere and the card description had to say so - a "could not run" whose real reason is "the catalogue never wired this" would otherwise read as a property of the RECORD. Since `expected` is exhaustive over `BenchCheckId`, a re-added row is a compile error in every scenario until it is answered.
 - **Scenario results are deterministic and hermetic, and a test asserts it** (same scenario twice -> identical outcomes, verdict and read log). That is what licenses the page leaving one card's result on screen while another is re-run: an earlier click's result is not stale, it is identical to what a fresh click would produce. It is also why "Run all" commits each result AS IT COMPLETES and catches inside the loop: `runVerificationBench` is contractually non-throwing for a bad record but `build()` is not (a fixture that lost its tamperable leaf, a malformed salt), and accumulating into a local threw away every scenario that had already succeeded and abandoned every one after it, leaving a toast and an empty page.
 - **`foreignRegistry`'s grant sits in FOREIGN_REGISTRY, and that is protocol-coherence rather than test convenience.** `issue()` is `onlyWhitelisted` against the clone's own `registry` slot, so a clone governed by that registry cannot have anchored anything unless THAT registry recorded the grant; a fixture with the grant only in the configured registry would be a chain state the protocol cannot produce. It is also the live catcher for the governing-registry rule - point the row back at `registryAddr` and this scenario goes red, because the configured registry's log is genuinely empty. Its `expected` vector is unchanged (`registry-governs-issuer: fail`, everything else honest) and it carries no `knownDefect`: `knownDefect` stays on `signer-delisted-after-issuance` alone, and a test asserts that.
 
@@ -1618,9 +1618,11 @@ rather than a value swap.
 
 **`VITE_DOGTAG_ISSUER_FACTORY_ADDR` FALLS BACK to the SDK default when unset**
 (`packages/ui/src/wallet/verificationBench.ts`), so leaving it unset after a cutover does not disable
-the bench's anchor check - it silently keeps reading generation 1. Its neighbour
-`VITE_ISSUER_DOMAIN_REGISTRY_ADDR` has no fallback and fails closed. Adjacent lines, opposite failure
-modes; the fallback one is the one that can lie.
+the bench's anchor check - it silently keeps reading generation 1. A fallback-free key fails closed
+instead; this one can lie, so check which kind you are editing. (Its neighbour
+`VITE_ISSUER_DOMAIN_REGISTRY_ADDR` was the fallback-free example until it was removed outright - see
+"The bench's issuer-domain rows were REMOVED"; `VITE_PROVIDER_REGISTRY_ADDR` and the other blank S-15
+keys are the surviving ones.)
 
 **A source edit to a mobile bundle is NOT a repoint.** `apps/*/roax.json` are compile-time, so the
 repoint takes effect only after a rebuild AND a reinstall on each handset (C-10, the cutover's long
@@ -4046,9 +4048,9 @@ Two consequences worth carrying. Documentation that asserts one of these outcome
 the other stack, so **branch on the observable rather than picking a side** - `docs/DEMO_CLICKS.md` does
 this in its "Which stack am I on?" section. And a per-portal `VITE_*` gap behaves the same way: a
 hand-started `vite dev` for `stacks/admin/web` typically carries only `VITE_DEMO_MODE=1`, which makes the
-Whitelist page report `VITE_ISSUER_REGISTRY_ADDR is not set` and the verification bench's issuer-domain
-row report itself unconfigured, while `demo-up.sh` passes both (the domain-registry address resolved from
-the ledger, which now HAS an `IssuerDomainRegistry` entry). Neither is a chain fault or a data fault.
+Whitelist page report `VITE_ISSUER_REGISTRY_ADDR is not set` while `demo-up.sh` passes it. That is not a
+chain fault or a data fault. (The bench's issuer-domain row was the other half of this pair until it was
+removed - see "The bench's issuer-domain rows were REMOVED".)
 
 Also note the tunnels are **per backend and rotate on every restart** (`VET_PUBLIC_URL` /
 `GROOMER_PUBLIC_URL` / the government stack's own `DEPLOYMENT_URL`), so a hostname copied out of a doc or
@@ -4101,11 +4103,10 @@ Kill the servers you started by the PID **on the port you chose**
 ### A GENUINELY anchored credential, on a chain you own, in about two minutes
 
 The verification surfaces (the admin `/bench`, `POST /verify/credential`, the wallet panel) all resolve
-the issuing clone from a **configured** factory, and the admin bench takes its RPC and all three
-addresses from `VITE_ROAX_RPC` / `VITE_ISSUER_REGISTRY_ADDR` / `VITE_DOGTAG_ISSUER_FACTORY_ADDR` /
-`VITE_ISSUER_DOMAIN_REGISTRY_ADDR`. So the whole trust chain can be stood up on a private anvil, which
-is how you exercise a **passing** verification without issuing on the captain's stack or spending ROAX
-gas. Reading his `/v1/records` first is worth one curl (`Bearer dogtag-gov-demo-token`), but the
+the issuing clone from a **configured** factory, and the admin bench takes its RPC and both addresses
+from `VITE_ROAX_RPC` / `VITE_ISSUER_REGISTRY_ADDR` / `VITE_DOGTAG_ISSUER_FACTORY_ADDR`. So the whole
+trust chain can be stood up on a private anvil, which is how you exercise a **passing** verification
+without issuing on the captain's stack or spending ROAX gas. Reading his `/v1/records` first is worth one curl (`Bearer dogtag-gov-demo-token`), but the
 government demo store is a `MemStore` and is usually empty after a restart.
 
 ```bash
@@ -5055,6 +5056,37 @@ Also: `pnpm --filter <pkg> dev -- --port N` does NOT reach vite (the `--` is pas
 and `strictPort` then fails on the config's own port). Run `./node_modules/.bin/vite --port N` from the
 package directory instead.
 
+### The bench's issuer-domain rows were REMOVED, and the two neighbours that were NOT
+
+`packages/ui/src/wallet/verificationBench.ts` no longer has `issuer-domain-claim` /
+`issuer-domain-dns`, `contracts.ts` no longer has `issuerDomainClaimOf`, and
+`VITE_ISSUER_DOMAIN_REGISTRY_ADDR` is gone from `stacks/admin/web`. Do not reinstate any of them, and
+in particular **do not "fix" this by repointing the bench at `ServiceDomainResolver`** - that is the
+C-9 repoint, and it would restore two permanently unanswered rows under a newer address.
+
+Both rows were dead, each for its own reason, and neither ever fed the verdict:
+`IssuerDomainRegistry` is deployed and EMPTY (`boundCloneCount()` reads 0 - re-check it before
+believing any of this), so the on-chain row could only ever report "published no domain claim"; and
+the DNS row was `could-not-run` BY CONSTRUCTION, since a TXT lookup is resolved server-side and the
+bench runs in a browser.
+
+**Three things that survive and are easy to delete by accident when chasing the word "domain":**
+
+- **`packages/ui/src/domain/issuerDomainBinding.ts` is a DIFFERENT THING and is LIVE.** It is the
+  six-state DISPLAY model backed by `crates/dogtag-dns-rs`, consumed by the government Verify page,
+  the admin issuer-application DNS-confirm dialog, `DomainBindingBadge`, and
+  `directory/types.ts` (which derives `DirectoryObservation` from it). None of them read the removed
+  address. Removing the registry's READS is not removing the binding.
+- **`government-api` still reads `ISSUER_DOMAIN_REGISTRY_ADDR`** (`stacks/government/.env.example`,
+  `chain.rs`, `routes.rs`). It is a backend, not a web app, and it was deliberately left alone.
+- **The two mobile bundles still carry the address** (`apps/*/roax.json`). They are COMPILE-TIME, so
+  changing them is a rebuild-and-reinstall (C-10), not an edit.
+
+**`make check-cutover-consumers` did NOT flag this, and that is not a bug in the gate.** The manifest
+declares CONSUMER FILES, not a per-address file list, and `stacks/admin/web/.env.example` still
+carries other moving addresses - so dropping one address from a still-declared file leaves the tree
+and the manifest in agreement. Do not read a green gate as proof that an address is untouched.
+
 ### The issuer↔domain DNS binding — read `docs/ISSUER_DOMAIN_BINDING.md` before touching it
 
 The normative convention, the three-link verification chain, the six states and the display rules all
@@ -5113,15 +5145,16 @@ recognises.
 and only the factory exposes `registry()`. Calling `registry()` on the domain registry reverts, which
 reads as "wrong address" when it is only the wrong name.
 
-**Wiring it is a FOUR-file job and each failure is silent**, because the address is deliberately
+**Wiring it is a THREE-file job and each failure is silent**, because the address is deliberately
 fallback-free (unset ⇒ that one check reports itself unavailable rather than reading a constant that may
-have moved). `stacks/admin/web/.env.example` (`VITE_ISSUER_DOMAIN_REGISTRY_ADDR`),
-`stacks/government/.env.example` (`ISSUER_DOMAIN_REGISTRY_ADDR`), and the two COMPILE-TIME mobile bundles
-`apps/ios/DogTag/roax.json` + `apps/android/app/src/main/assets/roax.json` (both read the
+have moved). `stacks/government/.env.example` (`ISSUER_DOMAIN_REGISTRY_ADDR`), and the two COMPILE-TIME
+mobile bundles `apps/ios/DogTag/roax.json` + `apps/android/app/src/main/assets/roax.json` (both read the
 `IssuerDomainRegistry` key and default to `""`, which both apps render as `Unavailable`; they need an app
 rebuild + reinstall to take effect). `scripts/demo-up.sh` needs no edit - it already resolves the key from
-`deployments/roax.json` via `ledger_addr`. `packages/ui` takes the address as a parameter with no default
-and needs none.
+`deployments/roax.json` via `ledger_addr` and passes it to government-api. **`stacks/admin/web` was the
+fourth and no longer is**: its `VITE_ISSUER_DOMAIN_REGISTRY_ADDR` and the two bench rows it fed were
+removed - see "The bench's issuer-domain rows were REMOVED", and do not re-add it. `packages/ui` takes
+no such address.
 
 ### Android JVM unit tests and `org.json`
 
@@ -5696,3 +5729,88 @@ ingest, and the hostile host is the real threat model anyway. **That case needs 
 hostile path with nothing substituted, which must render - and the control earned its place: the first
 run had both cases publishing the same logo bytes, so they shared an address and the substitution hit
 both. The control caught it.
+
+
+## The demo-fill affordance: ONE label, ONE mechanism, and the three forms that deliberately lack it
+
+`packages/ui/src/schema/demoData.ts` is the only demo-fill mechanism; never add a second. Every button
+reads **`Fill demo data`** (a parenthesised variant where one form offers several, e.g.
+`Fill demo data (vet)`). It shipped as three different names - `Fill sample`, `Demo (vet)`,
+`Vet preset` - and `stacks/{vet,groomer}/web/e2e/unlock.spec.ts:125` asserts `/Fill demo data/i`, so
+that is the spelling the tree already depended on.
+
+**A DEMO-FILL AFFORDANCE MUST NOT RENDER IN PRODUCTION, and in a SHARED component the default is what
+enforces that.** A fill button live on a real deployment invites fabricated data into a real system, so
+every portal button is gated on that portal's `env.demoMode`, and every shared component takes the
+decision as a prop that defaults to **false**: `ProviderSelfServiceFlows.demoMode`, and
+`VerifyFlow.showDemo`, which defaulted to `true` and so rendered live on the groomer Verify page.
+Fail-closed is the whole point - a call site added later inherits "no demo button" rather than
+inheriting one, which is the safe direction to be wrong in.
+`VerifyFlow` has exactly TWO call sites, **both in the groomer portal** and both now explicit:
+`pages/Verify.tsx` passes `env.demoMode`, and `pages/AppointmentDetail.tsx` passes `false` (an
+appointment-linked verification takes its purpose from the booking). The vet Verify page is NOT one of
+them - it renders its own local `OwnerHiddenVerifyFlow` and never imports this component, so do not go
+looking for a third caller to gate.
+
+**One exception, and it is structural rather than an oversight: `stacks/owner/web` has no
+`env.demoMode` at all**, so its two Receive buttons cannot be gated this way. That is the pet-owner
+wallet - a zero-backend, self-custodial holder app whose whole product is pasting a credential in, so a
+"paste this sample instead" affordance is closer to a first-run aid than to seeding a real system, and
+nothing it fills reaches any server. Gating them means introducing a demo-mode flag to that app first,
+which is a product call rather than a cleanup.
+
+**MERGE a preset into existing state; never replace the state object.** `DemoBusiness`'s own comment
+already records why (a key missing from the preset silently blanks that field), and the groomer client
+form is the sharp case: its payload REPLACES the owner's whole pet list, so filling by replacement
+drops `petId` and orphans every existing pet from its links. `Clients.tsx` fills the FIRST pet row in
+place and keeps the rest.
+
+**Three forms deliberately have NO button, because a fill there would produce a failure or a lie:**
+
+- **vet/groomer `ImportFromUser`** - it needs a *Customer JWT*, which no demo can mint, so any preset
+  fills a form that then fails to submit. (This panel is also the one the captain asked to remove; see
+  the note below on why it is still here.)
+- **owner `Settings`** - the only field is the ROAX RPC URL. The bundled default is what the existing
+  **Reset** button already restores, and any other URL deliberately fails the `eth_chainId` probe.
+- **government `Verify`** and the shared `CredentialVerifyPanel` - these render a PASS/FAIL verdict
+  over three pillars, and the only credential a preset could paste is one that was never anchored, so
+  the button would teach a red verdict. The documented zero-typing path is already Issue →
+  **Copy wrapped document** → Verify, which produces a genuinely anchored credential.
+
+The admin **verification bench** DOES have one, and the distinction is principled rather than
+hair-splitting: its product is *which checks could and could not run*, `could-not-run` is a
+first-class explained state there, and its toast says plainly that the control record was never
+anchored on this chain. A red VERDICT and an explained could-not-run are not the same claim.
+
+### DEMO VALUES MUST BE UNMISTAKABLY FAKE, and one carrier of the old identity is still live
+
+A demo value that reads like a real person is how a fake record gets mistaken for a real one, so every
+preset that fills a person field uses an obviously-fake register: `Demo` / `Importer (sample)` /
+`DEMO-ID-000000` / `1990-01-01` / `demo.importer@example.com` / `+65 6000 0000`. Categorical fields
+(role, ID type, ID jurisdiction) identify nobody and are deliberately left realistic.
+Two carriers were cleaned: the government Issue form's `demo` values (its PLACEHOLDERS are untouched -
+they are UI hints, and `government/web`'s own e2e fills its own values), and
+`stacks/owner/web/src/lib/sampleDoc.ts`.
+**Changing a value in `sampleDoc.ts` is NOT a text edit** - the leaves are `salt:tag:value` and the
+committed `merkleRoot` is genuine, so the root must be REGENERATED through the SDK. The way to do that
+without producing a self-consistent lie: reproduce the CURRENT root from the unmodified document
+first (`flattenData` -> `leafFromPacked` -> `buildMerkle`), and only then substitute values and take
+the new root, keeping every salt and type tag byte-identical. A pipeline that cannot reproduce the
+committed root will happily emit a new one that means nothing. `stacks/owner/web/e2e/owner.spec.ts`
+pins the root in THREE places and the Section A values in four, and that suite is not in CI, so grep
+the whole e2e directory for every replaced value rather than the two the reviewer happened to name.
+
+**KNOWN HAZARD, RECORDED RATHER THAN FIXED - `build_gov_vc` still injects the retired identity as its
+per-field DEFAULTS.** `stacks/government/api/src/app.rs` (Section A of the `TRAVEL_CLEARANCE` branch)
+falls back to `Dominic` / `Zagara` / `887524355` / `1997-02-13` / `dom.zagara@example.com` /
+`216-533-5925` whenever Section A arrives blank - which `scripts/e2e-roles.sh` does on every hermetic
+run, since it posts only `animalName` and `countryOfDeparture`. So a demo-issued `TRAVEL_CLEARANCE`
+still commits that identity into its Merkle root.
+It was left for two reasons, and the second is the one that matters. It is not a demo preset: these
+defaults are what a REAL government deployment writes into a REAL credential on a blank Section A, so
+changing them is a behaviour change to an issuance path, outside this branch's diff.
+And it is coupled to a test that would go vacuous: `stacks/government/api/tests/share_qr.rs` issues
+with `"fields": {}` and then asserts `!html.contains("Zagara")` to prove the PUBLIC receipt page leaks
+no Section A. That assertion only bites BECAUSE the default is `Zagara`; swap the literal without
+repointing it and the PII-leak guard silently stops guarding, which is a worse outcome than the
+hazard. Fixing this properly means moving both together and re-running `cargo test -p government-api`.

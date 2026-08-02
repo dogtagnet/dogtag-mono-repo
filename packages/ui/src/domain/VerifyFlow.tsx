@@ -33,8 +33,13 @@ export interface VerifyFlowProps {
   pollSession?: (sessionId: string) => Promise<{ status: string; txHash?: string }>;
   pollIntervalMs?: number;
   /**
-   * When true, shows a "Fill sample" demo button that selects a purpose so a non-technical operator
-   * can one-click prepare the verify session. Defaults true.
+   * When true, shows a "Fill demo data" demo button that selects a purpose so a non-technical operator
+   * can one-click prepare the verify session.
+   *
+   * Defaults FALSE, and the default is the safety property rather than a style choice: this component
+   * is shared by production portals, so a demo-fill affordance inheriting `true` renders live and
+   * invites fabricated data into a real system. A caller that wants it must say so - pass its own
+   * `env.demoMode` - and a caller added later inherits the closed state rather than the open one.
    */
   showDemo?: boolean;
   /**
@@ -59,7 +64,7 @@ export function VerifyFlow({
   purposes,
   pollSession,
   pollIntervalMs = 3000,
-  showDemo = true,
+  showDemo = false,
   appointmentId,
   onSettled,
 }: VerifyFlowProps) {
@@ -190,7 +195,7 @@ export function VerifyFlow({
               </Button>
               {showDemo && (
                 <Button type="button" variant="outline" onClick={fillSample}>
-                  <Sparkles className="h-4 w-4" /> Fill sample
+                  <Sparkles className="h-4 w-4" /> Fill demo data
                 </Button>
               )}
             </div>

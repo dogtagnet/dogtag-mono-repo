@@ -2,7 +2,7 @@ import type { WrappedDoc } from "@dogtag/standard";
 
 /**
  * A real, integrity-VALID DogTag credential (a rabies VACCINATION for "Rex", dog tag #424242),
- * produced by the SDK's `wrapDocument` with deterministic salts. Used by the "Fill sample" demo
+ * produced by the SDK's `wrapDocument` with deterministic salts. Used by the "Fill demo data" demo
  * button and the e2e test so the receive → hold → share flow can be exercised without a live
  * issuer. Its Merkle root is genuine — `checkIntegrity` passes on it.
  */
@@ -44,7 +44,7 @@ export const SAMPLE_WRAPPED_DOC_JSON = JSON.stringify(SAMPLE_WRAPPED_DOC, null, 
  * 9RVBXK8AFQ2C), produced by the SDK's `wrapDocument` with deterministic salts. It carries the exact
  * nested `credentialSubject` the government backend issues (`build_gov_vc`, app.rs): Section A
  * (importer PII), Section B (animal), Section C (travel), a validity block and a public `receiptId`
- * leaf. Used by the "Fill travel-clearance sample" demo button + the receipt e2e so the CDC-grade
+ * leaf. Used by the "Fill demo data (travel)" demo button + the receipt e2e so the CDC-grade
  * receipt renderer can be exercised without a live government issuer. Its Merkle root is genuine —
  * `checkIntegrity` passes on it.
  */
@@ -70,17 +70,22 @@ export const SAMPLE_TRAVEL_CLEARANCE_DOC: WrappedDoc = {
         multipleEntries: "99a0a7aeb5bcc3cad1d8dfe6edf4fb02:1:true",
         countryOfDepartureBinding: "b6bdc4cbd2d9e0e7eef5fc030a11181f:2:CA",
       },
+      // Section A is the person-PII block of a CDC travel receipt, so every leaf that NAMES OR
+      // IDENTIFIES someone is unmistakably fake - a sample that reads like a real person is exactly
+      // how a demo record gets mistaken for a real one. The categorical leaves (role, idType,
+      // idJurisdiction) identify nobody and are left alone. Changing a value changes its leaf hash,
+      // so `signature.merkleRoot` below was REGENERATED through the SDK against these salts.
       importer: {
-        firstName: "d3dae1e8eff6fd040b121920272e353c:2:Dominic",
+        firstName: "d3dae1e8eff6fd040b121920272e353c:2:Demo",
         middleName: "f0f7fe050c131a21282f363d444b5259:2:",
-        lastName: "0d141b222930373e454c535a61686f76:2:Zagara",
+        lastName: "0d141b222930373e454c535a61686f76:2:Importer (sample)",
         role: "2a31383f464d545b626970777e858c93:2:owner",
         idType: "474e555c636a71787f868d949ba2a9b0:2:drivers_license",
         idJurisdiction: "646b727980878e959ca3aab1b8bfc6cd:2:US-NY",
-        idNumber: "81888f969da4abb2b9c0c7ced5dce3ea:2:887524355",
-        dateOfBirth: "9ea5acb3bac1c8cfd6dde4ebf2f90007:2:1997-02-13",
-        email: "bbc2c9d0d7dee5ecf3fa01080f161d24:2:dom.zagara@example.com",
-        phone: "d8dfe6edf4fb020910171e252c333a41:2:216-533-5925",
+        idNumber: "81888f969da4abb2b9c0c7ced5dce3ea:2:DEMO-ID-000000",
+        dateOfBirth: "9ea5acb3bac1c8cfd6dde4ebf2f90007:2:1990-01-01",
+        email: "bbc2c9d0d7dee5ecf3fa01080f161d24:2:demo.importer@example.com",
+        phone: "d8dfe6edf4fb020910171e252c333a41:2:+65 6000 0000",
       },
       consignee: {
         fullName: "f5fc030a11181f262d343b424950575e:2:",
@@ -110,9 +115,9 @@ export const SAMPLE_TRAVEL_CLEARANCE_DOC: WrappedDoc = {
   },
   signature: {
     type: "DogTagMerkleProof",
-    targetHash: "0x010a607eb1f94fd672622331ae1272c5e08afba9b6d094b52b5b5e3a2bec4a45",
+    targetHash: "0x199948111387332ec1e85a4d1dc4651ea691bb7bcbad768e3a2f8c38b290005b",
     proof: [],
-    merkleRoot: "0x010a607eb1f94fd672622331ae1272c5e08afba9b6d094b52b5b5e3a2bec4a45",
+    merkleRoot: "0x199948111387332ec1e85a4d1dc4651ea691bb7bcbad768e3a2f8c38b290005b",
   },
   privacy: { obfuscated: [] },
   issuer: {

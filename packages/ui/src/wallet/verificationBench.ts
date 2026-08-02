@@ -12,7 +12,6 @@ import {
   ZERO_ADDRESS,
   compareLogPoints,
   grantInForceAt,
-  issuerDomainClaimOf,
   issuerRegistryOf,
   rootIssuedAtLog,
   sortLogPoints,
@@ -101,15 +100,13 @@ export type BenchCheckId =
   | "whitelisted-at-issuance"
   | "anchored-on-chain"
   | "not-revoked"
-  | "not-expired"
-  | "issuer-domain-claim"
-  | "issuer-domain-dns";
+  | "not-expired";
 
 /**
  * Which checks the VERIFIER'S OWN verdict folds in, and which are reported beside it.
  *
- * `verifyCredentialOnchain` computes `integrity && onchain && issuerWhitelisted === true`. Expiry and
- * the issuer-domain checks feed none of that, so an expired-but-anchored credential legitimately
+ * `verifyCredentialOnchain` computes `integrity && onchain && issuerWhitelisted === true`. Expiry feeds
+ * none of that, so an expired-but-anchored credential legitimately
  * produces `verdict: true` with a red expiry row - the captain's own point that an expired credential
  * is on-chain-valid. Stating which rows gate is what stops that reading as a self-contradiction: a
  * surface that showed a green banner over a red row without saying why would be leaving the reader to
@@ -128,8 +125,6 @@ const GATES_VERDICT: Record<BenchCheckId, boolean> = {
   "not-revoked": true,
   // Reported BESIDE the verdict, never folded into it.
   "not-expired": false,
-  "issuer-domain-claim": false,
-  "issuer-domain-dns": false,
   // Both of these are OBSERVATIONS ABOUT THE VERDICT'S OWN INPUTS rather than further tests of the
   // credential, so neither gates - and marking them advisory is not a hedge, it is the finding.
   //
@@ -180,7 +175,6 @@ export interface BenchCheck {
 export interface ChainRead {
   method:
     | keyof IssuerChainReader
-    | "issuerDomainClaim"
     | "issuerRegistry"
     | "rootIssuedLog"
     | "whitelistHistory";
@@ -351,13 +345,6 @@ export function recordingReader(inner: IssuerChainReader): {
   return { reader, reads };
 }
 
-/** The single on-chain domain read the bench makes on its own account. See {@link issuerDomainClaimOf}. */
-export interface DomainClaimReader {
-  claim(
-    registryAddr: string,
-    cloneAddr: string,
-  ): Promise<{ domain: string; updatedAtBlock: bigint } | null>;
-}
 
 /** Reads the registry a clone's own `onlyWhitelisted` consults. See {@link issuerRegistryOf}. */
 export interface IssuerAuthorityReader {
@@ -422,14 +409,6 @@ export interface BenchInput
   > {
   /** The record under test: a parsed WrappedDoc. */
   wrappedDoc: Record<string, unknown>;
-  /**
-   * `IssuerDomainRegistry` address. Deliberately has NO default, unlike the factory and the issuer
-   * registry: the contract set is still under revision and this one may yet be folded elsewhere.
-   * Unset means the domain check reports itself unavailable - never a pass, and never a failure.
-   */
-  domainRegistryAddr?: string;
-  /** Injected domain reader (tests); defaults to a viem read pinned to `blockNumber`. */
-  domainClaimReader?: DomainClaimReader;
   /** Injected `DogTagIssuer.registry()` reader (tests); defaults to a viem read pinned to `blockNumber`. */
   authorityReader?: IssuerAuthorityReader;
   /** Injected log reader (tests); defaults to viem `eth_getLogs` bounded above by `blockNumber`. */
@@ -679,7 +658,6 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
 
   const issuerMeta = isObject(doc.issuer) ? doc.issuer : {};
   const documentStore = str(issuerMeta.documentStore).trim();
-  const claimedDomain = str(issuerMeta.domain).trim();
   const claimedRoot = isObject(doc.signature) ? str(doc.signature.merkleRoot) : "";
 
   // ── Run the REAL verifier through the recorder ────────────────────────────────────────────────
@@ -726,7 +704,6 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
   // `issuerRegistry` read the row above records, so it must run after it.
   checks.push(await registryGovernsIssuerCheck(input, reads, registryAddr, blockLine, verifierError));
   checks.push(await whitelistedAtIssuanceCheck(input, reads, response, verifierError));
-  checks.push(...(await domainChecks(input, reads, claimedDomain, blockLine)));
 
   return {
     // Stamped centrally so a newly added check cannot silently omit it; `GATES_VERDICT` is exhaustive
@@ -1673,149 +1650,3 @@ function expiryCheck(doc: Record<string, unknown>, today: string): Omit<BenchChe
   };
 }
 
-/**
- * The issuer's domain, as TWO checks - the on-chain claim, and the DNS zone that must corroborate it.
- *
- * They are separate rows because only the first is answerable from a browser. The DNS half is resolved
- * server-side (`dogtag-dns-rs`), and a bench that showed one green row for "domain verified" would let
- * a reader believe a TXT lookup happened that never did.
- */
-async function domainChecks(
-  input: BenchInput,
-  reads: ChainRead[],
-  claimedDomain: string,
-  blockLine: EvidenceLine,
-): Promise<Array<Omit<BenchCheck, "gatesVerdict">>> {
-  // NOTE the absent parameter: the document's own `documentStore` is deliberately NOT in scope here.
-  // The domain claim is read from the clone the FACTORY named, and having the document's address
-  // available would make reading the claim off it a one-character mistake.
-  const claimQ = "Does the domain the document claims match the one the issuer published on-chain?";
-  const dnsQ = "Does that domain's DNS zone name this issuing contract back?";
-  const docLine: EvidenceLine = {
-    label: "Domain the document claims",
-    value: claimedDomain || "(absent)",
-    source: "document issuer.domain (NOT covered by the Merkle root)",
-  };
-
-  // The DNS half is never performed here. It reports could-not-run ALWAYS, with the reason, rather
-  // than being omitted - a check a surface cannot make is exactly what this bench exists to say aloud.
-  const dnsCheck: Omit<BenchCheck, "gatesVerdict"> = {
-    id: "issuer-domain-dns",
-    question: dnsQ,
-    outcome: "could-not-run",
-    finding: "No DNS lookup was performed.",
-    couldNotRunReason:
-      "The TXT lookup is resolved server-side by the verifier backends; this bench runs in the browser and cannot perform it. A passing on-chain claim above is NOT evidence that DNS agrees.",
-    evidence: [docLine],
-  };
-
-  const registry = input.domainRegistryAddr?.trim();
-  if (!registry) {
-    return [
-      {
-        id: "issuer-domain-claim",
-        question: claimQ,
-        outcome: "could-not-run",
-        finding: "No issuer-domain registry is configured for this bench.",
-        couldNotRunReason:
-          "No IssuerDomainRegistry address is configured, so the issuer's own on-chain domain claim could not be read.",
-        evidence: [docLine],
-      },
-      dnsCheck,
-    ];
-  }
-
-  const anchor = lastRead(reads, "rootIssuer");
-  const clone = anchor?.outcome === "ok" && !isZeroAddr(anchor.value) ? anchor.value : undefined;
-  if (!clone) {
-    return [
-      {
-        id: "issuer-domain-claim",
-        question: claimQ,
-        outcome: "could-not-run",
-        finding: "There is no factory-resolved contract whose domain claim could be read.",
-        couldNotRunReason:
-          "The domain claim is read from the contract the FACTORY named, never from the document. No such contract was resolved, and reading the claim off the address the document names would let a forged document answer a question about itself.",
-        evidence: [docLine],
-      },
-      dnsCheck,
-    ];
-  }
-
-  const claimReader: DomainClaimReader = input.domainClaimReader ?? {
-    claim: (registryAddr, cloneAddr) =>
-      issuerDomainClaimOf({
-        domainRegistryAddr: registryAddr,
-        cloneAddr,
-        rpcUrl: input.rpcUrl,
-        defaultRpcUrl: input.defaultRpcUrl,
-        blockNumber: input.blockNumber,
-      }),
-  };
-
-  let claim: { domain: string; updatedAtBlock: bigint } | null = null;
-  try {
-    claim = await claimReader.claim(registry, clone);
-    reads.push({
-      method: "issuerDomainClaim",
-      contract: registry,
-      args: [clone],
-      outcome: "ok",
-      value: claim ? claim.domain : "(no claim published)",
-    });
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    reads.push({ method: "issuerDomainClaim", contract: registry, args: [clone], outcome: "failed", error });
-    return [
-      {
-        id: "issuer-domain-claim",
-        question: claimQ,
-        outcome: "could-not-run",
-        finding: "The issuer's on-chain domain claim could not be read.",
-        couldNotRunReason: `The IssuerDomainRegistry read failed: ${error}`,
-        evidence: [docLine, blockLine],
-      },
-      dnsCheck,
-    ];
-  }
-
-  if (!claim) {
-    // "This issuer has published no domain claim" is the NORMAL day-one state. Neither a pass nor a
-    // failure - there is simply nothing to compare the document's claim against.
-    return [
-      {
-        id: "issuer-domain-claim",
-        question: claimQ,
-        outcome: "could-not-run",
-        finding: "This issuer has published no domain claim.",
-        couldNotRunReason:
-          "The IssuerDomainRegistry holds no binding for this contract, so the document's claimed domain cannot be corroborated or contradicted.",
-        evidence: [
-          docLine,
-          { label: "Registry asked", value: registry, source: `IssuerDomainRegistry.getBinding(${clone})` },
-          blockLine,
-        ],
-      },
-      dnsCheck,
-    ];
-  }
-
-  const matches = !!claimedDomain && claim.domain.toLowerCase() === claimedDomain.toLowerCase();
-  return [
-    {
-      id: "issuer-domain-claim",
-      question: claimQ,
-      outcome: matches ? "pass" : "fail",
-      finding: matches
-        ? "The document's claimed domain matches the issuer's own on-chain claim."
-        : "The document claims a DIFFERENT domain than the issuing contract published on-chain.",
-      evidence: [
-        { label: "Domain the issuer published", value: claim.domain, source: `IssuerDomainRegistry.getBinding(${clone})` },
-        docLine,
-        { label: "Claim written at block", value: claim.updatedAtBlock.toString(), source: "IssuerDomainRegistry binding" },
-        blockLine,
-      ],
-    },
-    dnsCheck,
-  ];
-}

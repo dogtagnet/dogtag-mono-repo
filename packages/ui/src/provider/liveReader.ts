@@ -5,7 +5,7 @@
  * factory or resolver address as a parameter - see the rule at the top of `readers.ts`. The
  * addresses come from configuration with NO fallback: unset means the surface reports itself
  * unavailable, rather than silently reading a constant that may have moved. That is the
- * `VITE_ISSUER_DOMAIN_REGISTRY_ADDR` precedent, and it is the right one here for the sharper reason
+ * `VITE_PROVIDER_DIRECTORY_ADDR` precedent, and it is the right one here for the sharper reason
  * that generation 2 is DEPLOYED BUT UNWIRED - a baked default would be a repoint by accident, which
  * is exactly what C-9/C-10 exist to do deliberately.
  *

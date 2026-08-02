@@ -46,6 +46,7 @@ export default function ProviderSelfService() {
       defaultProviderId={env.providerId}
       mirrorBase={env.contentMirrorBase}
       mirrorToken={env.contentMirrorToken}
+      demoMode={env.demoMode}
       capabilities={{ issuance: false, listing: true }}
     />
   );

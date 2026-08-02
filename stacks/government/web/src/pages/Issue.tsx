@@ -10,9 +10,13 @@ import { env } from "../lib/env";
  *  e.g. `importerLastName` → credentialSubject.importer.lastName).
  *
  *  `placeholder` documents the backend's own fallback for a BLANK field; `demo` is what the
- *  demo-only "Fill demo data" button types in. They coincide for everything except the dates, which
- *  float relative to today so a filled form is always inside a sensible window (the backend's
- *  hardcoded defaults go stale). A field with neither falls back to an empty string. */
+ *  demo-only "Fill demo data" button types in. They are SEPARATE on purpose and diverge wherever a
+ *  realistic hint would make a bad demo record: every Section A field that NAMES OR IDENTIFIES a
+ *  person, plus the animal name and the examining veterinarian, carries an unmistakably fake `demo`
+ *  (see the Section A note below). Categorical Section A fields - role, ID type, ID jurisdiction -
+ *  identify nobody, so they need none. The dates also diverge: they float relative to today so a
+ *  filled form is always inside a sensible window (the backend's hardcoded defaults go stale).
+ *  A field with no `demo` falls back to its `placeholder`, and one with neither to an empty string. */
 interface FieldSpec {
   key: string;
   label: string;
@@ -34,23 +38,27 @@ const RECORD_TYPE_SECTIONS: Record<string, FieldSection[]> = {
     {
       title: "Section A — Person importing the animal",
       hint: "PII (the private / obfuscatable block — committed in R as salted leaves, never on-chain in the clear).",
+      // The PLACEHOLDERS below are realistic on purpose - they show an operator the shape of the
+      // field. What "Fill demo data" TYPES must not be: this is the one form whose Section A puts
+      // person PII into a CDC travel receipt, so a demo record that reads like a real person is a
+      // record someone can mistake for one. Hence the explicit `demo` values.
       fields: [
-        { key: "importerFirstName", label: "First name", placeholder: "Dominic" },
+        { key: "importerFirstName", label: "First name", placeholder: "Dominic", demo: "Demo" },
         { key: "importerMiddleName", label: "Middle name/initial", placeholder: "", demo: "R." },
-        { key: "importerLastName", label: "Last name", placeholder: "Zagara" },
+        { key: "importerLastName", label: "Last name", placeholder: "Zagara", demo: "Importer (sample)" },
         { key: "importerRole", label: "The person listed above is the", placeholder: "owner" },
         { key: "importerIdType", label: "Identification type", placeholder: "drivers_license" },
         { key: "importerIdJurisdiction", label: "ID jurisdiction (state/country)", placeholder: "US-NY" },
-        { key: "importerIdNumber", label: "Identification number", placeholder: "887524355" },
-        { key: "importerDateOfBirth", label: "Date of birth", placeholder: "1997-02-13" },
-        { key: "importerEmail", label: "Email", placeholder: "dom.zagara@example.com" },
-        { key: "importerPhone", label: "Phone number", placeholder: "216-533-5925" },
+        { key: "importerIdNumber", label: "Identification number", placeholder: "887524355", demo: "DEMO-ID-000000" },
+        { key: "importerDateOfBirth", label: "Date of birth", placeholder: "1997-02-13", demo: "1990-01-01" },
+        { key: "importerEmail", label: "Email", placeholder: "dom.zagara@example.com", demo: "demo.importer@example.com" },
+        { key: "importerPhone", label: "Phone number", placeholder: "216-533-5925", demo: "+65 6000 0000" },
       ],
     },
     {
       title: "Section B — Animal information",
       fields: [
-        { key: "animalName", label: "Animal name", placeholder: "Blaze" },
+        { key: "animalName", label: "Animal name", placeholder: "Blaze", demo: "Demo Dog (sample)" },
         { key: "animalAgeYears", label: "Age — year(s)", placeholder: "3" },
         { key: "animalAgeMonths", label: "Age — month(s)", placeholder: "1" },
         { key: "animalSex", label: "Sex", placeholder: "male" },
@@ -100,7 +108,7 @@ const RECORD_TYPE_SECTIONS: Record<string, FieldSection[]> = {
           placeholder: "2029-01-14",
           demo: isoDate(-30 + 3 * 365),
         },
-        { key: "examiningVeterinarian", label: "Examining veterinarian", placeholder: "Dr. A. Meyer, DVM" },
+        { key: "examiningVeterinarian", label: "Examining veterinarian", placeholder: "Dr. A. Meyer, DVM", demo: "Dr. Demo Vet (sample)" },
         { key: "clinicalHealthStatus", label: "Clinical health status", placeholder: "fit_for_travel" },
         {
           key: "examinationDate",

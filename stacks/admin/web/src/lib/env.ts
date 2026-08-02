@@ -13,11 +13,5 @@ export const env = {
    * explicit states exist to prevent.
    */
   factoryAddr: import.meta.env.VITE_DOGTAG_ISSUER_FACTORY_ADDR ?? "",
-  /**
-   * IssuerDomainRegistry, for the bench's issuer-domain check. Deliberately has NO fallback: the
-   * contract set is still being revised and this one may yet be folded elsewhere, so an unset address
-   * makes the bench report that check UNAVAILABLE rather than read a constant that may have moved.
-   */
-  issuerDomainRegistryAddr: import.meta.env.VITE_ISSUER_DOMAIN_REGISTRY_ADDR ?? "",
   demoMode: import.meta.env.VITE_DEMO_MODE === "1" || import.meta.env.VITE_DEMO_MODE === "true",
 };

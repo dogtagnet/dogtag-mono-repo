@@ -67,7 +67,7 @@ export function Receive() {
             setText(SAMPLE_WRAPPED_DOC_JSON);
           }}
         >
-          Fill sample
+          Fill demo data (vaccination)
         </button>
         <button
           type="button"
@@ -78,7 +78,7 @@ export function Receive() {
             setText(SAMPLE_TRAVEL_CLEARANCE_DOC_JSON);
           }}
         >
-          Fill travel-clearance sample
+          Fill demo data (travel)
         </button>
       </div>
       <div className="notice">

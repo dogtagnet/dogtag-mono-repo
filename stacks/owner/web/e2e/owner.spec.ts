@@ -188,8 +188,8 @@ test("holder receipt: travel clearance renders and respects redacted re-imports"
   await expect(page.getByTestId("receipt-status")).toContainText("VALID");
   await expect(page.getByTestId("receipt-id")).toContainText("9RVBXK8AFQ2C");
   await expect(sheet).toContainText("Section A - Person Importing the Animal");
-  await expect(sheet).toContainText("Dominic");
-  await expect(sheet).toContainText("887524355");
+  await expect(sheet).toContainText("Importer (sample)");
+  await expect(sheet).toContainText("DEMO-ID-000000");
   await expect(sheet).toContainText("Section B - Animal Information");
   await expect(sheet).toContainText("Blaze");
   await expect(sheet).toContainText("Section C - Travel Information");
@@ -204,7 +204,7 @@ test("holder receipt: travel clearance renders and respects redacted re-imports"
   await expect(page.getByTestId("receipt-qr").locator("svg")).toBeVisible();
   await expect(page.getByTestId("receipt-live")).toContainText("anchored");
   await expect(page.getByTestId("receipt-root")).toContainText(
-    "0x010a607eb1f94fd672622331ae1272c5e08afba9b6d094b52b5b5e3a2bec4a45",
+    "0x199948111387332ec1e85a4d1dc4651ea691bb7bcbad768e3a2f8c38b290005b",
   );
 
   // Produce a redacted copy that withholds a Section-A identifier, then re-import it. The same root is
@@ -214,11 +214,11 @@ test("holder receipt: travel clearance renders and respects redacted re-imports"
   await expect(page.getByTestId("share-preview-integrity")).toContainText("authentic");
   await page.getByTestId("share-copy").click();
   const redactedJson = await page.getByTestId("share-output").inputValue();
-  expect(redactedJson).not.toContain("887524355");
+  expect(redactedJson).not.toContain("DEMO-ID-000000");
   const redacted = JSON.parse(redactedJson) as { privacy: { obfuscated: string[] }; signature: { merkleRoot: string } };
   expect(redacted.privacy.obfuscated.length).toBe(1);
   expect(redacted.signature.merkleRoot).toBe(
-    "0x010a607eb1f94fd672622331ae1272c5e08afba9b6d094b52b5b5e3a2bec4a45",
+    "0x199948111387332ec1e85a4d1dc4651ea691bb7bcbad768e3a2f8c38b290005b",
   );
 
   await page.goto("/receive");
@@ -226,8 +226,8 @@ test("holder receipt: travel clearance renders and respects redacted re-imports"
   await page.getByTestId("receive-add").click();
   await page.getByTestId("detail-receipt").click();
   await expect(page.getByTestId("receipt-withheld-note")).toContainText("1 field");
-  await expect(page.getByTestId("receipt-sheet")).toContainText("Dominic");
-  await expect(page.getByTestId("receipt-sheet")).not.toContainText("887524355");
+  await expect(page.getByTestId("receipt-sheet")).toContainText("Importer (sample)");
+  await expect(page.getByTestId("receipt-sheet")).not.toContainText("DEMO-ID-000000");
 });
 
 // The other half of the receipt-QR contract, and the one every credential issued before this change
@@ -253,7 +253,7 @@ test("holder receipt: a credential with no stamped status base degrades honestly
   // Same credential, same root - only the reachable base is absent.
   await expect(page.getByTestId("receipt-id")).toContainText("9RVBXK8AFQ2C");
   await expect(page.getByTestId("receipt-root")).toContainText(
-    "0x010a607eb1f94fd672622331ae1272c5e08afba9b6d094b52b5b5e3a2bec4a45",
+    "0x199948111387332ec1e85a4d1dc4651ea691bb7bcbad768e3a2f8c38b290005b",
   );
   await expect(page.getByTestId("receipt-public-url")).toContainText(
     "published no reachable status URL",

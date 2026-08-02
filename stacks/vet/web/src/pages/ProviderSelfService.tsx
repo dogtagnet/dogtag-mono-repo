@@ -7,7 +7,7 @@
  * rather than cosmetic.
  *
  * ADDRESSES COME FROM CONFIG WITH NO FALLBACK. Unset makes the page report itself unconfigured
- * rather than reading a baked constant. That is the `VITE_ISSUER_DOMAIN_REGISTRY_ADDR` precedent and
+ * rather than reading a baked constant. That is the `VITE_PROVIDER_DIRECTORY_ADDR` precedent and
  * it matters more here: the generation-2 set is deployed but UNWIRED, and client repointing is
  * C-9/C-10, so a default baked into this file would be a repoint by accident.
  */
@@ -44,6 +44,7 @@ export default function ProviderSelfService() {
       defaultProviderId={env.providerId}
       mirrorBase={env.contentMirrorBase}
       mirrorToken={env.contentMirrorToken}
+      demoMode={env.demoMode}
       capabilities={{ issuance: true, listing: true }}
     />
   );

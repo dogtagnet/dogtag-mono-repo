@@ -27,9 +27,14 @@ import {
   type CreateIssuerResp,
   type GovernanceAuthorityResp,
   type IssuerCloneStat,
+  demoIssuerDeploy,
 } from "@dogtag/ui";
-import { CheckCircle2, Copy, Factory, Plus, Send, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Copy, Factory, Plus, Send, ShieldCheck,
+  Sparkles,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+
+import { env } from "../lib/env";
 import { useApp } from "../app/AppContext";
 import { AddressRef } from "../components/ChainRef";
 
@@ -293,6 +298,23 @@ function DeployDialog({
             the governance-action layer. The clone address is deterministic and shown live below.
           </DialogDescription>
         </DialogHeader>
+        {env.demoMode && (
+          <div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const preset = demoIssuerDeploy();
+                setName(preset.name);
+                setRecordType(preset.recordType);
+                setBusiness(preset.business);
+              }}
+            >
+              <Sparkles className="h-4 w-4" /> Fill demo data
+            </Button>
+          </div>
+        )}
         <form onSubmit={submit} className="space-y-3">
           <div className="space-y-1.5">
             <Label required>Name</Label>

@@ -292,12 +292,13 @@ ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority"
   run government-api ":44832" "$ROOT/target/release/government-api"
 
 echo "Starting portals (vite dev):"
-# The verification bench reads VITE_ISSUER_DOMAIN_REGISTRY_ADDR and has NO fallback by design, so
-# without this the bench's on-chain-domain row reports "could not run" in the showcase no matter what
-# an issuer has published. VITE_* is inlined by vite at startup, so a portal already running when this
-# address changes needs a restart to pick it up.
+# The admin portal no longer takes VITE_ISSUER_DOMAIN_REGISTRY_ADDR: the bench's two issuer-domain
+# rows were removed once IssuerDomainRegistry was confirmed empty (boundCloneCount() reads 0), so
+# nothing here reads that address. Do NOT re-add it pointing at ServiceDomainResolver - that is the
+# C-9 repoint, and it would restore two permanently unanswered rows.
+# The government backend below DOES still read ISSUER_DOMAIN_REGISTRY_ADDR (no VITE_ prefix); that
+# one is passed above and is a different variable.
 run admin-web ":39741" env VITE_DEMO_MODE=1 \
-  VITE_ISSUER_DOMAIN_REGISTRY_ADDR="$ISSUER_DOMAIN_REGISTRY" \
   pnpm --filter @dogtag/admin-web dev
 # The S-17 content mirror, so the provider self-service page can publish into the demo indexer
 # instead of reporting "no content mirror is configured". Both are needed: the base names the

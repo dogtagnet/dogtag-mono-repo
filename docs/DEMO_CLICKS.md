@@ -319,8 +319,9 @@ How to read those four:
   more means generation 2 has been appended, which is the cutover state described above.
 - **`resolverApproved`** false means the registrar has not approved the typed directory resolver, so every
   directory store stays empty and §N8 cannot proceed. True means that gate has opened.
-- **`boundCloneCount`** zero means no issuing contract has bound a domain yet, which is what makes §L's
-  on-chain row report "published no domain claim". Non-zero means at least one has.
+- **`boundCloneCount`** zero means no issuing contract has ever bound a domain on the (now superseded)
+  `IssuerDomainRegistry`. It reads zero, which is why §L's two bench rows were removed rather than left
+  to report "could not run" forever.
 - **`providerCount`** zero means no provider has been registered yet. Non-zero means providers now exist;
   list them from the registry's own logs to see which (the command is in §N0).
 
@@ -395,7 +396,7 @@ There is **no** central registration and **no** "Central API URL" setting; every
 
 1. **Sign in** (admin password prefilled).
 2. Go to **Onboard issuer** (the wizard).
-3. Click **Vet preset** (top-right) - fills all three steps with the vet demo data
+3. Click **Fill demo data (vet)** (top-right) - fills all three steps with the vet demo data
    (record types incl. `VACCINATION` + `DOG_PROFILE`).
 4. Step 1 **Register business** → **Register business**.
 5. Step 2 **Submit issuer application** → **Submit application**.
@@ -403,7 +404,7 @@ There is **no** central registration and **no** "Central API URL" setting; every
    - **Issuer** approval whitelists the issuance record-types per address; when the record types
      include `DOG_PROFILE`, Approve **also grants `DogTagSBTConsent.ISSUER_ROLE`** (the custodial
      mint capability) to the signer.
-   - For a **groomer/verifier** application (Groomer preset), Approve instead whitelists each
+   - For a **groomer/verifier** application (**Fill demo data (groomer)**), Approve instead whitelists each
      `VERIFY:<purpose>` on-chain (from the application's **verify purposes** field) - see §F and the
      Groomer variant.
 
@@ -414,9 +415,9 @@ There is **no** central registration and **no** "Central API URL" setting; every
 > **The admin portal degrades one page at a time when its `VITE_*` addresses are missing, and it says so.**
 > `demo-up.sh` passes them; a hand-started `vite dev` typically does not.
 > On a portal started without them, **Whitelist** reports *"VITE_ISSUER_REGISTRY_ADDR is not set - the
-> live on-chain column is unavailable"* while grant/revoke still work through the backend, and the
-> bench's issuer-domain row reports itself unconfigured (§L).
-> Neither is a fault in the chain or in your data. Check how the portal was launched before chasing it.
+> live on-chain column is unavailable"* while grant/revoke still work through the backend.
+> That is not a fault in the chain or in your data. Check how the portal was launched before chasing it.
+> (The bench's issuer-domain rows used to be the other half of this callout; they were removed - §L.)
 
 > Funding gas: the on-chain signer still needs PLASMA. If not already done, run
 > `scripts/demo-bootstrap.sh 0x<signerAddress>` once (the address is the genesis signer from step B) -
@@ -576,7 +577,7 @@ and the wallet route below builds on it rather than replacing it:
   redacted copy of an **anchored** credential still passes every on-chain row.
   That qualifier is the prerequisite: the held credential has to be one from a real issuance, so paste
   the government JSON from the bullet above into the wallet's **Receive a credential** box first.
-  The wallet's two **Fill sample** buttons are the only zero-setup way to fill it, and their documents
+  The wallet's two **Fill demo data** buttons are the only zero-setup way to fill it, and their documents
   were never anchored on any chain, so benching a redacted copy of one fails the on-chain rows in exactly
   the way the dry-run case above describes.
 
@@ -688,8 +689,8 @@ beside it rather than folded into it.
 The chain records anchoring and revocation and has **no concept of a validity window**, so an expired
 credential really is on-chain-valid.
 The verifier's verdict is integrity, on-chain status and the issuer pillar; expiry, the configured-registry
-row and the two domain rows are reported next to it so you can see them without them silently changing
-the answer.
+row and the advisory grant-at-issuance row are reported next to it so you can see them without them
+silently changing the answer.
 
 For the opposite case, revoke the record and bench it again: *"Has the issuer revoked this credential?"*
 turns **Fail** and the verdict goes **not valid**.
@@ -793,11 +794,6 @@ Two more results are worth reading rather than counting:
   make. This is the same guard you can drive by hand in §P.
 - **The mis-paired-registry scenario stays `valid`.** The row that objects is the advisory
   configured-registry row from §E2. The credential is genuine; the fault is ours.
-
-> **Two rows read "could not run" for every scenario in this card, BY CONSTRUCTION.** No scenario
-> configures an `IssuerDomainRegistry`, so `issuer-domain-claim` and `issuer-domain-dns` never run here.
-> The card says so itself. That is not a finding about any scenario - load a real record in §E to
-> exercise that axis, and read §L for what it will say.
 
 ---
 
@@ -1073,50 +1069,72 @@ up before it offers a link. Three states, and the middle one is the one to check
 
 ---
 
-## L. The issuer domain binding - and the two rows that will say "Could not run"
+## L. The issuer domain binding - the two bench rows were REMOVED
 
-The bench's last two rows ask whether the issuer's claimed domain is really theirs:
+Earlier revisions of this guide sent you to the bench's last two rows, which asked:
 
 1. *"Does the domain the document claims match the one the issuer published on-chain?"*
 2. *"Does that domain's DNS zone name this issuing contract back?"*
 
-**Both report "Could not run" today, on every surface, and that is correct behaviour rather than a
-fault.** But **the reason has changed since the last revision of this guide, and the old reason is now
-wrong.**
+**Both rows are gone, and so is `VITE_ISSUER_DOMAIN_REGISTRY_ADDR`.** Do not look for them; do not set
+that variable. Neither ever answered anything, and neither ever could on this deployment:
 
-**`IssuerDomainRegistry` IS deployed on ROAX**, at `0xD3B121FEaCde93b95288912EAdbB10824550FdBF`, and it is
-in `contracts/deployments/roax.json`. Earlier revisions said it was absent from the ledger and undeployed.
-Deploying it published no claims, though. Read `boundCloneCount()` (the command is in the two-facts
-section near the top): zero means no issuing contract has bound a domain yet, which is the state that
-produces the wording below.
+- The on-chain row read `IssuerDomainRegistry` (`0xD3B121FE…`), which **is** deployed on ROAX and is
+  **empty** - `boundCloneCount()` reads zero, so the row could only ever report *"published no domain
+  claim"*. Verify for yourself; the command is in the two-facts section near the top.
+- The DNS row was `could-not-run` **by construction**: a TXT lookup is resolved server-side and this
+  bench runs in the browser. It could never have been anything else.
 
-So read the row's own **finding line** to know which of two situations you are in. They both say "Could
-not run", and they mean different things:
+Its successor `ServiceDomainResolver` (§N7) is deployed and **unwired**, so pointing the bench at that
+instead would have produced two unanswered rows under a newer address. That repoint is C-9 and is not
+what removing dead rows means.
 
-- *"No issuer-domain registry is configured for this bench."* The portal was started without
-  `VITE_ISSUER_DOMAIN_REGISTRY_ADDR`. This check reads **no default address on purpose** - the contract
-  set is still being revised, and reading a constant that may have moved would be worse than saying
-  nothing. `demo-up.sh` **does** pass it, resolved from the ledger, so a `demo-up.sh` stack should not
-  show this; a hand-started `vite dev` will. (This is the one that was walked.)
-- *"This issuer has published no domain claim."* The address **is** configured, the registry **was** read,
-  and it holds no binding for this contract. The reason line spells out the consequence: the document's
-  claimed domain "cannot be corroborated or contradicted". This is the normal day-one state, and it is
-  what a correctly-configured stack shows while `boundCloneCount()` still reads zero.
+**The domain binding itself is NOT gone - only the bench's dead reads of it.** The live surface is
+server-side (`crates/dogtag-dns-rs`), and you can still see it in two places: the **government Verify**
+page renders the issuer's domain-binding state on a verified credential, and the **admin issuer
+applications** page runs the DNS-confirm dialog when you approve one. Neither reads the removed address.
 
-The DNS half is unchanged and will not move until a verifier backend is in the loop:
-*"The TXT lookup is resolved server-side by the verifier backends; this bench runs in the browser and
-cannot perform it. A passing on-chain claim above is NOT evidence that DNS agrees."*
-
-They are two separate rows rather than one merged green tick precisely so that neither can imply a check
-that never ran. Neither feeds the verdict, so their absence changes no answer - it only means the
-issuer's **name and domain** are unproven, which is the same gap §E3's third mutation demonstrates from
-the other direction.
-
-**Binding a domain is what turns the first row on.** Until someone does, expect **Could not run** with
-the "published no domain claim" wording, in the bench and anywhere else a binding is shown.
+Nothing else changed: neither row ever fed the verdict, so no answer anywhere moves. What is unproven is
+still the issuer's **name and domain**, the same gap §E3's third mutation demonstrates from the other
+direction.
 
 ---
 
+### L1. Two things the same sweep deliberately did NOT remove
+
+Both were on the removal list, both were checked against the chain and the tree, and both were left in
+place on purpose. They are recorded here so that finding them still present does not read as an
+oversight.
+
+**The generation-1 `ProtocolRegistry` discovery reads STAY, and removing them would break the phone.**
+The brief called them superseded by `ProtocolRegistryV2`. They are not, yet. Verified against ROAX:
+
+```
+cast call 0xf5492A671E69b1A13f7Fd123C021830eB1ea8081 \
+  "getContractSet(bytes32)" $(cast keccak "dogtag-levelb/1") --rpc-url https://devrpc.roax.net
+#   -> a full record whose last word is 0x…01, i.e. active: true
+
+cast call 0xe98BFf66367F74F413414228adD91c16A24F7fdb \
+  "getDiscoverySet(bytes32)" $(cast keccak "dogtag-levelb/2") --rpc-url https://devrpc.roax.net
+#   -> execution reverted: unknown discovery set   (and the same for the levelb/1 key)
+```
+
+So generation 1 is published and ACTIVE while generation 2 is deployed and EMPTY - C-8 deployed the
+contract, and nothing has been published on it. The only readers are the native `runLevelBFlow` on both
+phones (`ScanScreen.swift` / `Net.swift` and the Android twins); **no web surface reads them at all**,
+so there was nothing to remove in the web apps in the first place. Removing them would leave
+`validateDiscovery`'s anti-redirect trip with no anchor to compare a platform's claim against.
+
+**The vet/groomer "Import from user" panel STAYS, because three other surfaces route to it.** The
+brief's own condition was to report rather than remove if anything depended on it, and something does:
+`PetTagCredentials.tsx` links to `/import` twice (the "ask the owner to share a record" and "Ask them
+to share one" remedies) and `TagDiscoveryPanel.tsx` navigates there from its discovery result's
+**Import** action. Removing the page would leave three dead links and strip the only remedy that copy
+offers. The complaint about it is still correct - its form wants a Customer JWT no receptionist can
+obtain, which is the same reason §J could not walk the microchip match - so removing it means deciding
+what those three call sites should offer instead, which is a product call rather than a deletion.
+
+---
 ## M. The generation-2 contracts are live, and nothing reads them
 
 This section exists so that a tester who has heard "the registry cutover shipped" does not misread every
@@ -1283,8 +1301,8 @@ not a genuine clone of the named generation, and it refuses one that is already 
 **N7. Claim a domain. Status: BLOCKED (needs N3 and N5).**
 `ServiceDomainResolver` records the domain claim for a service. It needs three things to be true at once:
 the resolver is still fleet-approved, this service still selects it, and the caller may write this
-service's records. It is also the successor to `IssuerDomainRegistry`, which is why §L's rows are about
-the older contract for now.
+service's records. It is the successor to `IssuerDomainRegistry`, whose dead bench rows were removed -
+see §L.
 
 **N8. Publish your listing - contacts, location pin, profile, logo. Status: BLOCKED (needs N1, plus a
 registrar approval of the directory resolver).**
@@ -1434,7 +1452,7 @@ Same as B + F, but the groomer onboards as a **verifier** via apply→approve:
    **verify purposes** field (`grooming_intake/boarding_intake/daycare_access`) → **Submit application**.
 2. Fund the relayer signer: `scripts/demo-bootstrap.sh 0x<groomerSignerAddress>` (a groomer is a
    verifier/relayer - no `ISSUER_ROLE` needed; the script funds PLASMA + re-grants the VERIFY whitelist).
-3. Admin portal → step A.3 click **Groomer preset** → **Approve** → this whitelists each
+3. Admin portal → step A.3 click **Fill demo data (groomer)** → **Approve** → this whitelists each
    `VERIFY:<purpose>` on-chain (`key = keccak256(abi.encode("VERIFY:", keccak256(label) mod r))`,
    `whitelistFor(verifyKey, groomerRelayer)`).
 

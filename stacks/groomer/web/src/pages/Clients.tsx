@@ -13,12 +13,16 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  DEMO_CRM_CLIENT,
 } from "@dogtag/ui";
 import type { ClientInput, ClientPetInput, CrmClient } from "@dogtag/ui";
-import { Plus, Search, Trash2, Users } from "lucide-react";
+import { Plus, Search, Trash2, Users,
+  Sparkles,
+} from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 import {
   FilterBar,
   FilterField,
@@ -246,8 +250,41 @@ export function ClientForm({
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
         <CardTitle>{title}</CardTitle>
+        {env.demoMode && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setName(DEMO_CRM_CLIENT.name);
+              setEmail(DEMO_CRM_CLIENT.email);
+              setPhone(DEMO_CRM_CLIENT.phone);
+              setAddress(DEMO_CRM_CLIENT.address);
+              setNotes(DEMO_CRM_CLIENT.notes);
+              // Fill the FIRST pet row in place rather than replacing the list: a replacement would
+              // drop `petId` on an edit, and this payload REPLACES the owner's whole pet list, so
+              // that would silently orphan every existing pet from its links.
+              setPets((prev) => {
+                const [first, ...rest] = prev;
+                const filled = {
+                  ...(first ?? petDraft()),
+                  name: DEMO_CRM_CLIENT.pet.name,
+                  species: DEMO_CRM_CLIENT.pet.species,
+                  breed: DEMO_CRM_CLIENT.pet.breed,
+                  sex: DEMO_CRM_CLIENT.pet.sex,
+                  dateOfBirth: DEMO_CRM_CLIENT.pet.dateOfBirth,
+                  notes: DEMO_CRM_CLIENT.pet.notes,
+                  microchipCode: DEMO_CRM_CLIENT.pet.microchipCode,
+                };
+                return [filled, ...rest];
+              });
+            }}
+          >
+            <Sparkles className="h-4 w-4" /> Fill demo data
+          </Button>
+        )}
       </CardHeader>
       <CardContent>
         {/* This form is hosted on a WORKING-SURFACE page (the directory uses the full width), but a

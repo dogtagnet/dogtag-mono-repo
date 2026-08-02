@@ -91,7 +91,7 @@ The phone has **no** "Central API URL" setting - every host it talks to comes fr
    > only to accredited vets.
 
 ## 2. Admin onboards the business (admin portal :39741, password `admin`, prefilled)
-Follow the wizard: **Register business** (use the **Vet preset** button to fill the demo data) → **Submit
+Follow the wizard: **Register business** (use the **Fill demo data (vet)** button to fill the demo data) → **Submit
 issuer application** (its addresses + record types) → **Approve** → this sends `whitelistFor` txs
 on-chain (central broadcasts as the wired admin signer); the **Whitelist viewer** shows the live
 `isWhitelistedFor` state. Both **issuers and verifiers** onboard this way:

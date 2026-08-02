@@ -7,7 +7,10 @@
  * the same fields the operator would otherwise type.
  */
 
-import type { ContactChannelRecord } from "../directory/channels";
+import {
+  PROVIDER_CONTACT_CHANNELS,
+  type ContactChannelRecord,
+} from "../directory/channels";
 
 /**
  * Demo credentials for the testnet click-through (scripts/demo-up.sh launches the backends with
@@ -261,4 +264,199 @@ export const DEMO_WHITELIST_APPLY_GROOMER: DemoWhitelistApply = {
   licenseNumber: "GRM-2024-0007",
   licenseJurisdiction: "CA",
   licenseExpiry: "2027-12-31",
+};
+
+/**
+ * The admin signer from `contracts/deployments/roax.json`. Used wherever a demo preset must name an
+ * address that really holds authority on the testnet, so the resulting action exercises the real
+ * on-chain path rather than proposing against a stranger.
+ */
+export const DEMO_ADMIN_SIGNER = "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2";
+
+/**
+ * Deploy-an-issuer-clone preset (admin Issuers/Factory).
+ *
+ * A FUNCTION, not a const, and the reason is the CREATE2 salt. A clone's salt is
+ * `keccak256(recordType, business)` and `Clones.cloneDeterministic` reverts once a salt has been
+ * used, so a preset whose every term is fixed submits successfully EXACTLY ONCE against a given
+ * chain and then reverts with "Deploy failed" - a button that works on the first walk and silently
+ * does nothing on the second, which is worse than no button. `business` is blank so the backend
+ * defaults it to the hosted signer (the single-authority topology every deployed clone uses), which
+ * leaves the RECORD TYPE as the only term that can vary, so the freshness has to live there.
+ *
+ * Sibling precedent: the provider-registration preset leaves `providerId` blank and the screen mints
+ * a CSPRNG id per click, for the same reason and against the same class of `AlreadyRegistered`.
+ *
+ * The suffix is 32 CSPRNG bits rather than a counter or a timestamp: a counter resets with the page
+ * and a same-millisecond timestamp does not separate two clicks, while `randomBytes` is injectable
+ * so a test can drive the value instead of observing a random one.
+ */
+export interface DemoIssuerDeploy {
+  name: string;
+  recordType: string;
+  business: string;
+}
+
+function defaultRandomBytes(n: number): Uint8Array {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  return b;
+}
+
+export function demoIssuerDeploy(
+  randomBytes: (n: number) => Uint8Array = defaultRandomBytes,
+): DemoIssuerDeploy {
+  const bytes = randomBytes(4);
+  if (bytes.length !== 4) throw new Error("demo record-type suffix needs exactly 4 random bytes");
+  const suffix = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+  return {
+    name: "Demo Issuer (testnet)",
+    recordType: `DEMO_VACCINATION_${suffix}`,
+    business: "",
+  };
+}
+
+/**
+ * Grant-a-capability preset (admin Whitelist). Grants BOTH axes at once - the record-type issuance
+ * key and the `VERIFY:<purpose>` keys - because that pair is what the onboarding flow grants and a
+ * preset covering one axis would leave the other looking broken.
+ */
+export interface DemoWhitelistGrant {
+  signer: string;
+  recordType: string;
+  verifyPurposes: string;
+}
+
+export const DEMO_WHITELIST_GRANT: DemoWhitelistGrant = {
+  signer: DEMO_ADMIN_SIGNER,
+  recordType: DEMO_RECORD_TYPE,
+  verifyPurposes: DEMO_VERIFY_PURPOSES,
+};
+
+/**
+ * Register-a-provider preset (admin registrar surface, the generation-2 `ProviderRegistry`).
+ *
+ * `providerId` is left blank: the screen mints a CSPRNG id, and a fixed one would collide with
+ * `AlreadyRegistered` the second time the captain walks the demo. `controller` is the well-known
+ * anvil account 0 - the same key the first live provider was registered with, chosen so anyone can
+ * act as it on a disposable testnet.
+ */
+export interface DemoProviderRegistration {
+  controller: string;
+  legalName: string;
+  jurisdiction: string;
+  registrationNumber: string;
+  verifiedOn: string;
+  notes: string;
+}
+
+export const DEMO_PROVIDER_REGISTRATION: DemoProviderRegistration = {
+  controller: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  legalName: "Demo Provider Pte Ltd (testnet)",
+  jurisdiction: "SG",
+  registrationNumber: "DEMO-KYC-0001",
+  verifiedOn: isoDate(0),
+  notes: "Demo registration - no KYC was performed.",
+};
+
+/**
+ * Groomer CRM presets. Deliberately unmistakable as demo data: a real receptionist must never be
+ * able to mistake a filled row for a real client, so every name says so and the contact details are
+ * RFC-2606 reserved (`example.com`) rather than plausible-looking personal data.
+ */
+export interface DemoCrmPet {
+  name: string;
+  species: string;
+  breed: string;
+  sex: string;
+  dateOfBirth: string;
+  notes: string;
+  microchipCode: string;
+}
+
+export const DEMO_CRM_PET: DemoCrmPet = {
+  name: "Demo Dog (sample)",
+  species: "Dog",
+  breed: "Golden Retriever",
+  sex: "female",
+  dateOfBirth: isoDate(-1400),
+  notes: "Demo record - not a real animal.",
+  microchipCode: "900000000000001",
+};
+
+export interface DemoCrmClient {
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+  notes: string;
+  pet: DemoCrmPet;
+}
+
+export const DEMO_CRM_CLIENT: DemoCrmClient = {
+  name: "Demo Client (sample)",
+  email: "demo.client@example.com",
+  phone: "+65 6000 0000",
+  address: "1 Demo Street, #01-01, Singapore 000000",
+  notes: "Demo record - not a real person.",
+  pet: DEMO_CRM_PET,
+};
+
+/**
+ * Book-an-appointment preset. `service`/`groomer` are the free-text fields the form collects; the
+ * client, pet and times are chosen in the form itself (the client picker is a live search, so a
+ * preset cannot name a client that exists on this shop's own database).
+ */
+export interface DemoCrmAppointment {
+  service: string;
+  groomer: string;
+  notes: string;
+}
+
+export const DEMO_CRM_APPOINTMENT: DemoCrmAppointment = {
+  service: "Demo full groom (sample)",
+  groomer: "Demo Groomer",
+  notes: "Demo booking - not a real appointment.",
+};
+
+/**
+ * Provider self-service preset (vet + groomer `ProviderSelfServiceFlows`).
+ *
+ * `providerId` is deliberately ABSENT: it is registrar-assigned and opaque, so any value here would
+ * name a provider that does not exist. The operator pastes the id the admin registrar screen minted.
+ *
+ * Contacts derive from the shared channel list rather than restating it, and are typed
+ * `ContactChannelRecord` so a channel added to `PROVIDER_CONTACT_CHANNELS` FAILS TO COMPILE here
+ * until it is given a demo value. A widened `Record<string, string>` with a `?? ""` fallback would
+ * accept the addition silently and fill the new field with a blank - which is the exact silence
+ * `channels.ts` exists to make impossible.
+ */
+export interface DemoProviderListing {
+  recordType: string;
+  domain: string;
+  lat: string;
+  lng: string;
+  contacts: ContactChannelRecord<string>;
+}
+
+const DEMO_LISTING_CONTACTS: ContactChannelRecord<string> = {
+  phone: "+65 6000 0000",
+  whatsapp: "+65 6000 0000",
+  telegram: "demoprovider",
+  email: "demo.provider@example.com",
+  website: "https://demo-provider.example.com",
+};
+
+export const DEMO_PROVIDER_LISTING: DemoProviderListing = {
+  recordType: DEMO_RECORD_TYPE,
+  domain: "demo-provider.example.com",
+  // Singapore, to a sane precision. A real coordinate rather than 0,0 - which is a REAL place and
+  // must never be used as a stand-in for "no location".
+  lat: "1.290270",
+  lng: "103.851959",
+  contacts: Object.fromEntries(
+    PROVIDER_CONTACT_CHANNELS.map((c) => [c, DEMO_LISTING_CONTACTS[c]]),
+  ) as ContactChannelRecord<string>,
 };
