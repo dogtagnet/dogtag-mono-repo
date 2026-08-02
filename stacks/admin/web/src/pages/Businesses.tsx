@@ -423,13 +423,13 @@ function RegisterDialog({
         {env.demoMode && (
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_BUSINESS_VET })}>
-              <Sparkles className="h-4 w-4" /> Demo (vet)
+              <Sparkles className="h-4 w-4" /> Fill demo data (vet)
             </Button>
             <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_BUSINESS_GROOMER })}>
-              <Sparkles className="h-4 w-4" /> Demo (groomer)
+              <Sparkles className="h-4 w-4" /> Fill demo data (groomer)
             </Button>
             <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_BUSINESS_CONTACT_ONLY })}>
-              <Sparkles className="h-4 w-4" /> Demo (no location)
+              <Sparkles className="h-4 w-4" /> Fill demo data (no location)
             </Button>
           </div>
         )}

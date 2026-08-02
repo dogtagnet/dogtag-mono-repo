@@ -40,6 +40,7 @@
  *     into either neighbour.
  */
 
+import { Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { keccak256, toHex } from "viem";
 import { useAccount, useWriteContract } from "wagmi";
@@ -66,6 +67,7 @@ import {
   type ProfileResolution,
 } from "../mirror";
 import { blankContactFields } from "../directory/registration";
+import { DEMO_PROVIDER_LISTING } from "../schema/demoData";
 import {
   ATTACHMENT_IS_NOT_SELF_SERVICE,
   assessCandidateClone,
@@ -138,6 +140,11 @@ export interface ProviderSelfServiceFlowsProps {
   mirrorBase?: string;
   /** Bearer for the mirror's write route. Reads are public; writes are not a free content host. */
   mirrorToken?: string;
+  /**
+   * Show the demo-fill affordance. Defaults OFF: this component is shared by two production
+   * portals, so a prefill must be opted into by a host that knows it is running in demo mode.
+   */
+  demoMode?: boolean;
 }
 
 /**
@@ -219,6 +226,7 @@ export function ProviderSelfServiceFlows({
   capabilities,
   mirrorBase,
   mirrorToken,
+  demoMode = false,
 }: ProviderSelfServiceFlowsProps): ReactNode {
   const { address, isConnected } = useAccount();
   const { writeContractAsync } = useWriteContract();
@@ -415,12 +423,33 @@ export function ProviderSelfServiceFlows({
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
       <Card>
-        <CardHeader>
-          <CardTitle>Your provider record</CardTitle>
+        <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle>Your provider record</CardTitle>
           <CardDescription>
             Your provider id is assigned by DogTag when you are approved. It is an opaque identifier -
             it is not derived from your name, your domain, your address or any of your keys.
-          </CardDescription>
+            </CardDescription>
+          </div>
+          {demoMode && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                // Everything EXCEPT providerId: that one is registrar-assigned and opaque, so a
+                // demo value would be a provider id that does not exist. The captain pastes the one
+                // the admin registrar screen minted.
+                setRecordType(DEMO_PROVIDER_LISTING.recordType);
+                setDomain(DEMO_PROVIDER_LISTING.domain);
+                setLatInput(DEMO_PROVIDER_LISTING.lat);
+                setLngInput(DEMO_PROVIDER_LISTING.lng);
+                setContacts((prev) => ({ ...prev, ...DEMO_PROVIDER_LISTING.contacts }));
+              }}
+            >
+              <Sparkles className="h-4 w-4" /> Fill demo data
+            </Button>
+          )}
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div>

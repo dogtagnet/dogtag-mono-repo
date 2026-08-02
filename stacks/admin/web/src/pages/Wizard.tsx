@@ -251,7 +251,7 @@ export function Wizard() {
                 variant={preset === "vet" ? "primary" : "outline"}
                 onClick={() => applyPreset("vet")}
               >
-                <Sparkles className="h-4 w-4" /> Vet preset
+                <Sparkles className="h-4 w-4" /> Fill demo data (vet)
               </Button>
               <Button
                 type="button"
@@ -259,7 +259,7 @@ export function Wizard() {
                 variant={preset === "groomer" ? "primary" : "outline"}
                 onClick={() => applyPreset("groomer")}
               >
-                <Sparkles className="h-4 w-4" /> Groomer preset
+                <Sparkles className="h-4 w-4" /> Fill demo data (groomer)
               </Button>
             </div>
           )}

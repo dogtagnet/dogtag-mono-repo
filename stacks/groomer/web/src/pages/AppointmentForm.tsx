@@ -14,12 +14,16 @@ import {
   SelectValue,
   Spinner,
   APPOINTMENT_STATES,
+  DEMO_CRM_APPOINTMENT,
 } from "@dogtag/ui";
 import type { AppointmentInput, AppointmentStatus, CrmAppointment, CrmClient } from "@dogtag/ui";
-import { ArrowLeft, CalendarPlus } from "lucide-react";
+import { ArrowLeft, CalendarPlus,
+  Sparkles,
+} from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 import { useAction, useDebounced } from "../app/crm";
 import { fromDateTimeInput, nowSec, toDateTimeInput } from "../lib/time";
 
@@ -164,15 +168,34 @@ export function AppointmentForm({ mode }: { mode: "create" | "edit" }) {
       </Link>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <CalendarPlus className="h-5 w-5 text-primary" />
-            {mode === "edit" ? "Edit appointment" : "New appointment"}
-          </CardTitle>
-          <CardDescription>
-            Pick the client and pet, then the slot. You will run the vaccination check from the
-            appointment itself.
-          </CardDescription>
+        <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <CalendarPlus className="h-5 w-5 text-primary" />
+              {mode === "edit" ? "Edit appointment" : "New appointment"}
+            </CardTitle>
+            <CardDescription>
+              Pick the client and pet, then the slot. You will run the vaccination check from the
+              appointment itself.
+            </CardDescription>
+          </div>
+          {env.demoMode && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                // The free-text fields only. Client and pet are LIVE searches against this shop's
+                // own book, so a preset cannot name one that exists here; the slot already defaults
+                // to a sensible time.
+                setService(DEMO_CRM_APPOINTMENT.service);
+                setGroomer(DEMO_CRM_APPOINTMENT.groomer);
+                setNotes(DEMO_CRM_APPOINTMENT.notes);
+              }}
+            >
+              <Sparkles className="h-4 w-4" /> Fill demo data
+            </Button>
+          )}
         </CardHeader>
         <CardContent>
           <form className="space-y-6" onSubmit={submit}>

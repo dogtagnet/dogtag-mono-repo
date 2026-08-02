@@ -21,6 +21,7 @@ import {
   type BenchReport,
   type BenchScenario,
   type CheckOutcome,
+  genuineCredential,
 } from "@dogtag/ui";
 import {
   AlertTriangle,
@@ -30,6 +31,7 @@ import {
   ShieldAlert,
   Upload,
   XCircle,
+  Sparkles,
 } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { env } from "../lib/env";
@@ -483,7 +485,6 @@ export function VerificationBench() {
         defaultRpcUrl: rpc.defaultRpcUrl,
         registryAddr: env.issuerRegistryAddr || undefined,
         factoryAddr: env.factoryAddr || undefined,
-        domainRegistryAddr: env.issuerDomainRegistryAddr || undefined,
         blockNumber,
       });
       setReport(next);
@@ -604,6 +605,30 @@ export function VerificationBench() {
             <Button onClick={() => void runOn(raw)} disabled={busy || !raw.trim()} data-testid="run-bench">
               {busy ? "Running..." : "Run the checks"}
             </Button>
+            {env.demoMode && (
+              <Button
+                variant="outline"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  // The catalogue's own honest control. Its addresses are the real deployed ones but
+                  // its ROOT was never anchored, so the chain rows will honestly report that no clone
+                  // resolved - a complete report, not an error. Say so, rather than let the captain
+                  // read it as a fault.
+                  const text = JSON.stringify(genuineCredential.build().wrappedDoc, null, 2);
+                  setRaw(text);
+                  setApplied([]);
+                  toast({
+                    title: "Demo data filled",
+                    description:
+                      "The catalogue's honest control record. It was never anchored on this chain, so its on-chain rows will report \u201ccould not run\u201d - paste a real credential (the government portal's Copy wrapped document) to exercise those.",
+                    variant: "success",
+                  });
+                }}
+              >
+                <Sparkles className="h-4 w-4" /> Fill demo data
+              </Button>
+            )}
             <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={busy}>
               <Upload className="h-4 w-4" />
               Upload .json
@@ -737,14 +762,6 @@ export function VerificationBench() {
             asked to produce - a signer delisted after it issued, a contract the factory never
             deployed vouching for a root, a registry that does not govern the clone. Each declares WHICH
             check must refuse it, and a run that diverges from that declaration is called out in red.
-            <br />
-            <br />
-            Two rows are unwired here BY CONSTRUCTION and are not a finding about any scenario: no
-            scenario configures an <span className="font-mono">IssuerDomainRegistry</span>, so{" "}
-            <span className="font-mono">issuer-domain-claim</span> and{" "}
-            <span className="font-mono">issuer-domain-dns</span> report &ldquo;could not run&rdquo;
-            throughout. The issuer-domain axis is orthogonal to every fraud modelled below; load a real
-            record above to exercise it.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

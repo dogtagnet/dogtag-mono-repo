@@ -384,10 +384,6 @@ function world(doc: Record<string, unknown>, script: ChainScript): ScenarioWorld
 
 /**
  * The outcome vector of an honest record, as the shared baseline every scenario deviates from.
- *
- * The two issuer-domain rows are `could-not-run` throughout the catalogue because no scenario
- * configures an `IssuerDomainRegistry`: the DNS half is not answerable from a browser at all, and the
- * on-chain half is a separate axis from every fraud modelled here.
  */
 const HONEST: Record<BenchCheckId, CheckOutcome> = {
   integrity: "pass",
@@ -399,8 +395,6 @@ const HONEST: Record<BenchCheckId, CheckOutcome> = {
   "anchored-on-chain": "pass",
   "not-revoked": "pass",
   "not-expired": "pass",
-  "issuer-domain-claim": "could-not-run",
-  "issuer-domain-dns": "could-not-run",
 };
 
 /** The vector every on-chain row collapses to when no clone resolves - nothing was asked of anything. */

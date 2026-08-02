@@ -33,7 +33,7 @@ export interface VerifyFlowProps {
   pollSession?: (sessionId: string) => Promise<{ status: string; txHash?: string }>;
   pollIntervalMs?: number;
   /**
-   * When true, shows a "Fill sample" demo button that selects a purpose so a non-technical operator
+   * When true, shows a "Fill demo data" demo button that selects a purpose so a non-technical operator
    * can one-click prepare the verify session. Defaults true.
    */
   showDemo?: boolean;
@@ -190,7 +190,7 @@ export function VerifyFlow({
               </Button>
               {showDemo && (
                 <Button type="button" variant="outline" onClick={fillSample}>
-                  <Sparkles className="h-4 w-4" /> Fill sample
+                  <Sparkles className="h-4 w-4" /> Fill demo data
                 </Button>
               )}
             </div>

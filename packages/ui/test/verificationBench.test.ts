@@ -23,7 +23,6 @@ import {
   type BenchCheck,
   type BenchCheckId,
   type BenchReport,
-  type DomainClaimReader,
   type GrantHistoryReader,
   type IssuerAuthorityReader,
 } from "../src/wallet/verificationBench";
@@ -49,7 +48,6 @@ const HOSTILE = "0x000000000000000000000000000000000000ba0b";
 /** The signer that actually issued R on-chain (== clone.issuedBy[R]). */
 const SIGNER = "0xabc0000000000000000000000000000000000abc";
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
-const DOMAIN_REGISTRY = "0x00000000000000000000000000000000000d0a17";
 const VACCINATION_KEY = recordTypeKey("VACCINATION");
 const NOW = 1_700_000_000;
 const TODAY = "2023-11-14";
@@ -332,18 +330,6 @@ function fakeGrantHistoryReader(cfg: ChainCfg): GrantHistoryReader {
   };
 }
 
-const domainReader = (domain: string | null): DomainClaimReader => ({
-  async claim() {
-    return domain === null ? null : { domain, updatedAtBlock: 4242n };
-  },
-});
-
-const failingDomainReader: DomainClaimReader = {
-  async claim() {
-    throw new Error("registry unreachable");
-  },
-};
-
 /**
  * Every reader is injected HERE, including the two log readers.
  *
@@ -466,10 +452,7 @@ function stripValidUntil(doc: WrappedDoc): Record<string, unknown> {
 describe("a genuine credential", () => {
   it("passes every check that can run, and the bench copies the real verifier's verdict", async () => {
     const doc = validDoc();
-    const r = await bench(doc, genuineChain(doc), {
-      domainRegistryAddr: DOMAIN_REGISTRY,
-      domainClaimReader: domainReader(ISSUER.domain),
-    });
+    const r = await bench(doc, genuineChain(doc));
     expect(r.verdict).toBe(true);
     expect(outcomes(r)).toMatchObject({
       integrity: "pass",
@@ -479,7 +462,6 @@ describe("a genuine credential", () => {
       "anchored-on-chain": "pass",
       "not-revoked": "pass",
       "not-expired": "pass",
-      "issuer-domain-claim": "pass",
     });
   });
 
@@ -899,10 +881,7 @@ describe("no row asserts from a value the recorder never observed", () => {
     // [issuedAt, onchainValid, revoked] with [0n, false, false] having made NO read, and reports the
     // DOCUMENT'S OWN address as `issuerAddr`. A sweep of genuine chains would pass before the fix.
     const worlds = [
-      await bench(doc, genuineChain(doc), {
-        domainRegistryAddr: DOMAIN_REGISTRY,
-        domainClaimReader: domainReader(ISSUER.domain),
-      }),
+      await bench(doc, genuineChain(doc)),
       await bench(doc, { ...genuineChain(doc), rootIssuers: {} }),
       await bench(forged, { ...withHostile(genuineChain(doc), doc), rootIssuers: {} }),
       await bench(doc, { ...genuineChain(doc), failing: new Set(["issuedAt"] as const) }),
@@ -1081,62 +1060,6 @@ describe("the canonical validUntil chain", () => {
   });
 });
 
-describe("the issuer-domain checks", () => {
-  it("passes when the document's domain matches the issuer's on-chain claim", async () => {
-    const doc = validDoc();
-    const r = await bench(doc, genuineChain(doc), {
-      domainRegistryAddr: DOMAIN_REGISTRY,
-      domainClaimReader: domainReader(ISSUER.domain),
-    });
-    expect(check(r, "issuer-domain-claim").outcome).toBe("pass");
-  });
-
-  it("fails when the document claims a domain the issuer never published", async () => {
-    const doc = validDoc();
-    const r = await bench(doc, genuineChain(doc), {
-      domainRegistryAddr: DOMAIN_REGISTRY,
-      domainClaimReader: domainReader("ministry-of-health.example"),
-    });
-    expect(check(r, "issuer-domain-claim").outcome).toBe("fail");
-  });
-
-  it("could-not-run for an unconfigured registry, an unreadable one, and an unpublished claim - each with its own reason", async () => {
-    const doc = validDoc();
-    const unconfigured = await bench(doc, genuineChain(doc));
-    const unreadable = await bench(doc, genuineChain(doc), {
-      domainRegistryAddr: DOMAIN_REGISTRY,
-      domainClaimReader: failingDomainReader,
-    });
-    const noClaim = await bench(doc, genuineChain(doc), {
-      domainRegistryAddr: DOMAIN_REGISTRY,
-      domainClaimReader: domainReader(null),
-    });
-    for (const r of [unconfigured, unreadable, noClaim]) {
-      expect(check(r, "issuer-domain-claim").outcome).toBe("could-not-run");
-    }
-    // Three DIFFERENT reasons: collapsing them is how "we never asked" comes to read as "nothing there".
-    const reasons = [unconfigured, unreadable, noClaim].map(
-      (r) => check(r, "issuer-domain-claim").couldNotRunReason,
-    );
-    expect(new Set(reasons).size).toBe(3);
-    expect(reasons[0]).toContain("No IssuerDomainRegistry address is configured");
-    expect(reasons[1]).toContain("registry unreachable");
-    expect(reasons[2]).toContain("holds no binding");
-  });
-
-  it("never lets the on-chain claim imply that DNS agreed", async () => {
-    const doc = validDoc();
-    const r = await bench(doc, genuineChain(doc), {
-      domainRegistryAddr: DOMAIN_REGISTRY,
-      domainClaimReader: domainReader(ISSUER.domain),
-    });
-    expect(check(r, "issuer-domain-claim").outcome).toBe("pass");
-    // The DNS half is a SEPARATE row and is never satisfied by the registry read.
-    const dns = check(r, "issuer-domain-dns");
-    expect(dns.outcome).toBe("could-not-run");
-    expect(dns.couldNotRunReason).toContain("server-side");
-  });
-});
 
 // ── the adversarial half ────────────────────────────────────────────────────────────────────────
 
@@ -1213,12 +1136,9 @@ describe("the mutations trip the specific check that catches them", () => {
 // ── the verdict's scope, stated rather than left to be inferred ─────────────────────────────────
 
 describe("which rows the verifier's verdict folds in", () => {
-  it("marks expiry and the issuer-domain rows as reported BESIDE the verdict, not inside it", async () => {
+  it("marks expiry as reported BESIDE the verdict, not inside it", async () => {
     const doc = validDoc();
-    const r = await bench(doc, genuineChain(doc), {
-      domainRegistryAddr: DOMAIN_REGISTRY,
-      domainClaimReader: domainReader(ISSUER.domain),
-    });
+    const r = await bench(doc, genuineChain(doc));
     const gates = Object.fromEntries(r.checks.map((c) => [c.id, c.gatesVerdict]));
     expect(gates).toEqual({
       integrity: true,
@@ -1228,8 +1148,6 @@ describe("which rows the verifier's verdict folds in", () => {
       "anchored-on-chain": true,
       "not-revoked": true,
       "not-expired": false,
-      "issuer-domain-claim": false,
-      "issuer-domain-dns": false,
       // Observations about the verdict's own inputs. Both must stay `false`: the verifier's formula
       // is `integrity && onchain && issuerWhitelisted === true` and this module copies it rather than
       // competing with it, so a row promoted to gating here would be the bench inventing a verdict.
@@ -1242,16 +1160,12 @@ describe("which rows the verifier's verdict folds in", () => {
     // This is the property that stops the page reading as self-contradictory: every red row sitting
     // under a `true` verdict must be one the verifier genuinely does not consider.
     const lapsed = validDoc("2020-05-01");
-    const r = await bench(lapsed, genuineChain(lapsed), {
-      domainRegistryAddr: DOMAIN_REGISTRY,
-      domainClaimReader: domainReader("somewhere-else.example"),
-    });
+    const r = await bench(lapsed, genuineChain(lapsed));
     expect(r.verdict).toBe(true);
     const redAndGating = r.checks.filter((c) => c.outcome === "fail" && c.gatesVerdict);
     expect(redAndGating.map((c) => c.id)).toEqual([]);
     // ...and there really ARE red rows, or this asserts nothing.
     expect(r.checks.filter((c) => c.outcome === "fail").map((c) => c.id).sort()).toEqual([
-      "issuer-domain-claim",
       "not-expired",
     ]);
   });

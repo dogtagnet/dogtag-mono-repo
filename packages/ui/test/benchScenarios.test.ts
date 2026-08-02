@@ -456,12 +456,9 @@ describe("the genuine control", () => {
     const r = await runBenchScenario(genuineCredential);
     expect(r.verdict).toBe(true);
     expect(r.checks.filter((c) => c.outcome === "fail")).toEqual([]);
-    // Only the two issuer-domain rows may be unanswered, and only because no domain registry is
-    // configured for the catalogue.
-    expect(r.checks.filter((c) => c.outcome === "could-not-run").map((c) => c.id).sort()).toEqual([
-      "issuer-domain-claim",
-      "issuer-domain-dns",
-    ]);
+    // Nothing may be unanswered on the control: every row the catalogue carries is answerable from
+    // its scripted chain, so a could-not-run here is a broken fixture rather than an honest limit.
+    expect(r.checks.filter((c) => c.outcome === "could-not-run").map((c) => c.id).sort()).toEqual([]);
   });
 
   it("trips a BOUNDED set of checks per fraud - the catalogue is discriminating", async () => {

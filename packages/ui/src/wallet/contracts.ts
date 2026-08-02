@@ -216,29 +216,6 @@ const DOGTAG_ISSUER_FACTORY_ABI = [
   },
 ] as const satisfies Abi;
 
-const ISSUER_DOMAIN_REGISTRY_ABI = [
-  {
-    // `getBinding(clone)` — the published issuer->domain claim. Deliberately does NOT revert on an
-    // unknown clone: "no domain claimed" is a normal day-one state, signalled by `updatedAt == 0`.
-    type: "function",
-    name: "getBinding",
-    stateMutability: "view",
-    inputs: [{ name: "clone", type: "address" }],
-    outputs: [
-      {
-        name: "",
-        type: "tuple",
-        components: [
-          { name: "domain", type: "string" },
-          { name: "updatedAt", type: "uint64" },
-          { name: "updatedAtBlock", type: "uint64" },
-          { name: "setBy", type: "address" },
-        ],
-      },
-    ],
-  },
-] as const satisfies Abi;
-
 /** The all-zero address `issuedBy` returns for a root this clone never issued. */
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
@@ -786,36 +763,3 @@ export async function rootIssuedAtLog(args: {
   return sortLogPoints(points)[0] ?? null;
 }
 
-/**
- * The on-chain issuer->domain claim published for `cloneAddr`, or `null` when none is.
- *
- * Read from the DOMAIN REGISTRY, never from the credential: `issuer.domain` sits outside the Merkle
- * root, so the document's own claim is exactly the field a relabelling attack rewrites. This getter is
- * the unforgeable half of that comparison.
- *
- * `null` is the honest "this issuer has published no domain claim" - the normal day-one state, and NOT
- * an error. A read that FAILS throws, so a caller can keep "no claim" and "could not ask" apart; folding
- * the two is the fail-open bug the six-state `IssuerDomainBinding` model exists to prevent.
- *
- * The registry address is a PARAMETER with no default, unlike the factory/registry addresses above. The
- * contract set is still being revised and `IssuerDomainRegistry` may yet be folded elsewhere, so a
- * caller with nothing configured must report the check as unavailable rather than read a stale constant.
- */
-export async function issuerDomainClaimOf(args: {
-  domainRegistryAddr: string;
-  cloneAddr: string;
-  rpcUrl?: string;
-  defaultRpcUrl?: string;
-  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
-  blockNumber?: bigint;
-}): Promise<{ domain: string; updatedAt: bigint; updatedAtBlock: bigint; setBy: string } | null> {
-  const b = (await roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
-    address: args.domainRegistryAddr as Address,
-    abi: ISSUER_DOMAIN_REGISTRY_ABI,
-    functionName: "getBinding",
-    args: [args.cloneAddr as Address],
-    blockNumber: args.blockNumber,
-  })) as { domain: string; updatedAt: bigint; updatedAtBlock: bigint; setBy: string };
-  // `updatedAt == 0` is the contract's own "no binding published" sentinel, not a zero timestamp.
-  return b.updatedAt === 0n ? null : b;
-}

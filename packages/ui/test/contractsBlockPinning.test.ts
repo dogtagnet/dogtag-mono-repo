@@ -27,7 +27,6 @@ const {
   rootIssuerOf,
   recordTypeOf,
   isWhitelistedFor,
-  issuerDomainClaimOf,
   issuerRegistryOf,
   rootIssuedAtLog,
   whitelistGrantHistory,
@@ -100,28 +99,6 @@ describe("every reader forwards blockNumber to the eth_call", () => {
     expect(readContract).not.toHaveBeenCalled();
   });
 
-  it("issuerDomainClaimOf pins its read too", async () => {
-    readContract.mockResolvedValueOnce({
-      domain: "vet.example",
-      updatedAt: 1n,
-      updatedAtBlock: 5n,
-      setBy: ADDR,
-    } as never);
-    await issuerDomainClaimOf({ domainRegistryAddr: ADDR, cloneAddr: ADDR, rpcUrl: url(), blockNumber: AT });
-    expect(lastCall()?.blockNumber).toBe(AT);
-  });
-
-  it("treats updatedAt == 0 as 'no claim published' rather than a zero-timestamp binding", async () => {
-    readContract.mockResolvedValueOnce({
-      domain: "",
-      updatedAt: 0n,
-      updatedAtBlock: 0n,
-      setBy: "0x0000000000000000000000000000000000000000",
-    } as never);
-    expect(
-      await issuerDomainClaimOf({ domainRegistryAddr: ADDR, cloneAddr: ADDR, rpcUrl: url() }),
-    ).toBeNull();
-  });
 });
 
 /**

@@ -56,6 +56,7 @@ import {
   type ProviderStanding,
   type ProvidersResp,
   type WhitelistOutcome,
+  DEMO_PROVIDER_REGISTRATION,
 } from "@dogtag/ui";
 import {
   AlertTriangle,
@@ -68,9 +69,11 @@ import {
   ShieldCheck,
   ShieldOff,
   UserPlus,
+  Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 import { AddressRef } from "../components/ChainRef";
 import { shortAddr } from "../lib/format";
 import {
@@ -699,6 +702,31 @@ export function Providers() {
               ever moves forward.
             </DialogDescription>
           </DialogHeader>
+
+          {env.demoMode && (
+            <div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  // A fresh id every time: a fixed one collides with AlreadyRegistered the second
+                  // time this demo is walked.
+                  setProviderId(generateProviderId());
+                  setController(DEMO_PROVIDER_REGISTRATION.controller);
+                  setStatement({
+                    legalName: DEMO_PROVIDER_REGISTRATION.legalName,
+                    jurisdiction: DEMO_PROVIDER_REGISTRATION.jurisdiction,
+                    registrationNumber: DEMO_PROVIDER_REGISTRATION.registrationNumber,
+                    verifiedOn: DEMO_PROVIDER_REGISTRATION.verifiedOn,
+                    notes: DEMO_PROVIDER_REGISTRATION.notes,
+                  });
+                }}
+              >
+                <Sparkles className="h-4 w-4" /> Fill demo data
+              </Button>
+            </div>
+          )}
 
           <div className="space-y-4">
             <div>

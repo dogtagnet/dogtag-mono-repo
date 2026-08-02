@@ -372,10 +372,10 @@ function CreateApplicationDialog({
         {env.demoMode && (
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_ISSUER_APPLICATION_VET })}>
-              <Sparkles className="h-4 w-4" /> Demo (vet)
+              <Sparkles className="h-4 w-4" /> Fill demo data (vet)
             </Button>
             <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_ISSUER_APPLICATION_GROOMER })}>
-              <Sparkles className="h-4 w-4" /> Demo (groomer)
+              <Sparkles className="h-4 w-4" /> Fill demo data (groomer)
             </Button>
           </div>
         )}

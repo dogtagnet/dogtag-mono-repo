@@ -28,6 +28,7 @@ import {
   type IssuerApplicationListItem,
   type WhitelistGrantResp,
   type WhitelistOutcome,
+  DEMO_WHITELIST_GRANT,
 } from "@dogtag/ui";
 import {
   CheckCircle2,
@@ -38,8 +39,11 @@ import {
   ShieldCheck,
   ShieldOff,
   XCircle,
+  Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+
+import { env } from "../lib/env";
 import { useApp } from "../app/AppContext";
 import { AddressRef } from "../components/ChainRef";
 import { shortAddr } from "../lib/format";
@@ -388,6 +392,22 @@ function GrantCapabilityDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             <code>DOG_PROFILE</code> record type also grants <code>ISSUER_ROLE</code>.
           </DialogDescription>
         </DialogHeader>
+        {env.demoMode && (
+          <div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSigner(DEMO_WHITELIST_GRANT.signer);
+                setRecordType(DEMO_WHITELIST_GRANT.recordType);
+                setVerifyPurposes(DEMO_WHITELIST_GRANT.verifyPurposes);
+              }}
+            >
+              <Sparkles className="h-4 w-4" /> Fill demo data
+            </Button>
+          </div>
+        )}
         <form onSubmit={submit} className="grid gap-3">
           <div className="space-y-1.5">
             <Label required>Signer address</Label>

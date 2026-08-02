@@ -141,10 +141,6 @@ export const relabelIssuerName: BenchMutation = {
       id: "issuer-whitelisted",
       why: "The whitelist is keyed on the signer and the record type the contract itself declares - never on a name.",
     },
-    {
-      id: "issuer-domain-claim",
-      why: "That compares the DOMAIN, which is a different field; a name-only relabel leaves the domain untouched.",
-    },
   ],
   caughtElsewhere:
     "The government verify route reads the clone's own `name()` - written by the factory's KYC-gated `createIssuer` - and reports a `nameConflict` against the document's claim. That check is server-side and is not part of this browser path.",
