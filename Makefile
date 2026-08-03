@@ -1,6 +1,6 @@
 # DogTag monorepo — root task runner (just is unavailable; GNU Make 3.81)
 .DEFAULT_GOAL := help
-.PHONY: help dev build test parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer test-consent-parity vendor-mobile-artifacts verify-provider-selfservice-mutations verify-content-mirror-mutations
+.PHONY: help dev build test check-addresses parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer test-consent-parity vendor-mobile-artifacts verify-provider-selfservice-mutations verify-content-mirror-mutations
 
 help: ## list targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'

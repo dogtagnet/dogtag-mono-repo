@@ -212,7 +212,7 @@ contract PublishProtocolVersionsPropose is PublishBase {
         vm.stopBroadcast();
 
         console2.log(
-            "dogtag-levelb/2 discovery-set ETA (unix)", reg.discoverySetEta(discoverySet.discoverySetId)
+            "dogtag-levelb/1 discovery-set ETA (unix)", reg.discoverySetEta(discoverySet.discoverySetId)
         );
         console2.log("artifact-set ETA (unix)", reg.artifactSetEta(artifactSet.artifactSetId));
         console2.log("binding ETA (unix)", reg.bindingEta(discoverySet.discoverySetId));
@@ -251,7 +251,7 @@ contract PublishProtocolVersionsPropose is PublishBase {
 /// # This phase needs the SAME environment phase 1 had
 ///
 /// Phase 2 used to read only `PUBLISH_PROTOCOL_REGISTRY`. The re-preflight and the two staged-versus-env
-/// checks mean it now reads every publish variable: the six `GEN2_*` addresses, the four pins, and
+/// checks mean it now reads every publish variable: the five `PUBLISH_*` addresses, the four pins, and
 /// `PUBLISH_ARTIFACTS_URL` / `PUBLISH_MIN_APP_VERSION`. On mainnet that is two days after phase 1, plausibly in
 /// a different shell, so load the same `.env` rather than only the registry address. A missing variable
 /// reverts inside `vm.envAddress`/`vm.envBytes32` before anything is broadcast.
@@ -277,9 +277,9 @@ contract PublishProtocolVersionsExecute is PublishBase {
 
         console2.log("Published discovery sets:", reg.discoverySetCount());
         console2.log("Published artifact sets:", reg.artifactSetCount());
-        console2.log("dogtag-levelb/2 active", reg.getDiscoverySet(ProtocolVersions.levelBId()).active);
+        console2.log("dogtag-levelb/1 active", reg.getDiscoverySet(ProtocolVersions.levelBId()).active);
         console2.log(
-            "dogtag-levelb/2 minAppVersion",
+            "dogtag-levelb/1 minAppVersion",
             reg.getActiveArtifactSet(ProtocolVersions.levelBId()).minAppVersion
         );
     }

@@ -48,10 +48,23 @@ DEBT="$ROOT_DIR/scripts/address-debt.json"
 [[ -f "$LEDGER" ]] || { echo "::error:: ledger not found: $LEDGER"; exit 1; }
 [[ -f "$DEBT" ]] || { echo "::error:: debt list not found: $DEBT"; exit 1; }
 
+# Read a newline-separated stream into an array. This is `mapfile -t`, spelled out, because `mapfile`
+# is a bash 4 builtin and stock `/bin/bash` on macOS is 3.2 - where it is not a builtin, not on PATH,
+# and under `set -euo pipefail` aborts the run at `command not found`. Whether that bites depends on
+# which bash the caller happens to resolve, which is exactly the kind of "the gate did not run"
+# accident the header above is about. Empty input yields an empty array, as `mapfile` does.
+read_lines() {
+  local __name="$1" __line
+  eval "$__name=()"
+  while IFS= read -r __line; do
+    eval "$__name+=(\"\$__line\")"
+  done
+}
+
 # THE LEDGER IS THE ONLY SOURCE. Every 20-byte address it publishes is an address no source file may
 # contain. Keys beginning `_` are prose notes; their addresses are historical references, not the
 # live set, so they are deliberately excluded.
-mapfile -t LIVE < <(python3 - "$LEDGER" <<'PY'
+read_lines LIVE < <(python3 - "$LEDGER" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 for k, v in d.items():
@@ -62,14 +75,14 @@ for k, v in d.items():
 PY
 )
 
-mapfile -t RETIRED < <(python3 - "$DEBT" <<'PY'
+read_lines RETIRED < <(python3 - "$DEBT" <<'PY'
 import json, sys
 for a in json.load(open(sys.argv[1])).get("retired", []):
     print(a.lower())
 PY
 )
 
-mapfile -t DECLARED < <(python3 - "$DEBT" <<'PY'
+read_lines DECLARED < <(python3 - "$DEBT" <<'PY'
 import json, sys
 for f in json.load(open(sys.argv[1])).get("stillHardcoded", {}):
     print(f)
@@ -80,7 +93,7 @@ cd "$ROOT_DIR"
 PATTERN="$(printf '%s\n' "${LIVE[@]}" "${RETIRED[@]}" | paste -sd'|' -)"
 
 # Tracked files only, and never the ledger itself - it is where addresses belong.
-mapfile -t OFFENDERS < <(
+read_lines OFFENDERS < <(
   git grep -lIE -i "$PATTERN" -- \
     ':!contracts/deployments/roax.json' \
     ':!scripts/address-debt.json' \

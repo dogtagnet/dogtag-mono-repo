@@ -218,7 +218,6 @@ contract Deploy is Script {
     function validatePublishTimelock(uint256 publishTimelock, bool testnetDeploy) public pure {
         if (!testnetDeploy) {
             require(publishTimelock == MAINNET_PUBLISH_TIMELOCK, "mainnet publish timelock must be 2 days");
-            return;
         }
     }
 

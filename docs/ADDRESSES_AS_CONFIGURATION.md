@@ -19,7 +19,12 @@ it, and that addresses are **operator-configurable, never holder-configurable**.
   then delete the entry. The list can only shrink; the gate enforces that.
 - The `ProtocolRegistry` discovery anchor is deployed with a zero publish timelock and its discovery
   set is **published and active**, so the anchor a phone would resolve actually answers today.
-- The mobile anchor read is fixed (`getDiscoverySet`, 9-word record) - see below for what remains.
+- The mobile anchor read is fixed IN CODE (`getDiscoverySet`, 9-word record) - but it is **inert until
+  the bundles move**, and nothing on a phone changes until then. Both bundles still name a superseded
+  generation-1 `ProtocolRegistry`, whose getter is `getContractSet`, so against the address the apps
+  actually read the corrected call still hits an absent selector and reverts with empty returndata -
+  the precise failure the fix removes. Publication does not close it either: it landed on the ledger's
+  registry, a different address from the bundled one. See below for what remains.
 
 ## How to enumerate, and the trap that makes a naive grep wrong
 
@@ -40,6 +45,41 @@ bash scripts/check-no-hardcoded-addresses.sh    # the current list, always curre
 **Four keys must be DELETED, not repointed** - they name contracts with no source at all:
 `CloneProvenanceRouter`, `IssuerRegistry`, `IssuerDomainRegistry`, `Poseidon6`. `ISSUER_REGISTRY_ADDR`
 alone appears in seven `.env` templates.
+
+### Seventeen of those files send you to a doc and a gate that no longer exist
+
+The comment beside a hardcoded address is frequently a dangling pointer, so read the file rather than
+following it. `docs/CLIENT_REPOINT.md`, `docs/ISSUER_V2_OWNERSHIP.md` and `docs/CLONE_PROVENANCE_ROUTER.md`
+were deleted with the generation they described, and `scripts/check-cutover-consumers.sh` /
+`make check-cutover-consumers` were repurposed into `scripts/check-no-hardcoded-addresses.sh` /
+`make check-addresses`. Still citing one or both:
+
+```
+apps/android/app/src/main/java/io/liberalize/dogtag/data/RoaxConfig.kt
+apps/ios/DogTag/Models.swift
+crates/dogtag-prover-rs/src/manifest.rs
+packages/ui/src/provider/liveReader.ts
+packages/ui/src/wallet/contracts.ts
+packages/ui/test/providerDomainAndDeploy.test.ts
+stacks/owner/web/src/lib/config.ts
+stacks/vet/api/src/chain.rs
+stacks/vet/api/tests/issuance_authority.rs
+stacks/admin/.env.example
+stacks/admin/web/.env.example
+stacks/government/.env.example
+stacks/groomer/.env.example
+stacks/groomer/web/.env.example
+stacks/indexer/.env.example
+stacks/vet/.env.example
+stacks/vet/web/.env.example
+```
+
+Every one is a declared entry in `scripts/address-debt.json`, so the comment is corrected by the same
+edit that clears the entry - which is why they are recorded here rather than swept now. **Do not
+"tidy" a citation on its own in one of these files**: the gate is bidirectional, and a declared file
+that stops carrying an address fails it until you also delete the entry. What the deleted docs said
+that still binds is in `AGENTS.md` - the record-type-keyed reads under the issuer-whitelist pillar,
+and the `msg.sender` branch that is the reason `ISSUER_REGISTRY_ADDR` cannot simply be repointed.
 
 ## The layers, in the order they were approved
 

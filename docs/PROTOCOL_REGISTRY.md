@@ -15,6 +15,18 @@ Publishing is a separate, two-phase, timelocked, captain-authorized operation: `
 > holds and WHY the two axes rotate independently is unaffected and still current; read every
 > "generation 2" as "this registry", and every "generation 1" as the superseded design the record was
 > widened away from.
+>
+> **Two things the deployed record does NOT match, so do not build a decoder from the table below.**
+> The version key is **`dogtag-levelb/1`**, not `dogtag-levelb/2` - one key was always going to survive
+> the collapse and it is the one the SDK already stamps into every credential's `protocol.version`.
+> And the record is **nine words, not ten**: with one factory there is nothing to bridge, so the
+> separate `rootIndex` member is gone and `factory` IS the root index (`rootIndex()` is a derived
+> accessor over it, and the publish preflight refuses to stage a record whose `factory` is not
+> `verificationRegistry.rootIndex()`). `contracts/src/ProtocolRegistry.sol`'s `DiscoverySet` is the
+> authority for the shape; the table below records the as-designed generation-2 record and is kept for
+> the reasoning about WHY each member is on this axis. Getting the arity wrong is not a cosmetic
+> error - the mobile decoders' exact-arity guard is what turned it into a refusal rather than an
+> anchor naming whatever sat at the shifted offsets.
 
 ## Why a new registry is forced, not chosen
 
@@ -244,7 +256,7 @@ Deferred, deliberately:
   Those are cutover steps C-9 and C-10.
   Both `ScanScreen` call sites pass `nil`/`null` today with a comment naming what must change and where.
 - The mandatory issuer-whitelist pillar still asks the generation-1 `IssuerRegistry`, so it does not yet answer for a generation-2 root.
-  That is a cutover blocker recorded in `docs/ISSUER_V2_OWNERSHIP.md` section 8, not something this slice closes.
+  That is a client-side code change in each consumer rather than a configuration flip, and not something this slice closes.
   Carrying `providerRegistry` on the validated anchor is what gives those five consumers an attested address to migrate TO.
 
 ## Tests
