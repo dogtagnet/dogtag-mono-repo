@@ -828,17 +828,44 @@ dropped** - the ladder `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` is in
 storage-only, no-external-call property `isRecognizedIssuer` needs as a verification input. What
 changed is only that the GRANT is keyed on the signer instead of on `(service, signer)`.
 
-**THE WIDENING, which is the whole point and is not a defect to "fix":** a signer holding the issue
-bit holds it wherever that bit is checked, so it may anchor on ANY service in effective standing -
-including another provider's. The at-issuance verification pillar reads that same grant from the
-`RightsSet` log and therefore answers AUTHORIZED for such a root. That is correct under this model and
-is a real reduction against the per-service grant it replaces; **no clone-side check can restore it,
-because the pillar is an off-chain log reader with no clone in the loop.** What stays closed is
-record-type relabelling, via `clone.recordType()` versus the document's claim.
-`test_the_issue_right_is_on_the_address_and_reaches_every_service_in_standing` and
-`test_a_signer_approved_for_one_provider_can_anchor_on_another_providers_clone` pin it as INTENDED, so
-a later reader cannot quietly reintroduce a service key into the lookup - which is exactly the key
-that cannot exist, because a registrar approves an applicant BEFORE that applicant has a clone.
+**TWO LAYERS, ANDed, and either one failing refuses (captain's ruling).** The scope-free grant on its
+own would let a signer approved for one provider anchor on ANY service in effective standing,
+including another provider's - and the at-issuance pillar, reading that same signer-keyed `RightsSet`
+history, would answer AUTHORIZED for it, producing a clean verdict on government's UNAUTHENTICATED
+`POST /v1/verify` for a credential its named issuer never issued. So `DogTagIssuer` keeps its OWN
+`issuanceAllowed` list and `onlyIssuanceCapable` requires BOTH:
+
+    registry.canIssue(address(this), msg.sender)   // the authority's scope-free grant + lifecycle
+    && issuanceAllowed[msg.sender]                 // THIS clone's own list
+
+**The scoping lives in the clone, never back in the lookup.** `rightsOf` stays address-in-bits-out,
+because a registrar approves an applicant BEFORE that applicant has a clone - there is nothing to key
+a grant against at approval time. The clone already knows which provider it belongs to, so it is where
+the confinement belongs.
+
+**Neither layer is redundant.** Layer 1 alone is the cross-provider hole; layer 2 alone would let a
+provider admit anyone with no KYC anywhere. Pinned separately by
+`test_a_signer_approved_for_one_provider_cannot_anchor_on_another_providers_clone` and
+`test_the_clone_list_alone_grants_nothing_without_the_authority_bit`. Deleting the clone-side check
+makes the first fail with *"next call did not revert as expected"* - the cross-provider anchor
+succeeds again, which is the demonstration that the list is what closes it.
+
+**Who may write the list (a NEW authority surface, so it is gated):** admitting is the clone
+`owner()`'s ALONE. The protocol admin is deliberately excluded from that direction - it also writes
+the authority bit, so a registrar that could admit would hold both layers at once and reach the same
+cross-provider issuance through itself. REMOVAL is the owner OR the protocol admin, because removal
+only narrows and is the incident-response direction for a compromised staff key. Same asymmetry the
+core already applies on the revocation axis.
+
+**The list gates ISSUE only, never REVOKE.** Removing a signer must stop the next anchor and strand
+nothing already anchored - the forward-only rule `delistFor` follows and the reason `canRevoke` is the
+wider rung. `test_the_clones_own_list_is_what_admits_a_signer_and_only_its_owner_writes_it` pins that
+a removed originator can still invalidate what it issued.
+
+**Being on the list is not an issuance right, and owning the clone still confers nothing.** An owner
+who admits itself and holds no bit cannot anchor - `test_owning_a_clone_confers_no_issuance_right`
+still holds. What stays closed independently is record-type relabelling, via `clone.recordType()`
+versus the document's claim.
 
 **That ordering problem is why the re-keying had to happen.** `approve_application` /
 `delist_application` in `stacks/admin/api` built `whitelistFor` / `delistFor` against a contract no
@@ -877,10 +904,14 @@ set for that reason. Mask in the FULL 256-bit width; never truncate to a `u64` f
 **Migration: there was nothing to migrate, measured rather than assumed.** The ledger's deployed
 `ProviderRegistry` answers `providerCount() == 0`, `serviceCount() == 0` and carries ZERO
 `IssuanceCapabilitySet` logs, so no grant exists on chain to carry across. The C-2 live walk recorded
-elsewhere in this file ran against a since-superseded instance. Redeploying `ProviderRegistry` is the
-whole deployment cost: `DogTagIssuer` and `DogTagIssuerFactory` are UNTOUCHED, so `implementation`
-does not move, so no new factory, so `VerificationRegistryConsent.rootIndex` does not move, so no
-client repoint and no mobile rebuild.
+elsewhere in this file ran against a since-superseded instance. **The deployment cost is the FULL cascade, and the two-layer ruling is what makes it so.**
+`DogTagIssuer` gains storage and a write, so its runtime hash moves; `DogTagIssuerFactory` checks
+`impl.codehash == keccak256(type(DogTagIssuer).runtimeCode)` at construction and pins `implementation`
+as `immutable`, so a new implementation needs a new factory; `VerificationRegistryConsent.rootIndex`
+is `immutable` and IS that factory, so a new factory needs a new verification registry. That means
+every client repoints and both gitignored mobile bundles are regenerated, rebuilt AND reinstalled -
+standing process on a full redeploy, not a caveat. The factory source needs no edit (it derives the
+hash from the type), but its DEPLOYED bytecode carries the old one.
 
 ### The issuer-whitelist pillar is MANDATORY, and anchors the clone to the FACTORY
 

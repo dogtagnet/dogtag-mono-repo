@@ -162,10 +162,20 @@ async fn government_verifies_a_vet_issued_credential() {
 ///   4. the pillar folds the signer's own `RightsSet` history and answers AUTHORIZED;
 ///   5. this endpoint returns a clean verdict for a credential its named issuer never issued.
 ///
-/// Step 2 is now refused by `DogTagIssuer.issuanceAllowed` - proved at the contract level by
-/// `test_a_signer_approved_for_one_provider_cannot_anchor_on_another_providers_clone`, which asserts
-/// the revert AND that nothing reaches the factory index. So the root arrives here UNANCHORED, and
-/// this test pins what this endpoint does with it: not a clean verdict.
+/// Step 2 is now refused by `DogTagIssuer.issuanceAllowed`. THE TWO HALVES ARE PINNED IN DIFFERENT
+/// PLACES, and this test is honest about which one it is:
+///
+///   * that the cross-provider anchor CANNOT HAPPEN is a contract fact, pinned by
+///     `test_a_signer_approved_for_one_provider_cannot_anchor_on_another_providers_clone`, which
+///     asserts the revert and that nothing reaches the factory index. Deleting the clone-side check
+///     reddens THAT test with "next call did not revert as expected" - the anchor succeeds again.
+///   * that an UNANCHORED root does not reach a clean verdict on this endpoint is what THIS test
+///     pins.
+///
+/// `MemChain` does not model the clone's `onlyIssuanceCapable` modifier, so this test is NOT sensitive
+/// to the clone-side check and would keep passing if it were removed. Stated rather than left to be
+/// discovered: the closure rests on the contract test, and this one covers the surface the forged
+/// credential would have been presented at.
 ///
 /// The CONTROL is the second half, and it is what stops this being vacuous: the identical credential,
 /// with the anchoring that the pre-closure chain would have permitted, verifies clean. So the
