@@ -46,6 +46,9 @@ test-contracts: ## Foundry tests
 verify-provider-selfservice-mutations: ## S-15 mutation gate for the provider engine (slow; not in `test`)
 	bash scripts/verify-provider-selfservice-mutations.sh
 
+verify-address-config-mutations: ## mutation gate for addresses-as-configuration (slow; not in `test`)
+	bash scripts/verify-address-config-mutations.sh
+
 verify-content-mirror-mutations: ## S-17 mutation gate for the content mirror (slow; not in `test`)
 	bash scripts/verify-content-mirror-mutations.sh
 

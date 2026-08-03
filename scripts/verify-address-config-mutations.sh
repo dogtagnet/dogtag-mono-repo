@@ -17,6 +17,11 @@
 # counted as evidence. Every mutation below asserts its scrutinee is PRESENT first, and a run in which
 # any mutation is inert exits non-zero.
 #
+# THE INJECTED LITERALS ARE SYNTHETIC, and must stay so. `make check-addresses` watches THIS FILE
+# too - it caught this harness carrying real retired addresses on its first run, which is the gate
+# working. What each mutation demonstrates is that A LITERAL crept back in; whether that literal is
+# a real deployment is irrelevant to the property and would put real addresses back in the tree.
+#
 # COMMIT BEFORE RUNNING. Restoration is `git checkout --`, so uncommitted work in a target file is
 # DESTROYED - a hazard already recorded in AGENTS.md, and one that has bitten this repo.
 set -uo pipefail
@@ -80,9 +85,9 @@ mutate "M1 unconfigured live indexer gets a baked-in triple" \
   stacks/indexer/api/src/app.rs \
   'let demo_generation = demo_generation.ok_or_else(|| {' \
   'let demo_generation = demo_generation.or_else(|| watch_generation(
-        "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
-        "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",
-        "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
+        "0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607",
+        "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70",
+        "0x3c5e7A9b0D2F4a6c8E0b1d3F5A7c9e0B2D4F6a80",
         vec![],
     ).ok()).ok_or_else(|| {' \
   run_cargo_indexer \
@@ -100,7 +105,7 @@ mutate "M2 legacy singleton defaults the omitted keys" \
 mutate "M3 contracts.ts reinstates a literal default" \
   packages/ui/src/wallet/contracts.ts \
   'ProviderRegistry: configured("VITE_PROVIDER_REGISTRY_ADDR"),' \
-  'ProviderRegistry: configured("VITE_PROVIDER_REGISTRY_ADDR") || "0x429c2ac735B1268FB0C65F7Cf7746A1C0e8452Aa",' \
+  'ProviderRegistry: configured("VITE_PROVIDER_REGISTRY_ADDR") || "0x4d6F8B0C2E4A6b8d0F2c4e6a8b0D2F4c6e8A0b90",' \
   run_vitest_ui \
   "holds no address of its own"
 
