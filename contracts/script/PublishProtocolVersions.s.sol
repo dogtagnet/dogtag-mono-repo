@@ -188,7 +188,7 @@ abstract contract PublishBase is Script {
 /// re-executes the discovery set: `executeDiscoverySet` assigns `discoverySets[id]` unconditionally, so it
 /// restamps `publishedAt` and re-emits `DiscoverySetPublished` for a change that moves no address -
 /// rewriting the generation's on-chain provenance and destroying the previous `publishedAt` with nothing
-/// recording it. The same trap is recorded for generation 1's script in AGENTS.md.
+/// recording it.
 ///
 /// A later artifact-only rotation is `proposeArtifactSet` + `proposeArtifactBinding` and their two
 /// executes, with NO `DiscoverySet` write at all. `contracts/script/PinConsentWitnessGraph.s.sol` is the
@@ -227,9 +227,8 @@ contract PublishProtocolVersionsPropose is PublishBase {
 /// # Why this phase re-preflights, and which single relation that catches
 ///
 /// The preflight is a snapshot of relations that held when the record was STAGED, and the record is not
-/// activated until a whole timelock later. Four of the five relations cannot move in between:
-/// `issuerRegistry`, `sbt` and `rootIndex` are `immutable` on `VerificationRegistryConsent`, and the
-/// router's `isGeneration` is append-only monotone, so a factory that was a generation stays one.
+/// activated until a whole timelock later. Three of the four relations cannot move in between:
+/// `providerRegistry`, `sbt` and `rootIndex` are `immutable` on `VerificationRegistryConsent`.
 ///
 /// The single drifting relation is `verifier == verificationRegistry.zkVerifier()`, and it drifts for a
 /// specific reason: `zkVerifier` is the one mutable member, swappable behind `ZK_TIMELOCK = 2 days` -

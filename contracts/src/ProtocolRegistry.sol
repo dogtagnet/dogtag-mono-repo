@@ -14,27 +14,26 @@ uint256 constant DEFAULT_PUBLISH_TIMELOCK_SECONDS = 2 days;
 /// constructor invariant" note on [`ProtocolRegistry`] for the derivation — this is not a taste value.
 uint256 constant MIN_PUBLISH_TIMELOCK_SECONDS = 1 hours;
 
-/// @title ProtocolRegistry — the generation-2 discovery TRUST ANCHOR.
+/// @title ProtocolRegistry — the discovery TRUST ANCHOR.
 /// @notice The dogtag-governed record of which contracts and which proving artifacts are current, read
-/// by every app before it acts on a platform's version CLAIM. Same role as generation 1's
-/// `ProtocolRegistry`; a SEPARATE deployment, because generation 1's record cannot describe generation 2.
+/// by every app before it acts on a platform's version CLAIM.
 ///
-/// # Why a new registry is FORCED, not chosen
+/// An app is deliberately version-AGNOSTIC: it bundles no addresses and discovers them. That makes this
+/// registry the root of trust for the whole client side — a platform tells an app which protocol version
+/// it speaks, and the app checks that claim HERE before acting on it. Everything below follows from
+/// that: the record is a fixed-shape tuple so a client can decode it without trusting the platform, and
+/// every write that could steer a client is timelocked.
 ///
-/// `ProtocolRegistry.ContractSet` (`ProtocolRegistry.sol:97-106`) is a FIXED struct holding exactly
-/// `contractSetId`, `factory`, `verificationRegistry`, `sbt`, `verifier`, `circuitId`, `publishedAt`,
-/// `active`. It has no member for a provider-authority core, for the resolver layer, or for a
-/// cross-generation provenance index — and the contract is not upgradeable (no proxy, no setter that can
-/// widen a struct). A Solidity struct's shape is part of its storage layout and its ABI, so generation 2
-/// cannot be published into it at all. The choice this slice actually makes is what the new record holds
-/// and what delay protects it; that there must BE a new record is settled by the struct.
+/// # Two axes, and they rotate independently
 ///
-/// # What generation 2 adds, and why each is on THIS axis
+/// A protocol version has an ON-CHAIN half (which deployed contracts belong together) and an OFF-CHAIN
+/// half (which proving artifacts an app must fetch, and their byte-integrity pins). They change at
+/// completely different rates and for completely different reasons, so they are separate records under
+/// separate ids, joined by one binding.
 ///
-/// Two addresses join the trio + verifier, and both are here rather than on a separate axis for the same
-/// structural reason: `VerificationRegistryConsent` pins them in IMMUTABLE slots
-/// (`VerificationRegistryConsent.sol:86-88`), so neither can move without moving the verification
-/// registry, which is the definition of an on-chain-axis rotation.
+/// Rotating a zkey therefore moves no address, and rotating an address forces no app to re-fetch
+/// anything. Collapsing them into one record would make every artifact rotation look like a contract
+/// rotation to every consumer, and vice versa.
 ///
 ///   * `providerRegistry` — the `ProviderRegistry` authority core. It occupies the verification
 ///     registry's immutable `providerRegistry` slot, and it is ALSO the root of the resolver layer: a
@@ -87,24 +86,25 @@ uint256 constant MIN_PUBLISH_TIMELOCK_SECONDS = 1 hours;
 /// on ROAX the `finalized` tag sits ~80 blocks behind `latest`, so a proposal is not authoritatively
 /// visible for minutes, before any human looks. A floor below that would be a timelock that exists only
 /// in the getter — a guard satisfiable vacuously, which is worse than none because it reads as
-/// protection. One hour clears finality plus a reaction with room to spare, and is still short enough to
-/// rehearse a whole cutover in one sitting. Production uses [`DEFAULT_PUBLISH_TIMELOCK`] (2 days); the
-/// deploy script requires exactly that unless a testnet opt-in is stated aloud.
+/// protection. One hour clears finality plus a reaction with room to spare, and is still short enough
+/// to rehearse a whole publication in one sitting. Production uses [`DEFAULT_PUBLISH_TIMELOCK`]
+/// (2 days); the deploy script requires exactly that unless a testnet opt-in is stated aloud.
 ///
-/// # Everything else mirrors generation 1 deliberately
+/// # The write shape, once, for both axes
 ///
-/// Two axes (R-5), one binding between them, `propose…`→timelock→`execute…` on every write a consumer
-/// could be steered by, and immediate un-timelocked `deprecate…` as the emergency lever that never
-/// deletes history but does cancel an in-flight proposal. That shape is reviewed, tested and understood;
-/// this contract does not re-litigate it, so a reader can diff the two files and see only the record.
+/// `propose…` → timelock → `execute…` on every write a consumer could be steered by, and an immediate
+/// un-timelocked `deprecate…` as the emergency lever. Deprecating never deletes history — a published
+/// record stays readable forever, so an old credential can still explain itself — but it DOES cancel an
+/// in-flight proposal, which is what makes it a genuine halt rather than a pause a stale proposal could
+/// undo the moment its window elapsed.
 contract ProtocolRegistry is AccessControlDefaultAdminRules {
-    /// @dev Two-step admin handover delay — mirrors generation 1 and `VerificationRegistryConsent`.
+    /// @dev Two-step admin handover delay — the same 2 days `VerificationRegistryConsent` uses.
     uint48 public constant ADMIN_TRANSFER_DELAY = 2 days;
 
     /// @notice May propose/execute/deprecate on either axis, and re-point bindings. Held by dogtag
-    /// governance. Same derivation as generation 1: `keccak256("PUBLISHER")`, NOT
-    /// `keccak256("PUBLISHER_ROLE")` — read it off the deployed contract rather than recomputing it from
-    /// the variable name.
+    /// governance. The derivation is `keccak256("PUBLISHER")`, NOT `keccak256("PUBLISHER_ROLE")` —
+    /// read it off the deployed contract rather than recomputing it from the variable name, which yields
+    /// a role nobody holds and reads as a correctly-configured signer being unauthorized.
     bytes32 public constant PUBLISHER_ROLE = keccak256("PUBLISHER");
 
     /// @notice Safe production default (2 days), mirroring `VerificationRegistryConsent.ZK_TIMELOCK`.
@@ -125,11 +125,11 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     /// @notice The on-chain half of what dogtag certifies for a protocol version: which deployed
     /// contracts belong together. Rotating this axis moves addresses; it says nothing about artifacts.
     ///
-    /// Named `DiscoverySet` rather than generation 1's `ContractSet` because the record grew from the
-    /// trio + verifier to the whole discovery layer, and because the different selector that rename
-    /// yields is what stops a generation-1 client misdecoding this wider tuple (see the contract note).
+    /// Its NAME and its SHAPE move together — see the contract note. A client decodes this as a
+    /// fixed-width tuple, so one built for a different shape must fail on dispatch rather than decode
+    /// every member one slot out.
     struct DiscoverySet {
-        bytes32 discoverySetId; // keccak256("dogtag-levelb/2") — the map key, must be non-zero
+        bytes32 discoverySetId; // keccak256("dogtag-levelb/1") — the map key, must be non-zero
         address factory; // clone source AND root index — == verificationRegistry.rootIndex()
         address verificationRegistry; // the registry a proof is submitted to — the anti-redirect anchor
         address sbt; // == verificationRegistry.sbt() (immutable there; the SHARED, reused SBT)
@@ -154,15 +154,16 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     mapping(bytes32 => uint256) public discoverySetEta;
 
     // ---------------------------------------------------------------------------------------------
-    // Axis 2 — the OFF-CHAIN proving-artifact set (byte-for-byte generation 1's)
+    // Axis 2 — the OFF-CHAIN proving-artifact set
     // ---------------------------------------------------------------------------------------------
 
     /// @notice The off-chain half: the proving artifacts an app fetches, their byte-integrity pins, and
     /// the minimum app version able to load them. Rotating this axis moves no address.
     ///
-    /// UNCHANGED from generation 1, deliberately: the circuit, the ceremony and the frozen VK are
-    /// untouched by the provider-registry work, so an artifact decoder written for generation 1 stays
-    /// correct and the two axes' independence is preserved across the generation boundary.
+    /// The pins are FETCH integrity, and are not the VK: `verifier` on the other axis is the VK's
+    /// on-chain identity, and no read here can relate the two. That a given zkey proves against a given
+    /// verifier is a governance judgement, which is exactly why the BINDING between the axes is
+    /// timelocked rather than validated.
     struct ArtifactSet {
         bytes32 artifactSetId; // keccak256("dogtag-levelb-artifacts/1") — the map key, non-zero
         bytes32 zkeySha256; // FETCH pin for the zkey (mandatory; NOT the VK)
@@ -428,7 +429,7 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
 
     /// @notice The published artifact record for `id`, REVERTING when there is none — unlike the
     /// `artifactSets` auto-getter, which answers a zeroed record that would read as an unpinned set at
-    /// version "" rather than as "no such set". Same name and same return shape as generation 1.
+    /// version "" rather than as "no such set".
     function getArtifactSet(bytes32 id) external view returns (ArtifactSet memory) {
         ArtifactSet memory a = artifactSets[id];
         require(a.artifactSetId != 0, "unknown artifact set");
@@ -438,7 +439,6 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     /// @notice Follow the binding: the artifact set currently published for `discoverySetId`. Reverts if
     /// no binding is set (a discovery set with no artifacts bound yet is a valid intermediate state
     /// during a two-axis rollout, and a resolver must fail closed rather than read a zeroed record).
-    /// Same name and same return shape as generation 1.
     function getActiveArtifactSet(bytes32 discoverySetId) external view returns (ArtifactSet memory) {
         bytes32 artifactSetId = activeArtifactSetOf[discoverySetId];
         require(artifactSetId != 0, "no artifact binding");
@@ -449,8 +449,8 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
 
     /// @notice One-call discovery for an app: both halves of what dogtag certifies for `discoverySetId`.
     /// A convenience over [`getDiscoverySet`] + [`getActiveArtifactSet`] — the axes stay independent,
-    /// this only saves a round trip. Renamed from generation 1's `resolve` for the same structural reason
-    /// as [`getDiscoverySet`]: its first return member changed shape.
+    /// this only saves a round trip. Named for the record it returns, for the same reason as
+    /// [`getDiscoverySet`].
     function resolveDiscovery(bytes32 discoverySetId)
         external
         view

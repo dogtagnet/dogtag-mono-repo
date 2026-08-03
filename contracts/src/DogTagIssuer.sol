@@ -5,31 +5,30 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /// @notice The protocol-global write-once root->clone index (impl §11.10(a), architecture §13.9).
-/// Generation 2's index is `DogTagIssuerFactory`; the shape is unchanged from generation 1.
+/// It is `DogTagIssuerFactory`, which is also the address the verification registry resolves every
+/// anchored root through.
 interface IRootIndex {
     function registerRoot(bytes32 root) external;
 }
 
-/// @dev The generation-2 authority core — the S-6 `ProviderRegistry`. These four functions are the
-/// WHOLE surface this generation requires of it, and every one is load-bearing: the factory asks
+/// @dev The authority core — `ProviderRegistry`. These four functions are the
+/// WHOLE surface this contract requires of it, and every one is load-bearing: the factory asks
 /// `canCreateService` before it clones, and a clone asks `canIssue`, `canRevoke` and `hasRole` on every
 /// write. Both references are permanent (the factory's `registry` is `immutable`, and a clone pins its
 /// own at `initialize` with no setter), so a core missing any one of the four cannot be repointed away
 /// from later — a core without `hasRole` would leave `adminRevoke`, the compromised-signer mass-revoke
 /// lever, reverting for every call forever.
 ///
-/// **The three issuance-axis reads are a nested ladder, not three switches**, and generation 2 depends
-/// on the gaps between them. `canRevoke` deliberately omits the live lifecycle terms `canIssue` folds
-/// (standing, an active generation, the provider's current pointer), which is what preserves an
-/// originator's ability to invalidate roots on a clone it has since superseded. Substituting one for the
+/// **The two issuance-axis reads are a nested ladder, not two switches**, and this contract depends on
+/// the gap between them. `canRevoke` deliberately omits the live lifecycle terms `canIssue` folds
+/// (standing, an active factory generation, the provider's current pointer), which is what preserves an
+/// originator's ability to invalidate roots on a clone it has since replaced. Substituting one for the
 /// other in either direction is a defect: upward it strands roots as unrevocable, downward it reopens a
-/// retired clone for new issuance.
+/// replaced clone for new issuance.
 ///
-/// **This is deliberately NOT the legacy `isWhitelistedFor(bytes32,address)`.** That selector cannot
-/// tell an issue call from a revoke call, so it cannot express the ladder at all; and on the core it
-/// branches on `msg.sender`, answering the orthogonal VERIFY-key capability for any caller that is not
-/// itself an attached service — so a factory asking it about a creation would be reading the wrong
-/// mapping entirely.
+/// **A single `isWhitelistedFor(recordType, signer)`-shaped read cannot serve here**, and the reason is
+/// worth keeping: such a selector cannot tell an issue call from a revoke call, so it cannot express the
+/// ladder at all. The questions are genuinely different, so the reads are too.
 interface IProviderAuthority {
     function canCreateService(bytes20 providerId, bytes32 recordType, address caller)
         external
@@ -40,26 +39,26 @@ interface IProviderAuthority {
     function hasRole(bytes32 role, address account) external view returns (bool);
 }
 
-/// @title DogTagIssuer — per-record-type anchoring contract, now with a real owner.
+/// @title DogTagIssuer — per-record-type anchoring contract, owned by the provider that deployed it.
 ///
-/// @notice Generation-2 successor to `DogTagIssuer`. Anchoring SEMANTICS are unchanged —
-/// `issue`/`revoke`/`isValid` mean what they meant, and `RootIssued`/`RootRevoked` are byte-identical,
-/// so an existing verifier, indexer decoder or explorer reads a generation-2 clone exactly as it reads a
-/// generation-1 clone. What changes is **who is asked**: the authority oracle is the S-6 authority core
-/// rather than generation 1's `IssuerRegistry`, and every clone has an owner.
+/// @notice One clone per (provider, record type). It anchors a credential's Merkle root, revokes it, and
+/// answers `isValid` — and it asks the {ProviderRegistry} core, on every write, whether the caller may
+/// do that.
 ///
 /// # Why an owner at all
 ///
-/// `DogTagIssuer` is `Initializable` only. It has no owner, no admin and no controller — every write is
-/// gated on `IssuerRegistry.isWhitelistedFor(recordType, msg.sender)` and nothing else. So the question
-/// "who controls this contract?" has no on-chain answer, and the captain's requirement that only
-/// *"whitelisted people, AND owner of contracts"* may publish a DNS claim is not merely unimplemented —
-/// it is **unimplementable**, because there is no owner to check. `IssuerDomainRegistry` had to
-/// substitute a proxy for it (`_isSpawningBusiness`, recomputing the clone's deterministic address from
-/// the salt), and that proxy authorizes whoever happened to be passed as `business` at creation — which
-/// in every clone deployed to date is the operator's own signer, not the organisation.
+/// An anchoring clone gated ONLY on a signer whitelist has no on-chain answer to "who controls this
+/// contract?", and the captain's requirement that only *"whitelisted people, AND owner of contracts"*
+/// may publish a DNS claim is then not merely unimplemented — it is **unimplementable**, because there
+/// is no owner to ask about.
 ///
-/// This contract replaces that proxy with the real thing: a checkable, transferable `owner()`.
+/// The tempting substitute is a proxy: recompute the clone's deterministic address from its creation
+/// salt and treat whoever is in the `business` slot as its controller. That proxy authorizes whoever
+/// happened to be PASSED as `business` at creation, which in practice is the operator who pressed the
+/// button rather than the organisation — so it answers a different question while looking like it
+/// answers this one.
+///
+/// So every clone carries a real, checkable, transferable `owner()` instead.
 ///
 /// # Ownership is CONTROL, and confers no capability of its own
 ///
@@ -80,21 +79,21 @@ interface IProviderAuthority {
 /// authorization. That is a real operational consequence of a handover, not an incidental one, and it is
 /// pinned by `test_a_handover_suspends_issuance_until_the_registrar_reconfirms`.
 ///
-/// `revoke` keeps generation 1's authority split exactly — the H-1 originator, or the core's protocol
-/// admin — with the ordinary arm now asking `canRevoke` rather than the legacy whitelist selector.
+/// `revoke` has two arms — the H-1 originator, or the core's protocol admin — with the ordinary arm
+/// asking `canRevoke`.
 /// Extending revocation to the clone owner would let an owner revoke credentials it did not issue, which
 /// is a distinct governance decision and is deliberately not taken here.
 ///
-/// # The legacy `name()` getter is permanently EMPTY, and that is the point
+/// # `name()` is permanently EMPTY, and that is the point
 ///
-/// Generation 1's `name` was written by the factory's `onlyOwner` `createIssuer` at KYC time, which is
+/// A clone's `name` could only be authoritative if a registrar wrote it at KYC time, which is
 /// the *only* reason a consumer could read it as an authoritative issuer identity. Creation is
 /// self-service here, so a caller-supplied name would be a provider-chosen string arriving with genuine
 /// factory provenance — a fabricated authority beside a green check, which is precisely the attack the
 /// on-chain name read exists to defeat.
 ///
 /// So no caller can set it: `initialize` takes no name, nothing in this contract ever writes the slot,
-/// and `name()` answers `""` for the life of every generation-2 clone. A consumer reading it must report
+/// and `name()` answers `""` for the life of every clone. A consumer reading it must report
 /// authoritative identity **unavailable** rather than falling back to the document's own claim.
 /// Registrar-controlled identity for this generation comes from the authority core instead — its
 /// publication-safe identity anchor, reached through the core's directory resolver. Reconciling the
@@ -110,7 +109,7 @@ interface IProviderAuthority {
 ///
 /// Two paths could otherwise zero the owner, and both are closed here rather than left to convention:
 ///
-///   * `renounceOwnership` is **disabled**. An ownerless clone is precisely the generation-1 state this
+///   * `renounceOwnership` is **disabled**. An ownerless clone is precisely the state this
 ///     contract exists to end, and OZ's default would let one transaction re-enter it irreversibly.
 ///   * `acceptOwnership` refuses `msg.sender == address(0)`. OZ's implementation compares
 ///     `pendingOwner() != msg.sender`; with no transfer pending both sides are the zero address, so the
@@ -122,13 +121,13 @@ interface IProviderAuthority {
 /// `test_owner_can_never_become_the_zero_address`.
 contract DogTagIssuer is Initializable, Ownable2Step {
     /// @dev The core's protocol-admin role, in the `AccessControl` shape the core projects for exactly
-    /// this read. Generation 1 spelled the same value as a bare `0x00` literal at each call site.
+    /// this read, rather than spelling a bare `0x00` literal at each call site.
     bytes32 public constant DEFAULT_ADMIN_ROLE = bytes32(0);
 
     IProviderAuthority public registry;
     IRootIndex public rootIndex; // the factory (write-once rootIssuer index)
     bytes32 public recordType;
-    /// @notice Retained for wire compatibility with generation 1's getter and **permanently empty** —
+    /// @notice Part of the clone's read surface and **permanently empty** —
     /// no path in this contract writes it. See the contract doc: a self-service generation cannot offer
     /// a caller-chosen name as an authoritative identity.
     string public name;
@@ -137,7 +136,9 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     mapping(bytes32 => uint256) public revokedAt; // 0 = not revoked
     mapping(bytes32 => address) public issuedBy; // H-1 originator
 
-    /// @dev Byte-identical to generation 1's, so every existing decoder reads a generation-2 clone.
+    /// @dev The shape every off-chain decoder — the oversight indexer, the web verifier, both mobile
+    /// clients — is written against. A widened event is a changed `topic0`, which drops the log from
+    /// every one of them silently rather than loudly.
     event RootIssued(bytes32 indexed root, address indexed by, uint256 ts);
     event RootRevoked(bytes32 indexed root, address indexed by, uint256 ts);
 
@@ -169,7 +170,7 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     /// holds no roots. The factory nonetheless requires its exact runtime-code identity at construction;
     /// see `DogTagIssuerFactory`'s dependency checks.
     constructor() Ownable(msg.sender) {
-        _disableInitializers(); // C-1: lock the implementation (clones initialize)
+        _disableInitializers(); // lock the implementation itself; only clones initialize
     }
 
     modifier onlyIssuanceCapable() {
@@ -195,7 +196,7 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     // ---------------------------------------------------------------------------------------------
 
     /// @notice Disabled. A clone with no owner cannot claim a domain, be repointed, or be handed over —
-    /// which is the generation-1 defect this contract exists to fix, so it must not be re-enterable.
+    /// which is the state this contract exists to make unreachable, so it must not be re-enterable.
     function renounceOwnership() public pure override {
         revert OwnerCannotBeZero();
     }
@@ -208,7 +209,7 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Anchoring — generation 1's semantics, asked of the generation-2 authority core
+    // Anchoring
     // ---------------------------------------------------------------------------------------------
 
     function issue(bytes32 r) public onlyIssuanceCapable {
@@ -219,14 +220,12 @@ contract DogTagIssuer is Initializable, Ownable2Step {
         emit RootIssued(r, msg.sender, block.timestamp);
     }
 
-    /// @dev Authority is checked BEFORE the root's state, matching generation 1: a caller with no
+    /// @dev Authority is checked BEFORE the root's state: a caller with no
     /// standing learns that first, whichever root it names.
     ///
     /// The admin arm is evaluated once and short-circuits the capability read, because the protocol
     /// admin is not required to hold an issuance grant on this clone — and `adminRevoke` already gives
-    /// it this exact power unconditionally, so routing it through here grants nothing new. Generation 1
-    /// reached the same arm only for an admin that also happened to be whitelisted, which was an
-    /// accident of its `onlyWhitelisted` modifier rather than its documented intent.
+    /// it this exact power unconditionally, so routing it through here grants nothing new.
     function revoke(bytes32 r) public {
         bool asAdmin = registry.hasRole(DEFAULT_ADMIN_ROLE, msg.sender);
         if (!asAdmin && !registry.canRevoke(address(this), msg.sender)) revert NotRevocationCapable();

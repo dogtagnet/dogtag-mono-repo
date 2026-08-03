@@ -18,14 +18,14 @@ import {IERC5192} from "./IERC5192.sol";
 /// @dev This contract structurally enforces the owner-hidden model:
 ///
 ///   - **Structural custodial mint (D1).** `mintCustodial(id, root)` takes NO `to`: it always mints to the
-///     immutable `custodian`. The retired recipient-taking mint let the caller pass any address; that
+///     immutable `custodian`. A recipient-taking mint would let the caller pass any address; that
 ///     mistake is now impossible because there is no recipient parameter or alternate mint path.
 ///   - **Write-once `profileRoot` (closes the M4 `setProfileRoot` hijack).** `profileRoot[id]` is set once,
 ///     at mint, and can never change - not by a setter (there is none), and not by burning the tag and
 ///     re-minting the same id (`mintCustodial` rejects an id whose root is already set). The mutable-root
 ///     setter is removed, not merely re-gated. See the hijack note below.
 ///   - **No `recover` / `Recovered` (D3, spec §"Recovery (M6)").** Recovery is a fresh custodial issuance:
-///     new tree, new `R`, new tag. The retired signature-authorized rebind, recovery role, nonce,
+///     new tree, new `R`, new tag. A signature-authorized rebind, a recovery role, a nonce,
 ///     EIP-712 typehashes, and soulbound bypass are all gone - a rebind names the new owner on-chain,
 ///     which is precisely what this model prevents. Dropping the bypass also
 ///     makes the soulbound lock ABSOLUTE: `_update` now permits only mint and burn, with no exception.
@@ -35,7 +35,7 @@ import {IERC5192} from "./IERC5192.sol";
 /// `ownerOf`/`keyOf` identity checks. That makes a MUTABLE `profileRoot` a full forgery vector: anyone able
 /// to overwrite it could fold a tree whose three reserved owner leaves they control, `issue(R2)` it through
 /// a whitelisted clone, repoint a victim tag at `R2`, and record a `Verified` for a pet they do not own.
-/// The retired model coupled a mutable root to owner-identity checks; this model has neither by design.
+/// A mutable root coupled to owner-identity checks is the shape this replaces; it has neither, by design.
 ///
 /// Re-gating was considered and rejected. A `status == Active` gate does not fire (a hijacker targets an
 /// Active tag). Restricting to `issuerOf[id]` still lets a compromised issuer silently repoint a REAL
@@ -63,7 +63,7 @@ contract DogTagSBTConsent is ERC721, AccessControlEnumerable, AccessControlDefau
         Revoked
     }
 
-    /// @dev Two-step admin handover timelock (matches `IssuerRegistry`; §13.1 H-3).
+    /// @dev Two-step admin handover timelock (§13.1 H-3).
     uint48 public constant ADMIN_TRANSFER_DELAY = 3 days;
 
     bytes32 public constant ISSUER_ROLE = keccak256("ISSUER");
@@ -172,7 +172,7 @@ contract DogTagSBTConsent is ERC721, AccessControlEnumerable, AccessControlDefau
         return true;
     }
 
-    /// @dev Soulbound, ABSOLUTELY: mint (from == 0) and burn (to == 0) only. The retired contract carried
+    /// @dev Soulbound, ABSOLUTELY: mint (from == 0) and burn (to == 0) only. A recovery bypass would carry
     /// a recovery bypass for its rebind path; D3 removes rebind, so the bypass is gone with it and no
     /// holder→holder transfer is expressible on this contract.
     function _update(address to, uint256 id, address auth) internal override returns (address) {

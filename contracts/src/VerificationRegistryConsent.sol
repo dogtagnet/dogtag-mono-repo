@@ -56,14 +56,16 @@ interface IRootIndex {
 /// (`ownerOf` IS called, but purely as a token-existence gate whose return value is discarded; see the
 /// burn note in `recordVerificationZK`.)
 ///
-/// @dev The owner-blind model structurally removes the retired owner-revealing surfaces:
-///   - NO ECDSA `recordVerification` path: it COMPARES `ownerOf(dogTagId) == subject`, and under D1
+/// @dev The owner-blind model structurally removes three surfaces an owner-revealing one would need,
+/// and each absence is load-bearing rather than incidental:
+///   - NO ECDSA `recordVerification` path: such a path COMPARES `ownerOf(dogTagId) == subject`, and under D1
 ///     (custodial mint) `ownerOf` resolves to the custodian and can never match a real owner. It is the
 ///     owner-identity COMPARISON that is structurally dead here, not the `ownerOf` read itself (which
 ///     this registry still makes, value discarded, as an existence gate). Consent is proven in-ZK or
 ///     not at all.
-///   - NO `ConsentKeyRegistry` (D2: the consent key moved INTO the tree, so `keyOf` is retired).
-///   - NO on-chain Poseidon6: the retired path derived the nullifier on-chain from `subject`; here it
+///   - NO consent-key registry (D2: the consent key lives INSIDE the tree, so there is no `keyOf` to
+///     ask and no per-owner mapping to leak).
+///   - NO on-chain Poseidon6: deriving the nullifier on-chain would need `subject`; here it
 ///     is a public signal the circuit binds to the hidden `ownerSecret` (D5).
 contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
     uint256 internal constant SNARK_SCALAR_FIELD =
@@ -75,7 +77,7 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
     uint256 internal constant ZK_TIMELOCK = 2 days;
 
     // Art. 9: SERVICE_ATTESTATION has no on-chain root → NOT verifiable on-chain (§11.9(h)).
-    // REDUCED mod r, unlike the retired path's raw `keccak256("SERVICE_ATTESTATION")`. `recordType` is
+    // REDUCED mod r, NOT the raw `keccak256("SERVICE_ATTESTATION")`. `recordType` is
     // a public SIGNAL here, so it is always < r, while the raw keccak (0xa757...ed43) EXCEEDS r — comparing
     // against the raw constant could never match and would silently make this guard dead code.
     // = keccak256("SERVICE_ATTESTATION") % r; asserted against the raw keccak in the test suite.

@@ -68,8 +68,9 @@ interface ICoreRecordPermission {
 /// implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in
 /// this codebase already.
 ///
-/// The three tiers `IssuerDomainRegistry` carried are all gone, and each for its own reason. Its tier 2
-/// recomputed the creation salt because generation-1 clones have no owner to ask — generation-2 clones do,
+/// Three authorization tiers that a domain registry might plausibly carry are all absent here, each for
+/// its own reason. A tier that
+/// recomputed the creation salt because a clone with no owner cannot be asked — these clones can be,
 /// so the stand-in is unnecessary. Its tier 3 `domainAdmin` existed only to rescue clones whose salted
 /// `business` was the operator's own signer; owner-epoch-scoped delegation in the core replaces it with a
 /// revocable grant that a clone-owner rotation invalidates automatically. And its tier 1 was a
@@ -85,7 +86,7 @@ interface ICoreRecordPermission {
 /// a generation-specific factory, so reaching it means either pinning this resolver to one generation or
 /// hopping through the core's generation record to find the right factory. What that note is actually
 /// protecting is that the rule lives in ONE place; composing the core's `canWriteService` satisfies that,
-/// and reconciling the core's own derivation with `authorizeClone` is recorded there as S-6's obligation.
+/// and reconciling the core's own derivation with `authorizeClone` is recorded there as open.
 ///
 /// # Provenance: the root index, and why the core's own check does not cover it
 ///
@@ -139,7 +140,7 @@ interface ICoreRecordPermission {
 ///
 /// # What this contract deliberately does not hold
 ///
-/// **No name, no legal identity.** A generation-2 clone's `name()` is permanently empty by construction,
+/// **No name, no legal identity.** A clone's `name()` is permanently empty by construction,
 /// and a provider-chosen string beside a green check is a fabricated authority. Registrar-controlled
 /// identity comes from the core's `publicIdentityAnchor`; never add an identity field here.
 ///
@@ -197,7 +198,7 @@ contract ServiceDomainResolver {
     /// values.
     uint256 private constant EFFECTIVE_SERVICE_RETURN_WORDS = 5;
 
-    /// @notice The S-6 authority core. Answers authorization, resolver selection and resolver approval.
+    /// @notice The authority core. Answers authorization, resolver selection and resolver approval.
     /// @dev Immutable. The core holds the standing, ownership and delegation facts a domain write depends
     /// on; a settable reference would let one transaction redefine who may publish an identity.
     ProviderRegistry public immutable core;
@@ -269,7 +270,7 @@ contract ServiceDomainResolver {
     error AlreadyDeclaredNoDomain(address service);
     error BadPage();
 
-    /// @param core_ the S-6 `ProviderRegistry`.
+    /// @param core_ the `ProviderRegistry` authority core.
     /// @param factory_ the `DogTagIssuerFactory` — the lineage `rootIndex` resolves roots through.
     /// @dev Both are behaviour-probed rather than merely code-checked, because an EOA staticcall SUCCEEDS
     /// with empty returndata — the silent shape a code-size check alone would miss. The probes are
@@ -445,7 +446,7 @@ contract ServiceDomainResolver {
 
     /// @notice The claim, with its disposition first.
     ///
-    /// @dev Deliberately a tuple rather than a bare `string`. `IssuerDomainRegistry.domainOf` returned
+    /// @dev Deliberately a tuple rather than a bare `string`. A bare-string `domainOf` would return
     /// `""` for three different facts, and a caller could consume it without ever learning which — the
     /// overload this contract exists to remove. A caller that wants only the string must write
     /// `(, string memory d) = resolveDomain(s)`, which discards the disposition visibly.
@@ -647,7 +648,7 @@ contract ServiceDomainResolver {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Domain validation — the grammar `IssuerDomainRegistry` established, preserved verbatim
+    // Domain validation — the canonical-domain grammar
     // ---------------------------------------------------------------------------------------------
 
     /// @dev Rejects anything a DNS resolver could not use verbatim as a query suffix. Enforcing this
