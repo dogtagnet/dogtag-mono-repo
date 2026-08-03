@@ -42,9 +42,35 @@ async function mount() {
   await settle();
 }
 
+/**
+ * The two ORTHOGONAL reads the page now issues on mount, plus the per-provider services read.
+ *
+ * Every mock below routes through this first. Without it a canned single-response `fetch` answers
+ * the providers payload to `GET /v1/admin/resolvers` too, and the page blows up on `kinds.map` -
+ * which fails every case in the file for a reason that has nothing to do with what it asserts.
+ */
+function journeyStub(url: string): Response | null {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  if (url.includes("/verifier-capabilities")) {
+    return json({ registry: REGISTRY, purposes: [] });
+  }
+  if (url.includes("/resolvers")) {
+    return json({ registry: REGISTRY, kinds: [] });
+  }
+  if (url.includes("/services")) {
+    return json({ registry: REGISTRY, providerId: PID, services: [] });
+  }
+  return null;
+}
+
 /** `GET /v1/admin/providers` returning one provider with the given approvals shape. */
 function listReturning(approvals: unknown, standing = "active") {
-  return vi.fn(async () =>
+  return vi.fn(async (input: RequestInfo | URL) =>
+    journeyStub(String(input)) ??
     new Response(
       JSON.stringify({
         registry: REGISTRY,
@@ -126,7 +152,8 @@ function listBody(providers: unknown[]) {
 
 /** The list route with one provider whose fields are overridden. */
 function listWith(over: Record<string, unknown>) {
-  return vi.fn(async () =>
+  return vi.fn(async (input: RequestInfo | URL) =>
+    journeyStub(String(input)) ??
     new Response(JSON.stringify(listBody([oneProvider(over)])), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -147,6 +174,8 @@ function routing(opts: {
 }) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    const stub = journeyStub(url);
+    if (stub) return stub;
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), {
         status,
@@ -440,7 +469,8 @@ describe("Providers - the authority banner", () => {
 
   /** `heldByHosted` is tri-state: null is "could not establish", which is not "no". */
   it("does not claim either way when holdership could not be established", async () => {
-    vi.stubGlobal("fetch", async () =>
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) =>
+      journeyStub(String(input)) ??
       new Response(
         JSON.stringify({
           registry: REGISTRY,
@@ -601,5 +631,318 @@ describe("Providers - a dispatched action is a durable record", () => {
     expect(log.textContent).toContain("Seaport Veterinary Clinic Pte Ltd");
     expect(await copyValueFor(log, "statement")).toContain("Seaport Veterinary Clinic Pte Ltd");
     expect(await copyValueFor(log, "identity digest")).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The services panel: the rest of the journey, rendered.
+//
+// The first case here is RE-HOMED from the deleted whitelist console's page test, which was the
+// page-level catcher for `AddressRef`'s inert copy affordance. `addressRefCopy.test.tsx` pins the
+// component in isolation; this pins that a real page mounting it still gets that treatment.
+// ---------------------------------------------------------------------------------------------
+
+/** A `fetch` that answers the list plus one attached service in the given shape. */
+function withService(service: Record<string, unknown>) {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    if (url.includes("/verifier-capabilities")) return json({ registry: REGISTRY, purposes: [] });
+    if (url.includes("/resolvers")) return json({ registry: REGISTRY, kinds: [] });
+    if (url.includes("/services")) {
+      return json({ registry: REGISTRY, providerId: PID, services: [service] });
+    }
+    if (url.includes("/issuance-capability") || url.includes("/standing")) {
+      return json({
+        outcome: "executed",
+        executed: true,
+        warning: null,
+        actions: [
+          {
+            disposition: "executed",
+            txHash: `0x${"e1".repeat(32)}`,
+            holder: `0x${"ad".repeat(20)}`,
+            summary: "registrar action",
+          },
+        ],
+      });
+    }
+    return json(listBody([oneProvider()]));
+  });
+}
+
+const SERVICE_ADDR = `0x${"5a".repeat(20)}`;
+
+function serviceView(over: Record<string, unknown> = {}) {
+  return {
+    service: {
+      serviceAddress: SERVICE_ADDR,
+      providerId: PID,
+      factoryGeneration: `0x${"df".repeat(32)}`,
+      recordTypeKey: `0x${"65".repeat(32)}`,
+      recordType: "VACCINATION",
+      confirmedOwner: CONTROLLER,
+      domainResolver: `0x${"0".repeat(40)}`,
+      ownerEpoch: 1,
+      standing: "pending",
+      attached: true,
+    },
+    effective: {
+      providerStanding: "active",
+      serviceStanding: "pending",
+      factoryActive: true,
+      ownerConfirmed: true,
+      hasActiveIssuer: false,
+    },
+    currentPointer: { state: "resolved", service: `0x${"0".repeat(40)}`, isCurrent: false },
+    issuance: { state: "resolved", entries: [] },
+    ...over,
+  };
+}
+
+async function expandServices() {
+  const toggle = container.querySelector<HTMLButtonElement>('[data-testid="toggle-services"]');
+  toggle!.click();
+  await settle();
+}
+
+describe("Providers - the services panel", () => {
+  /**
+   * RE-HOMED: an address the page cannot link must still hand over its FULL value, because
+   * `shortAddr` removes the elided characters from the DOM entirely - so on the inert branch a copy
+   * affordance is not a nicety, it is the only route to the value.
+   */
+  it("hands over a controller address it cannot link, without a hover", async () => {
+    vi.stubGlobal("fetch", listReturning({ state: "resolved", entries: [] }));
+    await mount();
+    const copy = [...container.querySelectorAll("button")].find((b) =>
+      (b.getAttribute("aria-label") ?? "").includes("Copy"),
+    );
+    expect(copy, "the row must offer a copy affordance").toBeDefined();
+    expect(container.textContent).not.toContain(CONTROLLER.slice(2, 30));
+  });
+
+  /**
+   * Attaching lands the service at PENDING and `canIssue` folds it, so the panel must say what is
+   * still missing rather than reading as done.
+   */
+  it("says what is blocking a freshly attached service rather than reporting it as ready", async () => {
+    vi.stubGlobal("fetch", withService(serviceView()));
+    await mount();
+    await expandServices();
+    const row = container.querySelector('[data-testid="service-row"]');
+    expect(row, "the service must render").not.toBeNull();
+    expect(row!.textContent).toContain("VACCINATION");
+    expect(container.querySelector('[data-testid="service-blocker"]')!.textContent).toContain(
+      "standing to Active",
+    );
+    // The five terms are reported APART, so the two that fail are visible individually.
+    expect(container.querySelector('[data-testid="service-terms"]')!.textContent).toContain(
+      "Service active",
+    );
+  });
+
+  /**
+   * The whole reason the panel exists: an admin who cannot see what a provider has attached will
+   * attach a duplicate. A read that FAILED must say so rather than showing an empty list.
+   */
+  it("renders an unreadable services read as its own state, never as nothing attached", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (body: unknown, status = 200) =>
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.includes("/verifier-capabilities")) return json({ registry: REGISTRY, purposes: [] });
+        if (url.includes("/resolvers")) return json({ registry: REGISTRY, kinds: [] });
+        if (url.includes("/services")) return json({ error: "eth_call failed" }, 502);
+        return json(listBody([oneProvider()]));
+      }),
+    );
+    await mount();
+    await expandServices();
+    expect(container.textContent).toContain("services could not be read");
+    expect(container.textContent).not.toContain("Nothing attached yet");
+  });
+
+  /**
+   * A capability log that could not be read is its own state - never an empty holder set, which
+   * would say nobody may issue on the strength of a read that never happened.
+   */
+  it("renders an unreadable issuance log as could-not-be-read, not as nobody", async () => {
+    vi.stubGlobal(
+      "fetch",
+      withService(
+        serviceView({ issuance: { state: "unavailable", reason: "the log range was capped" } }),
+      ),
+    );
+    await mount();
+    await expandServices();
+    const row = container.querySelector('[data-testid="service-row"]');
+    expect(row!.textContent).toContain("Could not be read");
+    expect(row!.textContent).toContain("the log range was capped");
+    expect(row!.textContent).not.toContain("Nobody yet");
+  });
+
+  /**
+   * The current pointer is the PROVIDER's own decision and no registrar route writes it, so the
+   * panel reports it and says who has to act - rather than offering a button the registrar cannot
+   * honour.
+   */
+  it("names the provider as the one who publishes the current pointer", async () => {
+    vi.stubGlobal("fetch", withService(serviceView()));
+    await mount();
+    await expandServices();
+    const pointer = container.querySelector('[data-testid="service-pointer"]');
+    expect(pointer!.textContent).toContain("the provider selects this itself");
+  });
+
+  /** The two orthogonal levers are rendered OUTSIDE the provider table, because neither is keyed by
+   * a provider: a purpose-keyed verify grant and a fleet-wide resolver approval. */
+  it("renders the verify and resolver levers outside the provider rows", async () => {
+    vi.stubGlobal("fetch", listReturning({ state: "resolved", entries: [] }));
+    await mount();
+    const verify = container.querySelector('[data-testid="verifier-capabilities"]');
+    const resolvers = container.querySelector('[data-testid="resolvers"]');
+    expect(verify, "the verify axis must render").not.toBeNull();
+    expect(resolvers, "the resolver allowlist must render").not.toBeNull();
+    expect(verify!.textContent).toContain("separate from issuance");
+    expect(resolvers!.textContent).toContain("the provider selects it");
+    // Neither may be nested inside the provider table, which would misstate what it applies to.
+    expect(verify!.closest("table"), "verify must not live inside a provider row").toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The capability dialog.
+//
+// These three writes previously read their address from `window.prompt` and sent it straight
+// through: no review, no direction, and unstubbable in jsdom - which is exactly why they had no
+// coverage at all. The worst of the three is `setIssuanceCapability`, which names a key allowed to
+// SIGN credentials.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Open the issuance-capability dialog on the one attached service.
+ *
+ * The dialog renders through a PORTAL, so everything it contains lives under `document.body` rather
+ * than inside `container` - the same reason the registration-dialog helpers above are
+ * document-scoped.
+ */
+async function openIssuanceDialog() {
+  await expandServices();
+  buttonWithText("Issuance capability")!.click();
+  await settle();
+}
+
+function capabilitySubmit() {
+  return document.body.querySelector<HTMLButtonElement>('[data-testid="capability-submit"]');
+}
+
+function directionButtons() {
+  return [
+    ...document.body.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="capability-direction"] button',
+    ),
+  ];
+}
+
+function lastPost(fetchMock: { mock: { calls: unknown[][] } }) {
+  const post = fetchMock.mock.calls.find(
+    ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+  );
+  if (!post) throw new Error("no write was sent");
+  return { url: String(post[0]), body: JSON.parse(String((post[1] as RequestInit).body)) };
+}
+
+describe("Providers - the capability dialog", () => {
+  it("will not send until a well-formed address has been entered", async () => {
+    vi.stubGlobal("fetch", withService(serviceView()));
+    await mount();
+    await openIssuanceDialog();
+    expect(capabilitySubmit(), "the dialog must render").not.toBeNull();
+    expect(capabilitySubmit()!.disabled, "nothing typed yet").toBe(true);
+
+    type(byId("cap-addr"), "0xnope");
+    await settle();
+    expect(capabilitySubmit()!.disabled, "a malformed address must not be sendable").toBe(true);
+    expect(document.body.textContent).toContain("Not a 0x-prefixed 20-byte address");
+  });
+
+  it("sends the address that was entered, granting by default", async () => {
+    const fetchMock = withService(serviceView());
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    await openIssuanceDialog();
+    const signer = `0x${"c3".repeat(20)}`;
+    type(byId("cap-addr"), signer);
+    await settle();
+    capabilitySubmit()!.click();
+    await settle();
+
+    const { url, body } = lastPost(fetchMock);
+    expect(url).toContain("/issuance-capability");
+    expect(body).toEqual({ signer, allowed: true });
+  });
+
+  /**
+   * The control says "Grant / withdraw" and every one of these is a two-way lever on the contract -
+   * the panels even render a withdrawn entry struck through. A dialog that could only grant would
+   * imply a state it gives no way to reach.
+   */
+  it("can withdraw as well as grant, which is what its label promises", async () => {
+    const fetchMock = withService(serviceView());
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    await openIssuanceDialog();
+    type(byId("cap-addr"), `0x${"c3".repeat(20)}`);
+    await settle();
+    const withdraw = directionButtons().find((b) => b.textContent?.trim() === "Withdraw");
+    expect(withdraw, "a withdraw direction must be offered").toBeDefined();
+    withdraw!.click();
+    await settle();
+    capabilitySubmit()!.click();
+    await settle();
+    expect(lastPost(fetchMock).body.allowed).toBe(false);
+  });
+
+  /** The resolver lever names its two directions in the registry's own words. */
+  it("labels the resolver directions approve and pull", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (b: unknown) =>
+          new Response(JSON.stringify(b), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.includes("/verifier-capabilities")) return json({ registry: REGISTRY, purposes: [] });
+        if (url.includes("/resolvers")) {
+          return json({
+            registry: REGISTRY,
+            kinds: [
+              { kind: "directory", listing: { state: "resolved", resolvers: [] } },
+              { kind: "domain", listing: { state: "resolved", resolvers: [] } },
+            ],
+          });
+        }
+        if (url.includes("/services")) {
+          return json({ registry: REGISTRY, providerId: PID, services: [] });
+        }
+        return json(listBody([oneProvider()]));
+      }),
+    );
+    await mount();
+    buttonWithText("Approve / pull")!.click();
+    await settle();
+    expect(directionButtons().map((b) => b.textContent?.trim())).toEqual(["Approve", "Pull"]);
   });
 });

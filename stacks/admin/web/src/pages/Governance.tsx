@@ -501,9 +501,9 @@ function GovernanceActionModelCard({ authority }: { authority: GovernanceAuthori
         <div className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-xs text-muted">
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           <span>
-            Routine capabilities (<code>createIssuer</code> on the Issuers page,{" "}
-            <code>whitelistFor</code>/<code>delistFor</code> on the Whitelist page) already dispatch
-            through this layer.{" "}
+            Routine capabilities (<code>createIssuer</code> on the Issuers page, the registrar writes
+            on the Providers page, and <code>whitelistFor</code> on issuer-application approval)
+            already dispatch through this layer.{" "}
             {hostedHoldsAny
               ? "The control-plane signer currently holds authority, so those execute directly."
               : "The control-plane signer holds none of these authorities, so those route as proposals."}{" "}

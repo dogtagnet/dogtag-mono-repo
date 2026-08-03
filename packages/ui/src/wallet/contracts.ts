@@ -1,8 +1,5 @@
 import {
-  BaseError,
   createPublicClient,
-  encodeFunctionData,
-  ExecutionRevertedError,
   keccak256,
   toBytes,
   type Abi,
@@ -74,32 +71,6 @@ const ISSUER_REGISTRY_ABI = [
     inputs: [
       { name: "rt", type: "bytes32" },
       { name: "s", type: "address" },
-    ],
-    outputs: [{ name: "", type: "bool" }],
-  },
-] as const satisfies Abi;
-
-/**
- * The generation-2 authority (`contracts/src/ProviderRegistry.sol`), declared for ONE purpose.
- *
- * `isRecognizedIssuer` is the one selector a generation-1 `IssuerRegistry` provably does NOT
- * implement — that contract's entire external surface is `whitelistFor` / `delistFor` /
- * `isWhitelistedFor`, and it has no fallback, so the call reverts there rather than answering. That
- * makes it usable as a GENERATION DISCRIMINATOR, which is the only thing this module uses it for.
- *
- * Its BOOLEAN is never consumed. `isRecognizedIssuer` reads current storage
- * (`_issuanceCapabilities[service][signer]`) with no block and no root, so it cannot answer "was this
- * in force when that root was anchored" — using its value would revert the pillar to a current-state
- * getter under a new name, which is the exact regression the forward-only rule removed.
- */
-const PROVIDER_AUTHORITY_ABI = [
-  {
-    type: "function",
-    name: "isRecognizedIssuer",
-    stateMutability: "view",
-    inputs: [
-      { name: "service", type: "address" },
-      { name: "signer", type: "address" },
     ],
     outputs: [{ name: "", type: "bool" }],
   },

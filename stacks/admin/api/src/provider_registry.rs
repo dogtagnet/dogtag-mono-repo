@@ -235,6 +235,182 @@ pub fn record_type_label(key: &str) -> Option<String> {
         .map(|label| (*label).to_string())
 }
 
+// -------------------------------------------------------------------------------------------------
+// Services, capabilities and typed resolvers - the rest of the journey past "the provider deployed".
+// -------------------------------------------------------------------------------------------------
+
+/// A service (an attached provider-deployed issuer contract) as the registrar screen needs it.
+///
+/// `attachService` resolves `recordType`, `factoryGeneration` and `confirmedOwner` off the clone and
+/// the pinned factory - none of them is registrar-supplied - so every field here except the standing
+/// is a fact about the contract rather than a claim about it.
+#[derive(Clone, Debug, Serialize)]
+pub struct ServiceRecord {
+    #[serde(rename = "serviceAddress")]
+    pub service_address: String,
+    #[serde(rename = "providerId")]
+    pub provider_id: String,
+    #[serde(rename = "factoryGeneration")]
+    pub factory_generation: String,
+    #[serde(rename = "recordTypeKey")]
+    pub record_type_key: String,
+    /// The human label when the key is one this deployment knows, else `null` - never a guess.
+    #[serde(rename = "recordType")]
+    pub record_type: Option<String>,
+    #[serde(rename = "confirmedOwner")]
+    pub confirmed_owner: String,
+    #[serde(rename = "domainResolver")]
+    pub domain_resolver: String,
+    #[serde(rename = "ownerEpoch")]
+    pub owner_epoch: u64,
+    pub standing: Standing,
+    /// `providerId != 0` is the existence sentinel: `service()` answers a zero-filled struct for an
+    /// address it has never seen rather than reverting, exactly like `provider()`.
+    pub attached: bool,
+}
+
+/// The five lifecycle terms `canIssue` folds, reported APART.
+///
+/// Never pre-AND them into one bool. Each has a different remedy - a suspended provider is the
+/// registrar's to lift, an unconfirmed owner needs `confirmServiceOwner`, an inactive factory
+/// generation is terminal - so one bool would tell an admin that something is wrong while
+/// withholding the only thing that says what to do about it.
+///
+/// `has_active_issuer` is the one term that is NOT independent of its neighbours: the contract
+/// answers `_activeIssuerCount != 0 && _serviceIssuanceEligible(..)`, which re-folds the owner and
+/// the standings AND adds the provider's current pointer. So it can be false with all four of the
+/// others true, and the remedy in that state is the PROVIDER's `repointService` - never another
+/// registrar grant.
+#[derive(Clone, Debug, Serialize)]
+pub struct ServiceEffective {
+    #[serde(rename = "providerStanding")]
+    pub provider_standing: Standing,
+    #[serde(rename = "serviceStanding")]
+    pub service_standing: Standing,
+    #[serde(rename = "factoryActive")]
+    pub factory_active: bool,
+    #[serde(rename = "ownerConfirmed")]
+    pub owner_confirmed: bool,
+    #[serde(rename = "hasActiveIssuer")]
+    pub has_active_issuer: bool,
+}
+
+/// One `(holder, allowed)` pair as last written by the registrar, for any capability whose raw
+/// mapping is private and therefore only knowable from its event log.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct CapabilityEntry {
+    /// The address the capability is held by - an issuance signer, or a verifier relayer.
+    pub holder: String,
+    pub allowed: bool,
+}
+
+/// The result of reading a capability log. Same three-state discipline, and same reason, as
+/// [`ApprovalsRead`]: an empty `Resolved` says nobody holds this capability, `Unavailable` says we
+/// could not ask, and rendering the second as the first states a fact about a service on the
+/// strength of a read that never happened.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum CapabilitiesRead {
+    Resolved { entries: Vec<CapabilityEntry> },
+    Unavailable { reason: String },
+}
+
+impl CapabilitiesRead {
+    pub fn entries(&self) -> Option<&[CapabilityEntry]> {
+        match self {
+            CapabilitiesRead::Resolved { entries } => Some(entries),
+            CapabilitiesRead::Unavailable { .. } => None,
+        }
+    }
+
+    /// Whether `holder` currently holds this capability, tri-state: `None` when the log did not
+    /// resolve, so a caller must branch rather than defaulting to "not held".
+    pub fn allowed(&self, holder: &str) -> Option<bool> {
+        let entries = self.entries()?;
+        Some(
+            entries
+                .iter()
+                .find(|e| e.holder.eq_ignore_ascii_case(holder))
+                .map(|e| e.allowed)
+                // A holder the resolved log never mentions has never been granted. That IS an
+                // answer, so it is a definite `false` rather than a could-not-check.
+                .unwrap_or(false),
+        )
+    }
+}
+
+/// Fold an ordered capability log into the current holder set.
+///
+/// Identical rule to [`fold_approvals`] and identical precondition: `events` MUST be in ascending
+/// `(blockNumber, logIndex)` order, and a withdrawal is KEPT as an explicit `false` because
+/// "granted then withdrawn" and "never granted" are different facts about what the registrar did.
+pub fn fold_capabilities(events: &[(String, bool)]) -> Vec<CapabilityEntry> {
+    let mut latest: BTreeMap<String, bool> = BTreeMap::new();
+    for (holder, allowed) in events {
+        latest.insert(holder.to_ascii_lowercase(), *allowed);
+    }
+    latest
+        .into_iter()
+        .map(|(holder, allowed)| CapabilityEntry { holder, allowed })
+        .collect()
+}
+
+/// `ProviderRegistry.ResolverKind` (`ProviderRegistry.sol:66-69`).
+///
+/// A typed resolver answers NOTHING until the registrar approves it here AND the provider selects
+/// it, so both halves must be visible - the core never clears a stored selection when a resolver is
+/// deapproved, which is exactly why the approval is a separate fleet-wide lever.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResolverKind {
+    Directory,
+    Domain,
+}
+
+impl ResolverKind {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            ResolverKind::Directory => 0,
+            ResolverKind::Domain => 1,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(ResolverKind::Directory),
+            1 => Some(ResolverKind::Domain),
+            _ => None,
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "directory" => Some(ResolverKind::Directory),
+            "domain" => Some(ResolverKind::Domain),
+            _ => None,
+        }
+    }
+}
+
+/// The verify purposes this deployment can name, for the orthogonal verifier axis.
+///
+/// `setVerifierCapability` is keyed by PURPOSE and not by service - it is the verify axis, which is
+/// orthogonal to issuance - so it is never rendered as a property of a service row.
+///
+/// HAND-MIRRORED from `PURPOSE_LABELS` in `stacks/owner/web/src/lib/consents.ts`, which is the list
+/// of labels actually in circulation across the portals; there is no shared source across the
+/// language boundary, so the two move together or not at all. The label is keccak-reduced by
+/// `purpose_key` into the word the contract stores under `verificationKey(purpose)`, so a label that
+/// exists nowhere else grants under a key `canVerify` is never asked about - a transaction that
+/// succeeds and grants nothing, reached through the label axis rather than the derived-key one.
+pub const KNOWN_VERIFY_PURPOSES: &[&str] = &[
+    "boarding_intake",
+    "travel_check",
+    "grooming_intake",
+    "daycare_access",
+    "service_animal",
+];
+
 /// `providerId` is `bytes20` - 40 hex characters. Zero is the one value the contract refuses
 /// (`ZeroProviderId()`, `ProviderRegistry.sol:288`); there is deliberately no format, checksum or
 /// derivation rule, because the id is an opaque KYC registrar assignment.

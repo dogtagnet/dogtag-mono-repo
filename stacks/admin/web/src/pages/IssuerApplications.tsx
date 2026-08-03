@@ -304,8 +304,8 @@ export function ApprovalTxList({ txs }: { txs?: string[] }) {
     return (
       <p className="text-xs text-warning" data-testid="approval-no-txs">
         No <code>whitelistFor</code> transactions were returned — nothing reached the chain for this
-        approval. The addresses may already have been whitelisted; confirm on the Whitelist page
-        before treating this issuer as live.
+        approval. The addresses may already have been whitelisted; confirm against the{" "}
+        <code>IssuerRegistry</code> on chain before treating this issuer as live.
       </p>
     );
   }

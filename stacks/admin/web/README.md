@@ -28,22 +28,18 @@ pnpm --filter @dogtag/admin-web dev
   after DNS-TXT + accreditation checks), **reject** (`/{id}/reject`), **delist** (`/{id}/delist` →
   on-chain `delistFor`). Shows the multi-address × multi-recordType structure and the resulting tx
   hashes (explorer links).
-- **Whitelist viewer** (`/whitelist`) — expands every (recordType, address) pair from the
-  applications. The *derived* column reflects application status (approved ⇒ expected whitelisted).
-  When `VITE_ISSUER_REGISTRY_ADDR` is set, the *on-chain* column reads
-  `IssuerRegistry.isWhitelistedFor(keccak256(recordType), address)` directly via viem against ROAX.
 
 ## Wired vs placeholder
 
 - **Wired to central backend contracts**: admin login, businesses list/register, issuer-application
-  list/approve/reject/delist, whitelist viewer (derived from applications; live on-chain read via
-  viem when the registry address is configured).
+  list/approve/reject/delist.
 - **Placeholder**: appointment + observability dashboards (the central backend exposes only
   owner-scoped appointment/consent endpoints; an aggregate admin view is future work).
 
 ## Env
 
 See `.env.example`. The central API base is proxied to `/api` by default. `VITE_ISSUER_REGISTRY_ADDR`
-enables the live on-chain whitelist read; `VITE_ROAX_RPC` supplies the bundled ROAX RPC default.
+supplies the registry the verification bench compares an issuing clone's own `registry()` against;
+`VITE_ROAX_RPC` supplies the bundled ROAX RPC default.
 An authenticated user can choose a browser-local endpoint under **Settings**; the central API and
 oversight indexer remain deployment-configured and are not user-configurable.
