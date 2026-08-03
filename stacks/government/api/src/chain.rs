@@ -26,80 +26,6 @@ use async_trait::async_trait;
 // every Rust surface that asks it shares ONE definition rather than three that can drift.
 pub use dogtag_standard::verify::{grant_in_force_at, GrantAtIssuance, GrantEvent, LogPoint};
 
-/// What a generation-discriminating probe established about an authority contract.
-///
-/// THREE outcomes, and the third is not a neighbour of the other two — the same shape the pillar's
-/// own verdict has, for the same reason. Collapsing [`AuthorityGeneration::Undetermined`] into
-/// [`AuthorityGeneration::Legacy`] is this repo's standing defect class (could-not-check rendered as
-/// a definite answer) reproduced inside the very read that exists to remove it, and it lands on the
-/// UNAUTHENTICATED `POST /v1/verify`.
-///
-/// Mirrored in `stacks/vet/api/src/chain.rs`; keep the two in step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthorityGeneration {
-    /// The successor's selector ANSWERED, so this authority speaks generation 2
-    /// (`contracts/src/ProviderRegistry.sol`).
-    Successor,
-    /// The node EXECUTED the call and the contract refused it — no such selector, and
-    /// `IssuerRegistry` has no fallback. Evidence that this authority does NOT implement the
-    /// successor's surface, i.e. that it is generation 1.
-    Legacy,
-    /// No answer was obtained at all. Evidence about NOTHING, and in particular not evidence of
-    /// generation 1.
-    Undetermined,
-}
-
-/// The JSON-RPC error code geth returns for a call the EVM EXECUTED and reverted. Confirmed against
-/// ROAX on 2026-07-31 with the exact production case — `isRecognizedIssuer` put to the deployed
-/// generation-1 `IssuerRegistry` answers `{"code":3,"message":"execution reverted","data":"0x"}`.
-const EXECUTION_REVERTED_CODE: i64 = 3;
-/// The canonical message, accepted ALONGSIDE the code for clients that report a revert under a
-/// different one (several spell it `-32000`). Without it a peer that does so would stop refusing every
-/// never-granted generation-1 signer, which is the pillar's main job. Narrow and exact rather than a
-/// guess across the error space — and note alloy's own `ErrorPayload::as_revert_data` keys on the
-/// looser `contains("revert")`.
-const EXECUTION_REVERTED_MESSAGE: &str = "execution reverted";
-
-/// Did the CONTRACT execute this call and revert, or did something else go wrong?
-///
-/// Only an execution revert is evidence ABOUT THE CONTRACT, and it is exactly the signal wanted here:
-/// a generation-1 `IssuerRegistry` has no `isRecognizedIssuer` and no fallback, so its dispatcher
-/// reverts.
-///
-/// Everything else says the contract did nothing. Some of it is obviously ours — `Transport` (timeout,
-/// reset connection, HTTP status), `DeserError`/`SerError`, `NullResp`, `LocalUsageError`, plus the
-/// contract layer's own `AbiError` (returndata that would not decode, which is what an address with no
-/// code produces) and the `UnknownFunction`/`UnknownSelector`/deployment variants. The part that is
-/// easy to get wrong is that an `ErrorResp` is NOT automatically a revert: `-32005` rate limit,
-/// `-32603` internal error, `-32601` method not found and `-32002` resource unavailable are the node
-/// speaking about ITSELF. Reading one of those as generation 1 leaves an empty grant history standing
-/// as a definite refusal — a forgery verdict against a genuine credential, produced by a call the
-/// contract never ran, on `POST /v1/verify`, which is UNAUTHENTICATED by design and where a rate-limit
-/// response is a realistic condition rather than a hypothetical one.
-///
-/// `ErrorPayload::as_revert_data` is deliberately NOT the discriminator: it requires revert DATA, and
-/// the revert this looks for is a bare dispatcher refusal that carries none (`"data":"0x"` above).
-///
-/// Mirrored by viem's `ExecutionRevertedError` on the web (`code === 3 || /execution reverted/`, the
-/// same pair) and by `isExecutionRevert` in both mobile clients.
-fn answered_with_execution_revert(e: &alloy::contract::Error) -> bool {
-    match e {
-        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(p)) => {
-            p.code == EXECUTION_REVERTED_CODE || p.message.contains(EXECUTION_REVERTED_MESSAGE)
-        }
-        _ => false,
-    }
-}
-
-/// Classify a generation probe. The probe's VALUE is deliberately not part of this decision — see the
-/// `isRecognizedIssuer` note in the `sol!` block above.
-fn generation_from_probe<T>(r: &Result<T, alloy::contract::Error>) -> AuthorityGeneration {
-    match r {
-        Ok(_) => AuthorityGeneration::Successor,
-        Err(e) if answered_with_execution_revert(e) => AuthorityGeneration::Legacy,
-        Err(_) => AuthorityGeneration::Undetermined,
-    }
-}
 
 /// Where a mined log sits, as the ordering key the fold compares.
 ///
@@ -181,30 +107,21 @@ sol! {
         function rootIssuer(bytes32 root) external view returns (address);
     }
 
-    #[sol(rpc)]
-    contract IIssuerRegistry {
-        /// Both indexed, so one filtered `eth_getLogs` per pair reconstructs the whole grant history.
-        /// `whitelistFor`/`delistFor` emit unconditionally (neither checks the prior value), so the
-        /// log is complete rather than edge-triggered.
-        ///
-        /// NOTE `topic1` is the RECORD-TYPE KEY, which makes every reader of this log a record-type
-        /// caller in the sense `docs/CLIENT_REPOINT.md` means — see `whitelisted_at_issuance`.
-        event Whitelisted(bytes32 indexed recordType, address indexed signer);
-        event Delisted(bytes32 indexed recordType, address indexed signer);
-        function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
-    }
-
-    /// The generation-2 authority (`contracts/src/ProviderRegistry.sol`), reached off the resolved
-    /// clone's own `registry()` exactly as the generation-1 registry is.
+    /// The provider authority (`contracts/src/ProviderRegistry.sol`), reached off the resolved
+    /// clone's own `registry()` and never from this deployment's configuration.
     ///
-    /// Only `isRecognizedIssuer` is declared, and only as a GENERATION DISCRIMINATOR: it is the one
-    /// selector a generation-1 `IssuerRegistry` provably does not implement (that contract's entire
-    /// external surface is `whitelistFor` / `delistFor` / `isWhitelistedFor`). Its BOOLEAN is never
-    /// consumed here — it is a current-storage read and cannot answer an at-issuance question.
-    /// This backend anchors no new roots, so it needs no `canIssue`.
+    /// `isWhitelistedFor` is the VERIFY axis only — at a plain `eth_call`'s zero `msg.sender` the
+    /// authority answers off `_verifierCapabilities`. It must never be handed a RECORD-TYPE key,
+    /// which is never a `verificationKey` output and would be a confident `false` about every
+    /// genuine issuer signer.
     #[sol(rpc)]
     contract IProviderAuthority {
-        function isRecognizedIssuer(address service, address signer) external view returns (bool);
+        /// Both leading args indexed, so one filtered `eth_getLogs` per (service, signer) pair
+        /// reconstructs the whole issuance grant history. Keyed on the SERVICE, not a record-type
+        /// key: a clone carries exactly one record type, and the check that the DOCUMENT's claimed
+        /// type matches `recordType()` stays at the caller.
+        event IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed);
+        function isWhitelistedFor(bytes32 key, address signer) external view returns (bool);
     }
 
     /// The ADDITIVE issuer↔domain claim registry. `getBinding` deliberately does NOT revert on an
@@ -422,7 +339,6 @@ pub trait ChainClient: Send + Sync {
     async fn whitelisted_at_issuance(
         &self,
         issuer_addr: &str,
-        record_type: &str,
         signer: &str,
         root: &str,
         at_block: Option<u64>,
@@ -784,7 +700,7 @@ impl ChainClient for AlloyChain {
         at_block: Option<u64>,
     ) -> Result<bool, ChainError> {
         let provider = self.provider().await?;
-        let c = IIssuerRegistry::new(parse_addr(registry_addr), provider);
+        let c = IProviderAuthority::new(parse_addr(registry_addr), provider);
         let mut call = c.isWhitelistedFor(parse_b256(record_type), parse_addr(signer));
         if let Some(b) = at_block {
             call = call.block(b.into());
@@ -798,7 +714,6 @@ impl ChainClient for AlloyChain {
     async fn whitelisted_at_issuance(
         &self,
         issuer_addr: &str,
-        record_type: &str,
         signer: &str,
         root: &str,
         at_block: Option<u64>,
@@ -862,17 +777,18 @@ impl ChainClient for AlloyChain {
             return Ok(GrantAtIssuance::Undetermined);
         };
 
-        // (3) That authority's grant history for this exact pair. One call: topic0 accepts a SET, so
-        // `Whitelisted` and `Delisted` come back interleaved in log order.
+        // (3) That authority's grant history for this exact (service, signer) pair. Both leading
+        // args are indexed, so one filtered `eth_getLogs` reconstructs the whole sequence.
+        //
+        // Keyed on the SERVICE ADDRESS, not a record-type key. A clone carries exactly one record
+        // type, so filtering by service inherently scopes the history to it; the check that the
+        // DOCUMENT's claimed type matches `recordType()` stays at the caller.
         let grants = provider
             .get_logs(&bounded(
                 Filter::new()
                     .address(governing)
-                    .event_signature(vec![
-                        IIssuerRegistry::Whitelisted::SIGNATURE_HASH,
-                        IIssuerRegistry::Delisted::SIGNATURE_HASH,
-                    ])
-                    .topic1(parse_b256(record_type))
+                    .event_signature(IProviderAuthority::IssuanceCapabilitySet::SIGNATURE_HASH)
+                    .topic1(parse_addr(issuer_addr).into_word())
                     .topic2(parse_addr(signer).into_word()),
             ))
             .await
@@ -880,57 +796,28 @@ impl ChainClient for AlloyChain {
         let mut history: Vec<GrantEvent> = Vec::with_capacity(grants.len());
         for l in &grants {
             // A grant whose position is unknown cannot be sequenced, and dropping it could turn a
-            // delisted-before into an authorised. Refuse to answer instead.
+            // withdrawn-before into an authorised. Refuse to answer instead.
             let Some(at) = log_point(l) else {
                 return Ok(GrantAtIssuance::Undetermined);
             };
-            history.push(GrantEvent {
-                at,
-                granted: l.topic0() == Some(&IIssuerRegistry::Whitelisted::SIGNATURE_HASH),
-            });
+            // `allowed` is the one NON-indexed argument, so it is the single data word.
+            let Ok(decoded) =
+                IProviderAuthority::IssuanceCapabilitySet::decode_log_data(l.data(), true)
+            else {
+                return Ok(GrantAtIssuance::Undetermined);
+            };
+            history.push(GrantEvent { at, granted: decoded.allowed });
         }
 
-        // (4) An EMPTY history is a definite refusal ONLY if this authority speaks this vocabulary.
+        // (4) An EMPTY history is a DEFINITE refusal, and that is evidence about the credential
+        // rather than about us: `issue()` is `onlyIssuanceCapable`, so an honest clone cannot have
+        // anchored this root without the authority having granted this signer the capability. A read
+        // that FAILED returned above and never arrives here as an empty one.
         //
-        // The query above is RECORD-TYPE-KEYED — `Whitelisted(bytes32 indexed recordType, address
-        // indexed signer)` puts the record-type key in `topic1` — so it fails against the successor
-        // for the same reason the legacy getter does, only more quietly. `ProviderRegistry` records
-        // its grants as `IssuanceCapabilitySet(service, signer, allowed)`: different name, different
-        // `topic0`, different argument shape, so this filter matches nothing there. Unguarded,
-        // `grant_in_force_at(&[], _)` would answer `NotAuthorized` — a definite forgery verdict
-        // against a genuine generation-2 credential, on the UNAUTHENTICATED `POST /v1/verify`.
-        //
-        // Scoped to the empty case because a NON-EMPTY history is itself proof the authority speaks
-        // generation 1. So this costs one extra `eth_call` on the refusal path only, and cannot
-        // perturb any answer the forward-only rule already establishes.
-        //
-        // The probe's boolean is DISCARDED: `isRecognizedIssuer` reads current storage with no block
-        // and no root, so consuming it would revert this pillar to a current-state getter under a new
-        // name. It identifies the generation and nothing else. Answering the historical question for
-        // generation 2 needs its own log vocabulary — `docs/ISSUER_V2_OWNERSHIP.md` §8.
-        //
-        // `at_block` is honoured here too, so the probe observes the same snapshot as the verdict and
-        // the block anchor printed beside it.
-        //
-        // And ONLY A REVERT may leave the refusal standing. A probe that could not be delivered — a
-        // timeout, a reset connection, a rate-limit response — establishes nothing about which
-        // vocabulary this authority speaks, so reading its failure as "generation 1" would let one
-        // transient turn a genuine generation-2 credential into a forgery verdict, on a route anyone
-        // can call without authenticating.
-        if history.is_empty() {
-            let authority = IProviderAuthority::new(governing, provider);
-            let mut probe =
-                authority.isRecognizedIssuer(parse_addr(issuer_addr), parse_addr(signer));
-            if let Some(b) = at_block {
-                probe = probe.block(b.into());
-            }
-            match generation_from_probe(&probe.call().await) {
-                AuthorityGeneration::Successor | AuthorityGeneration::Undetermined => {
-                    return Ok(GrantAtIssuance::Undetermined)
-                }
-                AuthorityGeneration::Legacy => {}
-            }
-        }
+        // The pillar folds the raw capability GRANT and deliberately not `canIssue`, which also folds
+        // live-lifecycle terms that can change after issuance — folding those would turn an ordinary
+        // repoint or suspension into a forgery verdict against genuinely issued credentials, on the
+        // UNAUTHENTICATED `POST /v1/verify`.
         Ok(grant_in_force_at(&history, anchored_at))
     }
     async fn issue(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError> {
@@ -1069,16 +956,12 @@ struct MemChainInner {
     ///
     /// Modelled as a property OF THE REGISTRY rather than a global mode, because the defect being
     /// modelled is one verifier meeting clones of both generations. A single flat whitelist cannot
-    /// express that, so it cannot fail the test that matters.
-    provider_registries: std::collections::HashSet<String>,
     /// Registries whose GENERATION PROBE cannot be delivered, while their other reads still answer.
     ///
     /// Distinct from [`MemChainInner::provider_registries`] and from any "answers neither vocabulary"
     /// state, and the distinction is the point: a revert is the node ANSWERING, and really is
     /// evidence the contract lacks the selector, while a timeout or a reset connection is no answer
     /// at all. A fake that could not tell them apart would agree with either implementation, and the
-    /// defect being modelled is exactly a transport failure read as a revert.
-    unreachable_probe_registries: std::collections::HashSet<String>,
     /// Monotone synthetic log position. Every emulated event takes the next one, so CALL ORDER IS LOG
     /// ORDER and a test expresses "delisted after issuance" by delisting after it issued. Without an
     /// ordering this fake could not tell the two apart, and the tests that matter could not fail.
@@ -1119,8 +1002,6 @@ impl Default for MemChainInner {
             root_issued_at: HashMap::new(),
             governing_registry: HashMap::new(),
             default_registry: String::new(),
-            provider_registries: std::collections::HashSet::new(),
-            unreachable_probe_registries: std::collections::HashSet::new(),
             log_seq: 0,
             consumed: HashMap::new(),
             claimed_domains: HashMap::new(),
@@ -1297,11 +1178,31 @@ impl MemChain {
         self.inner.lock().unwrap().at_blocks.clear();
     }
 
-    /// Whitelist a signer for a (registry, recordType, signer) tuple (test harness / demo bootstrap)
-    /// — `IssuerRegistry.whitelistFor`, flipping the current-state mapping AND emitting a
-    /// `Whitelisted` into the grant history.
-    pub fn whitelist(&self, registry: &str, record_type: &str, signer: &str) {
-        self.grant(registry, record_type, signer, true);
+    /// Grant a relayer a VERIFY purpose — `ProviderRegistry.setVerifierCapability` (test harness /
+    /// demo bootstrap). A plain current-state mapping: nothing asks a historical question about the
+    /// verify axis, so unlike the issuance axis it records no positioned event.
+    pub fn whitelist(&self, registry: &str, verify_key: &str, signer: &str) {
+        self.inner.lock().unwrap().whitelist.insert(
+            (
+                registry.to_lowercase(),
+                verify_key.to_lowercase(),
+                signer.to_lowercase(),
+            ),
+            true,
+        );
+    }
+    /// Grant `signer` the issuance capability on `service` —
+    /// `ProviderRegistry.setIssuanceCapability`. Flips the mapping AND emits
+    /// `IssuanceCapabilitySet`, exactly as the real call does, so a test that grants and then issues
+    /// produces the honest ordering the pillar reads back.
+    pub fn set_issuance_capability(
+        &self,
+        registry: &str,
+        service: &str,
+        signer: &str,
+        allowed: bool,
+    ) {
+        self.grant(registry, service, signer, allowed);
     }
     /// Withdraw a signer's authorization — `IssuerRegistry.delistFor`/`Delisted`.
     ///
@@ -1309,20 +1210,19 @@ impl MemChain {
     /// EVENT rather than only flipping a boolean: whether a delist landed before or after an anchoring
     /// is the entire question the issuer-whitelist pillar now asks, and a fake holding only the
     /// current state cannot express the difference. `adminRevoke` remains the retroactive lever.
-    pub fn delist(&self, registry: &str, record_type: &str, signer: &str) {
-        self.grant(registry, record_type, signer, false);
+    pub fn delist(&self, registry: &str, service: &str, signer: &str) {
+        self.grant(registry, service, signer, false);
     }
     /// Shared body of [`MemChain::whitelist`]/[`MemChain::delist`]: the real contract emits
     /// unconditionally (neither call checks the prior value), so the log is complete rather than
     /// edge-triggered.
-    fn grant(&self, registry: &str, record_type: &str, signer: &str, granted: bool) {
+    fn grant(&self, registry: &str, service: &str, signer: &str, granted: bool) {
         let mut g = self.inner.lock().unwrap();
         let key = (
             registry.to_lowercase(),
-            record_type.to_lowercase(),
+            service.to_lowercase(),
             signer.to_lowercase(),
         );
-        g.whitelist.insert(key.clone(), granted);
         if g.default_registry.is_empty() {
             g.default_registry = registry.to_lowercase();
         }
@@ -1351,14 +1251,14 @@ impl MemChain {
     pub fn set_grant_history(
         &self,
         registry: &str,
-        record_type: &str,
+        service: &str,
         signer: &str,
         history: Vec<GrantEvent>,
     ) {
         let mut g = self.inner.lock().unwrap();
         let key = (
             registry.to_lowercase(),
-            record_type.to_lowercase(),
+            service.to_lowercase(),
             signer.to_lowercase(),
         );
         if g.default_registry.is_empty() {
@@ -1392,33 +1292,6 @@ impl MemChain {
             .unwrap()
             .governing_registry
             .insert(clone_addr.to_lowercase(), registry.to_lowercase());
-    }
-    /// Declare `registry` a GENERATION-2 authority (`ProviderRegistry`).
-    ///
-    /// It records NO grant, deliberately: the point of the state is that a real `ProviderRegistry`
-    /// keeps its grants in `IssuanceCapabilitySet`, so its `Whitelisted`/`Delisted` history is empty
-    /// for EVERY pair — including pairs it has genuinely authorised. That emptiness is what used to
-    /// fold to a definite `NotAuthorized`.
-    pub fn set_provider_registry(&self, registry: &str) {
-        self.inner
-            .lock()
-            .unwrap()
-            .provider_registries
-            .insert(registry.to_lowercase());
-    }
-    /// Declare that this authority's GENERATION PROBE cannot be delivered, while its other reads
-    /// still answer — a timeout, a reset connection, a rate-limit response.
-    ///
-    /// Deliberately NOT the same state as [`MemChain::set_provider_registry`], and keeping the two
-    /// apart is the point rather than a nicety: a revert is the node ANSWERING, and really is
-    /// evidence the contract lacks the selector, while this is no answer at all. Only the first may
-    /// leave an empty history standing as a definite refusal.
-    pub fn set_provider_probe_unreachable(&self, registry: &str) {
-        self.inner
-            .lock()
-            .unwrap()
-            .unreachable_probe_registries
-            .insert(registry.to_lowercase());
     }
 }
 
@@ -1593,7 +1466,6 @@ impl ChainClient for MemChain {
     async fn whitelisted_at_issuance(
         &self,
         issuer_addr: &str,
-        record_type: &str,
         signer: &str,
         root: &str,
         at_block: Option<u64>,
@@ -1612,30 +1484,19 @@ impl ChainClient for MemChain {
         }
         let Some(anchored_at) = g
             .root_issued_at
-            .get(&(clone, root.to_lowercase()))
+            .get(&(clone.clone(), root.to_lowercase()))
             .copied()
         else {
             return Ok(GrantAtIssuance::Undetermined);
         };
+        // Keyed on the SERVICE, exactly as `IssuanceCapabilitySet`'s indexed topics are.
         let history = g
             .grants
-            .get(&(
-                governing.clone(),
-                record_type.to_lowercase(),
-                signer.to_lowercase(),
-            ))
+            .get(&(governing, clone, signer.to_lowercase()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        // See the Alloy implementation for why the probe is scoped to the EMPTY case: a non-empty
-        // history is itself proof the authority speaks generation 1. A probe that could not be
-        // DELIVERED lands here too — leaving the refusal standing on a read that never happened is
-        // the same defect the guard exists to remove, reached through an error path.
-        if history.is_empty()
-            && (g.provider_registries.contains(&governing)
-                || g.unreachable_probe_registries.contains(&governing))
-        {
-            return Ok(GrantAtIssuance::Undetermined);
-        }
+        // An EMPTY history is a DEFINITE refusal: `issue()` is `onlyIssuanceCapable`, so an honest
+        // clone cannot have anchored without a grant. A read that FAILED returned above.
         Ok(grant_in_force_at(history, anchored_at))
     }
     async fn issue(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError> {
@@ -1903,125 +1764,4 @@ mod tests {
         );
     }
 
-    // ---- the generation probe's error classification -----------------------------------------
-    //
-    // THE tests that pin the transport/revert split, and the only ones that can: `MemChain` is a
-    // different `ChainClient` and cannot reach the Alloy implementation, so its cases pin the trait's
-    // CONTRACT rather than this classification. Mirrors `stacks/vet/api/src/chain.rs`.
-
-    fn revert_error() -> alloy::contract::Error {
-        // How a node reports a call it EXECUTED and the contract refused: a JSON-RPC error response.
-        // This is what a generation-1 `IssuerRegistry` produces for `isRecognizedIssuer` — it does
-        // not implement the selector and has no fallback.
-        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(
-            alloy::rpc::json_rpc::ErrorPayload {
-                code: 3,
-                message: "execution reverted".into(),
-                data: None,
-            },
-        ))
-    }
-
-    #[test]
-    fn a_probe_that_answers_identifies_the_successor() {
-        assert_eq!(
-            generation_from_probe::<()>(&Ok(())),
-            AuthorityGeneration::Successor
-        );
-    }
-
-    /// A node-level error under a DIFFERENT code, so the message is the only thing identifying it.
-    /// Several clients spell an execution revert `-32000`; without this arm the pillar would stop
-    /// refusing every never-granted generation-1 signer against such a peer.
-    fn revert_error_under_another_code() -> alloy::contract::Error {
-        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(
-            alloy::rpc::json_rpc::ErrorPayload {
-                code: -32000,
-                message: "execution reverted".into(),
-                data: None,
-            },
-        ))
-    }
-
-    /// A node speaking about ITSELF, not about the call. `code` is the whole difference.
-    fn node_error(code: i64, message: &'static str) -> alloy::contract::Error {
-        alloy::contract::Error::TransportError(alloy::transports::RpcError::ErrorResp(
-            alloy::rpc::json_rpc::ErrorPayload {
-                code,
-                message: message.into(),
-                data: None,
-            },
-        ))
-    }
-
-    #[test]
-    fn only_an_execution_revert_identifies_generation_one() {
-        assert!(answered_with_execution_revert(&revert_error()));
-        assert_eq!(
-            generation_from_probe::<()>(&Err(revert_error())),
-            AuthorityGeneration::Legacy
-        );
-        // The message arm, for a client that reports the same revert under another code.
-        assert!(answered_with_execution_revert(&revert_error_under_another_code()));
-        assert_eq!(
-            generation_from_probe::<()>(&Err(revert_error_under_another_code())),
-            AuthorityGeneration::Legacy
-        );
-    }
-
-    /// A NODE-LEVEL ERROR IS NOT A CONTRACT ANSWER, and this is the case the first cut got wrong:
-    /// classifying on `ErrorResp` alone read a rate limit as "the contract refused it", leaving an
-    /// empty grant history standing as a definite forgery verdict. On government's mirror of this
-    /// read that lands on the unauthenticated `POST /v1/verify`, where rate limiting is realistic
-    /// rather than hypothetical.
-    #[test]
-    fn a_node_error_that_is_not_a_revert_is_undetermined_never_generation_one() {
-        for (code, message) in [
-            (-32005i64, "limit exceeded"),
-            (-32603, "internal error"),
-            (-32601, "the method does not exist/is not available"),
-            (-32002, "resource unavailable"),
-        ] {
-            assert!(
-                !answered_with_execution_revert(&node_error(code, message)),
-                "{code} is the node speaking about itself, not the contract executing anything"
-            );
-            assert_eq!(
-                generation_from_probe::<()>(&Err(node_error(code, message))),
-                AuthorityGeneration::Undetermined,
-                "{code} must not license the generation-1 conclusion"
-            );
-        }
-    }
-
-    #[test]
-    fn a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one() {
-        // Each of these is our side failing to obtain an answer. None is evidence about which
-        // vocabulary the authority speaks, so none may leave an empty grant history standing as a
-        // definite refusal — a forgery verdict, on the unauthenticated `POST /v1/verify`.
-        let unreachable: Vec<alloy::contract::Error> = vec![
-            alloy::contract::Error::TransportError(alloy::transports::RpcError::Transport(
-                alloy::transports::TransportErrorKind::BackendGone,
-            )),
-            alloy::contract::Error::TransportError(alloy::transports::RpcError::NullResp),
-            alloy::contract::Error::TransportError(
-                alloy::transports::RpcError::UnsupportedFeature("eth_call"),
-            ),
-            // Returndata that would not decode — what an address with no code answers.
-            alloy::contract::Error::ContractNotDeployed,
-            alloy::contract::Error::UnknownFunction("isRecognizedIssuer".to_string()),
-        ];
-        for e in &unreachable {
-            assert!(
-                !answered_with_execution_revert(e),
-                "{e:?} is not the node answering with an error"
-            );
-        }
-        for e in unreachable {
-            assert_eq!(
-                generation_from_probe::<()>(&Err(e)),
-                AuthorityGeneration::Undetermined
-            );
-        }
-    }
 }

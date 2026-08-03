@@ -253,19 +253,20 @@ enum RoaxRpc {
     /// `initialize` from the factory's own `immutable registry`, with no setter.
     static let registrySelector = functionSelector("registry()")
 
-    /// The generation-2 authority's `isRecognizedIssuer(address,address)`
-    /// (`contracts/src/ProviderRegistry.sol`), used ONLY as a generation discriminator - it is the one
-    /// selector a generation-1 `IssuerRegistry` provably does not implement. Its BOOLEAN is never
-    /// consumed; see `generationFromProbe`.
-    static let isRecognizedIssuerSelector = functionSelector("isRecognizedIssuer(address,address)")
-
-    /// Topics for the grant history the issuer-whitelist pillar folds. Both event arguments are
-    /// `indexed` on `IssuerRegistry`, so one filtered `eth_getLogs` per `(recordType, signer)` pair
-    /// reconstructs the whole history - and `whitelistFor`/`delistFor` emit unconditionally, so the
-    /// log is complete rather than edge-triggered.
+    /// `DogTagIssuer.RootIssued`, indexed on the root - the anchoring event, and so the issuance
+    /// BLOCK the grant history is sequenced against.
     static let rootIssuedTopic = eventTopic("RootIssued(bytes32,address,uint256)")
-    static let whitelistedTopic = eventTopic("Whitelisted(bytes32,address)")
-    static let delistedTopic = eventTopic("Delisted(bytes32,address)")
+
+    /// The authority's issuance-grant event. BOTH leading args are indexed, so one filtered
+    /// `eth_getLogs` on `(service, signer)` reconstructs the whole history; `allowed` is the one
+    /// NON-indexed argument, so grant and withdrawal arrive on this single topic and are told apart
+    /// by the log's DATA word rather than by which topic matched.
+    ///
+    /// A topic is the full 32-byte keccak, never a 4-byte selector: the shorter value matches no log
+    /// at all, which is indistinguishable from "never granted" and would refuse every credential.
+    /// Pinned by `GrantAtIssuanceTests`, and byte-identical to Kotlin's.
+    static let issuanceCapabilitySetTopic =
+        eventTopic("IssuanceCapabilitySet(address,address,bool)")
 
     /// Where a mined log sits. Ordered by `(blockNumber, logIndex)`; `logIndex` is BLOCK-SCOPED and so
     /// comparable ACROSS contracts within one block, which is the only reason a registry grant and a
@@ -323,57 +324,6 @@ enum RoaxRpc {
 
     /// Which generation's vocabulary an authority contract speaks.
     ///
-    /// THREE outcomes, and the third is not a neighbour of the other two. `.legacy` is a conclusion
-    /// ABOUT THE CONTRACT and licenses treating an empty grant history as a definite refusal;
-    /// `.undetermined` says the probe could not be put, which licenses nothing.
-    ///
-    /// Mirrors Rust `AuthorityGeneration` (`stacks/{vet,government}/api/src/chain.rs`), TS
-    /// `AuthorityGeneration` (`packages/ui/src/wallet/contracts.ts`) and Kotlin
-    /// `RoaxRpc.AuthorityGeneration`.
-    enum AuthorityGeneration { case successor, legacy, undetermined }
-
-    /// Classify a generation probe against `isRecognizedIssuer` - the one selector a generation-1
-    /// `IssuerRegistry` provably does not implement (its entire external surface is
-    /// `whitelistFor`/`delistFor`/`isWhitelistedFor`, and it has no fallback, so the call reverts
-    /// there rather than answering).
-    ///
-    /// The probe's VALUE is never consulted, here or by any caller: `isRecognizedIssuer` reads current
-    /// storage with no block and no root, so using its boolean would revert the pillar to a
-    /// current-state getter under a new name. It identifies the GENERATION and nothing else.
-    ///
-    /// ONLY A REVERT identifies generation 1. A probe that never arrived establishes nothing, and
-    /// reading it as generation 1 hands an empty history back to the fold, which correctly folds it to
-    /// a definite refusal - so one transient would become a forgery verdict against a genuine
-    /// credential.
-    static func generationFromProbe(_ probe: CallResult) -> AuthorityGeneration {
-        switch probe {
-        case .success: return .successor
-        case .refused: return .legacy
-        case .unreachable: return .undetermined
-        }
-    }
-
-    /// Fold a grant history against an anchoring point, given what the probe established about the
-    /// authority that produced it.
-    ///
-    /// `grantInForceAt` alone treats an EMPTY history as a definite refusal, which is right for a
-    /// generation-1 `IssuerRegistry`: an honest `issue()` cannot pass `onlyWhitelisted` in that state,
-    /// so the emptiness is evidence about the credential. It is WRONG for the successor.
-    /// `Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in
-    /// `topic1`, so the history read is a record-type caller in the sense `docs/CLIENT_REPOINT.md`
-    /// means - via logs rather than a getter - and `ProviderRegistry` records its grants as
-    /// `IssuanceCapabilitySet(service, signer, allowed)` instead. That filter matches NOTHING there, so
-    /// every genuine generation-2 credential arrives with an empty history.
-    ///
-    /// Scoped to the empty case, and that scoping is load-bearing: a NON-EMPTY history is itself proof
-    /// the authority speaks generation 1, because those events came out of it. So the probe fires on
-    /// the refusal path alone and cannot perturb any answer the forward-only rule established.
-    static func grantAtIssuance(
-        _ history: [GrantEvent], anchoredAt: LogPoint, generation: AuthorityGeneration
-    ) -> GrantAtIssuance {
-        if history.isEmpty, generation != .legacy { return .undetermined }
-        return grantInForceAt(history, anchoredAt: anchoredAt)
-    }
 
     static func isValid(rpcUrl: String, documentStore: String, root: String) async -> Result {
         guard !documentStore.isEmpty, !root.isEmpty else { return .unknown("missing addr/root") }
@@ -724,7 +674,7 @@ enum RoaxRpc {
         // credential a rotated, retired or lapsed signer ever issued while the protocol says each one
         // is genuine. `issuerRegistry` is deliberately NOT the authority asked: see below.
         switch await whitelistedAtIssuance(
-            rpcUrl: rpcUrl, clone: clone, recordTypeKey: chainRecordType, signer: signer, root: root
+            rpcUrl: rpcUrl, clone: clone, signer: signer, root: root
         ) {
         case .authorized: return .valid
         case .notAuthorized: return .invalid
@@ -742,7 +692,7 @@ enum RoaxRpc {
     /// contract's mapping and, on a mis-paired bundle, refuse a genuine credential over our own
     /// configuration.
     static func whitelistedAtIssuance(
-        rpcUrl: String, clone: String, recordTypeKey: String, signer: String, root: String
+        rpcUrl: String, clone: String, signer: String, root: String
     ) async -> GrantAtIssuance {
         // (1) WHICH authority answers. Zero, or a read that did not answer, means there is no
         // authority to ask - an initialized clone never reports zero here.
@@ -764,36 +714,44 @@ enum RoaxRpc {
         // FIRST regardless, so a clone that somehow emitted twice cannot move the anchoring later.
         guard let anchoredAt = anchoring.compactMap({ logPoint($0) }).min() else { return .undetermined }
 
-        // (3) That authority's grant history for this exact pair.
+        // (3) That authority's grant history for this exact (service, signer) pair. Keyed on the
+        // SERVICE, not a record-type key: a clone carries exactly one record type, so filtering by
+        // service inherently scopes the history to it.
         guard let grants = await ethGetLogs(
             rpcUrl: rpcUrl, address: governing,
-            topic0: [whitelistedTopic, delistedTopic],
-            topics: [pad32Topic(recordTypeKey), "0x" + padAddr(signer)]
+            topic0: [issuanceCapabilitySetTopic],
+            topics: ["0x" + padAddr(clone), "0x" + padAddr(signer)]
         ) else { return .undetermined }
         var history: [GrantEvent] = []
         history.reserveCapacity(grants.count)
         for log in grants {
             // A grant whose position is unknown cannot be sequenced, and dropping it could turn a
-            // delisted-before into an authorised. Refuse to answer instead.
+            // withdrawn-before into an authorised. Refuse to answer instead.
             guard let at = logPoint(log) else { return .undetermined }
-            let topic0 = ((log["topics"] as? [String])?.first ?? "").lowercased()
-            history.append(GrantEvent(at: at, granted: topic0 == whitelistedTopic.lowercased()))
+            // `allowed` is the one NON-indexed argument, so it is the single DATA word.
+            guard let granted = allowedFromLogData(log) else { return .undetermined }
+            history.append(GrantEvent(at: at, granted: granted))
         }
 
-        // (4) An EMPTY history is a definite refusal ONLY if this authority speaks this vocabulary.
-        // Probed on the refusal path alone - a non-empty history is itself proof of generation 1 - so
-        // this costs nothing on the hot path. See `grantAtIssuance` and `generationFromProbe`.
-        var generation = AuthorityGeneration.legacy
-        if history.isEmpty {
-            generation = generationFromProbe(
-                await ethCall(
-                    rpcUrl: rpcUrl,
-                    to: governing,
-                    data: isRecognizedIssuerSelector + padAddr(clone) + padAddr(signer)
-                )
-            )
+        // (4) An EMPTY history is a DEFINITE refusal, and that is evidence about the credential
+        // rather than about us: `issue()` is `onlyIssuanceCapable`, so an honest clone cannot have
+        // anchored this root without the authority having granted this signer the capability. A read
+        // that FAILED returned above and never arrives here as an empty one.
+        return grantInForceAt(history, anchoredAt: anchoredAt)
+    }
+
+    /// The `allowed` word of an `IssuanceCapabilitySet` log, or nil if the body is not a bool.
+    ///
+    /// Strict on purpose: a word that is neither 0 nor 1 is a log this build does not understand, and
+    /// guessing either way would state a grant or a withdrawal that was never recorded.
+    static func allowedFromLogData(_ log: [String: Any]) -> Bool? {
+        let raw = ((log["data"] as? String) ?? "").lowercased()
+        let body = raw.hasPrefix("0x") ? String(raw.dropFirst(2)) : raw
+        switch String(body.drop(while: { $0 == "0" })) {
+        case "": return false
+        case "1": return true
+        default: return nil
         }
-        return grantAtIssuance(history, anchoredAt: anchoredAt, generation: generation)
     }
 
     /// `keccak256(recordType utf8)` — the `IssuerRegistry` whitelist key, and the same value the
@@ -861,8 +819,7 @@ enum RoaxRpc {
     /// bookkeeping: a node returning a JSON-RPC error for a request it PROCESSED is how a revert
     /// arrives, and a revert is evidence about the contract, while a timeout, a dropped connection or
     /// a non-2xx status is no answer at all and is evidence about nothing. Any caller that draws a
-    /// conclusion ABOUT A CONTRACT from a failed call has to know which it got - see
-    /// `generationFromProbe`.
+    /// conclusion ABOUT A CONTRACT from a failed call has to know which it got.
     ///
     /// A THIRD CASE rather than a flag on `.failure`, deliberately: it makes every existing site a
     /// compile error until it decides, which is the whole point. Most genuinely do not care and match
@@ -878,8 +835,7 @@ enum RoaxRpc {
     }
 
     /// The JSON-RPC error code geth returns for a call the EVM EXECUTED and reverted. Confirmed
-    /// against ROAX on 2026-07-31 with the exact production case: `isRecognizedIssuer` put to the
-    /// deployed generation-1 `IssuerRegistry` answers
+    /// against ROAX on 2026-07-31: a selector the contract does not implement answers
     /// `{"code":3,"message":"execution reverted","data":"0x"}`.
     static let executionRevertedCode = 3
 
@@ -887,18 +843,13 @@ enum RoaxRpc {
     ///
     /// A JSON-RPC error member is not by itself evidence the contract did anything. `-32005` rate
     /// limit, `-32603` internal error, `-32601` method not found and `-32002` resource unavailable are
-    /// the node speaking about ITSELF; reading one of those as generation 1 leaves an empty grant
-    /// history standing as a definite refusal, i.e. a forgery verdict against a genuine credential
-    /// produced by a call that never ran.
+    /// the node speaking about ITSELF, and a caller that read one of those as a contract answer would
+    /// be stating a conclusion drawn from a call that never ran.
     ///
-    /// Only an execution revert licenses that conclusion, and it is exactly the signal wanted: a
-    /// generation-1 `IssuerRegistry` has no `isRecognizedIssuer` and no fallback, so its dispatcher
-    /// reverts. The code is the typed discriminator; the canonical message is accepted alongside it
-    /// for clients that report the same revert under a different code (several spell it `-32000`),
-    /// without which the pillar would stop refusing every never-granted signer against such a peer.
+    /// The code is the typed discriminator; the canonical message is accepted alongside it for
+    /// clients that report the same revert under a different code (several spell it `-32000`).
     ///
-    /// Mirrors Rust `answered_with_execution_revert`, Kotlin `RoaxRpc.isExecutionRevert` and viem's
-    /// `ExecutionRevertedError` (`code === 3 || /execution reverted/`, the same pair).
+    /// Mirrors Kotlin `RoaxRpc.isExecutionRevert`.
     static func isExecutionRevert(code: Int, message: String) -> Bool {
         code == executionRevertedCode
             || message.range(of: "execution reverted", options: .caseInsensitive) != nil

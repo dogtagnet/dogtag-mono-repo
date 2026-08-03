@@ -63,16 +63,13 @@ fn state_with(whitelisted: bool) -> (AppState, String) {
         ISSUER_ADDR,
         &government_api::app::record_type_key(TRAVEL_CLEARANCE),
     );
-    // The authority's ISSUING right, which is a different grant from the VERIFY:<purpose> gate the
-    // `whitelisted` flag toggles below. It is unconditional because it holds on the real chain by
-    // construction: `issue()` is `onlyWhitelisted`, so anything this signer anchored was whitelisted
-    // for that record type. Without it the mandatory issuer-whitelist pillar cannot resolve and every
-    // credential this fake issues would verify as indeterminate.
-    chain.whitelist(
-        REGISTRY_ADDR,
-        &government_api::app::record_type_key(TRAVEL_CLEARANCE),
-        &signer,
-    );
+    // The authority's ISSUING capability, which is a different grant from the VERIFY:<purpose> gate
+    // the `whitelisted` flag toggles below — and is keyed on the SERVICE rather than on a purpose.
+    // It is unconditional because it holds on the real chain by construction: `issue()` is
+    // `onlyIssuanceCapable`, so anything this signer anchored was capable at the time. Without it
+    // the mandatory issuer-whitelist pillar cannot resolve and every credential this fake issues
+    // would verify as indeterminate.
+    chain.set_issuance_capability(REGISTRY_ADDR, ISSUER_ADDR, &signer, true);
     if whitelisted {
         chain.whitelist(
             REGISTRY_ADDR,

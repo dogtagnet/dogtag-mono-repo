@@ -78,25 +78,17 @@ class RoaxRpcSelectorTest {
             "0xf8cd30a628b432a1200caf81085096c82a5f570da14360572b72d4e0ba57e6d7",
             RoaxRpc.eventTopic("RootIssued(bytes32,address,uint256)"),
         )
+        // The authority's issuance-grant topic. Pinned because the failure mode is SILENT: a value
+        // derived at the wrong width, or from a drifted signature, matches no log at all - which
+        // reads exactly like "this signer was never granted" and refuses every genuine credential.
+        // Confirmed with `cast keccak "IssuanceCapabilitySet(address,address,bool)"`.
         assertEquals(
-            "0x0ed68b47399672cf072b19a599fa9f99cdc79a286bf59bc301ca44b94f589bce",
-            RoaxRpc.eventTopic("Whitelisted(bytes32,address)"),
-        )
-        assertEquals(
-            "0xf3af84db5dbf726f68c33f3ded733403e15667370ab38e8cb37fdc874835b00e",
-            RoaxRpc.eventTopic("Delisted(bytes32,address)"),
+            "0x831abb96b1c02fe346a944062a9367343ef9d09be41d65818b796cd1a8676941",
+            RoaxRpc.ISSUANCE_CAPABILITY_SET_TOPIC,
         )
         // The registry the CLONE names - the only authority whose grant log answers for it.
         assertEquals("0x7b103999", RoaxRpc.functionSelector("registry()"))
-        // The generation discriminator. A WRONG selector here reverts on a real `ProviderRegistry`
-        // too, which the guard reads as "generation 1" - so it would silently restore the definite
-        // refusal against every genuine generation-2 credential, the exact defect the guard removes.
-        // Confirmed with `cast sig "isRecognizedIssuer(address,address)"`.
-        assertEquals("0x0b137974", RoaxRpc.IS_RECOGNIZED_ISSUER_SELECTOR)
-        assertEquals(
-            "0x0b137974",
-            RoaxRpc.functionSelector("isRecognizedIssuer(address,address)"),
-        )
+
     }
 
     /**

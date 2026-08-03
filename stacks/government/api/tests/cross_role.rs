@@ -104,7 +104,7 @@ async fn post(state: &AppState, uri: &str, body: Value) -> (StatusCode, Value) {
 #[tokio::test]
 async fn government_verifies_a_vet_issued_credential() {
     // 1) VET role: issue a VACCINATION credential + anchor its root on the (emulated) chain, and
-    //    whitelist the vet signer for VACCINATION (what the admin approve flow does on-chain).
+    //    grant the vet signer the issuance capability on that clone (what the registrar does).
     let (root, wrapped) = vet_issue_vaccination("7");
     // The vet's own signer anchors, so the emulated clone records `issuedBy[root] = VET_SIGNER` just
     // as the real one records `msg.sender` — that is the address the whitelist pillar resolves.
@@ -116,16 +116,14 @@ async fn government_verifies_a_vet_issued_credential() {
         VACC_CLONE,
         &government_api::app::record_type_key("VACCINATION"),
     );
-    // The whitelist grant lands BEFORE the anchoring, which is the only order the real chain can
-    // produce: `issue()` is `onlyWhitelisted`, so an unwhitelisted signer's anchoring reverts. The
-    // pillar now asks whether the signer held the capability AT the anchoring point, so the order is
+    // The capability grant lands BEFORE the anchoring, which is the only order the real chain can
+    // produce: `issue()` is `onlyIssuanceCapable`, so an uncapable signer's anchoring reverts. The
+    // pillar asks whether the signer held the capability AT the anchoring point, so the order is
     // load-bearing rather than incidental — seeded the other way round this models a chain state the
     // protocol forbids, and the verifier correctly refuses it.
-    chain.whitelist(
-        REGISTRY,
-        &government_api::app::record_type_key("VACCINATION"),
-        VET_SIGNER,
-    );
+    //
+    // Keyed on the SERVICE, as `IssuanceCapabilitySet` is.
+    chain.set_issuance_capability(REGISTRY, VACC_CLONE, VET_SIGNER, true);
     chain
         .issue(VACC_CLONE, &root)
         .await

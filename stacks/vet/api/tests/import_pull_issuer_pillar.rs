@@ -95,7 +95,7 @@ async fn boot_anchored() -> Deployment {
     let app = vet_api::router(state.clone());
     let (_admin, op, backend) = boot_custody(&app).await;
     let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     mem.set_record_type(ISSUER, &rt);
     Deployment {
         app,
@@ -128,7 +128,7 @@ async fn boot_unanchored(configure_factory: bool) -> Deployment {
     let app = vet_api::router(state.clone());
     let (_admin, op, backend) = boot_custody(&app).await;
     let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     mem.set_record_type(ISSUER, &rt);
     Deployment {
         app,
@@ -347,11 +347,12 @@ async fn a_forged_document_store_is_reported_as_a_store_mismatch_not_an_unauthor
     assert!(!v.valid);
 }
 
-/// Rewrite the governing registry's grant history so the signer was DELISTED BEFORE it anchored
-/// `root` — the state in which the document reports an issuance that cannot have happened.
+/// Rewrite the governing authority's grant history so the signer's capability was WITHDRAWN BEFORE
+/// it anchored `root` — the state in which the document reports an issuance that cannot have
+/// happened.
 ///
-/// It has to be seeded rather than driven: issuance is itself gated on the whitelist, so a test that
-/// delists and then issues is refused at the backend preflight and never reaches the pillar.
+/// It has to be seeded rather than driven: issuance is itself gated on the capability, so a test
+/// that withdraws and then issues is refused at the backend preflight and never reaches the pillar.
 fn delist_before_anchoring(d: &Deployment, root: &str) {
     use dogtag_standard::verify::{GrantEvent, LogPoint};
     let anchored = d
@@ -360,7 +361,7 @@ fn delist_before_anchoring(d: &Deployment, root: &str) {
         .expect("the honest issuance recorded an anchoring point");
     d.mem.set_grant_history(
         REGISTRY,
-        &record_type_key("VACCINATION"),
+        ISSUER,
         &d.backend,
         vec![
             GrantEvent {

@@ -545,7 +545,6 @@ async fn prepare(
         Ok(a) => a,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
-    let rt_key = app::rt_key(&body.record_type);
     // PRESENT TENSE, deliberately: "may this signer anchor a new root right now". Asked
     // service-scoped against the clone we are about to write to, so the authority is that clone's
     // own `registry()` and this preflight refuses exactly what the write would refuse — on either
@@ -553,7 +552,7 @@ async fn prepare(
     // `ChainClient::issuance_capability`.
     match st
         .chain
-        .issuance_capability(&issuer_addr, &rt_key, &signer_addr)
+        .issuance_capability(&issuer_addr, &signer_addr)
         .await
     {
         Ok(IssuanceCapability::Authorized) => {}
@@ -679,10 +678,9 @@ async fn confirm_inner(st: &AppState, record_id: &str, tx_hash: &str) -> Result<
     //
     // Asking the historical question also makes this path generation-correct for free, since
     // `whitelisted_at_issuance` resolves the authority off the clone rather than off configuration.
-    let rt_key = app::rt_key(&r.record_type);
     match st
         .chain
-        .whitelisted_at_issuance(&issuer_addr, &rt_key, &signer, &r.root)
+        .whitelisted_at_issuance(&issuer_addr, &signer, &r.root)
         .await
     {
         Ok(GrantAtIssuance::Authorized) => {}
@@ -1006,8 +1004,7 @@ async fn issuer_signers(State(st): State<AppState>, headers: HeaderMap) -> Resp 
     // first; `issuer/signers` is operator-gated and read-only, so no gate depends on it.
     let mut matrix = Vec::new();
     for (rt, issuer_addr) in st.cfg.issuer_addrs.iter() {
-        let key = app::rt_key(rt);
-        let wl = match st.chain.issuance_capability(issuer_addr, &key, &active).await {
+        let wl = match st.chain.issuance_capability(issuer_addr, &active).await {
             Ok(IssuanceCapability::Authorized) => Some(true),
             Ok(IssuanceCapability::NotAuthorized) => Some(false),
             Ok(IssuanceCapability::Undetermined) | Err(_) => None,
@@ -1395,7 +1392,7 @@ async fn verify_credential(
                         Ok(Some(chain_rt_key)) if !chain_rt_key.eq_ignore_ascii_case(&rt_key) => {
                             (Some(signer), Some(false))
                         }
-                        Ok(Some(chain_rt_key)) => {
+                        Ok(Some(_)) => {
                             // ...and about the moment this root was ANCHORED, not about now.
                             // Delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the
                             // retroactive lever), so `isWhitelistedFor` — a current-state getter —
@@ -1405,7 +1402,7 @@ async fn verify_credential(
                             // `Whitelisted`/`Delisted` logs, so any verifier with an RPC reproduces it.
                             match st
                                 .chain
-                                .whitelisted_at_issuance(clone, &chain_rt_key, &signer, &claimed_root)
+                                .whitelisted_at_issuance(clone, &signer, &claimed_root)
                                 .await
                             {
                                 Ok(GrantAtIssuance::Authorized) => (Some(signer), Some(true)),
@@ -1442,70 +1439,33 @@ async fn verify_credential(
     // a pass. That asymmetry is what lets it stay live on an unresolvable clone without reopening the
     // hole — an unresolved pillar stays unresolved no matter how agreeable the assertion is.
     //
-    //   matched / differs        — the chain named the originator, so the claim is decidable.
-    //   unanchoredNotWhitelisted — no originator to compare against, but the asserted address is not
-    //                              whitelisted at all for the CLAIMED record type: a definite failure.
-    //                              Sourcing that record type from the document is sound ONLY because
-    //                              this branch can never yield a pass — a caller who names a type
-    //                              their signer happens to hold gains nothing by it.
-    //   unanchoredUnconfirmed    — as above but the address IS whitelisted, which still does not show
-    //                              it issued THIS root. Nothing is promoted.
+    //   matched / differs      — the chain named the originator, so the claim is decidable.
+    //   unanchoredUnevaluable  — no originator to compare against AND no authority that can be asked
+    //                            about this signer. Reported, never folded into a failure.
     //
-    // THE ONE PLACE THE CURRENT-STATE GETTER SURVIVES, and deliberately so. Everywhere else the
-    // pillar asks the historical question, because delisting is forward-only. Asking it HERE would
-    // need an anchoring point and an authority, and on this branch no clone resolved — so both could
-    // only come off `documentStore`, which is attacker-chosen. That would let a forged document
-    // neutralise the check by naming a contract whose logs say whatever it likes, on precisely the
-    // factory-less deployments where this assertion is the LAST check standing. The registry read
-    // below is this deployment's own and cannot be spoofed.
+    // WHY THE FACTORY-LESS BRANCH CAN NO LONGER REFUSE, stated plainly because it is a deliberate
+    // narrowing rather than an oversight. Every issuance-axis read on the authority is
+    // SERVICE-SCOPED — `canIssue(service, signer)` takes a service address — and this branch is
+    // DEFINED by there being no resolved clone to pass. So there is no service to ask about, and the
+    // one selector that takes no service (`isWhitelistedFor`) answers off the orthogonal VERIFY axis:
+    // handed a record-type key it returns a confident `false` for every genuine issuer signer, which
+    // would condemn each of them. Supplying `documentStore` to satisfy the signature is strictly
+    // worse — it hands the attacker the choice of which contract answers, the exact substitution the
+    // anchor exists to close.
     //
-    // The cost is stated rather than hidden: an operator who asserts a signer that was delisted AFTER
-    // it issued gets a definite refusal here, which is the very defect the rest of this change
-    // removes. It is bounded to a factory-less deployment WITH an explicit `signerAddr`, it fails
-    // loudly rather than silently, and the remedy is to configure `FACTORY_ADDR` — which restores the
-    // trusted anchor and with it the historical question. Closing it properly means reading the grant
-    // history from THIS deployment's registry while taking the anchoring point from the document's
-    // contract; that is a real design, not a tweak, and it is not this change.
-    //
-    // IT IS ALSO THE ONE RECORD-TYPE CALLER THAT CANNOT BE MIGRATED AT ALL, for a reason independent
-    // of the one above: every generation-2 issuance-axis read is SERVICE-SCOPED —
-    // `isRecognizedIssuer(service, signer)`, `canRevoke(service, signer)`, `canIssue(service, signer)`
-    // all take a service address as their first argument — and this branch is defined by there being
-    // no resolved clone to pass. There is no service address here, so the successor cannot be asked
-    // this question at ALL, let alone asked it for the same inputs. Supplying `documentStore` to
-    // satisfy the signature would be strictly worse than the current read: it hands the attacker the
-    // choice of which contract answers, which is the substitution the whole anchor exists to close.
-    //
-    // So this stays on `isWhitelistedFor` against this deployment's own configured registry. The
-    // consequence for the cutover is stated plainly rather than left to be discovered: this is the
-    // ONE surviving record-type-keyed read of `ISSUER_REGISTRY_ADDR`, so that variable cannot be
-    // repointed to a `ProviderRegistry` while a factory-less vet deployment exists — the successor
-    // answers this key off `_verifierCapabilities` and would report `unanchoredNotWhitelisted`, a
-    // definite failure, for every genuine signer. A deployment WITH `FACTORY_ADDR` never reaches
-    // here, so configuring the factory is also what clears this blocker.
+    // So the assertion is REPORTED and gates nothing. That is a real loss of a check, and the honest
+    // one: we cannot ask, and an inability to check may never be stated as a verdict about the
+    // subject. It is bounded to a factory-less deployment, and `FACTORY_ADDR` is what restores the
+    // anchor — and with it the historical question the pillar asks everywhere else.
     let expected_signer_state = match (resolved_signer.as_deref(), want_signer) {
         (_, None) => "notAsserted",
         (Some(actual), Some(want)) if want.eq_ignore_ascii_case(actual) => "matched",
         (Some(_), Some(_)) => "differs",
-        (None, Some(want)) => match st
-            .chain
-            .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, want)
-            .await
-        {
-            Ok(true) => "unanchoredUnconfirmed",
-            Ok(false) => "unanchoredNotWhitelisted",
-            Err(e) => {
-                return err(
-                    StatusCode::BAD_GATEWAY,
-                    &format!("on-chain whitelist read failed: {e}"),
-                )
-            }
-        },
+        // No clone resolved, so there is no service to ask the authority about. Reported as
+        // unevaluable rather than guessed at in either direction.
+        (None, Some(_)) => "unanchoredUnevaluable",
     };
-    let signer_assertion_failed = matches!(
-        expected_signer_state,
-        "differs" | "unanchoredNotWhitelisted"
-    );
+    let signer_assertion_failed = expected_signer_state == "differs";
     let issuer_whitelisted = if signer_assertion_failed {
         Some(false)
     } else {

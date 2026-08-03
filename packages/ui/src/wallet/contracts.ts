@@ -13,59 +13,52 @@ import { guardedRoaxTransport } from "../chain/rpcEndpoint";
 import { roax } from "./chain";
 
 /**
- * Deployed ROAX contract addresses (contracts/deployments/roax.json). Exposed as defaults; each
- * portal may override via `VITE_*` env. These are the addresses the whitelist viewer + the
- * issue-status on-chain poller read against.
+ * The deployed contract set on ROAX (chainId 135). ONE set - there is no second generation to choose
+ * between, and no runtime fork picks between an old and a new address.
  *
- * CUTOVER (registry plan S-13/S-14, `docs/CLIENT_REPOINT.md`): THREE of these are moving addresses,
- * and only TWO may actually be repointed at C-9.
- *
- * `DogTagIssuerFactory` → **`CloneProvenanceRouter`**: this module READS `rootIssuer`, so it takes
- * the router, never `DogTagIssuerFactoryV2` - that would resolve every historical root to
- * `address(0)` and surface as an indeterminate issuer-whitelist pillar rather than an error.
- * `VerificationRegistryConsent` → its V2.
- *
- * `IssuerRegistry` is **BLOCKED**, and being read-only does not rescue it. `ProviderRegistry`
- * implements `isWhitelistedFor` but branches on `msg.sender`, and `readContract` below passes no
- * `account` - so `msg.sender` is `0x0` and it answers the orthogonal VERIFY-key capability instead
- * of the issuance whitelist. `isWhitelistedFor` here asks with `recordTypeKey(...)`, which is never
- * a VERIFY key, so every answer would be a confident `false` for a genuine issuer signer. The
- * unblock is the `isRecognizedIssuer(service, signer)` migration (`docs/ISSUER_V2_OWNERSHIP.md` §8).
- * The governing condition it violates: an address may be repointed only when the successor answers
- * THE SAME QUESTION FOR THE SAME INPUTS - a matching selector is not evidence of that.
- *
- * That migration has now run on the Rust backends, and this module's `isWhitelistedFor` was
- * deliberately LEFT on generation 1. Its only consumer is the admin console's whitelist viewer
- * (`stacks/admin/web/src/lib/whitelist.ts`), whose WRITE axis cannot move with it: `ProviderRegistry`
- * implements neither `whitelistFor` nor `delistFor`, so `whitelistGrant`/`whitelistRevoke` stay on
- * generation 1 until C-12. Migrating the read alone would put generation-2 state beside buttons that
- * write generation 1 - a console disagreeing with itself about which chain state it is showing,
- * which is worse than one that is uniformly a generation behind. The read and the write move
- * together or not at all. See `docs/CLIENT_REPOINT.md`.
- *
- * `DogTagSBT` here is already the reused `DogTagSBTConsent` and must NOT move - it is listed with
- * the movers because it looks like it should move, not because it does. Because these are DEFAULTS,
- * an unset `VITE_*` override after the cutover silently keeps reading generation 1 - so move the
- * constants, do not rely on the env. `make check-cutover-consumers` is the gate, and it is what
- * establishes the counts above rather than a reading of this list.
+ * These are DEFAULTS. A `VITE_*` override that is set wins; one that is unset falls back here rather
+ * than failing closed, so check which kind of variable you are editing before assuming an unset value
+ * disables a read. `make check-cutover-consumers` is the gate over the whole tree.
  */
 export const DEPLOYED_ADDRESSES = {
-  IssuerRegistry: "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",
-  DogTagSBT: "0xBEbc45A838643D27004827b797b30A464b2b02c0",
-  VerificationRegistry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
   /**
-   * The OWNER-HIDDEN verification registry — the live one, and a DIFFERENT contract from
-   * `VerificationRegistry` above (which it supersedes). Its `Verified(uint256 indexed dogTagId, ...)`
-   * is the only event that indexes a tag id, so it is what on-chain tag discovery must read; pointing
-   * a scan at the superseded address returns zero events and is indistinguishable from a tag with no
-   * history. Matches `VERIFICATION_REGISTRY_CONSENT_ADDR` in the deployed stacks.
+   * The provider authority. Holds provider and service records, the issuance capability the issuer's
+   * `onlyIssuanceCapable` consults, and the orthogonal verifier capability. Deployed as
+   * `ProviderRegistry`.
    */
-  VerificationRegistryConsent: "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
+  ProviderRegistry: "0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9",
+  DogTagSBT: "0xBEbc45A838643D27004827b797b30A464b2b02c0",
+  /**
+   * The owner-hidden verification registry. Its `Verified(uint256 indexed dogTagId, ...)` is the only
+   * event that indexes a tag id, so it is what on-chain tag discovery must read. Its `rootIndex` is
+   * the provenance router below, and its `issuerRegistry` is the provider authority above - both
+   * immutable, so neither can be repointed without redeploying this contract.
+   */
+  VerificationRegistryConsent: "0xE49f30D6677f019f11298B3294377E6B817d43Da",
+  /**
+   * The ROOT INDEX: what `rootIssuer(R)` is asked of, and the address a READER resolving a credential
+   * to its issuing clone must use. Not the factory - see `DogTagIssuerFactory` below.
+   */
+  CloneProvenanceRouter: "0xf374f4cA5ebBBAFf0dFcE48D8Cda2e47F9D5da01",
+  /**
+   * The clone factory: what a WRITER calls for `predictIssuer`/`createIssuer`. It deploys; it does
+   * not resolve historical roots. Reading `rootIssuer` off it instead of off the router above
+   * resolves only clones it deployed and answers the zero address for every other, which surfaces as
+   * an indeterminate issuer pillar rather than an error.
+   */
+  DogTagIssuerFactory: "0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6",
+  /** The issuer implementation every clone delegates to. */
+  DogTagIssuerImpl: "0x91E210AD9A5CCe4aF2C49221f0584E2ad6d13691",
+  /** The discovery anchor. */
+  ProtocolRegistry: "0xe98BFf66367F74F413414228adD91c16A24F7fdb",
+  /** The typed DIRECTORY resolver, selected per provider through the authority. */
+  ProviderDirectory: "0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0",
+  /** The typed DOMAIN resolver, selected per service through the authority. */
+  ServiceDomainResolver: "0x4AB4a70CFa9CE9415B96dF543C218F90a2619c33",
+  /** The frozen consent ceremony verifier. Unchanged - the same VK the bundled zkey proves against. */
+  Groth16VerifierConsent: "0x1A9027986B859dc3879896B053deA78F636BE9b1",
   Poseidon6: "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
-  ConsentKeyRegistry: "0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671",
-  DogTagIssuerFactory: "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
-  Groth16Verifier: "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
-  admin: "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
+  admin: "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
 } as const;
 
 /** keccak256(recordType utf8 bytes) — matches the backend's record_type_key + IssuerRegistry. */
@@ -168,25 +161,23 @@ const DOGTAG_ISSUER_ABI = [
 ] as const satisfies Abi;
 
 /**
- * `IssuerRegistry`'s two grant-lifecycle events, both indexed on exactly the pair a whitelist question
- * is asked about - so the full grant history for one `(recordType, signer)` is one filtered
- * `eth_getLogs`, with no scan and no per-log decode of irrelevant entries.
+ * The authority's issuance-grant event, indexed on exactly the pair the question is asked about - so
+ * the full history for one `(service, signer)` is ONE filtered `eth_getLogs`, with no scan and no
+ * per-log decode of irrelevant entries.
+ *
+ * Keyed on the SERVICE ADDRESS, not a record-type key. A clone carries exactly one record type, so
+ * filtering by service inherently scopes the history to it; the separate check that the DOCUMENT's
+ * claimed record type matches `recordType()` stays at the caller, where a relabelled credential is
+ * refused. `allowed` is the one NON-indexed argument, so grant and withdrawal arrive on one topic.
  */
-const ISSUER_REGISTRY_EVENT_ABI = [
+const ISSUANCE_CAPABILITY_EVENT_ABI = [
   {
     type: "event",
-    name: "Whitelisted",
+    name: "IssuanceCapabilitySet",
     inputs: [
-      { name: "recordType", type: "bytes32", indexed: true },
+      { name: "service", type: "address", indexed: true },
       { name: "signer", type: "address", indexed: true },
-    ],
-  },
-  {
-    type: "event",
-    name: "Delisted",
-    inputs: [
-      { name: "recordType", type: "bytes32", indexed: true },
-      { name: "signer", type: "address", indexed: true },
+      { name: "allowed", type: "bool", indexed: false },
     ],
   },
 ] as const satisfies Abi;
@@ -536,7 +527,8 @@ function logPoint(l: {
  */
 export async function whitelistGrantHistory(args: {
   registryAddr: string;
-  recordTypeKey: string;
+  /** The clone the grant is about. `IssuanceCapabilitySet` is indexed on it, not on a record type. */
+  service: string;
   signer: string;
   rpcUrl?: string;
   defaultRpcUrl?: string;
@@ -545,29 +537,24 @@ export async function whitelistGrantHistory(args: {
   toBlock?: bigint;
 }): Promise<WhitelistGrantEvent[] | UnpositionedLog> {
   const client = roaxPublicClient(args.rpcUrl, args.defaultRpcUrl);
-  const range = {
+  const logs = await client.getLogs({
     address: args.registryAddr as Address,
     fromBlock: args.fromBlock ?? 0n,
     ...(args.toBlock === undefined ? {} : { toBlock: args.toBlock }),
     args: {
-      recordType: args.recordTypeKey as `0x${string}`,
+      service: args.service as Address,
       signer: args.signer as Address,
     },
-  } as const;
-  const [granted, revoked] = await Promise.all([
-    client.getLogs({ ...range, event: ISSUER_REGISTRY_EVENT_ABI[0] }),
-    client.getLogs({ ...range, event: ISSUER_REGISTRY_EVENT_ABI[1] }),
-  ]);
+    event: ISSUANCE_CAPABILITY_EVENT_ABI[0],
+  });
   const events: WhitelistGrantEvent[] = [];
-  for (const [kind, logs] of [
-    ["whitelisted", granted],
-    ["delisted", revoked],
-  ] as const) {
-    for (const l of logs) {
-      const at = logPoint(l);
-      if (!at) return UNPOSITIONED_LOG;
-      events.push({ kind, ...at });
-    }
+  for (const l of logs) {
+    const at = logPoint(l);
+    if (!at) return UNPOSITIONED_LOG;
+    // A log whose `allowed` word did not decode is a malformed entry, not a fact about the
+    // credential - it cannot be folded, so the whole answer is withheld.
+    if (typeof l.args.allowed !== "boolean") return UNPOSITIONED_LOG;
+    events.push({ kind: l.args.allowed ? "whitelisted" : "delisted", ...at });
   }
   return sortLogPoints(events);
 }
@@ -630,98 +617,9 @@ export function grantInForceAt(
   return asOf?.kind === "whitelisted" ? "authorized" : "notAuthorized";
 }
 
-/**
- * Which generation's vocabulary an authority contract speaks, as established by a probe.
- *
- * THREE outcomes, and the third is not a neighbour of the other two — the same shape the pillar's own
- * verdict has, for the same reason. `"legacy"` is a conclusion ABOUT THE CONTRACT and licenses
- * treating an empty grant history as a definite refusal; `"undetermined"` says the probe could not be
- * put, which licenses nothing.
- */
-export type AuthorityGeneration = "successor" | "legacy" | "undetermined";
 
-/**
- * Did the CONTRACT execute this call and revert, or did the NODE fail on its own account?
- *
- * `ExecutionRevertedError` is viem's revert-SPECIFIC class: `getNodeError` raises it for `code === 3`
- * or a message matching `/execution reverted/`, which is exactly the pair the Rust and mobile ports
- * key on. Everything else the node can say about ITSELF — `-32005` rate limit (`LimitExceededRpcError`),
- * `-32603` internal error (`InternalRpcError`), `-32601`, `-32002` — and every transport failure keeps
- * its own class, so this walk excludes them.
- *
- * DO NOT "align" this with `ContractFunctionRevertedError`, which is what it used to walk for and is
- * NOT revert-specific: viem's `getContractError` folds BOTH `code === 3` AND `InternalRpcError.code`
- * (`-32603`) into that class, so an internal error read as a revert. Verified empirically against the
- * pinned viem rather than inferred — through `readContract` a `-32603` yields
- * `ContractFunctionRevertedError`, while through `call` it yields `InternalRpcError`. That is why the
- * probe below uses `call`: it is also the honest read for a value we discard.
- */
-export function answeredWithExecutionRevert(e: unknown): boolean {
-  if (!(e instanceof BaseError)) return false;
-  return Boolean(e.walk((x) => x instanceof ExecutionRevertedError));
-}
 
-/**
- * What a probe that DID NOT throw establishes, from its returndata alone.
- *
- * A successful `eth_call` is only evidence of the successor if something actually answered. An address
- * with NO CODE returns empty without reverting, which is neither a `ProviderRegistry` answering nor
- * evidence of a generation-1 `IssuerRegistry` — the same case `readContract` used to surface as
- * `ContractFunctionZeroDataError`. Reading it as `"successor"` would silently suppress the definite
- * refusal for every never-granted signer whose configured authority address points at nothing.
- *
- * Split out from the I/O so it is pinned rather than inferred, mirroring how the Rust port keeps
- * `generation_from_probe` beside its call.
- */
-export function generationFromProbeData(data: string | undefined): AuthorityGeneration {
-  return data && data !== "0x" ? "successor" : "undetermined";
-}
 
-/**
- * Probe an authority contract for the successor's surface, to decide whether an EMPTY grant history
- * is an answer or a vocabulary mismatch.
- *
- * Scoped by its caller to the empty-history case ONLY, and that scoping is load-bearing: a NON-EMPTY
- * history is itself proof this authority speaks generation 1, because those events came out of it.
- * Only the empty case is ambiguous between "generation 1, never granted" and "generation 2, wrong
- * vocabulary". So this costs one `eth_call` on the refusal path alone and cannot perturb any answer
- * the forward-only rule already establishes.
- *
- * The probe's BOOLEAN is discarded — see {@link PROVIDER_AUTHORITY_ABI}. It identifies the GENERATION
- * and nothing else. Answering the historical question against a generation-2 authority needs its
- * `IssuanceCapabilitySet` log, which is a separate change (`docs/ISSUER_V2_OWNERSHIP.md` §8).
- *
- * Never throws: a probe that could not be put is `"undetermined"`, which the caller renders as an
- * unresolved pillar rather than as a pass or an accusation.
- */
-export async function authorityGenerationOf(args: {
-  registryAddr: string;
-  issuerAddr: string;
-  signer: string;
-  rpcUrl?: string;
-  defaultRpcUrl?: string;
-  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
-  blockNumber?: bigint;
-}): Promise<AuthorityGeneration> {
-  try {
-    // A raw `call` rather than `readContract`, for two reasons that point the same way. The value is
-    // DISCARDED, so decoding it would be work done only to throw the result away; and `readContract`
-    // routes the failure through `getContractError`, which collapses an internal error into the same
-    // class as a revert - see {@link answeredWithExecutionRevert}.
-    const { data } = await roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).call({
-      to: args.registryAddr as Address,
-      data: encodeFunctionData({
-        abi: PROVIDER_AUTHORITY_ABI,
-        functionName: "isRecognizedIssuer",
-        args: [args.issuerAddr as Address, args.signer as Address],
-      }),
-      blockNumber: args.blockNumber,
-    });
-    return generationFromProbeData(data);
-  } catch (e) {
-    return answeredWithExecutionRevert(e) ? "legacy" : "undetermined";
-  }
-}
 
 /**
  * Where this root was anchored, as a `(blockNumber, logIndex)` point - or `null` when this clone
