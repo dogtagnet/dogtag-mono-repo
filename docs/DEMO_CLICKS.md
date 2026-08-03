@@ -351,12 +351,74 @@ The portal passes the factory account on exactly that one read.
 > A provider registered earlier the same day (`0x2ee0cd95…4ecc`) also appears in the list; it was
 > created with `cast`, not through this page.
 
-### 1.3 The rest of the admin portal
+### 1.3 Finish the provider off - the four actions only DogTag can take
+
+**Do this after the provider has deployed their contract (§2.4), and before they try §2.5.**
+Everything here is `onlyOwner` on the provider registry, so no provider key can do any of it.
+
+Expand the provider's row with the **chevron** beside its id. That opens **Attached services** - what
+this provider has attached, and for each one the five lifecycle terms `canIssue` folds, shown
+separately because each has a different fix.
+
+#### 1.3.1 Attach their contract
+
+Click **Attach a contract**, paste the address the provider sent you, and press **Check**.
+
+The check reads everything off the chain, so the address is the only thing you type: it probes each
+active factory generation's own `isClone` to work out which generation deployed it, then reads
+`recordType()` and `owner()` off the contract itself. Press **Attach**.
+
+> **The one refusal worth recognising.** A *generation-1* `DogTagIssuer` has no `owner()` at all, so
+> it can never be attached however correct the rest of the form is. The check says so in words rather
+> than letting the send revert - it is a property of that contract, not a form error to correct.
+
+The service appears in the panel as **pending**.
+
+#### 1.3.2 Set its standing to Active
+
+Attaching lands the service at PENDING exactly as registering lands a provider there, and `canIssue`
+folds the service standing - so **attaching alone grants nothing**. The panel says which term is
+missing; click **Activate** on the service row.
+
+#### 1.3.3 Grant issuance capability
+
+Click **Issuance capability** on the service row and give the address that will SIGN issuances.
+
+This is the registrar's grant to make and nobody else's: a service *delegate* carries content-write
+permissions and does **not** satisfy `canIssue`, so a provider cannot grant their own signing key.
+
+#### 1.3.4 Approve the typed resolvers
+
+In **Typed resolvers**, click **Approve / pull** on each kind and give the deployed resolver address
+(`ProviderDirectory` for `directory`, `ServiceDomainResolver` for `domain`; both are in
+`contracts/deployments/roax.json`).
+
+Approving is the whole of the registrar's part. The provider must then **select** the resolver on
+their own portal - the screen says so, because approval alone resolves nothing.
+
+> **Verify capability** is the card below, and it is deliberately *not* part of this sequence. It is
+> keyed by PURPOSE and takes no service at all: an issuer is not implicitly a verifier, and a relayer
+> granted there can verify without being able to issue anything.
+
+**Walked live on ROAX 2026-08-03** against provider `0x2ee0cd95…4ecc` and the contract it had already
+deployed (`0x0505Ac77…0cc1`): attach `0x71a6d8b1…`, standing `0xc64904ce…`, issuance capability
+`0x2b8d840e…`, directory resolver `0x110010f7…`, domain resolver `0x189869f7…`. After the provider's
+own `repointService` (`0x45a2fa42…`), `canIssue(service, signer)` reads **true** on chain and
+`serviceCount()` went from 0 to 1 - the first service ever attached on that registry.
+
+### 1.4 The rest of the admin portal
 
 Opened but not re-walked for this guide: **Activity**, **Issuers / Factory**, **Onboard issuer**,
-**Business registry**, **Issuer applications**, **Whitelist**, **Governance**.
+**Business registry**, **Issuer applications**, **Governance**.
 Several of them now carry a **Fill demo data** button.
 **Verification bench** has a section of its own - §7.
+
+> **The Whitelist page is gone**, and is not coming back. It called `isWhitelistedFor` on the single
+> authority, which answers that off an orthogonal axis - a confident `false` for every genuine issuer
+> signer - and granted through `whitelistFor`, which that contract does not implement at all. Its
+> replacements are **Issuance capability** (§1.3.3) and **Verify capability**, both on the Providers
+> page. The generation-1 `IssuerRegistry` whitelisting that **Issuer applications** still performs is
+> a different contract and is untouched.
 
 **Activity** reads the oversight indexer, so on a `demo-up.sh` stack it renders the scripted rows
 described in §0.4.
@@ -379,35 +441,38 @@ stays short.
 There is **no backend on this path at all**: every read and every write is made from the provider's
 own wallet, straight to the chain.
 
-### Read this before you start: one flow completes, three stop
+### Read this before you start: every flow completes, and three of them need DogTag in the middle
 
-**Three of the four flows stop, at the same missing step, and none of them stops because of anything
-you did.**
-Knowing that first is the difference between a walk and half an hour of wondering what you got wrong.
+**Three of the four flows need a DogTag action partway through.**
+That is not a stop - the admin screens for all of them exist (§1.3) - but the order matters, and
+knowing it first is the difference between a walk and half an hour of wondering what you got wrong.
 
 | Flow | Outcome |
 |---|---|
-| 1. Deploy your own contract | **Completes.** Walked to a mined transaction and an independently verified contract. |
-| 2. Choose which contract is current | **Stops** - DogTag has to attach it first, and there is no admin screen for that. |
-| 3. Your domain | **Stops** - the domain register is neither approved nor selected. |
-| 4. Your listing | **Stops** - the provider directory is neither approved nor selected. |
+| 1. Deploy your own contract | **Completes on its own.** Nothing from DogTag is needed first. |
+| 2. Choose which contract is current | **Completes after DogTag attaches it** (§1.3.1) and sets its standing (§1.3.2). |
+| 3. Your domain | **Completes after DogTag approves the domain resolver** (§1.3.4). |
+| 4. Your listing | **Completes after DogTag approves the directory resolver** (§1.3.4). |
 
-**Why, in one sequence.** Making a contract live takes **three moves, and only two of them are
-yours**:
+**Why, in one sequence.** Making a contract live takes **three moves, and the middle one is
+DogTag's**:
 
 > provider deploys (`createIssuer`) → **REGISTRAR attaches** (`attachService`) → provider selects it
-> as current
+> as current (`repointService`)
 
-The middle move is DogTag's, not yours: `attachService` is `onlyOwner` on the provider registry, so
-no provider key can send it however correctly everything else is set up.
-It is also the move with **no screen anywhere** - not on this page, and not in the admin portal,
-whose registrar page covers register, activate and approve and nothing else.
-That is what flow 2 runs into, and flows 3 and 4 hit the same shape one layer along: a registrar
-approval that has no button yet.
+`attachService` is `onlyOwner` on the provider registry, so no provider key can send it however
+correctly everything else is set up - and `repointService` refuses an address that was never
+attached, which is what flow 2 runs into if you get ahead of the registrar.
+Flows 3 and 4 are the same shape one layer along: a typed resolver answers nothing until the
+registrar approves it **and** you select it, and only the second half is yours.
 
-So walk all four anyway.
-The checks are worth reading, they tell you exactly which term is missing, and flow 1 genuinely
-completes.
+**Issuing needs one more DogTag action after all of that**: `setIssuanceCapability` (§1.3.3) names
+the key that may sign. Attaching grants nothing on its own, and neither does selecting.
+
+So the practical order for a full walk is: do §2.4 (deploy), go back to the admin portal and do
+§1.3, then come back and finish §2.5 through §2.7.
+If you would rather walk straight through, walk all four anyway - the checks tell you exactly which
+term is missing, and they are worth reading.
 
 ### Before you start
 
@@ -562,20 +627,19 @@ Put `1` in **Contract number** and check again.
 **What you are about to do:** tell your provider record that the contract you just deployed is the one
 new credentials should anchor to.
 
-**THIS IS THE ONE THAT STOPS, and it is the middle move of the three: DogTag has to attach your
-contract before you can select it.**
-`attachService` is `onlyOwner` on the provider registry, so no provider key can send it - and there is
-no admin screen for it either, so nobody can send it for you today.
-Nothing you deployed is wrong, and there is no setting on your side that fixes it.
-The page says the same thing in a notice at the top of the card, before you click.
+**This is the middle move of the three, so DogTag has to attach your contract before you can select
+it.** `attachService` is `onlyOwner` on the provider registry, so no provider key can send it however
+correct everything else is - the page says the same thing in a notice at the top of the card, before
+you click.
 
-Walk it anyway: the first two checks pass, and seeing which one fails is what makes the shape of the
-gap obvious.
+**If DogTag has already done §1.3.1, this completes.** If not, the check refuses and names exactly
+that as the missing term. Either way the walk below is worth doing: the first two checks pass and the
+third is what tells you where you are.
 
 1. Paste the address you deployed in flow 1 into **Contract address**.
 2. Click **Check this contract**.
 
-**You should see** verdict **Not allowed**, with three checks:
+**Before DogTag attaches it** you should see verdict **Not allowed**, with three checks:
 
 | Check | Result |
 |---|---|
@@ -589,10 +653,9 @@ and the remedy, in the product's own words:
 > record - that step is DogTag's, not yours. Send this address to DogTag to attach it to your provider
 > record. You can select it here once that is done.
 
-How the "no admin surface" claim above was established, since it is the load-bearing one: searched
-across the portal, backend and shared-client sources, the attach call appears only in explanatory
-comments, never as a call - so there is no button to press and no route to post to.
-The registrar page in §1.2 covers register, activate and approve, and nothing else.
+**After DogTag has done §1.3.1 and §1.3.2** the third check passes too, the verdict flips, and
+**Select this contract** sends `repointService`. That is the move that makes `canIssue` finally read
+true - it is the last of the five terms, and the only one that is yours.
 
 **Leave the contract address in the field.** Flow 3 reads it.
 
@@ -601,11 +664,10 @@ The registrar page in §1.2 covers register, activate and approve, and nothing e
 **What you are about to do:** publish the domain your clinic is known by, against the contract from
 flow 2.
 
-**THIS ONE STOPS TOO, one layer along from flow 2's gap.**
+**This is the same shape as flow 2, one layer along.**
 A domain is published through a typed register, and that register answers nothing until DogTag
 approves it and it is then selected for your contract - two steps, in that order, fixed by the
-contract itself.
-Neither has a page here yet, so this refuses however correct everything you type is.
+contract itself. The first is DogTag's (§1.3.4) and the second is yours.
 The card says so before you click.
 
 1. **Check the Contract address in step 2 is still filled in.** This is the trap on this page: the
@@ -627,8 +689,7 @@ Three checks, all failing:
 | May your key publish a domain for this contract? | **FAILED** |
 
 The first is the root cause: a typed resolver answers nothing until DogTag approves it **and** the
-contract selects it.
-Neither has happened, and neither has an admin surface.
+contract selects it. Once §1.3.4 has run, the approval half holds and selecting is yours.
 
 ### 2.7 Flow 4 - publish your listing
 
@@ -671,13 +732,18 @@ Two properties of this flow are worth knowing for when it does open:
 
 ### 2.8 Where §2 leaves you
 
-As the map at the top said: flow 1 completed and left you a real contract on the testnet that you own.
-Flows 2, 3 and 4 each stopped at a registrar step - attach, approve the domain register, approve the
-directory - and all three are the same shape: DogTag's move, with no screen yet.
+As the map at the top said: flow 1 completes on its own, and flows 2, 3 and 4 each need a registrar
+step in the middle - attach and stand up, approve the domain resolver, approve the directory resolver.
+All three are the same shape: DogTag's move, and all three now have a screen (§1.3).
 
-None of them is a misconfiguration you can fix from the provider's side.
-Both the product and this section say so at the point you hit them, and the summary is at the top
-rather than here, because a reader needs it before the confusion rather than after.
+None of them is a misconfiguration you can fix from the provider's side. Both the product and this
+section say so at the point you hit them, and the summary is at the top rather than here, because a
+reader needs it before the confusion rather than after.
+
+**A full walk, end to end**, is therefore: §1.2 register and approve → §2.4 the provider deploys →
+§1.3 DogTag attaches, stands it up, grants issuance and approves the resolvers → §2.5-§2.7 the
+provider selects it, claims a domain and publishes a listing. Walked to a live `canIssue(service,
+signer) == true` on ROAX on 2026-08-03; the transaction hashes are in §1.3.
 
 ---
 

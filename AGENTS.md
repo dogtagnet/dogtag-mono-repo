@@ -5742,6 +5742,114 @@ reddening its own named test - and a ninth was REJECTED as inert (`unwrap_or(fal
 `approved()` claim is pinned by the LIB suite, not the integration target: point the mutation at
 `--lib`, or it matches no test and reports a green.
 
+### The journey is COMPLETE now - five registrar calls, not two, and the fifth is easy to miss
+
+The surface above stopped at "the provider may deploy". Everything past that point was registrar work
+with no caller, which is why `serviceCount()` read 0 on a live registry while providers had already
+deployed: `repointService` refuses an address that was never attached, so a provider could deploy and
+then go nowhere. `attachService`, `setServiceStanding`, `setIssuanceCapability`,
+`setVerifierCapability` and `setResolverApproved` close it (`stacks/admin/api/src/routes.rs`,
+`stacks/admin/web/src/pages/Providers.tsx`, pure decisions in `src/lib/providerServices.ts`).
+
+**`setServiceStanding` is REQUIRED, and leaving it out is the same defect the provider standing was.**
+`attachService` writes `standing: Standing.PENDING` (`ProviderRegistry.sol:539`) exactly as
+`registerProvider` does, and `canIssue` folds the service standing through
+`_serviceIssuanceEligible` - so a journey that attaches and then grants issuance produces a service
+that still issues nothing. An earlier plan named only attach and the two capability calls; that plan
+was wrong, and the shape of the error is worth remembering because it recurs: every registrar
+CREATION lands its record inert.
+
+**`setVerifierCapability` takes the RAW `purpose`, NEVER `verify_key(label)`.** The contract derives
+`verificationKey(purpose) = keccak256(abi.encode("VERIFY:", purpose))` itself
+(`ProviderRegistry.sol:786`), so handing it an already-derived key derives TWICE and writes the
+capability under a key `canVerify` never reads - a transaction that succeeds, costs gas, and grants
+nothing, with no error anywhere. `purpose_key` is the right helper; `verify_key` is the generation-1
+`IssuerRegistry` convention and still has its own caller in `approve_application`, so both survive
+and are one keystroke apart.
+
+**It is keyed by PURPOSE and takes no service**, so it is rendered in its own card and never inside a
+service row - the verify axis is orthogonal to issuance, and an issuer is not implicitly a verifier.
+
+**The attach preflight composes the chain's own reads and is never STRICTER than it.** It probes each
+ACTIVE generation's `factory.isClone(service)` to resolve the `generationId` (so no admin types a
+bytes32), then reads `owner()` and `recordType()` off the service. Its verdict is three-valued:
+`refused` (the chain would reject this), `ready`, and `couldNotRun` - which STILL offers the send,
+because a read we could not complete is not evidence the contract would refuse, and a preflight that
+refuses what the chain accepts is the `cloneProvenance.ts` defect. The one exception is mechanical
+rather than a policy: a send needs a `generationId` and an `expectedOwner` to address, so a
+`couldNotRun` missing either is offered as a re-check instead (`attachSendable`).
+
+**`expectedOwner` is a transaction GUARD, never a selector** - the contract compares it against the
+`owner()` it read and stores the RESOLVED one, so a wrong value can only refuse a send.
+
+**A generation-1 `DogTagIssuer` can NEVER be attached, and that is the first thing an admin will
+try.** It is `Initializable` only and has no `owner()` at all, so `_readServiceMetadata` fails and
+`attachService` reverts `InvalidServiceMetadata()`. The preflight says so in words naming the
+permanent property, rather than letting a raw revert arrive from a send and read as a form error a
+different expected owner would fix.
+
+**Resolver approval is HALF a step and the response says so.** A typed resolver answers nothing until
+the registrar approves it AND the provider selects it; the core never clears a stored selection when
+a resolver is deapproved, which is exactly why approval is a separate fleet-wide lever. The two
+halves are reported apart and must never be pre-ANDed into one "working" bool.
+
+**The five `effectiveService` terms are reported APART on the wire and on screen**, because each has
+a different remedy - a suspended provider is the registrar's to lift, an unconfirmed owner needs
+`confirmServiceOwner`, a deprecated generation is terminal, and no active issuer is one grant away.
+One bool would tell an admin something is wrong while withholding the only thing that says what to do.
+
+**`MemChain` needs a `set_clone` seeder** (added), because the registrar attaches contracts the
+PROVIDER deployed on their own portal - a different actor from the admin factory route, so
+`create_issuer` is not the path that puts them there. And the capability-log failure switch is its
+OWN (`set_failing_capability_log_reads`), for the reason `set_failing_approval_log_reads` already is:
+the realistic failure is the service `eth_call` answering while a range-capping peer refuses the
+`eth_getLogs`, and a shared switch collapses the route into a 502 before the `unavailable` arm is
+ever built.
+
+**WALKED LIVE ON ROAX 2026-08-03** against provider `0x2ee0cd95…4ecc` and the contract it had already
+deployed through the provider portal (`0x0505Ac77…0cc1` - a genuine factory clone owned by the
+controller, which is how the deploy half was confirmed as already working). `serviceCount()` went
+**0 -> 1**: attach `0x71a6d8b1…`, service standing `0xc64904ce…`, issuance capability `0x2b8d840e…`,
+directory resolver `0x110010f7…`, domain resolver `0x189869f7…`. After the provider's own
+`repointService` (`0x45a2fa42…`) `canIssue(service, signer)` reads **true**. Note `canIssue` stayed
+false until that last step while `canRevoke` and `isRecognizedIssuer` were already true - the nested
+ladder, with `_serviceIssuanceEligible`'s current-pointer term as the difference.
+
+**The admin Whitelist console is DELETED, not repaired, and the distinction matters.** It called
+`isWhitelistedFor(recordType, address)`, which the single authority answers off the orthogonal VERIFY
+axis for a caller that is not itself an attached service - a definite `false` for every genuine
+issuer signer - and granted through `whitelistFor`, which that contract does not implement at all.
+There was nothing to fix. Its replacements are the two capability calls above. **What was NOT
+deleted, and must not be**: `approve_application`'s `whitelistFor` calls, the Dashboard's "Whitelist
+admin" authority tile, and `whitelist_for_calldata`/`delist_for_calldata` in `chain.rs` - all
+generation-1 `IssuerRegistry`, still live. `WhitelistRow`/`IssuerSignersResp` are a third unrelated
+thing (the vet/groomer custody signer matrix). `WhitelistOutcome` was RENAMED `DispatchOutcome`,
+because every registrar route reports through it and the old name described a console that no longer
+exists.
+
+**Deleting a console can be a silent coverage regression, and this one was.** `control_plane.rs`
+lines ~179-480 pinned `dispatch_summary`'s tri-state `outcome` and the `ADMIN_PROPOSE_ONLY`
+declaration - logic that OUTLIVED the console. Those cases are re-homed into
+`tests/provider_journey.rs` on **`setVerifierCapability`**, not on `setIssuanceCapability`: the
+latter 404s on a service that was never attached, and under propose-only nothing executes, so the
+attach could never land and the case under test would never be reached. Enumerate what a deleted file
+pins before deleting it.
+
+**A test asserting an auth gate must send a WELL-FORMED body.** Axum runs the `Json<T>` extractor
+BEFORE the handler, so a `{}` body that fails to deserialize answers **422** without `require_admin`
+ever running - the test then passes on the extractor rather than on the gate it is named for.
+
+Evidence: `cargo test -p admin-api` (all suites green; 15 in `tests/provider_journey.rs`) and
+`pnpm --filter @dogtag/admin-web test` (60). Seven mutations were applied, run and reverted, each
+reddening exactly one named test: the preflight made stricter than the chain (both in the engine and
+in the route), an unavailable `effectiveService` rendered as `false`, a could-not-establish term
+toned as the failure red, an unreadable services read falling through to an empty list, an unreadable
+capability log becoming an empty holder set, and `setVerifierCapability` sending the derived key.
+
+**Pre-existing lint fixed along the way**: `packages/ui/src/wallet/contracts.ts` carried four orphans
+from phase 1's generation-probe deletion (`BaseError`, `encodeFunctionData`, `ExecutionRevertedError`
+and `PROVIDER_AUTHORITY_ABI`) that failed `tsc --noEmit` on `origin/main`.
+
 ## The content-addressed profile and logo mirror (S-17) - and the one rule that defines it
 
 `stacks/indexer/api/src/mirror.rs` serves it, `packages/ui/src/mirror/` fetches and CHECKS it.
