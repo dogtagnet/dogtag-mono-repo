@@ -8,7 +8,6 @@ interface ImportMetaEnv {
   readonly VITE_GROOMER_API_PROXY?: string;
   readonly VITE_ROAX_RPC?: string;
   readonly VITE_DOGTAG_ISSUER_ADDR?: string;
-  readonly VITE_ISSUER_REGISTRY_ADDR?: string;
 }
 
 interface ImportMeta {

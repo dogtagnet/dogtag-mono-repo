@@ -1,3 +1,4 @@
+import { DEPLOYED_ADDRESSES } from "../wallet/contracts";
 /**
  * One-click "Fill demo data" presets for the clickable end-to-end demo. These produce VALID inputs
  * for each form so a non-technical operator can populate + submit without typing. The values mirror
@@ -28,10 +29,17 @@ export const DEMO_OPERATOR_PASSWORD = "operator";
 export const DEMO_CUSTODY_PASSPHRASE = "demo-pass-0000";
 
 /**
- * On-chain VACCINATION DogTagIssuer clone (VACCINATION_ISSUER_ADDR in scripts/demo-up.sh). This is
- * the documentStore the issuer-application must reference so the on-chain whitelist matches.
+ * The documentStore a demo issuer-application references - SYNTHETIC, and unmistakably so.
+ *
+ * It used to be a real deployed clone, on the reasoning that the demo should match what
+ * `scripts/demo-up.sh` provisions. Two things are wrong with that. A demo preset is fill-in data and
+ * this fleet's rule is that fill-in data must be unmistakably fake, because a plausible value is how
+ * a demo record gets mistaken for a real one. And it went stale the moment that clone was superseded
+ * - silently, since a documentStore that names nothing still submits cleanly and only fails later at
+ * the whitelist. A demo that wants a real clone reads it from configuration, as `Setup.tsx` does
+ * with `env.dogtagIssuerAddr`.
  */
-export const DEMO_VACCINATION_DOCUMENT_STORE = "0x1456f93f7376789c46408CC4616751eB853edD9A";
+export const DEMO_VACCINATION_DOCUMENT_STORE = "0x000000000000000000000000000000000acc0001";
 
 /**
  * The single record type the vet/groomer backend accepts for issuance + whitelisting. The backend
@@ -267,11 +275,16 @@ export const DEMO_WHITELIST_APPLY_GROOMER: DemoWhitelistApply = {
 };
 
 /**
- * The admin signer from `contracts/deployments/roax.json`. Used wherever a demo preset must name an
- * address that really holds authority on the testnet, so the resulting action exercises the real
- * on-chain path rather than proposing against a stranger.
+ * The governance signer, from this build's CONFIGURATION. Used wherever a demo preset must name an
+ * address that really holds authority on the target chain, so the resulting action exercises the
+ * real on-chain path rather than proposing against a stranger.
+ *
+ * This is the one demo value that may NOT be synthetic - the whole point of the preset is that the
+ * dispatch executes rather than falling back to a proposal - so it is read from configuration
+ * instead, and is the empty string when unset. A preset carrying an empty signer is a preset the
+ * operator must fill in, which is the honest state of an unconfigured deployment.
  */
-export const DEMO_ADMIN_SIGNER = "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2";
+export const DEMO_ADMIN_SIGNER = DEPLOYED_ADDRESSES.admin;
 
 /**
  * Deploy-an-issuer-clone preset (admin Issuers/Factory).

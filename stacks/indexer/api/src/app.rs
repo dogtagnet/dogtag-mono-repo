@@ -233,6 +233,140 @@ pub fn parse_watch_generations(raw: &str) -> Result<Vec<WatchGeneration>, String
     validate_watch_generations(generations)
 }
 
+/// The watch configuration as READ, before any decision is taken about it. `main` fills this in from
+/// the environment and nothing else; every rule lives in [`resolve_watch_generations`].
+///
+/// The split exists so the rules are testable at all. They used to live inside the env reader, which
+/// meant exercising them required writing the PROCESS environment - shared by every test thread, so
+/// the cases would have raced each other exactly as `vm.setEnv` does under forge's default threads.
+/// A rule that can only be tested by a racing test is a rule that ends up untested.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct WatchConfigInput {
+    /// `INDEXER_GENERATIONS`, verbatim. `None` when the variable is absent.
+    pub generations_json: Option<String>,
+    pub factory: Option<String>,
+    pub issuer_registry: Option<String>,
+    pub verification_registry: Option<String>,
+    pub seed_clones: Option<String>,
+}
+
+impl WatchConfigInput {
+    /// The legacy singleton keys that are set, in the order they are reported to the operator.
+    fn legacy_present(&self) -> Vec<&'static str> {
+        [
+            ("FACTORY_ADDR", &self.factory),
+            ("ISSUER_REGISTRY_ADDR", &self.issuer_registry),
+            (
+                "VERIFICATION_REGISTRY_CONSENT_ADDR",
+                &self.verification_registry,
+            ),
+            ("SEED_CLONES", &self.seed_clones),
+        ]
+        .into_iter()
+        .filter(|(_, v)| v.is_some())
+        .map(|(k, _)| k)
+        .collect()
+    }
+}
+
+/// What a resolution produced, so the caller can log the deprecation warning without re-deriving
+/// which branch ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedWatch {
+    pub generations: Vec<WatchGeneration>,
+    /// True when the deprecated singleton variables supplied the triple.
+    pub used_legacy_singleton: bool,
+}
+
+/// Decide the watch set from what was configured. PURE - no environment, no I/O.
+///
+/// THERE ARE NO ADDRESS DEFAULTS, and an unconfigured live instance is an ERROR.
+///
+/// This used to fall back to the then-live triple, baked in as constants. That made "the operator
+/// configured nothing" indistinguishable from "the operator configured exactly this" - and the
+/// moment those contracts were superseded, that indistinguishable state became a scanner watching
+/// addresses that decide nothing, while `/v1/status.watchedGenerations` reported them as a
+/// deliberate choice. A stale default is worse than no default in a service whose whole job is to
+/// report what it watched, because it cannot report a gap it was built to paper over.
+///
+/// `demo_generation` is the caller's SYNTHETIC stand-in, used only when nothing at all is
+/// configured and the instance is scripted. It is a parameter rather than a constant here so the
+/// library never carries an address of its own.
+pub fn resolve_watch_generations(
+    input: &WatchConfigInput,
+    demo_generation: Option<WatchGeneration>,
+) -> Result<ResolvedWatch, String> {
+    if let Some(raw) = &input.generations_json {
+        // The two forms may never coexist: accepting both recreates the split-brain where an
+        // operator edits one address source while the scanner reads the other.
+        let conflicts = input.legacy_present();
+        if !conflicts.is_empty() {
+            return Err(format!(
+                "INDEXER_GENERATIONS cannot be combined with legacy {}",
+                conflicts.join(", ")
+            ));
+        }
+        return Ok(ResolvedWatch {
+            generations: parse_watch_generations(raw)?,
+            used_legacy_singleton: false,
+        });
+    }
+
+    if input.legacy_present().is_empty() {
+        // Nothing configured at all. A scripted instance supplies its own synthetic generation; a
+        // live one has nothing to watch and says so rather than inventing something to watch.
+        let demo_generation = demo_generation.ok_or_else(|| {
+            "no watch configuration: set INDEXER_GENERATIONS to the exact \
+             factory/issuerRegistry/verificationRegistry triple this deployment watches (addresses \
+             come from contracts/deployments/roax.json). There is no default - a baked-in triple \
+             would make an unconfigured scanner indistinguishable from a deliberately configured one"
+                .to_string()
+        })?;
+        return Ok(ResolvedWatch {
+            generations: validate_watch_generations(vec![demo_generation])?,
+            used_legacy_singleton: false,
+        });
+    }
+
+    // Every address of the legacy triple must be supplied. Defaulting the ones the operator omitted
+    // would silently mix their configuration with ours, which is the same defect one variable down.
+    let required = |key: &'static str, value: &Option<String>| -> Result<String, String> {
+        value.clone().ok_or_else(|| {
+            format!(
+                "legacy singleton watch configuration is incomplete: {key} is unset. Supply all of \
+                 FACTORY_ADDR, ISSUER_REGISTRY_ADDR and VERIFICATION_REGISTRY_CONSENT_ADDR, or \
+                 migrate to INDEXER_GENERATIONS"
+            )
+        })
+    };
+    let factory = required("FACTORY_ADDR", &input.factory)?;
+    let issuer_registry = required("ISSUER_REGISTRY_ADDR", &input.issuer_registry)?;
+    let verification_registry = required(
+        "VERIFICATION_REGISTRY_CONSENT_ADDR",
+        &input.verification_registry,
+    )?;
+    // Seed clones legitimately default to NONE: an empty seed set is a complete statement (discover
+    // every clone from `IssuerCreated`), unlike an omitted emitter address.
+    let seed_clones = input
+        .seed_clones
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|clone| !clone.is_empty())
+        .map(str::to_string)
+        .collect();
+    Ok(ResolvedWatch {
+        generations: validate_watch_generations(vec![watch_generation(
+            &factory,
+            &issuer_registry,
+            &verification_registry,
+            seed_clones,
+        )?])?,
+        used_legacy_singleton: true,
+    })
+}
+
 /// keccak256(label) as lowercase `0x…` — the on-chain record-type / purpose key. Used to translate a
 /// human `?recordType=TRAVEL_CLEARANCE` filter into the indexed `keccak256` key. Mirrors the
 /// government stack's `record_type_key` (there via `sha3`; here via alloy's re-exported keccak).
@@ -334,16 +468,148 @@ mod tests {
             .contains("must not be the zero address"));
     }
 
+    /// The shipped template DECLARES the variable and ships it BLANK.
+    ///
+    /// It used to ship a full triple, and this test asserted that triple parsed. That was the wrong
+    /// property to hold: a template carrying addresses opts every deployment that copies it into
+    /// watching a set nobody chose for it, and those addresses go stale silently. Both halves below
+    /// are load-bearing - declared, so an operator can see what to set; blank, so copying the file
+    /// configures nothing by accident.
     #[test]
-    fn shipped_env_generation_set_parses() {
+    fn the_shipped_env_template_declares_the_variable_and_ships_it_blank() {
         let example = include_str!("../../.env.example");
         let raw = example
             .lines()
             .find_map(|line| line.strip_prefix("INDEXER_GENERATIONS="))
-            .expect("indexer env template must carry INDEXER_GENERATIONS");
-        let generations =
-            parse_watch_generations(raw).expect("shipped INDEXER_GENERATIONS must be bootable");
-        assert_eq!(generations.len(), 1);
-        assert_eq!(generations[0].seed_clones.len(), 3);
+            .expect("indexer env template must DECLARE INDEXER_GENERATIONS");
+        assert_eq!(
+            raw.trim(),
+            "",
+            "the template must ship no addresses: {raw:?}"
+        );
+        // And a blank value really does carry no configuration, rather than parsing as something.
+        assert!(parse_watch_generations(raw).is_err());
+    }
+
+    /// No line of the shipped template may carry a 20-byte address at all - not as a value, and not
+    /// inside the `INDEXER_GENERATIONS` JSON. `make check-addresses` guards this from outside for the
+    /// whole tree; this is the same property asserted where this file's own reader can see it.
+    #[test]
+    fn the_shipped_env_template_carries_no_address_anywhere() {
+        let example = include_str!("../../.env.example");
+        for (n, line) in example.lines().enumerate() {
+            let hex_runs = line.split("0x").skip(1).filter(|rest| {
+                rest.chars().take(40).filter(|c| c.is_ascii_hexdigit()).count() == 40
+            });
+            assert_eq!(
+                hex_runs.count(),
+                0,
+                "line {} of stacks/indexer/.env.example carries an address: {line}",
+                n + 1
+            );
+        }
+    }
+
+    // ---- resolve_watch_generations: there is no address default -----------------------------
+    //
+    // Every case below drives the PURE decision. None of them writes the process environment, which
+    // is what lets them run concurrently with each other and with every other test in this crate.
+
+    fn demo_stand_in() -> WatchGeneration {
+        watch_generation(
+            "0x00000000000000000000000000000000000000fa",
+            "0x00000000000000000000000000000000000000fb",
+            "0x00000000000000000000000000000000000000fc",
+            vec![],
+        )
+        .expect("synthetic demo generation")
+    }
+
+    #[test]
+    fn an_unconfigured_live_instance_refuses_to_start_rather_than_watching_a_baked_in_triple() {
+        let err = resolve_watch_generations(&WatchConfigInput::default(), None)
+            .expect_err("nothing configured, and nothing may be invented");
+        assert!(
+            err.contains("INDEXER_GENERATIONS"),
+            "the refusal must name the variable to set, got: {err}"
+        );
+        assert!(
+            err.contains("no default"),
+            "and must say plainly that there is no default, got: {err}"
+        );
+    }
+
+    #[test]
+    fn an_unconfigured_demo_instance_watches_its_own_synthetic_generation() {
+        let resolved = resolve_watch_generations(&WatchConfigInput::default(), Some(demo_stand_in()))
+            .expect("a scripted instance supplies its own generation");
+        assert_eq!(resolved.generations.len(), 1);
+        assert_eq!(
+            resolved.generations[0].factory, "0x00000000000000000000000000000000000000fa",
+            "the demo watches exactly the stand-in the caller passed, never a deployed address"
+        );
+        assert!(!resolved.used_legacy_singleton);
+    }
+
+    #[test]
+    fn a_partial_legacy_singleton_configuration_names_the_missing_variable() {
+        let input = WatchConfigInput {
+            factory: Some(FACTORY_ONE.into()),
+            ..Default::default()
+        };
+        // Passing the demo stand-in too: a partially-configured instance must NOT silently fall
+        // through to it, because half the triple really was chosen by the operator.
+        let err = resolve_watch_generations(&input, Some(demo_stand_in()))
+            .expect_err("half a triple is not a triple");
+        assert!(
+            err.contains("ISSUER_REGISTRY_ADDR"),
+            "name the first variable that is missing, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_complete_legacy_singleton_configuration_still_works_and_is_flagged_as_deprecated() {
+        let input = WatchConfigInput {
+            factory: Some(FACTORY_ONE.into()),
+            issuer_registry: Some(REGISTRY_ONE.into()),
+            verification_registry: Some(VREG_ONE.into()),
+            seed_clones: Some("0x00000000000000000000000000000000000000D1".into()),
+            ..Default::default()
+        };
+        let resolved =
+            resolve_watch_generations(&input, None).expect("a complete legacy triple is accepted");
+        assert_eq!(resolved.generations.len(), 1);
+        assert_eq!(resolved.generations[0].seed_clones.len(), 1);
+        assert!(
+            resolved.used_legacy_singleton,
+            "the caller needs this to emit the deprecation warning"
+        );
+    }
+
+    #[test]
+    fn an_empty_seed_clone_set_is_a_complete_statement_unlike_an_omitted_emitter() {
+        let input = WatchConfigInput {
+            factory: Some(FACTORY_ONE.into()),
+            issuer_registry: Some(REGISTRY_ONE.into()),
+            verification_registry: Some(VREG_ONE.into()),
+            ..Default::default()
+        };
+        let resolved = resolve_watch_generations(&input, None)
+            .expect("no seed clones means discover them all from IssuerCreated");
+        assert!(resolved.generations[0].seed_clones.is_empty());
+    }
+
+    #[test]
+    fn the_two_configuration_forms_may_never_coexist() {
+        let input = WatchConfigInput {
+            generations_json: Some(format!(
+                r#"[{{"factory":"{FACTORY_ONE}","issuerRegistry":"{REGISTRY_ONE}","verificationRegistry":"{VREG_ONE}"}}]"#
+            )),
+            factory: Some(FACTORY_TWO.into()),
+            ..Default::default()
+        };
+        let err = resolve_watch_generations(&input, None)
+            .expect_err("a stale legacy value must not silently disagree with the atomic form");
+        assert!(err.contains("FACTORY_ADDR"), "got: {err}");
     }
 }

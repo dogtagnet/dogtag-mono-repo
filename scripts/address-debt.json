@@ -49,27 +49,9 @@
     "docs/PREREQUISITES.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
     "docs/PRODUCTION_DEPLOYMENT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
     "docs/REMOTE_DEPLOYMENT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "packages/ui/src/schema/demoData.ts": "consumer; must read from configuration",
-    "packages/ui/src/wallet/contracts.ts": "consumer; must read from configuration",
     "scripts/demo-bootstrap.sh": "tooling; resolve from the ledger with ledger_addr rather than a literal",
     "scripts/e2e-roles.sh": "tooling; resolve from the ledger with ledger_addr rather than a literal",
     "scripts/e2e-smoke.sh": "tooling; resolve from the ledger with ledger_addr rather than a literal",
-    "stacks/admin/.env.example": "env template; ships a value operators should supply, and a blank fallback-free var is safer than a stale default",
-    "stacks/admin/api/src/main.rs": "consumer; must read from configuration",
-    "stacks/admin/docker-compose.yml": "consumer; must read from configuration",
-    "stacks/admin/web/.env.example": "env template; ships a value operators should supply, and a blank fallback-free var is safer than a stale default",
-    "stacks/admin/web/src/lib/governance.ts": "consumer; must read from configuration",
-    "stacks/government/.env.example": "env template; ships a value operators should supply, and a blank fallback-free var is safer than a stale default",
-    "stacks/government/api/src/app.rs": "consumer; must read from configuration",
-    "stacks/government/api/src/main.rs": "consumer; must read from configuration",
-    "stacks/groomer/.env.example": "env template; ships a value operators should supply, and a blank fallback-free var is safer than a stale default",
-    "stacks/groomer/web/.env.example": "env template; ships a value operators should supply, and a blank fallback-free var is safer than a stale default",
-    "stacks/indexer/.env.example": "env template; ships a value operators should supply, and a blank fallback-free var is safer than a stale default",
-    "stacks/indexer/api/src/main.rs": "consumer; must read from configuration",
-    "stacks/owner/web/src/lib/config.ts": "consumer; must read from configuration",
-    "stacks/owner/web/src/lib/sampleDoc.ts": "consumer; must read from configuration",
-    "stacks/vet/.env.example": "env template; ships a value operators should supply, and a blank fallback-free var is safer than a stale default",
-    "stacks/vet/web/.env.example": "env template; ships a value operators should supply, and a blank fallback-free var is safer than a stale default",
-    "stacks/vet/web/src/pages/Setup.tsx": "consumer; must read from configuration"
+    "stacks/owner/web/src/lib/sampleDoc.ts": "consumer; must read from configuration"
   }
 }

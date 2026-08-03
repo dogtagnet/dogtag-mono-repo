@@ -5,7 +5,7 @@ import { wrapDocument } from "@dogtag/standard/wrap";
 // `types` is a leaf module of plain declarations plus the `TypeTag` enum - no `circomlibjs`, so it is
 // browser-safe on the same terms as `wrap`.
 import { TypeTag, type IssuerMeta, type WrappedDoc } from "@dogtag/standard/types";
-import { DEPLOYED_ADDRESSES, recordTypeKey, sortLogPoints, ZERO_ADDRESS } from "./contracts";
+import { recordTypeKey, sortLogPoints, ZERO_ADDRESS } from "./contracts";
 import type { LogPoint, WhitelistGrantEvent } from "./contracts";
 import type { IssuerChainReader } from "./verifyCredential";
 import {
@@ -74,9 +74,18 @@ import {
 
 // ── the scripted world ──────────────────────────────────────────────────────────────────────────
 
-/** The registry and factory this client is configured with. Never sourced from a document. */
-export const SCENARIO_REGISTRY = DEPLOYED_ADDRESSES.ProviderRegistry;
-export const SCENARIO_FACTORY = DEPLOYED_ADDRESSES.DogTagIssuerFactory;
+/**
+ * The registry and factory the SCENARIOS are configured with. Never sourced from a document, and
+ * deliberately SYNTHETIC rather than this build's real configuration.
+ *
+ * Every scenario scripts its own chain, so what these have to be is distinguishable - they are the
+ * addresses a fake is keyed on, and the catalogue's whole method is that a read put to the wrong
+ * contract comes back empty. Sourcing them from `DEPLOYED_ADDRESSES` also made the catalogue
+ * unrunnable wherever the portal was not configured, which is the one page that must still work when
+ * the deployment does not.
+ */
+export const SCENARIO_REGISTRY = "0x00000000000000000000000000000000005e6157";
+export const SCENARIO_FACTORY = "0x00000000000000000000000000000000fac70001";
 
 /** The clone the factory names for an honest root. */
 /** The clone every scenario anchors through - and the key its grant history is indexed on. */

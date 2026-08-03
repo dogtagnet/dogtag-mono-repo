@@ -89,8 +89,18 @@ export interface VerifiedLog {
  */
 export async function fetchVerifiedLogs(dogTagIds: bigint[]): Promise<VerifiedLog[]> {
   if (dogTagIds.length === 0) return [];
+  // UNCONFIGURED IS A REFUSAL, NOT AN EMPTY HISTORY. The two are indistinguishable downstream - both
+  // render as "this owner has consented to nothing" - so the scan must never proceed without an
+  // address to scan. Throwing puts it on the caller's could-not-check path, which is where a fact we
+  // failed to establish belongs.
+  if (!VERIFICATION_REGISTRY_CONSENT_ADDR) {
+    throw new Error(
+      "no VerificationRegistryConsent configured: set VITE_VERIFICATION_REGISTRY_CONSENT_ADDR " +
+        "(from contracts/deployments/roax.json). Consent history cannot be read without it.",
+    );
+  }
   const logs = await publicClient().getLogs({
-    address: VERIFICATION_REGISTRY_CONSENT_ADDR,
+    address: VERIFICATION_REGISTRY_CONSENT_ADDR as `0x${string}`,
     event: VERIFIED_EVENT,
     args: { dogTagId: dogTagIds },
     fromBlock: 0n,
