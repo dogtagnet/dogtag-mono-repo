@@ -75,10 +75,10 @@ vi.mock("../src/wallet/contracts", async (importOriginal) => {
 });
 
 const CONTRACTS: ProviderContracts = {
-  core: "0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9",
-  factory: "0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6",
-  domainResolver: "0x4AB4a70CFa9CE9415B96dF543C218F90a2619c33",
-  directory: "0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0",
+  core: "0x9309aB1c2d3E4F5061728394A5B6C7D8E9F00112",
+  factory: "0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607",
+  domainResolver: "0x7A9b0C1d2E3F4a5B6C7d8e9f0A1B2c3D4e5F6A7b",
+  directory: "0x8b0c1D2E3f4a5B6c7D8E9F0A1B2C3d4E5f6A7b8C",
 };
 
 let root: Root | null = null;

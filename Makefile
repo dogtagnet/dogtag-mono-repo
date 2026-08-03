@@ -34,6 +34,9 @@ test-consent-parity: ## consent prove<->VK parity - LOUD gate, fails if artifact
 vendor-mobile-artifacts: ## copy the consent zkey+graph from circuits/build into both app bundles
 	scripts/vendor-mobile-artifacts.sh
 
+gen-mobile-config: ## write both apps/*/roax.json address bundles from the deploy ledger
+	scripts/gen-mobile-roax-config.sh
+
 contracts: ## compile Foundry contracts
 	cd contracts && forge build
 
@@ -42,6 +45,9 @@ test-contracts: ## Foundry tests
 
 verify-provider-selfservice-mutations: ## S-15 mutation gate for the provider engine (slow; not in `test`)
 	bash scripts/verify-provider-selfservice-mutations.sh
+
+verify-address-config-mutations: ## mutation gate for addresses-as-configuration (slow; not in `test`)
+	bash scripts/verify-address-config-mutations.sh
 
 verify-content-mirror-mutations: ## S-17 mutation gate for the content mirror (slow; not in `test`)
 	bash scripts/verify-content-mirror-mutations.sh

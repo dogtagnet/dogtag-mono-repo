@@ -80,6 +80,13 @@ jobs:
           done
           scripts/vendor-mobile-artifacts.sh
 
+      # The address bundle is generated from the deploy ledger and gitignored, so the runner's
+      # checkout does not have it. Without this the APK builds clean and crashes on the first screen
+      # that reads a contract address (the `requireRoaxConfig` gradle check catches it either way,
+      # but this is the step that supplies it).
+      - name: Generate the mobile address bundle from the deploy ledger
+        run: scripts/gen-mobile-roax-config.sh
+
       - name: Build native prover libs (cargo-ndk → jniLibs)
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}

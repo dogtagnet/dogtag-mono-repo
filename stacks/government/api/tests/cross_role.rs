@@ -21,7 +21,7 @@ use tower::ServiceExt;
 // The live ROAX VACCINATION clone + IssuerRegistry (contracts/deployments/roax.json). Used here only
 // as stable identifiers; MemChain stands in for the chain state.
 const VACC_CLONE: &str = "0x5c703910111f942ee0f47e02214291b5274cdb53";
-const REGISTRY: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
+const REGISTRY: &str = "0x3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192030405";
 const VET_SIGNER: &str = "0x00000000000000000000000000000000000000a1";
 
 /// Build a VACCINATION wrapped credential exactly as the vet stack would: a typed-scalar VC wrapped
@@ -64,7 +64,7 @@ fn government_stack(chain: MemChain) -> AppState {
         factory_addr: "0x00000000000000000000000000000000000000fa".into(),
         issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
         dns_doh_endpoint: String::new(),
-        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
+        verification_registry_addr: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".into(),
         travel_clearance_issuer_addr: "0x1111111111111111111111111111111111111111".into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: "Example Competent Authority".into(),

@@ -115,25 +115,36 @@ class AnchorResolverTest {
     // ---- GOLDEN vectors from the real ABI encoder (independent of this decoder's author) ----
 
     /**
-     * The EXACT bytes `getDiscoverySet(keccak256("dogtag-levelb/1"))` returns from the published record
-     * on ROAX, captured with `cast call`. Nine words, one per member of the static tuple:
-     * `[discoverySetId, factory, verificationRegistry, sbt, verifier, providerRegistry, circuitId,
-     * publishedAt, active]`.
+     * The EXACT nine-word encoding of a `getDiscoverySet` record, one word per member of the static
+     * tuple: `[discoverySetId, factory, verificationRegistry, sbt, verifier, providerRegistry,
+     * circuitId, publishedAt, active]`.
      *
-     * Never hand-edit this hex. A hand-built vector is written from the same understanding as the
-     * decoder, so a shared mistake passes both; only bytes the chain actually returned can catch an
-     * ABI-model error. Recapture it if the record's shape or member order ever moves. The iOS mirror
-     * carries the identical bytes.
+     * Produced by the REAL Solidity ABI encoder, in
+     * `contracts/test/ProtocolRegistry.t.sol::test_the_golden_encoding_the_mobile_decoders_are_pinned_against`,
+     * which asserts these same bytes from the contract end. That shared literal is what makes the three
+     * files one contract rather than three independent guesses - and they had already drifted apart
+     * once, when the Solidity end was made synthetic and this pair was left holding a live chain
+     * capture, so the comment claiming they were pinned together was false for a while.
+     *
+     * THE ADDRESSES ARE SYNTHETIC, DELIBERATELY. What this vector pins is the record's ARITY and
+     * MEMBER ORDER, which is independent of which addresses the members hold; using the live deployed
+     * ones bought nothing and put real addresses in the tree, which is what `make check-addresses`
+     * exists to refuse. They are distinct per member so a member-order regression cannot pass by two
+     * slots holding the same value.
+     *
+     * Never hand-edit this hex: a hand-built vector is written from the same understanding as the
+     * decoder, so a shared mistake passes both. Regenerate by running that Solidity test and reading
+     * the actual bytes out of its failure message, then paste them into all three files.
      */
     private val DISCOVERY_SET_GOLDEN =
         "36a8d69d16a9f540fa11be5f0311ebd5efd8e971b66cd704a6e197ee15b01b3d" + // 0 discoverySetId
-        "0000000000000000000000005abdb6d61495f8b753069d582088d1f46283cc69" + // 1 factory
-        "0000000000000000000000005cc19ab043be52becd4043aa66d40fb98ff66dff" + // 2 verificationRegistry
-        "00000000000000000000000049aa0ed542bb3811452af93be45b2559aee8b0c8" + // 3 sbt (skipped)
-        "000000000000000000000000868b0b5768d07e635686a0637614ef2716a5680f" + // 4 verifier (skipped)
-        "000000000000000000000000429c2ac735b1268fb0c65f7cf7746a1c0e8452aa" + // 5 providerRegistry
+        "0000000000000000000000001c9ac2eb3f1a2d4b5c6d7e8f90a1b2c3d4e5f607" + // 1 factory
+        "0000000000000000000000002b4d6f8a0c1e3a5b7d9f0e2c4a6b8d0f1e3a5c70" + // 2 verificationRegistry
+        "0000000000000000000000003c5e7a9b0d2f4a6c8e0b1d3f5a7c9e0b2d4f6a80" + // 3 sbt (skipped)
+        "0000000000000000000000004d6f8b0c2e4a6b8d0f2c4e6a8b0d2f4c6e8a0b90" + // 4 verifier (skipped)
+        "0000000000000000000000009309ab1c2d3e4f5061728394a5b6c7d8e9f00112" + // 5 providerRegistry
         "a708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f" + // 6 circuitId
-        "000000000000000000000000000000000000000000000000000000006a70504c" + // 7 publishedAt (skipped)
+        "000000000000000000000000000000000000000000000000000000006b4c7500" + // 7 publishedAt (skipped)
         "0000000000000000000000000000000000000000000000000000000000000001"   // 8 active = true
 
     /**
@@ -146,9 +157,9 @@ class AnchorResolverTest {
         val d = AnchorResolver.decodeDiscoverySet(DISCOVERY_SET_GOLDEN)
         assertNotNull(d)
         assertEquals("0x36a8d69d16a9f540fa11be5f0311ebd5efd8e971b66cd704a6e197ee15b01b3d", d?.discoverySetId)
-        assertEquals("0x5abdb6d61495f8b753069d582088d1f46283cc69", d?.factory)
-        assertEquals("0x5cc19ab043be52becd4043aa66d40fb98ff66dff", d?.verificationRegistry)
-        assertEquals("0x429c2ac735b1268fb0c65f7cf7746a1c0e8452aa", d?.providerRegistry)
+        assertEquals("0x1c9ac2eb3f1a2d4b5c6d7e8f90a1b2c3d4e5f607", d?.factory)
+        assertEquals("0x2b4d6f8a0c1e3a5b7d9f0e2c4a6b8d0f1e3a5c70", d?.verificationRegistry)
+        assertEquals("0x9309ab1c2d3e4f5061728394a5b6c7d8e9f00112", d?.providerRegistry)
         assertEquals("0xa708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f", d?.circuitId)
         assertEquals(true, d?.active)
     }
@@ -168,7 +179,7 @@ class AnchorResolverTest {
         val d = AnchorResolver.decodeDiscoverySet(DISCOVERY_SET_GOLDEN)
         assertNotNull(d)
         assertEquals(d?.factory, d?.rootIndex)
-        assertEquals("0x5abdb6d61495f8b753069d582088d1f46283cc69", d?.rootIndex)
+        assertEquals("0x1c9ac2eb3f1a2d4b5c6d7e8f90a1b2c3d4e5f607", d?.rootIndex)
     }
 
     /**

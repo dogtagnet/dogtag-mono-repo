@@ -22,3 +22,13 @@ android/app/src/main/assets/consent.graph
 ios/DogTag/consent.graph
 # stray xcframework backup (the live xcframework is ignored above)
 ios/*.xcframework.bak/
+# GENERATED address bundles — written from contracts/deployments/roax.json by
+# scripts/gen-mobile-roax-config.sh (make gen-mobile-config). Treated exactly like the vendored zkey
+# and graph above: the source is committed, the bundle copy is not. A tracked copy carrying real
+# addresses IS a hardcoded address, which `make check-addresses` exists to refuse — and it drifted,
+# which is how both bundles came to name a superseded generation-1 ProtocolRegistry while the
+# getDiscoverySet fix sat inert in the clients. A fresh checkout has neither, and both apps refuse to
+# build until the generator runs (iOS through its pbxproj resource reference, Android through the
+# requireRoaxConfig gradle check).
+android/app/src/main/assets/roax.json
+ios/DogTag/roax.json

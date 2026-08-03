@@ -33,7 +33,7 @@ use government_api::app::{AppState, Config};
 use government_api::chain::{ChainClient, MemChain};
 use government_api::store::{MemStore, Store};
 
-const CLONE: &str = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f";
+const CLONE: &str = "0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70";
 const DOMAIN_REGISTRY: &str = "0x00000000000000000000000000000000000000dd";
 const FACTORY: &str = "0x00000000000000000000000000000000000000fa";
 /// The name the protocol multisig wrote into the clone at `createIssuer`.
@@ -45,13 +45,13 @@ fn state() -> (AppState, MemChain) {
         deployment_url: "http://localhost:44832".into(),
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
-        issuer_registry_addr: "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c".into(),
+        issuer_registry_addr: "0x3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192030405".into(),
         factory_addr: FACTORY.into(),
         issuer_domain_registry_addr: DOMAIN_REGISTRY.into(),
         // No DoH endpoint: DNS therefore reports `couldNotCheck`, which is exactly the honest state for
         // a hermetic test and keeps this suite about the RELABELLING, not about resolution.
         dns_doh_endpoint: String::new(),
-        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
+        verification_registry_addr: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".into(),
         travel_clearance_issuer_addr: CLONE.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: ONCHAIN_NAME.into(),
@@ -126,7 +126,7 @@ async fn issue_root(chain: &MemChain, root: &str) {
     let signer = chain
         .signer_address()
         .expect("MemChain has an emulated signer");
-    chain.set_issuance_capability("0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c", CLONE, &signer, true);
+    chain.set_issuance_capability("0x3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192030405", CLONE, &signer, true);
     // Declare the clone's own immutable `recordType()`, as the factory's `createIssuer` does on a real
     // clone. The mandatory issuer-whitelist pillar asks the RESOLVED clone which record type it issues
     // rather than trusting the envelope, so an undeclared clone leaves that pillar indeterminate — and

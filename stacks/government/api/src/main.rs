@@ -86,7 +86,12 @@ async fn main() {
                     .ok()
                     .filter(|v| !v.trim().is_empty())
             })
-            .unwrap_or_else(|| "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B".to_string()),
+            // Unset defaults to the ZERO address rather than to a baked-in deployment. The comment
+            // above is about a phone refusing on an anchor MISMATCH; a zero produces the same
+            // refusal but reads as unconfigured at `/health` and in `unverifiedClaims`, where a
+            // stale real address reads as a deliberate choice. Addresses come from
+            // contracts/deployments/roax.json, through the environment.
+            .unwrap_or_else(|| "0x0000000000000000000000000000000000000000".to_string()),
         travel_clearance_issuer_addr: env(
             "TRAVEL_CLEARANCE_ISSUER_ADDR",
             "0x0000000000000000000000000000000000000000",

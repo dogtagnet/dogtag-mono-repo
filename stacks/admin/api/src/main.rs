@@ -54,11 +54,15 @@ async fn main() {
         ),
         // Unified owner-hidden registry used for unstamped imported-document metadata.
         chain_id,
+        // Both default to the ZERO address, matching `FACTORY_ADDR` below. A stale non-zero default
+        // is the worse of the two failures: it names a contract that decides nothing while every
+        // surface reporting it looks configured, whereas a zero reads as unset wherever it surfaces.
+        // Addresses come from contracts/deployments/roax.json, through the environment.
         verification_registry_addr: env(
             "VERIFICATION_REGISTRY_ADDR",
-            "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
+            "0x0000000000000000000000000000000000000000",
         ),
-        sbt_addr: env("SBT_ADDR", "0xBEbc45A838643D27004827b797b30A464b2b02c0"),
+        sbt_addr: env("SBT_ADDR", "0x0000000000000000000000000000000000000000"),
         factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
         provider_registry_addr: env(
             "PROVIDER_REGISTRY_ADDR",

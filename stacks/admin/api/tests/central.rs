@@ -387,7 +387,7 @@ async fn import_projects_unified_default_provenance() {
     assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levelb/1"));
     assert_eq!(
         cred.verification_registry.as_deref(),
-        Some("0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87")
+        Some("0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70")
     );
     // issuerClone defaults to the imported doc's own documentStore.
     assert_eq!(

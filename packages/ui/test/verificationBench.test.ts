@@ -13,7 +13,7 @@
 // ONE thing off a genuine baseline.
 import { TypeTag, wrapDocument, type IssuerMeta, type WrappedDoc } from "@dogtag/standard";
 import { describe, expect, it } from "vitest";
-import { DEPLOYED_ADDRESSES, recordTypeKey, UNPOSITIONED_LOG } from "../src/wallet/contracts";
+import { recordTypeKey, UNPOSITIONED_LOG } from "../src/wallet/contracts";
 import type { IssuerChainReader } from "../src/wallet/verifyCredential";
 import {
   docFromShareResponse,
@@ -216,12 +216,12 @@ function genuineChain(doc: WrappedDoc): ChainCfg {
     recordTypes: { [CLONE.toLowerCase()]: VACCINATION_KEY },
     // The clone is governed by the registry this client is configured with - the matched pair a
     // factory guarantees, since `registry` is written once from the factory's own immutable.
-    issuerRegistries: { [CLONE.toLowerCase()]: DEPLOYED_ADDRESSES.ProviderRegistry },
+    issuerRegistries: { [CLONE.toLowerCase()]: CONFIGURED_REGISTRY },
     // ...and the log agrees with the getters: granted at 800_000, anchored at 900_000. It sits in the
     // registry that GOVERNS the clone, which is the only log an `onlyWhitelisted` issuance can rest on.
     rootIssuedLogs: { [k(CLONE, root)]: ISSUED_AT_LOG },
     grants: {
-      [k3(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)]: [
+      [k3(CONFIGURED_REGISTRY, CLONE, SIGNER)]: [
         { kind: "whitelisted", ...GRANTED_AT_LOG },
       ],
     },
@@ -338,12 +338,26 @@ function fakeGrantHistoryReader(cfg: ChainCfg): GrantHistoryReader {
  * flaky, and (for a bench whose whole subject is what a chain answered) capable of going green against
  * state nobody in this file wrote.
  */
+/**
+ * The factory and registry THIS CLIENT is configured with, passed explicitly on every run.
+ *
+ * They used to come from the module-level `DEPLOYED_ADDRESSES` literals. Those are read from
+ * configuration now and are EMPTY in a test process - which would collapse every fake's contract key
+ * onto the same empty string and silently retire the address-keying this file's own header calls
+ * load-bearing (a fake that ignores which contract it is asked about cannot model "the hostile
+ * contract answers true while the clone the factory named answers false").
+ */
+const CONFIGURED_FACTORY = "0x00000000000000000000000000000000fac70001";
+const CONFIGURED_REGISTRY = "0x000000000000000000000000000000000c0f1601";
+
 async function bench(
   doc: WrappedDoc | Record<string, unknown>,
   cfg: ChainCfg,
   extra: Partial<Parameters<typeof runVerificationBench>[0]> = {},
 ): Promise<BenchReport> {
   return runVerificationBench({
+    factoryAddr: CONFIGURED_FACTORY,
+    registryAddr: CONFIGURED_REGISTRY,
     wrappedDoc: asRecord(doc),
     reader: fakeReader(cfg),
     authorityReader: fakeAuthorityReader(cfg),
@@ -418,6 +432,8 @@ describe("the three-state contract", () => {
     const cfg = genuineChain(validDoc());
     for (const junk of [null, 42, "a string", [1, 2, 3], true]) {
       const r = await runVerificationBench({
+        factoryAddr: CONFIGURED_FACTORY,
+        registryAddr: CONFIGURED_REGISTRY,
         wrappedDoc: junk as unknown as Record<string, unknown>,
         reader: fakeReader(cfg),
         blockNumber: 900_100n,
@@ -490,7 +506,7 @@ describe("the recording reader", () => {
     const doc = validDoc();
     const r = await bench(doc, genuineChain(doc));
     const anchorRead = r.reads.find((x) => x.method === "rootIssuer");
-    expect(anchorRead?.contract).toBe(DEPLOYED_ADDRESSES.DogTagIssuerFactory);
+    expect(anchorRead?.contract).toBe(CONFIGURED_FACTORY);
     expect(anchorRead?.value?.toLowerCase()).toBe(CLONE.toLowerCase());
     // The verdict-deciding reads went to the FACTORY-RESOLVED clone.
     expect(r.reads.find((x) => x.method === "isValid")?.contract.toLowerCase()).toBe(CLONE.toLowerCase());
@@ -598,7 +614,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     expect(row.outcome).not.toBe("fail");
     const read = r.reads.find((x) => x.method === "whitelistHistory");
     expect(read?.contract.toLowerCase()).toBe(FOREIGN_REGISTRY.toLowerCase());
-    expect(read?.contract.toLowerCase()).not.toBe(DEPLOYED_ADDRESSES.ProviderRegistry.toLowerCase());
+    expect(read?.contract.toLowerCase()).not.toBe(CONFIGURED_REGISTRY.toLowerCase());
   });
 
   it("keeps a genuinely empty GOVERNING log a definite refusal - that IS evidence", async () => {
@@ -625,11 +641,11 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const r = await bench(doc, {
       ...genuineChain(doc),
       grants: {
-        [k3(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)]: [
+        [k3(CONFIGURED_REGISTRY, CLONE, SIGNER)]: [
           { kind: "whitelisted", blockNumber: ISSUED_AT_LOG.blockNumber + 50n, logIndex: 0 },
         ],
       },
-      authorityGenerations: { [DEPLOYED_ADDRESSES.ProviderRegistry.toLowerCase()]: "successor" },
+      authorityGenerations: { [CONFIGURED_REGISTRY.toLowerCase()]: "successor" },
     });
     const row = check(r, "whitelisted-at-issuance");
     expect(row.outcome).toBe("fail");
@@ -683,7 +699,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const r = await bench(doc, {
       ...cfg,
       grants: {
-        [k3(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)]: UNPOSITIONED_LOG,
+        [k3(CONFIGURED_REGISTRY, CLONE, SIGNER)]: UNPOSITIONED_LOG,
       },
     });
     const row = check(r, "whitelisted-at-issuance");
@@ -733,7 +749,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const r = await bench(doc, {
       ...genuineChain(doc),
       grants: {
-        [k3(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)]: UNPOSITIONED_LOG,
+        [k3(CONFIGURED_REGISTRY, CLONE, SIGNER)]: UNPOSITIONED_LOG,
       },
     });
     const row = check(r, "issuer-whitelisted");
@@ -785,10 +801,10 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const doc = validDoc();
     const cfg = genuineChain(doc);
     const logs = fakeGrantHistoryReader(cfg);
-    expect(await logs.grants(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)).not.toEqual([]);
+    expect(await logs.grants(CONFIGURED_REGISTRY, CLONE, SIGNER)).not.toEqual([]);
     expect(await logs.grants(FOREIGN_REGISTRY, CLONE, SIGNER)).toEqual([]);
     const reader = fakeReader(cfg);
-    expect(await reader.grantHistory(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)).not.toEqual(
+    expect(await reader.grantHistory(CONFIGURED_REGISTRY, CLONE, SIGNER)).not.toEqual(
       [],
     );
     expect(await reader.grantHistory(FOREIGN_REGISTRY, CLONE, SIGNER)).toEqual([]);

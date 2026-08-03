@@ -31,6 +31,23 @@ const SIGNER = "0xabc0000000000000000000000000000000000abc";
  * pillar must ask this one, so a fake that used the configured address could not tell the two apart.
  */
 const GOVERNING_REGISTRY = "0x00000000000000000000000000000000005e6157";
+/**
+ * The factory THIS CLIENT is configured with, passed explicitly on every call below.
+ *
+ * It used to be omitted so the module-level `DEPLOYED_ADDRESSES.DogTagIssuerFactory` default
+ * supplied it. That default is now read from configuration and is EMPTY in a test process, which is
+ * correct - but it also means a test that leans on it is really asserting something about the
+ * ambient environment. Naming it here keeps every assertion about the anchor about a value this file
+ * chose.
+ */
+const CONFIGURED_FACTORY = "0x00000000000000000000000000000000fac70001";
+/**
+ * A registry this client is configured with, and which the pillar must NOT ask. Passed as
+ * `registryAddr` so the "never this client's own configured registry" assertion is discriminating -
+ * against an empty default it would have held trivially, which is the vacuous shape this file's
+ * `GOVERNING_REGISTRY` note is already about.
+ */
+const CONFIGURED_REGISTRY = "0x000000000000000000000000000000000c0f1601";
 const NOW = 1_700_000_000;
 
 /** A wrapped doc with dogTagId == "42"; deterministic salts so the root is stable across runs. */
@@ -165,7 +182,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
   it("valid: issued, not revoked, isValid → verdict pass / status valid", async () => {
     const doc = validDoc();
     const { reader } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true, isRevoked: false });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.verdict).toBe(true);
     expect(r.status).toBe("valid");
@@ -186,7 +203,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
   it("revoked: issued but revokedAt set → verdict fail / status revoked", async () => {
     const doc = validDoc();
     const { reader } = fakeReader({ issuedAt: 1_699_000_000n, isValid: false, isRevoked: true });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.status).toBe("revoked");
     expect(r.verdict).toBe(false);
@@ -197,7 +214,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
   it("not_issued: issuedAt == 0 → status not_issued (distinct from revoked)", async () => {
     const doc = validDoc();
     const { reader } = fakeReader({ issuedAt: 0n, isValid: false, isRevoked: false });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.status).toBe("not_issued");
     expect(r.verdict).toBe(false);
@@ -208,7 +225,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
   it("integrity_failed: tampered doc → status integrity_failed even when chain says valid", async () => {
     const doc = tamperIntegrity(validDoc());
     const { reader } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true, isRevoked: false });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.status).toBe("integrity_failed");
     expect(r.verdict).toBe(false);
@@ -224,7 +241,13 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       // The governing authority's log records no grant to this signer on this clone, ever.
       grantHistory: [],
     });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
+      registryAddr: CONFIGURED_REGISTRY,
+      wrappedDoc: asRecord(doc),
+      reader,
+      now: NOW,
+    });
 
     expect(r.status).toBe("valid"); // on-chain state is valid…
     expect(r.verdict).toBe(false); // …but an unauthorised issuer signer fails the verdict.
@@ -234,7 +257,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     // CHAIN-resolved clone and the CHAIN-resolved signer. Never anything supplied by the caller or
     // the document, and never this client's own configured registry.
     expect(calls.grantHistory).toEqual([[GOVERNING_REGISTRY, CLONE, SIGNER]]);
-    expect(calls.grantHistory[0][0]).not.toBe(DEPLOYED_ADDRESSES.ProviderRegistry);
+    expect(calls.grantHistory[0][0]).not.toBe(CONFIGURED_REGISTRY);
   });
 
   it("delisting is FORWARD-ONLY: after the anchoring it verifies, before it does not", async () => {
@@ -243,6 +266,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
 
     // Delisted AFTER the anchoring - a key rotation. The credential stays genuine.
     const after = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       now: NOW,
       reader: fakeReader({
@@ -259,6 +283,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
 
     // Delisted BEFORE it - an anchoring `onlyWhitelisted` could not have permitted.
     const before = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       now: NOW,
       reader: fakeReader({
@@ -282,6 +307,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     const doc = validDoc();
     const empty = fakeReader({ issuedAt: 1_699_000_000n, isValid: true, grantHistory: [] });
     const refused = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       reader: empty.reader,
       now: NOW,
@@ -294,6 +320,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     // a chance to perturb an answer the forward-only rule already established.
     const granted = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
     const passed = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       reader: granted.reader,
       now: NOW,
@@ -306,6 +333,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     const doc = validDoc();
     // (a) the clone names no governing registry - there is no authority whose log could answer.
     const noAuthority = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       now: NOW,
       reader: fakeReader({ issuedAt: 1_699_000_000n, isValid: true, issuerRegistry: ZERO_ADDR })
@@ -321,6 +349,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       rootIssuedAt: null,
     });
     const unanchored = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       now: NOW,
       reader: noAnchoring.reader,
@@ -349,7 +378,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       // reading we have, so the pillar reports it could not run.
       rootIssuedAt: UNPOSITIONED_LOG,
     });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.fragments.issuerWhitelisted).toBeNull();
     expect(r.verdict).toBe(false);
@@ -364,7 +393,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       isValid: true,
       grantHistory: UNPOSITIONED_LOG,
     });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     // `null`, NOT the `false` an empty history earns above: the registry's log could not be ordered,
     // which is a fact about our reading rather than evidence about the credential. The three outcomes
@@ -377,7 +406,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
   it("resolves the signer from the chain, so the pillar runs with no operator input at all", async () => {
     const doc = validDoc();
     const { reader, calls } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(calls.issuedBy).toEqual([[ISSUER.documentStore, doc.signature.merkleRoot]]);
     expect(r.fragments.issuerWhitelisted).toBe(true);
@@ -394,7 +423,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       isValid: true,
       issuedBy: ZERO_ADDR,
     });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.fragments.issuerWhitelisted).toBeNull(); // indeterminate…
     expect(r.verdict).toBe(false); // …and therefore NOT a pass.
@@ -417,6 +446,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     // The factory still names the REAL clone — the hostile contract can never enter that index.
     const { reader, calls } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
     const r = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(forged as WrappedDoc),
       reader,
       now: NOW,
@@ -433,7 +463,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
   it("a root no factory clone ever issued is indeterminate, and no reads are made", async () => {
     const doc = validDoc();
     const { reader, calls } = fakeReader({ rootIssuer: ZERO_ADDR, isValid: true });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.fragments.issuerWhitelisted).toBeNull();
     expect(r.fragments.onchain).toBe(false);
@@ -454,6 +484,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     };
     const { reader, calls } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
     const r = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(relabelled as WrappedDoc),
       reader,
       now: NOW,
@@ -471,7 +502,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       isValid: true,
       recordType: `0x${"0".repeat(64)}`,
     });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.fragments.issuerWhitelisted).toBeNull();
     expect(r.verdict).toBe(false);
@@ -482,6 +513,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     const doc = validDoc();
     const { reader } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
     const r = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       signerAddr: "0x00000000000000000000000000000000000000ff",
       reader,
@@ -496,11 +528,11 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
   it("reads the CLAIMED root + the resolved clone, and recomputedRoot matches on a valid doc", async () => {
     const doc = validDoc();
     const { reader, calls } = fakeReader({ issuedAt: 1n, isValid: true });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+    const r = await verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW });
 
     const claimedRoot = doc.signature.merkleRoot;
     expect(calls.rootIssuer).toEqual([
-      [DEPLOYED_ADDRESSES.DogTagIssuerFactory, claimedRoot],
+      [CONFIGURED_FACTORY, claimedRoot],
     ]);
     for (const c of [calls.issuedAt[0], calls.isValid[0], calls.isRevoked[0]]) {
       expect(c).toEqual([ISSUER.documentStore, claimedRoot]);
@@ -518,6 +550,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     const hostile = "0x000000000000000000000000000000000000beef";
     const { reader, calls } = fakeReader({ issuedAt: 1n, isValid: true });
     const r = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       issuerAddr: hostile,
       reader,
@@ -532,6 +565,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     // An override that AGREES with the factory leaves a genuine credential passing.
     const agreeing = fakeReader({ issuedAt: 1n, isValid: true });
     const ok = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       issuerAddr: ISSUER.documentStore.toUpperCase().replace("0X", "0x"),
       reader: agreeing.reader,
@@ -547,6 +581,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     const doc = validDoc();
     const { reader, calls } = fakeReader({ rootIssuer: ZERO_ADDR, isValid: true, issuedAt: 1n });
     const r = await verifyCredentialOnchain({
+      factoryAddr: CONFIGURED_FACTORY,
       wrappedDoc: asRecord(doc),
       issuerAddr: "0x000000000000000000000000000000000000beef",
       reader,
@@ -592,14 +627,14 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       },
     };
     await expect(
-      verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW }),
+      verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: asRecord(doc), reader, now: NOW }),
     ).rejects.toThrow("rpc 502");
   });
 
   it("rejects a structurally malformed document (missing issuer/signature)", async () => {
     const { reader } = fakeReader({ isValid: true });
     await expect(
-      verifyCredentialOnchain({ wrappedDoc: { foo: "bar" }, reader, now: NOW }),
+      verifyCredentialOnchain({ factoryAddr: CONFIGURED_FACTORY, wrappedDoc: { foo: "bar" }, reader, now: NOW }),
     ).rejects.toThrow(/issuer\/signature/);
   });
 });

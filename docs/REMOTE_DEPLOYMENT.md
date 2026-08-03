@@ -187,7 +187,7 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `ADMIN_PASSWORD` | all | admin-session login (custody/console) | `admin` | **secret** → `openssl rand -hex 32` |
 | `CENTRAL_HMAC_SECRET` | all | central↔business HMAC; **identical across all stacks** | `dev-central-hmac-secret` | **secret** → `openssl rand -hex 32` (same value everywhere) |
 | `ADMIN_PRIVATE_KEY` | admin | on-chain signer (`whitelistFor` / issuer-role administration / factory `createIssuer`); its holdership of each authority is what the `GovernanceAction` dispatcher checks. Since Governance Phase-2 (2026-07-05, block 123835) this MUST be **governance signer-1**. The old deployer EOA `0x119F…` lost governance/admin authority but retains the retired owner-revealing SBT's issuer/whitelist capabilities and is not a neutral key | from `contracts/.env` (`GOVERNANCE_PRIVATE_KEY`) | **secret** - dedicated **funded** signer-1 key |
-| `ADMIN_ADDRESS` | admin | address of `ADMIN_PRIVATE_KEY` - expected governance signer-1 `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` | from `contracts/.env` | derive from the key |
+| `ADMIN_ADDRESS` | admin | address of `ADMIN_PRIVATE_KEY` - must equal the deploy ledger's `admin` key (`bash -c 'source scripts/lib/ledger.sh; ledger_addr admin'`) | from `contracts/.env` | derive from the key |
 | `BUSINESS_ID` | vet, groomer | central registry id | `biz-vet-local` / `biz-groomer-local` | real id |
 | `BUSINESS_TYPE` | groomer | run `vet-api` as groomer | `groomer` | `groomer` |
 | `CENTRAL_BASE_URL` | vet, groomer | central api base for HMAC events | `http://localhost:39742` | `https://api.<DOMAIN>` (your admin stack) |
@@ -472,8 +472,9 @@ DOM=<DOMAIN>                          # this business's real domain
    **lowercased**; the prefix is the literal `dogtag-verify=`; the checker (Cloudflare DoH,
    `accept: application/dns-json`) matches a TXT record whose value **contains** that token. See §4 and
    [`stacks/admin/api/src/dns.rs`](../stacks/admin/api/src/dns.rs) (`expected_txt`).
-   For example, a business whose clone is `0x1456…edD9A` publishes
-   `dogtag-verify=0x1456f93f7376789c46408cc4616751eb853edd9a`.
+   For example, a business whose clone is `0x6F8a…6f70` publishes
+   `dogtag-verify=0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70`. (An illustrative address, not a
+   deployed one - the record's VALUE is the clone's own address, lowercased.)
 
    **Verify.** The TXT resolves with the lowercased clone before you approve:
    ```bash

@@ -9,11 +9,15 @@
  */
 
 /**
- * The governance authority post-Phase-2. Per `roax.json._governance` it now holds the factory
- * `Ownable2Step` ownership, the IssuerRegistry `WHITELIST_ADMIN`, and the DEFAULT_ADMIN of the
- * IssuerRegistry + VerificationRegistry + DogTagSBT (each behind its ACDAR two-step timelock).
+ * The governance authority, READ FROM CONFIGURATION (`VITE_ADMIN_SIGNER_ADDR`; the value lives in
+ * `contracts/deployments/roax.json` under `admin`). Post-Phase-2 it holds the factory
+ * `Ownable2Step` ownership and the registry DEFAULT_ADMIN, each behind its two-step timelock.
+ *
+ * Unset is the empty string, and `sameAddr` below already refuses to match an empty value on either
+ * side - so an unconfigured console reports every authority as "not signer-1" rather than silently
+ * reconciling against an address nobody chose.
  */
-export const GOVERNANCE_SIGNER_1 = "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2";
+export const GOVERNANCE_SIGNER_1 = (import.meta.env.VITE_ADMIN_SIGNER_ADDR ?? "").trim();
 export const GOVERNANCE_SIGNER_1_LABEL = "signer-1";
 /**
  * The original deployer EOA. Phase-2 stripped it of the three governance authorities (factory owner,

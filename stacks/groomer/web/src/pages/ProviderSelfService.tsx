@@ -23,13 +23,13 @@ function readContracts(): { contracts: ProviderContracts; missing: string[] } {
   // half-broken rather than loudly unconfigured.
   const named: [string, string][] = [
     ["VITE_PROVIDER_REGISTRY_ADDR", env.providerRegistryAddr],
-    ["VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR", env.issuerFactoryV2Addr],
+    ["VITE_DOGTAG_ISSUER_FACTORY_ADDR", env.issuerFactoryAddr],
     ["VITE_SERVICE_DOMAIN_RESOLVER_ADDR", env.serviceDomainResolverAddr],
     ["VITE_PROVIDER_DIRECTORY_ADDR", env.providerDirectoryAddr],
   ];
   const contracts: ProviderContracts = {
     core: env.providerRegistryAddr as `0x${string}`,
-    factory: env.issuerFactoryV2Addr as `0x${string}`,
+    factory: env.issuerFactoryAddr as `0x${string}`,
     domainResolver: env.serviceDomainResolverAddr as `0x${string}`,
     directory: env.providerDirectoryAddr as `0x${string}`,
   };

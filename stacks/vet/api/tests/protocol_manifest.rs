@@ -4,15 +4,16 @@
 //! client — the faithful "an app fetches the dogtag-signed discovery manifest, then verifies it
 //! OFFLINE" flow. It exercises every documented branch of the serving contract in one sequential test
 //! (env var `DOGTAG_MANIFEST_SIGNING_KEY` is process-global, so a single test owns it, no sibling race):
-//!   * key UNSET            -> 503 "not configured"  (feature off, fail-closed)
-//!   * key SET-but-malformed -> 503 "misconfigured"  (the unset-vs-malformed distinction)
-//!   * key VALID            -> 200 + a manifest that OFFLINE-VERIFIES against the paired public key
-//!   * unknown version       -> 404                    (fail-closed on an unrecognized version)
+//!   * key UNSET             -> 503 "not configured"  (feature off, fail-closed)
+//!   * key SET-but-malformed -> 503 "misconfigured"   (the unset-vs-malformed distinction)
+//!   * DEPLOYMENT unset      -> 503 naming the variable (the on-chain half is configuration too)
+//!   * key VALID             -> 200 + a manifest that OFFLINE-VERIFIES against the paired public key
+//!   * unknown version       -> 404                   (fail-closed on an unrecognized version)
 
 use axum::{routing::get, Router};
 use dogtag_prover::manifest::{verify, SignedManifest};
 use ed25519_dalek::SigningKey;
-use vet_api::protocol::SIGNING_KEY_ENV;
+use vet_api::protocol::{DEPLOYMENT_ENV, SIGNING_KEY_ENV};
 
 #[tokio::test]
 async fn manifest_route_serve_and_verify_offline() {
@@ -45,10 +46,39 @@ async fn manifest_route_serve_and_verify_offline() {
     assert_eq!(status_bad, 503, "malformed key must 503");
     assert!(body_bad.contains("misconfigured"), "body: {body_bad}");
 
-    // --- 3. key VALID -> 200 + a manifest that verifies OFFLINE against the paired pubkey --------
+    // --- 3. key VALID but DEPLOYMENT unset -> 503 NAMING the variable ---------------------------
+    // The manifest's on-chain half is configuration exactly like the key: it MIRRORS chain state, so
+    // the prover crate ships no deployment constant. It used to, and every address in it had gone
+    // superseded - this route would have served a signed manifest disagreeing with the chain on every
+    // member. A missing variable must therefore refuse and SAY WHICH, never fill in a guess.
     let seed = [7u8; 32];
     let signing_key = SigningKey::from_bytes(&seed);
     std::env::set_var(SIGNING_KEY_ENV, hex::encode(seed));
+    for var in DEPLOYMENT_ENV {
+        std::env::remove_var(var);
+    }
+    let r = get("dogtag-levelb/1").await;
+    let status_nodeploy = r.status();
+    let body_nodeploy = r.text().await.unwrap();
+    assert_eq!(status_nodeploy, 503, "an unconfigured deployment must 503");
+    assert!(
+        body_nodeploy.contains("CHAIN_ID"),
+        "the refusal must NAME the missing variable, or the operator cannot act on it: {body_nodeploy}"
+    );
+
+    // Configure it, one synthetic record. Distinct per member so a field-order mistake in the
+    // assembly cannot pass on two slots sharing a value.
+    for (var, value) in [
+        ("CHAIN_ID", "135"),
+        ("FACTORY_ADDR", "0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607"),
+        ("VERIFICATION_REGISTRY_CONSENT_ADDR", "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70"),
+        ("SBT_CONSENT_ADDR", "0x3c5e7A9b0D2F4a6c8E0b1d3F5A7c9e0B2D4F6a80"),
+        ("GROTH16_VERIFIER_CONSENT_ADDR", "0x4d6F8B0C2E4A6b8d0F2c4e6a8b0D2F4c6e8A0b90"),
+    ] {
+        std::env::set_var(var, value);
+    }
+
+    // --- 4. key VALID + deployment set -> 200 + a manifest that verifies OFFLINE ----------------
 
     let version = dogtag_standard::wrap::LEVEL_B_VERSION;
     let r = get(version).await;

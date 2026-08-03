@@ -380,13 +380,17 @@ export interface DiscoveryAddresses {
 }
 
 /**
- * Default addresses for a ROAX deployment. Note the VERIFICATION REGISTRY: discovery must read the
- * owner-hidden `VerificationRegistryConsent`, whose `Verified` event indexes `dogTagId`. The older
- * `VerificationRegistry` in {@link DEPLOYED_ADDRESSES} is a different, superseded contract; pointing a
- * scan at it returns zero events and looks exactly like an honestly empty chain.
+ * Default addresses for a ROAX deployment, taken from {@link DEPLOYED_ADDRESSES} - i.e. from this
+ * build's CONFIGURATION, never from a literal. Each is the empty string when unconfigured, which the
+ * caller must treat as "cannot scan" rather than as an address to dial.
+ *
+ * Note the VERIFICATION REGISTRY: discovery must read the owner-hidden `VerificationRegistryConsent`,
+ * whose `Verified` event indexes `dogTagId`. Any other verification registry instance still answers
+ * `eth_getLogs`, so a wrong one here returns zero events and looks exactly like an honestly empty
+ * chain.
  */
 export const DISCOVERY_ADDRESSES: DiscoveryAddresses = {
-  sbt: DEPLOYED_ADDRESSES.DogTagSBT as Address,
+  sbt: DEPLOYED_ADDRESSES.DogTagSBTConsent as Address,
   verificationRegistry: DEPLOYED_ADDRESSES.VerificationRegistryConsent as Address,
   factory: DEPLOYED_ADDRESSES.DogTagIssuerFactory as Address,
 };

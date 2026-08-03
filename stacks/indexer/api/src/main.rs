@@ -9,8 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use indexer_api::app::{
-    keccak_key, parse_watch_generations, validate_watch_generations, watch_generation, AppState,
-    Config,
+    keccak_key, resolve_watch_generations, watch_generation, AppState, Config, WatchConfigInput,
 };
 use indexer_api::chain::{AlloyLogSource, LogSource, MemLogSource};
 use indexer_api::directory::Directory;
@@ -19,22 +18,24 @@ use indexer_api::mirror::{ContentMirror, MemContentMirror};
 use indexer_api::scope::{ScopeConfig, ScopeRegistry};
 use indexer_api::store::{MemStore, Store};
 
-// ROAX deployment defaults (contracts/deployments/roax.json), lowercased. The atomic
-// INDEXER_GENERATIONS setting supersedes these; they remain the deprecated one-generation fallback.
-const DEFAULT_FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
-const DEFAULT_REGISTRY: &str = "0xaee540350292e49a9aedf19dd4c3bac6abee6c21";
-// Unified owner-hidden `VerificationRegistryConsent` (roax.json canonical pairing), lowercased.
-const DEFAULT_VREG_CONSENT: &str = "0xabfd6f6e31780ebcb7abd28a2a9bcfc9c8e6a77b";
-// The government TRAVEL_CLEARANCE clone on the FRESH owner-hidden set (roax.json government_clones).
-// The earlier 0x8e276bd4… / 0xe30a1739… pair is bound to the RETIRED IssuerRegistry and quarantined as
-// government_clones_deadRegistry_legacy - seeding those would name clones no issuance flows through.
-// EU_HEALTH_CERT has no clone on the fresh set yet, so there is nothing to seed for it.
-const GOV_TRAVEL_CLONE: &str = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f";
-const DEMO_DOGPROFILE_CLONE: &str = "0x0e56ae2e1ef684d3e90d7699b981c6b76df922bf";
-const DEMO_VACCINATION_CLONE: &str = "0x1456f93f7376789c46408cc4616751eb853edd9a";
-// On testnet the government signer is the protocol admin address (roax.json government_clones note).
-const GOV_SIGNER: &str = "0x119f8c7f6d7ec10e7376983739c6f46cf9cc3e96";
-// A stand-in demo groomer signer that issues on the DOG_PROFILE clone (demo scoped-view data).
+// The DEMO generation and the addresses its scripted history names. Every one of them is
+// deliberately SYNTHETIC and unmistakably so.
+//
+// They used to be the real deployed set, on the reasoning that a demo should look like the real
+// thing. That is exactly backwards for this service: `MemLogSource` FABRICATES the history, so a
+// scripted feed naming real contracts is a synthetic feed wearing the deployment's face - the very
+// confusion `/health`'s `simulated` flag exists to remove, reintroduced one layer down where no flag
+// covers it. Whoever reads `/v1/status.watchedGenerations` on a demo instance must be able to see at
+// a glance that nothing here addresses a chain.
+//
+// `DEMO_GROOMER_SIGNER` was already synthetic; the rest now match it.
+const DEMO_FACTORY: &str = "0x00000000000000000000000000000000fac70000";
+const DEMO_REGISTRY: &str = "0x000000000000000000000000000000000e615700";
+const DEMO_VREG_CONSENT: &str = "0x00000000000000000000000000000000c0e5e400";
+const GOV_TRAVEL_CLONE: &str = "0x000000000000000000000000000000000a7e1000";
+const DEMO_DOGPROFILE_CLONE: &str = "0x00000000000000000000000000000000d06f1000";
+const DEMO_VACCINATION_CLONE: &str = "0x000000000000000000000000000000000acc0000";
+const GOV_SIGNER: &str = "0x0000000000000000000000000000000000905160";
 const DEMO_GROOMER_SIGNER: &str = "0x00000000000000000000000000000000c710f000";
 
 /// A deprecated singleton watch variable, read as CONFIGURATION rather than as mere presence.
@@ -52,65 +53,49 @@ fn legacy_env(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Load the atomic generation-set configuration. The old four-variable shape remains a
-/// singleton-only compatibility fallback, but the two forms may never coexist: accepting both would
-/// recreate the split-brain where an operator edits one address source while the scanner reads the
-/// other.
-fn load_watch_generations() -> Result<Vec<indexer_api::chain::WatchGeneration>, String> {
-    const LEGACY_KEYS: [&str; 4] = [
-        "FACTORY_ADDR",
-        "ISSUER_REGISTRY_ADDR",
-        "VERIFICATION_REGISTRY_CONSENT_ADDR",
-        "SEED_CLONES",
-    ];
-
-    match std::env::var("INDEXER_GENERATIONS") {
-        Ok(raw) => {
-            let conflicts: Vec<&str> = LEGACY_KEYS
-                .into_iter()
-                .filter(|key| legacy_env(key).is_some())
-                .collect();
-            if !conflicts.is_empty() {
-                return Err(format!(
-                    "INDEXER_GENERATIONS cannot be combined with legacy {}",
-                    conflicts.join(", ")
-                ));
-            }
-            parse_watch_generations(&raw)
-        }
+/// Read the watch configuration from the environment and hand it to the pure decision in
+/// [`resolve_watch_generations`]. This function reads env and NOTHING else; every rule about what a
+/// given combination means - including that there are no address defaults and an unconfigured live
+/// instance refuses to start - lives in the library beside its tests.
+fn load_watch_generations(demo: bool) -> Result<Vec<indexer_api::chain::WatchGeneration>, String> {
+    let generations_json = match std::env::var("INDEXER_GENERATIONS") {
+        Ok(raw) => Some(raw),
         Err(std::env::VarError::NotUnicode(_)) => {
-            Err("INDEXER_GENERATIONS is not valid UTF-8".into())
+            return Err("INDEXER_GENERATIONS is not valid UTF-8".into())
         }
-        Err(std::env::VarError::NotPresent) => {
-            let legacy_configured = LEGACY_KEYS.into_iter().any(|key| legacy_env(key).is_some());
-            if legacy_configured {
-                tracing::warn!(
-                    "legacy singleton indexer watch variables are deprecated; migrate the exact \
-                     triple + seed clones to INDEXER_GENERATIONS"
-                );
-            }
-            let factory = legacy_env("FACTORY_ADDR").unwrap_or_else(|| DEFAULT_FACTORY.to_string());
-            let issuer_registry =
-                legacy_env("ISSUER_REGISTRY_ADDR").unwrap_or_else(|| DEFAULT_REGISTRY.to_string());
-            let verification_registry = legacy_env("VERIFICATION_REGISTRY_CONSENT_ADDR")
-                .unwrap_or_else(|| DEFAULT_VREG_CONSENT.to_string());
-            let seed_clones = legacy_env("SEED_CLONES")
-                .unwrap_or_else(|| {
-                    [GOV_TRAVEL_CLONE, DEMO_DOGPROFILE_CLONE, DEMO_VACCINATION_CLONE].join(",")
-                })
-                .split(',')
-                .map(str::trim)
-                .filter(|clone| !clone.is_empty())
-                .map(str::to_string)
-                .collect();
-            validate_watch_generations(vec![watch_generation(
-                &factory,
-                &issuer_registry,
-                &verification_registry,
-                seed_clones,
-            )?])
-        }
+        Err(std::env::VarError::NotPresent) => None,
+    };
+    let input = WatchConfigInput {
+        generations_json,
+        factory: legacy_env("FACTORY_ADDR"),
+        issuer_registry: legacy_env("ISSUER_REGISTRY_ADDR"),
+        verification_registry: legacy_env("VERIFICATION_REGISTRY_CONSENT_ADDR"),
+        seed_clones: legacy_env("SEED_CLONES"),
+    };
+    // The scripted stand-in is supplied HERE rather than held in the library, so the library carries
+    // no address of its own and a live instance can never reach one.
+    let demo_generation = if demo {
+        Some(watch_generation(
+            DEMO_FACTORY,
+            DEMO_REGISTRY,
+            DEMO_VREG_CONSENT,
+            vec![
+                GOV_TRAVEL_CLONE.to_string(),
+                DEMO_DOGPROFILE_CLONE.to_string(),
+                DEMO_VACCINATION_CLONE.to_string(),
+            ],
+        )?)
+    } else {
+        None
+    };
+    let resolved = resolve_watch_generations(&input, demo_generation)?;
+    if resolved.used_legacy_singleton {
+        tracing::warn!(
+            "legacy singleton indexer watch variables are deprecated; migrate the exact triple + \
+             seed clones to INDEXER_GENERATIONS"
+        );
     }
+    Ok(resolved.generations)
 }
 
 #[tokio::main]
@@ -126,7 +111,7 @@ async fn main() {
     let rpc_url = env("ROAX_RPC", "https://devrpc.roax.net");
     let chain_id: u64 = env("CHAIN_ID", "135").parse().unwrap_or(135);
 
-    let generations = load_watch_generations().unwrap_or_else(|error| {
+    let generations = load_watch_generations(demo).unwrap_or_else(|error| {
         tracing::error!("invalid indexer watch configuration: {error}; refusing to start");
         std::process::exit(1);
     });

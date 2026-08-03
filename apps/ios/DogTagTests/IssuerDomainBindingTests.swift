@@ -13,8 +13,8 @@ import XCTest
 ///    credential, whose validity is proven on-chain; telling a holder their valid credential FAILED would
 ///    be worse than showing nothing.
 final class IssuerDomainBindingTests: XCTestCase {
-    private let clone = "0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F"
-    private let cloneLc = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+    private let clone = "0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70"
+    private let cloneLc = "0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70"
 
     // MARK: - the normative record name
 
@@ -537,7 +537,7 @@ final class IssuerDomainBindingTests: XCTestCase {
 /// The defence is the factory's write-once `rootIssuer[R]`, which names the clone that issued THIS root.
 /// `chooseClone` is that decision, kept pure so the property is assertable without a network.
 final class IssuerCloneResolutionTests: XCTestCase {
-    private let ours = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+    private let ours = "0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70"
     private let otherAuthority = "0x00000000000000000000000000000000000000ee"
 
     /// THE property. A document naming some other factory clone must not cause that clone to be the one
@@ -556,7 +556,7 @@ final class IssuerCloneResolutionTests: XCTestCase {
     /// An agreeing document is not a disagreement, and address CASE is not evidence of one.
     func test_an_agreeing_document_store_is_not_reported_as_a_difference() {
         let choice = IssuerBindingResolver.chooseClone(
-            rootIssuer: .value(ours), documentStore: "  0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F "
+            rootIssuer: .value(ours), documentStore: "  0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70 "
         )
         XCTAssertEqual(choice.address, ours)
         XCTAssertFalse(choice.documentStoreDiffers)
@@ -605,7 +605,7 @@ final class IssuerCloneResolutionTests: XCTestCase {
     // MARK: - the address word
 
     func test_decodes_a_right_aligned_address_word() {
-        let word = String(repeating: "0", count: 24) + "b5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+        let word = String(repeating: "0", count: 24) + "6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70"
         XCTAssertEqual(RoaxRpc.decodeAbiAddress(word), ours)
         XCTAssertEqual(RoaxRpc.decodeAbiAddress("0x" + word.uppercased()), ours)
     }

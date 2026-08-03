@@ -197,12 +197,28 @@ stay gitignored so the blobs are never double-committed.
 |---|---|---|---|
 | `consent_final.zkey` (~25 MB) | `apps/ios/DogTag/consent_final.zkey` | `apps/android/app/src/main/assets/consent_final.zkey` | zkey committed under `circuits/build/`; the bundle copy is gitignored — vendor it |
 | `consent.graph` (~1.5 MB) | `apps/ios/DogTag/consent.graph` | `apps/android/app/src/main/assets/consent.graph` | graph committed under `circuits/build/`; the bundle copy is gitignored — vendor it |
-| `roax.json` (hand-maintained subset) | `apps/ios/DogTag/roax.json` | `apps/android/app/src/main/assets/roax.json` | yes |
+| `roax.json` (GENERATED from the deploy ledger) | `apps/ios/DogTag/roax.json` | `apps/android/app/src/main/assets/roax.json` | no — gitignored; run `make gen-mobile-config` |
 | `testvectors.json` | `apps/ios/DogTag/testvectors.json` | `apps/android/app/src/main/assets/testvectors.json` | yes |
 
 Each bundle copy is a 1:1 copy of the file under `circuits/build/`.
 Both sources are committed there, but their bundle copies are gitignored in `apps/.gitignore` (so the
 blobs are never double-committed).
+
+**`roax.json` is GENERATED, not hand-maintained, and it is gitignored for the same reason the blobs
+are**: a tracked copy carrying real addresses IS a hardcoded address, which `make check-addresses`
+exists to refuse - and it drifted exactly that way, so both bundles came to name a superseded
+`ProtocolRegistry` while the corrected `getDiscoverySet` call sat inert against it. So a fresh
+checkout needs BOTH commands before either app will build:
+
+```bash
+make vendor-mobile-artifacts   # the consent zkey + graph
+make gen-mobile-config         # the address bundle, from contracts/deployments/roax.json
+```
+
+Their absence is a LOUD build failure, and that failure is the guard rather than a project bug - iOS
+through the `pbxproj` Copy Bundle Resources reference, Android through the `requireRoaxConfig` gradle
+check. Run BOTH before any `xcodegen`, which sweeps `apps/ios/DogTag/` and silently drops references
+to files that are not there.
 **A fresh checkout has none of the four bundle copies (2 files x 2 apps), and the apps will not
 prove until you vendor them.** One command does all four:
 

@@ -175,7 +175,7 @@ function CredentialRow({
         wrappedDoc: doc,
         rpcUrl,
         defaultRpcUrl,
-        registryAddr: env.issuerRegistryAddr || undefined,
+        registryAddr: env.providerRegistryAddr || undefined,
       });
       setState({ phase: "checked", result });
     } catch (e) {

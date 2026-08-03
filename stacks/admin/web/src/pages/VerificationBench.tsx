@@ -483,7 +483,7 @@ export function VerificationBench() {
         wrappedDoc: parsed,
         rpcUrl: rpc.rpcUrl,
         defaultRpcUrl: rpc.defaultRpcUrl,
-        registryAddr: env.issuerRegistryAddr || undefined,
+        registryAddr: env.providerRegistryAddr || undefined,
         factoryAddr: env.factoryAddr || undefined,
         blockNumber,
       });

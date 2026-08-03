@@ -17,8 +17,8 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 const ISSUER_ADDR: &str = "0x1111111111111111111111111111111111111111";
-const REGISTRY_ADDR: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
-const CONSENT_REGISTRY: &str = "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B";
+const REGISTRY_ADDR: &str = "0x3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192030405";
+const CONSENT_REGISTRY: &str = "0x5e7F9a0b1c2d3E4f5a6B7c8d9e0f1a2b3c4D5E6f";
 const API_TOKEN: &str = "dogtag-gov-demo-token";
 const DEPLOYMENT_URL: &str = "http://192.168.1.20:44832";
 const PURPOSE: &str = "travel_check";

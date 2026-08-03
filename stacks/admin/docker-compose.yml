@@ -50,10 +50,11 @@ services:
     env_file: .env
     environment:
       # Production knobs (secrets — incl. ADMIN_PRIVATE_KEY/ADMIN_ADDRESS — come from .env).
-      # ADMIN_PRIVATE_KEY must be governance signer-1 (0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) since
-      # Phase-2 (2026-07-05, block 123835) moved the governance/admin authority off the old deployer EOA
-      # 0x119F…, which still holds the retired owner-revealing SBT's ISSUER_ROLE + historical
-      # record-type whitelists and is NOT a neutral key - see .env.example.
+      # ADMIN_PRIVATE_KEY must be the governance signer - `admin` in contracts/deployments/roax.json.
+      # Phase-2 (2026-07-05, block 123835) moved the governance/admin authority off the original
+      # deployer EOA, which is NOT a neutral key: it still holds the retired owner-revealing SBT's
+      # ISSUER_ROLE and historical record-type whitelists. The address is deliberately not
+      # transcribed here - read it from the ledger. See .env.example.
       MONGO_URI: "mongodb://mongo:27017/dogtag"
       MONGO_DB: ${MONGO_DB:-dogtag}
       CHAIN_ID: ${CHAIN_ID:-135}

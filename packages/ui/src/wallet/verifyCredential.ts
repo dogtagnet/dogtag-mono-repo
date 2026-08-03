@@ -8,6 +8,7 @@ import type { VerifyCredentialResp } from "../api/types";
 import {
   DEPLOYED_ADDRESSES,
   grantInForceAt,
+  isConfiguredAddress,
   isRootRevoked,
   isRootValid,
   issuedAtOf,
@@ -236,6 +237,19 @@ export async function verifyCredentialOnchain(
   // theatre. The registry is then derived from the clone the factory resolved, so it rests on the
   // same anchor - see the pillar below, and `args.registryAddr` for why an override is ignored.
   const factoryAddr = args.factoryAddr?.trim() || DEPLOYED_ADDRESSES.DogTagIssuerFactory;
+  // NO FACTORY CONFIGURED IS ITS OWN REFUSAL, named. The pillar below is mandatory and anchors on
+  // this address, so without it there is nothing to ask - and an empty `to` is not a contract that
+  // answered. Left to fall through, viem rejects on a malformed address and the panel renders a
+  // cryptic transport error for what is our own configuration gap. This path is deliberately
+  // stricter than vet-api's silent `unavailableNoFactoryConfigured` degrade: the web verifier already
+  // fails closed on an unreadable read, so it may not pass on an unmade one either.
+  if (!isConfiguredAddress(factoryAddr)) {
+    throw new Error(
+      "no DogTagIssuerFactory configured: set VITE_DOGTAG_ISSUER_FACTORY_ADDR (from " +
+        "contracts/deployments/roax.json). The issuer-whitelist pillar anchors on it, so this " +
+        "credential cannot be verified without it.",
+    );
+  }
   const expectedSigner = args.signerAddr?.trim();
 
   // ANCHOR THE ISSUING CLONE - the read every on-chain pillar below is made against.

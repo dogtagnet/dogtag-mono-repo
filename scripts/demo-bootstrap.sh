@@ -13,10 +13,18 @@
 #
 #   VERIFY_PURPOSES="grooming_intake" scripts/demo-bootstrap.sh 0x<signer>
 #
-# Uses governance signer-1's key in contracts/.env (registry WHITELIST_ADMIN + factory owner + PLASMA
-# source). Governance Phase-2 (executed on-chain 2026-07-05, block 123835) moved the governance/admin
-# authority off the old deployer EOA 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 onto governance signer-1
-# 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2; set GOVERNANCE_PRIVATE_KEY (signer-1) in contracts/.env.
+# Uses the governance signer's key in contracts/.env (registry WHITELIST_ADMIN + factory owner +
+# PLASMA source). Governance Phase-2 (executed on-chain 2026-07-05, block 123835) moved the
+# governance/admin authority off the original deployer EOA onto that signer, which the deploy ledger
+# records as its `admin` key; set GOVERNANCE_PRIVATE_KEY to its key in contracts/.env.
+#
+# STALE AGAINST THE LAUNCH SET, and resolving its addresses from the ledger does not change that: the
+# grants below call `whitelistFor`, which `ProviderRegistry` does not implement on the issuance axis.
+# Onboarding is now the registrar SEQUENCE - `registerProvider` -> `setProviderStanding(ACTIVE)` ->
+# `setServiceCreationApproval` -> the provider deploys its own clone -> `attachService` ->
+# `setServiceStanding(ACTIVE)` -> `setIssuanceCapability`, with `setVerifierCapability` on the
+# orthogonal verify axis. Rewriting this script onto that sequence is C-2 work, deliberately not done
+# inside a configuration change. What IS fixed here is that the addresses are no longer literals.
 set -euo pipefail
 SIGNER="${1:?usage: demo-bootstrap.sh <signerAddress>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,17 +33,30 @@ set -a
 source "$ROOT/contracts/.env"
 set +a
 
+# THE LEDGER IS THE SOURCE - the governance signer named in the message below is read from it rather
+# than pinned here, so a redeploy that rotates the admin cannot leave this script naming the old one.
+# shellcheck source=scripts/lib/ledger.sh
+source "$ROOT/scripts/lib/ledger.sh"
+
 RPC="${ROAX_RPC:-https://devrpc.roax.net}"
-PK="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env}"
-IR="${ISSUER_REGISTRY_ADDR:-${ISSUER_REGISTRY:-}}"
-VR="${VERIFICATION_REGISTRY_CONSENT_ADDR:-}"
-SBT="${SBT_CONSENT_ADDR:-}"
+# Resolved into a variable BEFORE the message that names it. A `$(...)` inside `${VAR:?word}` works,
+# but any apostrophe in that word opens a quote context bash never closes - "the ledger's admin"
+# there is a parse error at load time, not a runtime one, so the whole script dies before its first
+# line. Same family as the zsh `:r`/backtick hazards recorded in AGENTS.md; keep expansions plain.
+ADMIN_SIGNER="$(ledger_addr admin)"
+PK="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY to the key for the ledger admin signer ${ADMIN_SIGNER:-<none recorded>} in contracts/.env}"
+IR="${ISSUER_REGISTRY_ADDR:-${ISSUER_REGISTRY:-$(ledger_addr ProviderRegistry)}}"
+VR="${VERIFICATION_REGISTRY_CONSENT_ADDR:-$(ledger_addr VerificationRegistryConsent)}"
+SBT="${SBT_CONSENT_ADDR:-$(ledger_addr DogTagSBTConsent)}"
+# These two are per-provider `DogTagIssuer` CLONES, deployed by a provider rather than by
+# Deploy.s.sol, so the ledger holds no key for them and there is nothing to resolve. They stay
+# operator-supplied - exactly as demo-up.sh, whose address set this script consumes.
 PROFILE_ISSUER="${PROFILE_ISSUER_ADDR:-}"
 VACCINATION_ISSUER="${VACCINATION_ISSUER_ADDR:-}"
 
-: "${IR:?set ISSUER_REGISTRY_ADDR to the shared deployment used by demo-up.sh}"
-: "${VR:?set VERIFICATION_REGISTRY_CONSENT_ADDR to the owner-hidden registry used by demo-up.sh}"
-: "${SBT:?set SBT_CONSENT_ADDR to the owner-hidden SBT used by demo-up.sh}"
+: "${IR:?no ProviderRegistry in the ledger; set ISSUER_REGISTRY_ADDR}"
+: "${VR:?no VerificationRegistryConsent in the ledger; set VERIFICATION_REGISTRY_CONSENT_ADDR}"
+: "${SBT:?no DogTagSBTConsent in the ledger; set SBT_CONSENT_ADDR}"
 : "${PROFILE_ISSUER:?set PROFILE_ISSUER_ADDR to the DOG_PROFILE issuer clone used by demo-up.sh}"
 : "${VACCINATION_ISSUER:?set VACCINATION_ISSUER_ADDR to the vaccination issuer clone used by demo-up.sh}"
 

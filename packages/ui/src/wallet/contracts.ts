@@ -10,53 +10,86 @@ import { guardedRoaxTransport } from "../chain/rpcEndpoint";
 import { roax } from "./chain";
 
 /**
- * The deployed contract set on ROAX (chainId 135). ONE set - there is no second generation to choose
- * between, and no runtime fork picks between an old and a new address.
+ * The address of a deployed contract, as CONFIGURED for this build. Absent means absent - never a
+ * baked-in literal.
  *
- * These are DEFAULTS. A `VITE_*` override that is set wins; one that is unset falls back here rather
- * than failing closed, so check which kind of variable you are editing before assuming an unset value
- * disables a read. `make check-cutover-consumers` is the gate over the whole tree.
+ * `packages/ui` is consumed as SOURCE through each app's vite build, so `import.meta.env.VITE_*` in
+ * this file is inlined per consumer exactly as it is in that app's own `env.ts`. The whole object is
+ * read once rather than key by key, because vite substitutes `import.meta.env` wholesale; the shape
+ * mirrors the existing precedent in `./config.ts`.
+ */
+type ViteEnv = Record<string, string | undefined>;
+const VITE_ENV: ViteEnv =
+  ((import.meta as unknown as { env?: ViteEnv }).env as ViteEnv | undefined) ?? {};
+
+function configured(key: string): string {
+  return (VITE_ENV[key] ?? "").trim();
+}
+
+/**
+ * The deployed contract set, READ FROM CONFIGURATION. There is one launch set; addresses live in
+ * `contracts/deployments/roax.json` and reach a build through the environment.
+ *
+ * **UNSET IS THE EMPTY STRING, and that is the point.** This was a table of literals, which meant an
+ * app that configured nothing still read a full set of plausible addresses - and every one of them
+ * went stale the moment the set was redeployed, silently, because a pasted address compiles and keeps
+ * working right up until it names a contract that decides nothing. Empty fails closed: a caller must
+ * either be given an address or say it could not check, and `make check-addresses` keeps the property
+ * from decaying back.
+ *
+ * Consumers must therefore treat `""` as "not configured" and REFUSE, never as an address to dial -
+ * an empty `to` is not a contract that answered `false`. See `verifyCredentialOnchain`, which names
+ * the missing variable rather than letting viem reject on a malformed address.
+ *
+ * Four keys that used to sit here are GONE rather than repointed - `CloneProvenanceRouter`,
+ * `IssuerRegistry`, `IssuerDomainRegistry` and `Poseidon6`. They name contracts with no source in
+ * this repo at all: there is one factory and it IS the root index, one provider authority, and no
+ * on-chain Poseidon on the owner-hidden path. A key kept "just in case" is a key someone wires up.
  */
 export const DEPLOYED_ADDRESSES = {
   /**
    * The provider authority. Holds provider and service records, the issuance capability the issuer's
-   * `onlyIssuanceCapable` consults, and the orthogonal verifier capability. Deployed as
-   * `ProviderRegistry`.
+   * `onlyIssuanceCapable` consults, and the orthogonal verifier capability.
    */
-  ProviderRegistry: "0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9",
-  DogTagSBT: "0xBEbc45A838643D27004827b797b30A464b2b02c0",
+  ProviderRegistry: configured("VITE_PROVIDER_REGISTRY_ADDR"),
+  /** The owner-hidden SBT: the tag, and its write-once `profileRoot`. */
+  DogTagSBTConsent: configured("VITE_DOGTAG_SBT_CONSENT_ADDR"),
   /**
    * The owner-hidden verification registry. Its `Verified(uint256 indexed dogTagId, ...)` is the only
-   * event that indexes a tag id, so it is what on-chain tag discovery must read. Its `rootIndex` is
-   * the provenance router below, and its `issuerRegistry` is the provider authority above - both
-   * immutable, so neither can be repointed without redeploying this contract.
+   * event that indexes a tag id, so it is what on-chain tag discovery must read.
    */
-  VerificationRegistryConsent: "0xE49f30D6677f019f11298B3294377E6B817d43Da",
+  VerificationRegistryConsent: configured("VITE_VERIFICATION_REGISTRY_CONSENT_ADDR"),
   /**
-   * The ROOT INDEX: what `rootIssuer(R)` is asked of, and the address a READER resolving a credential
-   * to its issuing clone must use. Not the factory - see `DogTagIssuerFactory` below.
+   * The clone factory - `predictIssuer`/`createIssuer` for a WRITER, and `rootIssuer(R)` for a READER
+   * resolving a credential to its issuing clone. There is no separate provenance router: the factory
+   * IS the write-once root index, and `VerificationRegistryConsent` pins it in its immutable
+   * `rootIndex` slot.
    */
-  CloneProvenanceRouter: "0xf374f4cA5ebBBAFf0dFcE48D8Cda2e47F9D5da01",
-  /**
-   * The clone factory: what a WRITER calls for `predictIssuer`/`createIssuer`. It deploys; it does
-   * not resolve historical roots. Reading `rootIssuer` off it instead of off the router above
-   * resolves only clones it deployed and answers the zero address for every other, which surfaces as
-   * an indeterminate issuer pillar rather than an error.
-   */
-  DogTagIssuerFactory: "0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6",
+  DogTagIssuerFactory: configured("VITE_DOGTAG_ISSUER_FACTORY_ADDR"),
   /** The issuer implementation every clone delegates to. */
-  DogTagIssuerImpl: "0x91E210AD9A5CCe4aF2C49221f0584E2ad6d13691",
+  DogTagIssuerImpl: configured("VITE_DOGTAG_ISSUER_IMPL_ADDR"),
   /** The discovery anchor. */
-  ProtocolRegistry: "0xe98BFf66367F74F413414228adD91c16A24F7fdb",
+  ProtocolRegistry: configured("VITE_PROTOCOL_REGISTRY_ADDR"),
   /** The typed DIRECTORY resolver, selected per provider through the authority. */
-  ProviderDirectory: "0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0",
+  ProviderDirectory: configured("VITE_PROVIDER_DIRECTORY_ADDR"),
   /** The typed DOMAIN resolver, selected per service through the authority. */
-  ServiceDomainResolver: "0x4AB4a70CFa9CE9415B96dF543C218F90a2619c33",
-  /** The frozen consent ceremony verifier. Unchanged - the same VK the bundled zkey proves against. */
-  Groth16VerifierConsent: "0x1A9027986B859dc3879896B053deA78F636BE9b1",
-  Poseidon6: "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
-  admin: "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
+  ServiceDomainResolver: configured("VITE_SERVICE_DOMAIN_RESOLVER_ADDR"),
+  /** The frozen consent ceremony verifier - the VK the bundled zkey proves against. */
+  Groth16VerifierConsent: configured("VITE_GROTH16_VERIFIER_CONSENT_ADDR"),
+  /** The governance signer that holds the protocol authorities. */
+  admin: configured("VITE_ADMIN_SIGNER_ADDR"),
 } as const;
+
+/**
+ * True when `addr` is a configured address rather than the unset empty string.
+ *
+ * Deliberately a NAMED predicate rather than a bare truthiness check at each call site: the two
+ * things a caller must keep apart are "we have no address" and "the contract at this address
+ * answered", and a `if (addr)` scattered through the readers is how those come to share a branch.
+ */
+export function isConfiguredAddress(addr: string | undefined | null): addr is string {
+  return typeof addr === "string" && addr.trim().length > 0;
+}
 
 /** keccak256(recordType utf8 bytes) — matches the backend's record_type_key + IssuerRegistry. */
 export function recordTypeKey(recordType: string): `0x${string}` {

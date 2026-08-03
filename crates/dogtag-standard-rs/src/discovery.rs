@@ -514,7 +514,7 @@ mod tests {
     // A matched (claims, anchor, ctx) triple built around the frozen Level-B version, so every axis is
     // realistic. Each test perturbs exactly ONE field to isolate the axis under test.
     const VERSION: &str = "dogtag-levelb/1";
-    const REGISTRY: &str = "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87";
+    const REGISTRY: &str = "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70";
     const CIRCUIT: &str = "consent.circom/DogTagConsent(6)";
     const PURPOSE: &str = "GROOMING_INTAKE";
     const ARTIFACTS: &str = "dogtag-levelb-artifacts/1";

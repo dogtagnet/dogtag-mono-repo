@@ -174,7 +174,7 @@ mod tests {
             issuer: IssuerMeta {
                 name: "DogTag Government Authority".into(),
                 domain: displayed_domain.into(),
-                document_store: "0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F".into(),
+                document_store: "0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70".into(),
                 record_type: "TRAVEL_CLEARANCE".into(),
             },
             protocol: None,

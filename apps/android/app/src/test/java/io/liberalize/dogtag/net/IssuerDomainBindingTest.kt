@@ -27,8 +27,8 @@ import org.junit.Test
  * `dogtag-dns-rs` unit tests — all three classify the same DoH bodies the same way.
  */
 class IssuerDomainBindingTest {
-    private val clone = "0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F"
-    private val cloneLc = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+    private val clone = "0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70"
+    private val cloneLc = "0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70"
 
     // ---- the normative record name -------------------------------------------------------------
 
@@ -594,7 +594,7 @@ class IssuerDomainBindingTest {
  * `IssuerCloneResolutionTests`.
  */
 class IssuerCloneResolutionTest {
-    private val ours = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+    private val ours = "0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70"
     private val otherAuthority = "0x00000000000000000000000000000000000000ee"
 
     @Test
@@ -636,7 +636,7 @@ class IssuerCloneResolutionTest {
     fun an_agreeing_document_store_is_not_reported_as_a_difference() {
         val choice = IssuerBindingResolver.chooseClone(
             RoaxRpc.AddressRead.Value(ours),
-            "  0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F ",
+            "  0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70 ",
         )
         assertEquals(ours, choice.address)
         assertFalse(choice.documentStoreDiffers)
@@ -689,7 +689,7 @@ class IssuerCloneResolutionTest {
 
     @Test
     fun decodes_a_right_aligned_address_word() {
-        val word = "0".repeat(24) + "b5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+        val word = "0".repeat(24) + "6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70"
         assertEquals(ours, RoaxRpc.decodeAbiAddress(word))
         assertEquals(ours, RoaxRpc.decodeAbiAddress("0x" + word.uppercase()))
     }

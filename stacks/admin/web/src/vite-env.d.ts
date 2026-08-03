@@ -5,8 +5,10 @@ interface ImportMetaEnv {
   readonly VITE_CENTRAL_API_PROXY?: string;
   readonly VITE_REOWN_PROJECT_ID?: string;
   readonly VITE_DEPLOYMENT_URL?: string;
-  readonly VITE_ISSUER_REGISTRY_ADDR?: string;
   readonly VITE_ROAX_RPC?: string;
+  readonly VITE_DOGTAG_ISSUER_FACTORY_ADDR?: string;
+  readonly VITE_PROVIDER_REGISTRY_ADDR?: string;
+  readonly VITE_ADMIN_SIGNER_ADDR?: string;
 }
 
 interface ImportMeta {

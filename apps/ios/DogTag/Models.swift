@@ -457,28 +457,41 @@ extension Credential {
 
 }
 
-/// The live ROAX (chainId 135) deployment addresses, loaded from the bundled `roax.json`.
+/// The live ROAX deployment addresses, loaded from the bundled `roax.json`, which is GENERATED from
+/// `contracts/deployments/roax.json` by `scripts/gen-mobile-roax-config.sh` and gitignored.
 ///
 /// COMPILE-TIME. `roax.json` ships inside the app bundle, so editing that file is NOT a repoint — it
 /// is the prerequisite for a build that is one, and nothing between those two states says which you
-/// are in. At the generation-2 cutover this makes mobile the long pole (plan step C-10): an installed
-/// old build keeps reading `rootIssuer` from the generation-1 factory baked in here, so a
-/// generation-2 root resolves to zero and the credential degrades to `UNVERIFIED`. `issuerFactory`
-/// takes the `CloneProvenanceRouter`, not `DogTagIssuerFactoryV2`. See `docs/CLIENT_REPOINT.md`;
-/// `make check-cutover-consumers` is the gate. (The JSON itself can carry no comment saying this.)
+/// are in. An installed old build keeps reading the addresses baked into it, so a full redeploy ends
+/// in a mobile rebuild AND reinstall; that is standing process, not a caveat.
+///
+/// EVERY FIELD FAILS CLOSED EMPTY, and that is what makes an absent or stale bundle safe. The keys
+/// read below are the LEDGER's key names. A bundle generated before that rename carries the old ones,
+/// so every address reads "" and each consumer reports could-not-check rather than silently dialling
+/// the retired contracts such a bundle names. `make check-addresses` is the gate that keeps the file
+/// out of the tree. (The JSON itself can carry no comment saying this; its `_` key does.)
 struct RoaxConfig {
     let chainId: Int
     let dogTagSbt: String
+    /// What this NAMES on the launch set is `ProviderRegistry`, which is also what
+    /// `DogTagIssuerFactory.registry()` answers. The Swift name is kept because the pillar's own
+    /// vocabulary is "issuer registry"; only its VALUE is dialled, and only for the VERIFY-axis
+    /// `isWhitelistedFor(VERIFY:<purpose>, relayer)` read — an `eth_call` carries no `from`, so
+    /// `ProviderRegistry` answers that off `_verifierCapabilities`, which is the axis and the mapping
+    /// the question means. The issuance-axis authority is NOT this value: it comes off the clone's
+    /// own `registry()` (see `RoaxRpc.whitelistedAtIssuance`).
     let issuerRegistry: String
     /// `DogTagIssuerFactory` — LINK 1 of the issuer↔domain chain (`isClone`). Empty means provenance
     /// cannot be checked, and the binding reports "could not read" rather than claiming anything.
     let issuerFactory: String
-    /// `IssuerDomainRegistry` — the clone's on-chain domain claim. Empty until deployed; the binding then
-    /// reports "could not read", never "no domain claimed".
+    /// The clone's on-chain domain claim. ALWAYS EMPTY today, deliberately: `IssuerDomainRegistry`
+    /// has no source in this repo and no launch-set deployment, so the generator writes no key for it
+    /// and the binding reports "could not read" — never "no domain claimed", which would assert a
+    /// read nobody made. `ServiceDomainResolver` is the launch set's domain surface; wiring this to
+    /// it is a client repoint, not a configuration change.
     let issuerDomainRegistry: String
-    let poseidon6: String
-    /// `ProtocolRegistry` is the discovery trust anchor. Empty until redeployment; verification then
-    /// fails closed instead of inventing an address.
+    /// `ProtocolRegistry` is the discovery trust anchor. Empty fails closed instead of inventing an
+    /// address.
     let protocolRegistry: String
 
     static func load() -> RoaxConfig {
@@ -487,15 +500,14 @@ struct RoaxConfig {
               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return RoaxConfig(chainId: 135, dogTagSbt: "", issuerRegistry: "",
                               issuerFactory: "", issuerDomainRegistry: "",
-                              poseidon6: "", protocolRegistry: "")
+                              protocolRegistry: "")
         }
         return RoaxConfig(
             chainId: (o["chainId"] as? Int) ?? 135,
-            dogTagSbt: (o["DogTagSBT"] as? String) ?? "",
-            issuerRegistry: (o["IssuerRegistry"] as? String) ?? "",
+            dogTagSbt: (o["DogTagSBTConsent"] as? String) ?? "",
+            issuerRegistry: (o["ProviderRegistry"] as? String) ?? "",
             issuerFactory: (o["DogTagIssuerFactory"] as? String) ?? "",
             issuerDomainRegistry: (o["IssuerDomainRegistry"] as? String) ?? "",
-            poseidon6: (o["Poseidon6"] as? String) ?? "",
             protocolRegistry: (o["ProtocolRegistry"] as? String) ?? ""
         )
     }

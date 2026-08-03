@@ -16,6 +16,14 @@
 #
 # Requires: curl, jq, cast (foundry), python3. Uses contracts/.env (GOVERNANCE_PRIVATE_KEY) for
 # funding and whitelist administration.
+#
+# STALE AGAINST THE LAUNCH SET, and resolving its addresses from the ledger does not change that.
+# The whitelist steps below call `whitelistFor`/`isWhitelistedFor`, which `ProviderRegistry` does not
+# implement on the issuance axis - onboarding is now the registrar SEQUENCE (`registerProvider` ->
+# `setProviderStanding` -> `setServiceCreationApproval` -> the provider deploys its clone ->
+# `attachService` -> `setServiceStanding` -> `setIssuanceCapability`). Rewriting the flow onto that
+# sequence is C-2 work, deliberately not done inside a configuration change. What IS fixed here is
+# that the addresses are no longer literals.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,8 +36,21 @@ VET="${VET_BASE:-http://localhost:41874}"
 RPC="${ROAX_RPC:-https://devrpc.roax.net}"
 BOOTSTRAP_PK="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY in contracts/.env}"
 
-IR=0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21          # IssuerRegistry
-VACC_CLONE=0x1456f93f7376789c46408CC4616751eB853edD9A   # VACCINATION issuer clone
+# THE LEDGER IS THE SOURCE. Resolved by ledger KEY NAME with an env override for a one-off
+# deployment - never a literal pinned here, which is the shape that keeps working after a redeploy
+# while driving contracts that decide nothing.
+# shellcheck source=scripts/lib/ledger.sh
+source "$ROOT/scripts/lib/ledger.sh"
+
+# The provider authority. This script still spells it `ISSUER_REGISTRY_ADDR`, as the backends do;
+# what it NAMES on the launch set is `ProviderRegistry`, which is also what
+# `DogTagIssuerFactory.registry()` answers.
+IR="${ISSUER_REGISTRY_ADDR:-${ISSUER_REGISTRY:-$(ledger_addr ProviderRegistry)}}"
+# A per-provider `DogTagIssuer` CLONE, deployed by a provider rather than by Deploy.s.sol, so the
+# ledger holds no key for it and there is nothing to resolve. It stays operator-supplied.
+VACC_CLONE="${VACCINATION_ISSUER_ADDR:-}"
+: "${IR:?no ProviderRegistry in the ledger; set ISSUER_REGISTRY_ADDR}"
+: "${VACC_CLONE:?set VACCINATION_ISSUER_ADDR to a factory clone this provider deployed}"
 ADMIN_PW="${ADMIN_PASSWORD:-admin}"
 OP_PW="${OPERATOR_PASSWORD:-operator}"
 PASSPHRASE="${GENESIS_PASSPHRASE:-demo-pass-123}"

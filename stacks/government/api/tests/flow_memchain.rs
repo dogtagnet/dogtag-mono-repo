@@ -14,9 +14,9 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 const ISSUER_ADDR: &str = "0x1111111111111111111111111111111111111111";
-const REGISTRY_ADDR: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
+const REGISTRY_ADDR: &str = "0x3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192030405";
 const API_TOKEN: &str = "dogtag-gov-demo-token";
-const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
+const FACTORY: &str = "0x2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7081920304";
 /// A LAN IP, not `localhost`: a loopback name is one of the bases issuance REFUSES to stamp into a
 /// credential (no phone can resolve it), so a localhost deployment would leave `statusBaseUrl` unset
 /// and the receipt-QR assertions below would be exercising the degradation branch by accident.
@@ -31,7 +31,7 @@ fn demo_state() -> (AppState, MemChain) {
         factory_addr: "0x00000000000000000000000000000000000000fa".into(),
         issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
         dns_doh_endpoint: String::new(),
-        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
+        verification_registry_addr: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: "DogTag Government Authority".into(),
@@ -430,7 +430,7 @@ async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
     assert_eq!(block["version"], "dogtag-levelb/1");
     assert_eq!(
         block["verificationRegistry"],
-        "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87"
+        "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70"
     );
     assert_eq!(block["issuerClone"], ISSUER_ADDR);
     assert_eq!(
@@ -454,7 +454,7 @@ async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
     assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levelb/1"));
     assert_eq!(
         cred.verification_registry.as_deref(),
-        Some("0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87")
+        Some("0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70")
     );
     assert_eq!(
         cred.issuer_signer.map(|s| s.to_lowercase()),
@@ -1016,7 +1016,7 @@ async fn a_resolved_but_unwhitelisted_issuer_fails_the_verdict() {
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
         factory_addr: FACTORY.into(),
-        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
+        verification_registry_addr: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: "DogTag Government Authority".into(),

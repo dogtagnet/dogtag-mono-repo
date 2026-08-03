@@ -212,6 +212,97 @@ addresses absolutely.
 than a promise that decays: it fails on any undeclared file carrying a ledger or retired address, AND
 on any declared file that no longer carries one, so `scripts/address-debt.json` can only shrink.
 
+## Addresses are CONFIGURATION, and `make check-addresses` is what keeps that true
+
+The captain's requirement is a setup guide you can follow from a clean slate with **no hardcoded
+contract address anywhere**. That property decays the first time somebody pastes an address back in,
+and it decays SILENTLY: a pasted address is valid-looking, compiles, and keeps working right up until
+the next redeploy, when it names a contract that decides nothing and reports whatever it says.
+
+**`scripts/address-debt.json` is the work-list and `make check-addresses` is the gate.** It is
+BIDIRECTIONAL - an undeclared file carrying a ledger or retired address fails, AND a declared file
+that no longer carries one fails too - so the list can only shrink and cannot rot into a description
+of a tree that has moved on. Clear an entry in the SAME change that makes its file read from
+configuration.
+
+**The ONE source is `contracts/deployments/roax.json`, resolved BY KEY NAME.** `scripts/lib/ledger.sh`
+(`ledger_addr` / `ledger_require` / `ledger_chain_id`) is how every script reads it; a key that stops
+existing then fails loudly instead of silently naming a dead address. `scripts/gen-deployment-env.sh
+<stack>` projects the ledger onto each stack's variable names, and `scripts/gen-mobile-roax-config.sh`
+writes the two mobile bundles. **The deploy WRITES the configuration**: run `Deploy.s.sol`, re-run
+those, restart (and for the phones, rebuild AND reinstall). Nothing is transcribed by hand.
+
+**An unset address is the EMPTY or ZERO value, never a literal fallback.** `FACTORY_ADDR` set the
+precedent and everything follows it: a fail-closed default beats a stale one, because a zero reads as
+unset wherever it surfaces while a superseded literal makes every surface look configured. Every
+`.env.example` ships its addresses BLANK, and no consumer has a `?? "0x…"`.
+
+### What is legitimately still declared, and why it is not a shortfall
+
+Three files, and all three are documentation whose addresses are HISTORICAL RECORDS rather than
+guidance: `docs/CEREMONY_TRANSCRIPT.md`, `docs/CEREMONY_TRANSCRIPT.consent.md`, and this file. A
+ceremony transcript that stopped naming the instance it attests to would stop being a transcript, and
+AGENTS.md mixes deployment provenance (M3/M5 records, the r8 redeploy) with live guidance. **When you
+touch a live-guidance address in AGENTS.md, point it at the ledger; when you touch a provenance
+record, leave it.** The entry stays either way.
+
+### The mobile bundles are GENERATED and GITIGNORED
+
+`apps/*/roax.json` is written by `scripts/gen-mobile-roax-config.sh`, alongside the vendored
+`consent_final.zkey`/`consent.graph` and for the same reason: a tracked copy carrying real addresses
+IS a hardcoded address. A fresh checkout has neither and both apps refuse to build - iOS through its
+`pbxproj` Copy Bundle Resources reference, Android through the `requireRoaxConfig` gradle check.
+**That failure is the guard, not a project bug**, and the Android half exists because assets are
+copied verbatim: without it a missing bundle ships an APK that builds clean and then CRASHES on the
+first screen that reads an address, which is far worse and discovered far later.
+
+**The bundle's KEYS are the ledger's key names, and that rename is load-bearing.** The sharpest hazard
+in generating these files is the developer who already has a checkout: git stops TRACKING a file
+without removing it, so their old `roax.json` stays on disk forever. Under the previous key names that
+phone would go on reading four retired contracts with nothing in any diff to say so. Under the
+ledger's names a stale bundle yields `""` for every address, and every consumer already treats `""`
+as could-not-check - the whitelist pillar answers `Unknown`, the anchor read fails closed, the
+credential shows UNVERIFIED. Never rename these back toward "compatibility".
+
+### The remaining layer-3 change, and the hazard that keeps it separate
+
+AGENTS.md rule 5 says the phones bundle ONE anchor address and resolve factory, verification registry,
+SBT, verifier and provider registry from `getDiscoverySet` at RUNTIME. The bundle is generated now;
+the runtime narrowing is NOT done, and it is not a configuration change. `RecordImporter` /
+`Net.swift` `whitelistedAtIssuance` take those as SYNCHRONOUS string parameters and
+`CredentialRefresher` reads the SBT synchronously per credential, across **15 `RoaxConfig.load()` call
+sites on the two platforms** (measured, not estimated). Making them resolve from an async, failable
+anchor read mints a new tri-state at every one, in the exact path this file says must never render
+could-not-check as a verdict. **If you find yourself changing `RecordImporter`'s signature, that is
+this work and it needs its own slice.**
+
+What the generated bundle already buys is the thing the anchor exists for: before it, BOTH bundles
+named a superseded generation-1 `ProtocolRegistry` whose getter really is `getContractSet`, so the
+`getDiscoverySet` fix sat INERT - verified against ROAX, the old address reverts with empty
+returndata (indistinguishable from an unpublished version) while the ledger's answers the nine-word
+record.
+
+### Sharp edges paid for by this work
+
+- **A `$(...)` inside `${VAR:?word}` works, but an apostrophe in that word does not.** Bash treats it
+  as opening a quote it never closes, so "the ledger's admin" there is a PARSE error at load time and
+  the whole script dies before its first line. Resolve into a variable first. Same family as the zsh
+  `:r`/backtick hazards recorded elsewhere in this file.
+- **A golden ABI vector does not need real addresses, and should not have them.** What it pins is
+  ARITY and MEMBER ORDER, which is independent of the values. `contracts/test/ProtocolRegistry.t.sol`
+  and the two mobile `AnchorResolver` suites carry ONE synthetic vector between them; regenerate by
+  running that Solidity test and reading the actual bytes out of its failure message, and paste the
+  same bytes into all three. They had silently diverged once - the Solidity end was made synthetic
+  while the mobile pair kept a live capture - and every file's comment went on claiming they were
+  pinned together.
+- **A mutation that does not COMPILE is inert, not evidence.** An address with a broken EIP-55
+  checksum fails solc rather than the assertion, so its "red" proves nothing. Use
+  `cast to-check-sum-address`.
+- **A manifest MIRRORS chain state, so its contract set is configuration.** `dogtag_prover` ships no
+  deployment constant; the caller supplies one. The constant it used to ship had gone entirely
+  superseded, which `reconcile` would have surfaced as a pile of phantom conflicts - a fallback that
+  can only ever conflict is not a fallback.
+
 ## Product model (non-negotiable)
 
 **dogtag is ONE owner-hidden model. There is no Level-A/Level-B split, mode, or vocabulary in the product.**
@@ -272,7 +363,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 374 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 295 tests over 13 suites (12 `.t.sol` files; one carries two contracts), measured 2026-08-03. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -1005,7 +1096,7 @@ Every credential record is stamped with which protocol/contract it was created o
 - **Populated at issuance, mirrored to queryable columns** (persist, don't just transmit): vet `Record`, gov `IssuedCredential`, and admin `Pet`+`Credential` gain `chain_id`/`protocol_version`/`verification_registry`/`issuer_signer` (all `Option`, `#[serde(default)]`; whole-struct serde/BSON makes them a transparent Mongo migration). **Admin also gains `issuer_addr`** (the issuerClone) - it previously carried provenance ONLY inside the encrypted `sealed_doc`; this closes that gap.
 - **Where `issuerSigner` comes from per stack** (the honest claim, sourced from the issuer's OWN signer knowledge - never by reading `issuedBy[R]` and copying it, which would make the claim un-falsifiable): gov/admin backend-sign, so it's `chain.signer_address(...)` known at issue. **Vet's is POST-CONFIRM**: at prepare the block's `issuerSigner` is left `""` (wallet mode never learns the signer at build time); at confirm vet derives it from the `RootIssued(root, by)` log (the value it already stores as `signer_address`) and patches both the `issuer_signer` column AND `wrapped_doc.protocol.issuerSigner` (the block sits outside `R`, so patching never perturbs the root).
 - **Back-compat default (§4.4) - DELETED (decision D5).** `WrappedDoc::resolved_protocol` / TS `resolvedProtocol` defaulted an absent block to the retired protocol generation; both were deleted in the final cleanup slice because the testnet is disposable and was redeployed fresh (2026-07-23 r8), so no pre-unification record survives to need the default. A stamped block is read as-is; the admin import path assigns an unstamped doc the single owner-hidden version/registry inline (`stacks/admin/api/src/routes.rs` - there is no retired generation left to route to).
-- **Config**: gov + admin read `verification_registry_addr` (env `VERIFICATION_REGISTRY_ADDR`, whose compiled-in default is `0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B`) for unstamped imported-document metadata; vet's routing key is `VERIFICATION_REGISTRY_CONSENT_ADDR`. **That default is SUPERSEDED** - it names a registry the launch deployment replaced - and it is still in the code because moving it is part of the client repoint, which is a separate captain-authorized step. Read it as a description of what the binary does today, not as a live address. Admin also gained a `chain_id` Config field (mirrors the chain client's id).
+- **Config**: gov + admin read `verification_registry_addr` (env `VERIFICATION_REGISTRY_ADDR`) for unstamped imported-document metadata; vet's routing key is `VERIFICATION_REGISTRY_CONSENT_ADDR`. **Both compiled-in defaults are now the ZERO address**, following the `FACTORY_ADDR` precedent: a fail-closed default beats a stale one, because a zero reads as unset wherever it surfaces while a superseded literal names a contract that decides nothing on every surface that looks configured. (This entry previously described a baked-in superseded literal; that is no longer what the binaries do.) Admin also gained a `chain_id` Config field (mirrors the chain client's id).
 - **Deferred to M7 P5 (noted, not built here)**: live per-backend `issuedBy` eth-calls (vet ABI/`ChainRpcAdapter`, gov/admin `chain.rs`) so the backends enforce the signer check end-to-end, and the full §4.3 resolution loop (recognized-trio validation of `verificationRegistry`/`issuerClone` against a discovery anchor - that's what makes a forged *registry/clone* safe; P3/P4). This brick ships the envelope block + columns + default + the SDK-enforced signer property only.
 
 ## ProtocolRegistry discovery anchor + signed-manifest fallback (M7 P3)
@@ -2057,7 +2148,8 @@ perfectly healthy server as dead.
 
 ## Governance authority (Phase-2 executed) - tooling signer
 
-- **Governance authority is signer-1 `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`; the tooling ADMIN key
+- **Governance authority is the signer the deploy ledger records as its `admin` key** (resolve it with
+  `source scripts/lib/ledger.sh; ledger_addr admin` - never transcribe it); **the tooling ADMIN key
   is signer-1.** Governance Phase-2 executed on-chain 2026-07-05 (block 123835), moving registry
   `DEFAULT_ADMIN_ROLE` + `WHITELIST_ADMIN` and `DogTagIssuerFactory` `Ownable2Step` ownership off the old
   deployer EOA `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96`. A 2026-07-16 audit found the old EOA still has the
@@ -2321,8 +2413,9 @@ both-sources-merged-once, and a deliberately corrupted store.
   file.
   Then make the same change in `project.yml` so a later regeneration agrees.
   Verify with `plutil -lint apps/ios/DogTag.xcodeproj/project.pbxproj`, confirm
-  `grep -c 'consent_final.zkey\|consent.graph'` is unchanged (that count is the trap's canary), and
-  build + test both schemes.
+  `grep -c 'consent_final.zkey\|consent.graph\|roax.json'` is unchanged (that count is the trap's
+  canary - `roax.json` is ON it because it is gitignored and referenced identically now, so it drops
+  out of the pbxproj exactly the same way), and build + test both schemes.
 - To eyeball record lists without a backend: install to a booted sim, write `pets.json` +
   `credentials.json` into the app's `get_app_container … data`/Documents dir, relaunch, screenshot.
 
@@ -2429,8 +2522,9 @@ entry, using fresh 24-char hex IDs). Do NOT blindly `xcodegen generate` — rege
 silently strips the vendored prover resources (zkey / witness graph) from the pbxproj.
 
 If you genuinely need a regen (e.g. adding a target), the safe procedure is: vendor the consent
-pair per docs/MOBILE_BUILD.md §4 (`cp circuits/build/consent_final.zkey apps/ios/DogTag/` + the
-`consent.graph` copy) - or `touch` both paths if you only need the wiring, not a proving build -
+pair AND generate the address bundle per docs/MOBILE_BUILD.md §4 (`make vendor-mobile-artifacts &&
+make gen-mobile-config`) - or `touch` all THREE paths if you only need the wiring, not a proving
+build; `roax.json` is gitignored too now, so it drops out the same way -
 so xcodegen sees them (the committed pbxproj references the CONSENT pair; the retired
 verification pair is gone from the wiring), `xcodegen generate`, then confirm with
 `git diff --no-color apps/ios/DogTag.xcodeproj/project.pbxproj | grep '^-'` that **no** zkey/graph

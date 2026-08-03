@@ -1718,7 +1718,7 @@ mod tests {
     async fn memchain_never_invents_a_definite_provenance_answer() {
         let c = MemChain::new();
         let factory = "0x00000000000000000000000000000000000000fa";
-        let clone = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f";
+        let clone = "0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70";
         assert!(
             c.is_factory_clone(factory, clone, None).await.is_err(),
             "an unseeded pair is 'we were never told', not 'the factory said no'"

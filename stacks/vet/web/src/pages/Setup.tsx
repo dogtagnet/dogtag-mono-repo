@@ -12,6 +12,7 @@ import {
   buildUnlockPath,
   DEMO_ADMIN_PASSWORD,
   DEMO_CUSTODY_PASSPHRASE,
+  DEMO_VACCINATION_DOCUMENT_STORE,
   DEMO_WHITELIST_APPLY_VET,
   type AccountInfo,
   type GenesisStartResp,
@@ -456,7 +457,7 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
     verifyPurposes: env.demoMode ? DEMO_WHITELIST_APPLY_VET.verifyPurposes : "",
     domain: env.demoMode ? "testvet.roax.net" : "",
     documentStore: env.demoMode
-      ? env.dogtagIssuerAddr || "0x1456f93f7376789c46408CC4616751eB853edD9A"
+      ? env.dogtagIssuerAddr || DEMO_VACCINATION_DOCUMENT_STORE
       : env.dogtagIssuerAddr || "",
     usdaNan: env.demoMode ? "123456" : "",
     licenseNumber: env.demoMode ? "VET-2024-0001" : "",
