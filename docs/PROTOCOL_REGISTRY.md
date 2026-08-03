@@ -1,12 +1,20 @@
 # ProtocolRegistry: the discovery layer, and the timelock
 
 The discovery anchor: the dogtag-governed record of which contracts and which proving artifacts are current.
-DEPLOYED BY S-14, AND UNWIRED.
-Cutover step C-8 ran live on ROAX, so `contracts/deployments/roax.json` carries a `ProtocolRegistry` key - see `_s14_cutover` there for the address, transaction hash and block, which are deliberately not copied into this file.
-Nothing has been published on it and no `.env.example` entry or client points at it; repointing is C-9 and is separately captain-authorized.
-Its `PUBLISH_TIMELOCK` was deployed at the contract's 1-hour floor with the testnet opt-in stated aloud, and it is IMMUTABLE - the reasoning is in `_s14_cutover`. **Mainnet must use exactly 2 days.**
 
-Generation 1's deployed `ProtocolRegistry` (`0xf5492A67…`, see `docs/PROTOCOL_REGISTRY_RUNBOOK.md`) is untouched and stays live until the cutover repoints clients.
+**Status: deployed as one of the ten launch contracts, carrying NO published discovery set, and read by no client.**
+`contracts/deployments/roax.json` carries its address, transaction hash and block; they are deliberately not copied into this file.
+Verified on chain 2026-08-03: `getDiscoverySet(keccak256("dogtag-levelb/1"))` reverts with the contract's own named reason **`"unknown discovery set"`** - a deliberate fail-closed answer, so an app validating a version claim against it resolves nothing and fails closed, the correct state for an unpublished deployment.
+Use that getter name when you check: a call to a selector the contract does not have reverts too, with empty returndata, and mistaking that for the same answer is the could-not-check-as-an-answer trap this repo names elsewhere.
+Publishing is a separate, two-phase, timelocked, captain-authorized operation: `docs/PROTOCOL_REGISTRY_RUNBOOK.md`.
+`PUBLISH_TIMELOCK` is IMMUTABLE, and **mainnet must use exactly 2 days**.
+
+> **Reading note.** This file was written while two registries coexisted, so it argues throughout in
+> terms of "generation 1" and "generation 2". Only one exists now - the launch contract this file
+> describes - and there is no other registry to contrast it with. The reasoning about WHAT the record
+> holds and WHY the two axes rotate independently is unaffected and still current; read every
+> "generation 2" as "this registry", and every "generation 1" as the superseded design the record was
+> widened away from.
 
 ## Why a new registry is forced, not chosen
 
@@ -78,7 +86,7 @@ Two guards, at different layers, and neither is redundant:
 
 - The CONSTRUCTOR refuses anything below `MIN_PUBLISH_TIMELOCK` and reverts `PublishTimelockBelowFloor(given, floor)`.
   That is what makes a zero-delay registry impossible even for someone deploying the contract directly, without the script.
-- `DeployProtocolRegistry.s.sol` additionally requires exactly the 2-day production default unless `PUBLISH_TESTNET_DEPLOY=true` is stated aloud.
+- `Deploy.s.sol` (which stands the registry up along with the rest of the launch set; the separate `DeployProtocolRegistry.s.sol` no longer exists) additionally requires exactly the 2-day production default unless the testnet opt-in is stated aloud.
   A testnet may go shorter, but not below the contract's floor and never to zero.
   This is the deliberate divergence from generation 1's deploy script, whose testnet opt-in accepts zero (it has a passing test named `test_explicit_testnet_opt_in_accepts_zero_timelock`).
 
@@ -201,7 +209,7 @@ Nothing about either mistake looks wrong at publish time.
 - `verifier == verificationRegistry.zkVerifier()`
 - `rootIndex.isGeneration(factory)`, because the factory is not reachable from the registry in generation 2, and generation membership is the property that makes it a factory whose roots that root index can resolve
 
-The preflight lives in the SCRIPT rather than in the registry, following `DeployIssuerDomainRegistry.s.sol`, which preflights `factory.registry()` the same way.
+The preflight lives in the SCRIPT rather than in the registry, following the same shape an earlier deploy script used to preflight `factory.registry()`.
 The registry stores data and asserts nothing about the semantics of what it stores; binding it to one verification registry's ABI would mean a later generation with a differently-shaped registry could not be published at all.
 
 It deliberately does NOT check that the bound artifacts prove against `verifier`.
@@ -242,7 +250,7 @@ Deferred, deliberately:
 ## Tests
 
 - `contracts/test/ProtocolRegistry.t.sol` (22): the constructor floor as a boundary rather than a `!= 0` check, the delay actually gating every write, the selector rename and the exact 10-word arity, `factory != rootIndex`, per-member zero refusals, R-5 independence in both directions, deprecate-cancels-a-stale-proposal, binding lifecycle, fail-closed reads, role gating, and the golden encoding the two mobile suites are pinned against.
-- `contracts/test/DeployProtocolRegistry.t.sol` (10): the mainnet guard, the testnet opt-in that cannot reach zero, the contract floor holding without the script, the real scripts end to end against a REAL stack (real router over real factories, real SBT, real verifier, real verification registry), each of the preflight's five relations broken in turn plus the accept case and an unmutated positive control, a real mid-window verifier swap driven through the verification registry's own 2-day timelock so the execute phase's re-preflight refuses it, and one re-staging test per axis so neither staged-versus-environment check is vacuous.
+- `contracts/test/Deploy.t.sol` (11; it absorbed the deploy-script coverage when the scripts collapsed into one): the mainnet guard, the testnet opt-in that cannot reach zero, the contract floor holding without the script, the real scripts end to end against a REAL stack (real router over real factories, real SBT, real verifier, real verification registry), each of the preflight's five relations broken in turn plus the accept case and an unmutated positive control, a real mid-window verifier swap driven through the verification registry's own 2-day timelock so the execute phase's re-preflight refuses it, and one re-staging test per axis so neither staged-versus-environment check is vacuous.
 
 ### No test in that file writes a NON-CANONICAL environment value, and that is what makes it deterministic
 
@@ -261,13 +269,13 @@ Measured on a 10-core machine, forge 1.5.1:
 
 | configuration | before | after |
 |---|---|---|
-| `--match-path test/DeployProtocolRegistry.t.sol`, default threads | 0/8 runs green | 10/10 runs green |
+| `--match-path test/Deploy.t.sol`, default threads | 0/8 runs green | 10/10 runs green |
 | whole `forge test`, default threads | not a reliable signal (see below) | 10/10 runs green |
 
 The "before" column is the isolated-file measurement, which is the one that matters: running the file alone gives its concurrent test functions maximum interleaving. An earlier reading of 21 consecutive clean WHOLE-SUITE runs was a false clean - with 14 suites competing for the thread pool the three env-writing tests were often scheduled sequentially, so the whole-suite configuration hid the race rather than disproving it.
 
 Separate observation, measured rather than assumed: the two other files that call `vm.setEnv` are NOT flaky by this mechanism.
-`contracts/test/PinConsentWitnessGraph.t.sol` ran 8/8 green and `contracts/test/DeployProtocolRegistry.t.sol` 8/8 green, each isolated by `--match-path` at default threads.
+`contracts/test/PinConsentWitnessGraph.t.sol` ran 8/8 green and the deploy-script suite (now `contracts/test/Deploy.t.sol`) 8/8 green, each isolated by `--match-path` at default threads.
 Generation 1's file has a single env-touching test writing only canonical values (its other tests pass explicit arguments to `validatePublishTimelock`), so it has no within-suite divergence to race on.
 Nothing outside this branch needed fixing.
 - `crates/dogtag-standard-rs` `discovery::tests`: the generation-2 anchor validating and surfacing both members, every unusable-address form failing closed, absence passing, the error naming the member, and a platform lie still outranking the shape check.
