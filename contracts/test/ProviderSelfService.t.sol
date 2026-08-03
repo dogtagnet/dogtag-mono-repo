@@ -2,12 +2,10 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {CloneProvenanceRouter} from "../src/CloneProvenanceRouter.sol";
 import {DogTagIssuer} from "../src/DogTagIssuer.sol";
 import {DogTagIssuerFactory} from "../src/DogTagIssuerFactory.sol";
-import {DogTagIssuerFactoryV2} from "../src/DogTagIssuerFactoryV2.sol";
-import {DogTagIssuerV2} from "../src/DogTagIssuerV2.sol";
-import {IssuerRegistry} from "../src/IssuerRegistry.sol";
+import {DogTagIssuerFactory} from "../src/DogTagIssuerFactory.sol";
+import {DogTagIssuer} from "../src/DogTagIssuer.sol";
 import {ProviderDirectory} from "../src/ProviderDirectory.sol";
 import {ProviderRegistry} from "../src/ProviderRegistry.sol";
 import {ServiceDomainResolver} from "../src/ServiceDomainResolver.sol";
@@ -34,13 +32,13 @@ contract ForgedService {
 /// that the forgery guard the captain named actually stands where the journey would enter an
 /// address.
 ///
-/// Nothing here is a double. The core, the router, both factory generations, the clones, the domain
+/// Nothing here is a double. The core, the factory, the clones, the domain
 /// resolver and the directory are all the real contracts, because every claim below is about how
 /// they compose - a mocked core would let this file agree with a stand-in rather than with the
 /// bytecode the cutover deployed.
 ///
 /// FOUR contracts under test went live on ROAX on 2026-08-01 (S-14) and their sources are frozen:
-/// `ProviderRegistry`, `DogTagIssuerFactoryV2`, `DogTagIssuerV2`, `CloneProvenanceRouter`. This
+/// `ProviderRegistry`, `DogTagIssuerFactory`, `DogTagIssuer`. This
 /// suite adds no source change to any of them, and must not.
 ///
 /// Headline claims:
@@ -54,18 +52,15 @@ contract ForgedService {
 ///    no-placeholder rule has to live in the portal.
 contract ProviderSelfServiceTest is Test {
     ProviderRegistry internal core;
-    CloneProvenanceRouter internal router;
-    DogTagIssuerFactory internal generationOne;
-    DogTagIssuerFactoryV2 internal factory;
-    DogTagIssuerFactoryV2 internal unregisteredFactory;
-    DogTagIssuerV2 internal implementation;
+    DogTagIssuerFactory internal factory;
+    DogTagIssuerFactory internal unregisteredFactory;
+    DogTagIssuer internal implementation;
     ServiceDomainResolver internal domainResolver;
     ProviderDirectory internal directory;
 
     /// @dev The registrar. Holds `onlyOwner` on the core: KYC, attachment, standing. It deploys no
     /// clone in this suite, deliberately.
     address internal constant REGISTRAR = address(0xA11CE);
-    address internal constant ROUTER_ADMIN = address(0x120D);
 
     /// @dev The provider's own key. Deploys the clone, owns it, and drives every self-service write.
     address internal constant PROVIDER_KEY = address(0xC011);
@@ -91,36 +86,18 @@ contract ProviderSelfServiceTest is Test {
     address internal firstClone;
 
     function setUp() public {
-        // Generation 1 exists so the router is built over a real earlier generation - the topology
-        // the live cutover actually has. Nothing in this suite issues through it.
-        IssuerRegistry legacyRegistry = new IssuerRegistry(REGISTRAR);
-        DogTagIssuer legacyImplementation = new DogTagIssuer();
-        generationOne =
-            new DogTagIssuerFactory(address(legacyImplementation), address(legacyRegistry), REGISTRAR);
-
-        address[] memory generations = new address[](1);
-        generations[0] = address(generationOne);
-        router = new CloneProvenanceRouter(generations, ROUTER_ADMIN);
-
         core = new ProviderRegistry(REGISTRAR);
-        implementation = new DogTagIssuerV2();
-        // Router, then factory, then append - the order the two contracts were built for, and the
-        // order S-14 broadcast. A factory cannot be appended before it exists.
-        factory = new DogTagIssuerFactoryV2(address(implementation), address(core), address(router));
-        unregisteredFactory =
-            new DogTagIssuerFactoryV2(address(implementation), address(core), address(router));
+        implementation = new DogTagIssuer();
+        factory = new DogTagIssuerFactory(address(implementation), address(core));
+        // A second GENUINE factory of identical bytecode that the core was never told about. Its clones
+        // are real clones and are still unattachable - the gap the attach guard must close.
+        unregisteredFactory = new DogTagIssuerFactory(address(implementation), address(core));
 
-        vm.startPrank(ROUTER_ADMIN);
-        router.appendGeneration(address(factory));
-        router.appendGeneration(address(unregisteredFactory));
-        vm.stopPrank();
-
-        domainResolver = new ServiceDomainResolver(address(core), address(router));
+        domainResolver = new ServiceDomainResolver(address(core), address(factory));
         directory = new ProviderDirectory(core);
 
         vm.startPrank(REGISTRAR);
-        // Only ONE generation is registered in the core. `unregisteredFactory` is a genuine V2
-        // factory the router recognizes and the core does not - the gap the attach guard must close.
+        // Only ONE generation is registered in the core.
         core.addFactoryGeneration(GENERATION_2, address(factory));
         _registerProvider(PROVIDER, PROVIDER_KEY);
         _registerProvider(OTHER_PROVIDER, OTHER_PROVIDER_KEY);
@@ -174,9 +151,9 @@ contract ProviderSelfServiceTest is Test {
         address clone = factory.createIssuer(PROVIDER, RECORD_TYPE, 7);
 
         assertTrue(factory.isClone(clone), "the factory recorded its own deployment");
-        assertEq(DogTagIssuerV2(clone).owner(), PROVIDER_KEY, "the provider owns what it deployed");
-        assertTrue(DogTagIssuerV2(clone).owner() != REGISTRAR, "the registrar owns nothing here");
-        assertEq(DogTagIssuerV2(clone).recordType(), RECORD_TYPE);
+        assertEq(DogTagIssuer(clone).owner(), PROVIDER_KEY, "the provider owns what it deployed");
+        assertTrue(DogTagIssuer(clone).owner() != REGISTRAR, "the registrar owns nothing here");
+        assertEq(DogTagIssuer(clone).recordType(), RECORD_TYPE);
     }
 
     /// @dev The address is exact BEFORE the transaction, so a portal can show the provider what it
@@ -203,13 +180,13 @@ contract ProviderSelfServiceTest is Test {
         vm.prank(REGISTRAR);
         core.setServiceCreationApproval(PROVIDER, RECORD_TYPE, false);
         vm.prank(PROVIDER_KEY);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotApproved.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotApproved.selector);
         factory.createIssuer(PROVIDER, RECORD_TYPE, 9);
     }
 
     function test_a_stranger_cannot_deploy_a_clone_under_someone_elses_provider_id() public {
         vm.prank(STRANGER);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotApproved.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotApproved.selector);
         factory.createIssuer(PROVIDER, RECORD_TYPE, 9);
     }
 
@@ -250,13 +227,13 @@ contract ProviderSelfServiceTest is Test {
     /// @dev The FIRST of two independent gates, and the one that is easy to miss because it sits on
     /// the create rather than the attach. `canCreateService` keys on `generationOfFactory[msg.sender]`
     /// - the CALLING factory - so a V2 factory the core has never registered cannot deploy anything
-    /// at all, however genuine its bytecode and however approved the provider. The router recognizes
+    /// at all, however genuine its bytecode and however approved the provider. Its own factory recognizes
     /// this factory (`setUp` appended it), which is what makes the case sharp: lineage provenance
     /// alone buys nothing here.
     function test_an_unregistered_factory_generation_deploys_nothing() public {
-        assertTrue(router.isClone(unregisteredFactory.predictIssuer(RECORD_TYPE, PROVIDER_KEY, 0)) == false);
+        assertTrue(factory.isClone(unregisteredFactory.predictIssuer(RECORD_TYPE, PROVIDER_KEY, 0)) == false);
         vm.prank(PROVIDER_KEY);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotApproved.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotApproved.selector);
         unregisteredFactory.createIssuer(PROVIDER, RECORD_TYPE, 0);
     }
 
@@ -273,8 +250,7 @@ contract ProviderSelfServiceTest is Test {
 
         vm.prank(PROVIDER_KEY);
         address clone = unregisteredFactory.createIssuer(PROVIDER, RECORD_TYPE, 0);
-        assertTrue(unregisteredFactory.isClone(clone), "genuinely deployed by a real V2 factory");
-        assertTrue(router.isClone(clone), "and the provenance lineage recognizes it");
+        assertTrue(unregisteredFactory.isClone(clone), "genuinely deployed by a real factory");
         assertFalse(factory.isClone(clone), "but not by the generation about to be named");
 
         vm.prank(REGISTRAR);
@@ -345,15 +321,15 @@ contract ProviderSelfServiceTest is Test {
 
         bytes32 root = keccak256("a credential anchored before the repoint");
         vm.prank(PROVIDER_KEY);
-        DogTagIssuerV2(firstClone).issue(root);
-        assertEq(router.rootIssuer(root), firstClone, "anchored here");
+        DogTagIssuer(firstClone).issue(root);
+        assertEq(factory.rootIssuer(root), firstClone, "anchored here");
 
         address replacement = _deployAndAttach(PROVIDER, 1);
         vm.prank(PROVIDER_KEY);
         core.repointService(replacement);
 
         assertEq(core.currentService(PROVIDER, RECORD_TYPE), replacement, "new credentials go here");
-        assertEq(router.rootIssuer(root), firstClone, "the old one still answers for what it issued");
+        assertEq(factory.rootIssuer(root), firstClone, "the old one still answers for what it issued");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -500,7 +476,7 @@ contract ProviderSelfServiceTest is Test {
         // 1. The provider deploys its own clone.
         vm.prank(PROVIDER_KEY);
         address clone = factory.createIssuer(PROVIDER, RECORD_TYPE, 42);
-        assertEq(DogTagIssuerV2(clone).owner(), PROVIDER_KEY);
+        assertEq(DogTagIssuer(clone).owner(), PROVIDER_KEY);
         assertEq(core.service(clone).providerId, bytes20(0), "deployed, and not yet attached");
 
         // 2a. The registrar attaches it. Not self-service, and not skippable.

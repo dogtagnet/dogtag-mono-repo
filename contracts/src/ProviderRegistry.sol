@@ -37,9 +37,9 @@ interface IProviderRegistry {
 /// domain, controller, signer, service clone, factory salt or factory generation.
 ///
 /// The contract intentionally has one authority key for this generation. `Ownable2Step` makes every
-/// key switch request/accept, and `hasRole` projects that one current key into the two legacy role
-/// reads required by existing Dogtag consumers. There is no independently grantable role that could
-/// leave the old key behind after a rotation.
+/// key switch request/accept, and `hasRole` projects that one current key into the two role reads
+/// consumers make (`DEFAULT_ADMIN_ROLE` and `WHITELIST_ADMIN`). There is no independently grantable role
+/// that could leave the old key behind after a rotation.
 contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     bytes32 public constant DEFAULT_ADMIN_ROLE = bytes32(0);
     bytes32 public constant WHITELIST_ADMIN = keccak256("WHITELIST_ADMIN");
@@ -488,7 +488,7 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     /// `canWriteService` requires `_serviceStandingIsEffective`, which requires an active generation.
     /// `setDomainResolver` is included, so a service's last-selected domain resolver can no longer be
     /// changed or cleared - not by its owner, not by a delegate, and deliberately not by a registrar
-    /// override, which would be an authority to rewrite a superseded generation's published claims.
+    /// override, which would be an authority to rewrite a frozen service's published claims.
     ///
     /// The provider axis is deliberately ASYMMETRIC: `Provider.directoryResolver` stays writable and
     /// clearable throughout, because `canWriteProvider` consults provider standing only and a provider
@@ -690,19 +690,18 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     ///
     /// CORRECTION, and it matters because the earlier wording sent a reader the wrong way. This was
     /// documented as "THE historical issuer-status question, and the only sound migration target for
-    /// a direct legacy `isWhitelistedFor(recordTypeKey, signer)` reader such as the mandatory
-    /// issuer-whitelist verification pillar". That was written when the pillar really was a
-    /// current-state read. It no longer is: the pillar now asks whether a grant was in force AT THE
-    /// BLOCK A ROOT WAS ANCHORED, reconstructed from `Whitelisted`/`Delisted` logs, because delisting
-    /// is forward-only and a current-state read refused every credential a rotated signer ever
-    /// issued (`DogTagIssuer.sol:82`; `adminRevoke` is the retroactive lever).
+    /// a direct `isWhitelistedFor(recordTypeKey, signer)` reader such as the mandatory issuer-whitelist
+    /// verification pillar". It is NOT: the pillar asks whether a grant was in force AT THE BLOCK A ROOT
+    /// WAS ANCHORED, reconstructed from this contract's own `IssuanceCapabilitySet` log, because
+    /// withdrawing a grant is forward-only and a current-state read would refuse every credential a
+    /// since-rotated signer ever issued (`adminRevoke` is the retroactive lever, not this).
     ///
     /// This function reads CURRENT STORAGE — `_issuanceCapabilities[service][signer]`, with no block
     /// and no root parameter — so it cannot answer that question and is NOT the pillar's migration
     /// target. Consuming its boolean there would revert the pillar to a current-state getter under a
     /// new name. Verifiers use it only to establish that an authority speaks this generation's
-    /// vocabulary at all; answering the historical question for generation 2 needs this contract's
-    /// own `IssuanceCapabilitySet` log. See `docs/ISSUER_V2_OWNERSHIP.md` §8.
+    /// vocabulary at all; the historical question is answered from this contract's own
+    /// `IssuanceCapabilitySet` log.
     ///
     /// It remains the sound target for a PRESENT-TENSE record-type reader that is not a pre-issue
     /// gate — a console asking "is this signer a recognized issuer for this service now".
@@ -726,13 +725,14 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         return _isRecognizedIssuer(serviceAddress, _services[serviceAddress], signer);
     }
 
-    /// @notice Preserves an originator's ability to revoke roots on a superseded service without
-    /// reopening that service for new issuance. S-7 must call this path from `revoke`; the legacy
+    /// @notice Preserves an originator's ability to revoke roots on a replaced service without
+    /// reopening that service for new issuance. `DogTagIssuer.revoke` calls this path; a single
     /// `isWhitelistedFor` selector cannot distinguish an issue call from a revoke call.
     ///
     /// Above `isRecognizedIssuer` it adds only the confirmed-live-owner term, which the registrar can
     /// clear at any time — `confirmServiceOwner` is gated by neither standing nor generation. Every
-    /// term it deliberately omits is either irreversible (a deprecated generation, a RETIRED standing)
+    /// term it deliberately omits is either irreversible (a deprecated factory generation, a RETIRED
+    /// standing)
     /// or a review state that must not block invalidation (a suspended provider, a repointed pointer).
     /// Revocation is the safety direction: no lifecycle event may strand a root as unrevocable by the
     /// originator that anchored it.
@@ -799,7 +799,7 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         return keccak256(abi.encode("VERIFY:", purpose));
     }
 
-    /// @notice Exact legacy shape with caller-aware issuance scoping. A registered service caller
+    /// @notice A caller-aware issuance-scoping read. A registered service caller
     /// gets only its own service grant; other consumers read the orthogonal VERIFY-key capability.
     function isWhitelistedFor(bytes32 key, address signer) external view override returns (bool) {
         Service storage callerService = _services[msg.sender];

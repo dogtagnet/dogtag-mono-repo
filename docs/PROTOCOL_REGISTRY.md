@@ -1,12 +1,34 @@
-# ProtocolRegistryV2: the generation-2 discovery layer, and the timelock (registry-plan S-11)
+# ProtocolRegistry: the discovery layer, and the timelock
 
-The generation-2 discovery anchor: the dogtag-governed record of which contracts and which proving artifacts are current.
-DEPLOYED BY S-14, AND UNWIRED.
-Cutover step C-8 ran live on ROAX, so `contracts/deployments/roax.json` carries a `ProtocolRegistryV2` key - see `_s14_cutover` there for the address, transaction hash and block, which are deliberately not copied into this file.
-Nothing has been published on it and no `.env.example` entry or client points at it; repointing is C-9 and is separately captain-authorized.
-Its `PUBLISH_TIMELOCK` was deployed at the contract's 1-hour floor with the testnet opt-in stated aloud, and it is IMMUTABLE - the reasoning is in `_s14_cutover`. **Mainnet must use exactly 2 days.**
+The discovery anchor: the dogtag-governed record of which contracts and which proving artifacts are current.
 
-Generation 1's deployed `ProtocolRegistry` (`0xf5492A67…`, see `docs/PROTOCOL_REGISTRY_RUNBOOK.md`) is untouched and stays live until the cutover repoints clients.
+**Status: deployed, and carrying a PUBLISHED, active `dogtag-levelb/1` on both axes with its binding.**
+This registry REPLACES the one deployed with the rest of the launch set, so that it could carry `PUBLISH_TIMELOCK` 0 and publish without a wait.
+`contracts/deployments/roax.json` carries its address, the publish transaction hashes and the reasoning (`_publication`, `_protocol_registry_redeploy`); they are deliberately not copied into this file.
+`getDiscoverySet(keccak256("dogtag-levelb/1"))` returns a nine-word record, `getActiveArtifactSet` resolves, and `minAppVersion` is `1.4.0`.
+Use that getter name when you check: a call to a selector the contract does not have reverts with EMPTY returndata, and mistaking that for an answer is the could-not-check-as-an-answer trap this repo names elsewhere.
+An UNKNOWN key reverts with the contract's own named reason **`"unknown discovery set"`** - a deliberate fail-closed answer, and what to compare against when you check a key that should not be there.
+Publishing is a separate, two-phase, captain-authorized operation: `docs/PROTOCOL_REGISTRY_RUNBOOK.md`.
+`PUBLISH_TIMELOCK` is IMMUTABLE; **mainnet must use exactly 2 days**, and a testnet may use any value including zero, which this deployment does.
+
+> **Reading note.** This file was written while two registries coexisted, so it argues throughout in
+> terms of "generation 1" and "generation 2". Only one exists now - the launch contract this file
+> describes - and there is no other registry to contrast it with. The reasoning about WHAT the record
+> holds and WHY the two axes rotate independently is unaffected and still current; read every
+> "generation 2" as "this registry", and every "generation 1" as the superseded design the record was
+> widened away from.
+>
+> **Two things the deployed record does NOT match, so do not build a decoder from the table below.**
+> The version key is **`dogtag-levelb/1`**, not `dogtag-levelb/2` - one key was always going to survive
+> the collapse and it is the one the SDK already stamps into every credential's `protocol.version`.
+> And the record is **nine words, not ten**: with one factory there is nothing to bridge, so the
+> separate `rootIndex` member is gone and `factory` IS the root index (`rootIndex()` is a derived
+> accessor over it, and the publish preflight refuses to stage a record whose `factory` is not
+> `verificationRegistry.rootIndex()`). `contracts/src/ProtocolRegistry.sol`'s `DiscoverySet` is the
+> authority for the shape; the table below records the as-designed generation-2 record and is kept for
+> the reasoning about WHY each member is on this axis. Getting the arity wrong is not a cosmetic
+> error - the mobile decoders' exact-arity guard is what turned it into a refusal rather than an
+> anchor naming whatever sat at the shifted offsets.
 
 ## Why a new registry is forced, not chosen
 
@@ -21,12 +43,12 @@ That there must be a new record is settled by the struct.
 
 ## The record
 
-`ProtocolRegistryV2.DiscoverySet` is generation 1's eight members plus two, in this order:
+`ProtocolRegistry.DiscoverySet` is generation 1's eight members plus two, in this order:
 
 | # | member | what it is |
 |---|---|---|
 | 0 | `discoverySetId` | `keccak256("dogtag-levelb/2")`, the map key |
-| 1 | `factory` | the generation-2 `DogTagIssuerFactoryV2`: where a provider's clone comes from |
+| 1 | `factory` | the generation-2 `DogTagIssuerFactory`: where a provider's clone comes from |
 | 2 | `verificationRegistry` | the registry a proof is submitted to, and the anti-redirect anchor |
 | 3 | `sbt` | the SHARED, reused `DogTagSBTConsent` |
 | 4 | `verifier` | the existing `Groth16VerifierConsent`: the frozen ceremony VK's on-chain identity |
@@ -78,7 +100,7 @@ Two guards, at different layers, and neither is redundant:
 
 - The CONSTRUCTOR refuses anything below `MIN_PUBLISH_TIMELOCK` and reverts `PublishTimelockBelowFloor(given, floor)`.
   That is what makes a zero-delay registry impossible even for someone deploying the contract directly, without the script.
-- `DeployProtocolRegistryV2.s.sol` additionally requires exactly the 2-day production default unless `GEN2_TESTNET_DEPLOY=true` is stated aloud.
+- `Deploy.s.sol` (which stands the registry up along with the rest of the launch set; the separate `DeployProtocolRegistry.s.sol` no longer exists) additionally requires exactly the 2-day production default unless the testnet opt-in is stated aloud.
   A testnet may go shorter, but not below the contract's floor and never to zero.
   This is the deliberate divergence from generation 1's deploy script, whose testnet opt-in accepts zero (it has a passing test named `test_explicit_testnet_opt_in_accepts_zero_timelock`).
 
@@ -131,19 +153,19 @@ The discovery set, the artifact set and the binding are three timelocked writes 
 
 ```
 # Phase 1 - preflight, then propose (starts the timelock on all three)
-forge script contracts/script/PublishProtocolVersionsV2.s.sol:PublishProtocolVersionsV2Propose \
+forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersionsPropose \
   --rpc-url $ROAX_RPC --broadcast --legacy --private-key $PUBLISHER_KEY
 
 # Phase 2 - after the printed ETAs, execute sets first, then the binding
-forge script contracts/script/PublishProtocolVersionsV2.s.sol:PublishProtocolVersionsV2Execute \
+forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersionsExecute \
   --rpc-url $ROAX_RPC --broadcast --legacy --private-key $PUBLISHER_KEY
 ```
 
-Every input is a mandatory environment variable under the `GEN2_` namespace, with no stale-network fallbacks: `GEN2_PROTOCOL_REGISTRY`, `GEN2_FACTORY`, `GEN2_VERIFICATION_REGISTRY`, `GEN2_SBT`, `GEN2_VERIFIER`, `GEN2_PROVIDER_REGISTRY`, `GEN2_ROOT_INDEX`, `GEN2_ZKEY_SHA256`, `GEN2_WITNESS_MOBILE_SHA256`, `GEN2_R1CS_SHA256`, `GEN2_WASM_SHA256`, `GEN2_ARTIFACTS_URL`, `GEN2_MIN_APP_VERSION`.
-The deploy script takes `GEN2_ADMIN` (mandatory, no default), `GEN2_PUBLISHER`, `GEN2_PUBLISH_TIMELOCK_SECS` and `GEN2_TESTNET_DEPLOY`.
+Every input is a mandatory environment variable under the `PUBLISH_` namespace, with no stale-network fallbacks: `PUBLISH_PROTOCOL_REGISTRY`, `PUBLISH_FACTORY`, `PUBLISH_VERIFICATION_REGISTRY`, `PUBLISH_SBT`, `PUBLISH_VERIFIER`, `PUBLISH_PROVIDER_REGISTRY`, `PUBLISH_ROOT_INDEX`, `PUBLISH_ZKEY_SHA256`, `PUBLISH_WITNESS_MOBILE_SHA256`, `PUBLISH_R1CS_SHA256`, `PUBLISH_WASM_SHA256`, `PUBLISH_ARTIFACTS_URL`, `PUBLISH_MIN_APP_VERSION`.
+The deploy script takes `PUBLISH_ADMIN` (mandatory, no default), `PUBLISH_PUBLISHER`, `PUBLISH_PUBLISH_TIMELOCK_SECS` and `PUBLISH_TESTNET_DEPLOY`.
 
 **Phase 2 needs the SAME environment phase 1 had, not just the registry address.**
-It used to read only `GEN2_PROTOCOL_REGISTRY`.
+It used to read only `PUBLISH_PROTOCOL_REGISTRY`.
 It now reads every publish variable in that list: the six addresses feed the re-preflight, and all thirteen feed the two staged-versus-environment checks that confirm the bytes about to be activated are still the bytes this environment describes.
 On mainnet phase 2 runs two days after phase 1, plausibly in a different shell or a different operator's session, so load the same `.env` rather than exporting the registry address alone.
 A missing variable reverts inside `vm.envAddress` / `vm.envBytes32` / `vm.envString` before anything is broadcast, so it fails safe, but the message names only the variable and says nothing about the two-phase procedure.
@@ -153,7 +175,7 @@ Read it off the deployed contract rather than recomputing it from the variable n
 
 ### This pair is FIRST-ROLLOUT only
 
-`PublishProtocolVersionsV2Propose` stages all three writes unconditionally, so the two phases send six transactions between them.
+`PublishProtocolVersionsPropose` stages all three writes unconditionally, so the two phases send six transactions between them.
 Reaching for it to move ONE axis re-executes the discovery set: `executeDiscoverySet` assigns the record unconditionally, so it restamps `publishedAt` and re-emits `DiscoverySetPublished` for a change that moves no address, rewriting the generation's on-chain provenance and destroying the previous `publishedAt` with nothing recording it.
 The same trap is recorded for generation 1's script in AGENTS.md.
 
@@ -170,7 +192,7 @@ Without the re-check, `executeDiscoverySet` would write a verifier the registry 
 Phase 2 additionally asserts that the staged bytes still equal the record this environment describes, because `executeDiscoverySet` writes the staged bytes and never reads the environment.
 The remedy after either refusal is a fresh propose, and therefore a fresh timelock - never editing the environment to agree with the chain, which would leave the retired verifier staged while the preflight reported everything in order.
 
-### Why the `GEN2_` namespace, rather than reusing generation 1's names
+### Why the `PUBLISH_` namespace, rather than reusing generation 1's names
 
 Two reasons, and the first is an operator hazard rather than tidiness.
 
@@ -184,7 +206,7 @@ Second, `vm.setEnv` mutates the PROCESS environment and `forge test` runs test c
 The generation-1 deploy test sets `ROOT_INDEX` to its own factory, and the generation-2 publish script read it mid-test.
 That produced a genuine flake, the preflight failing on `rootIndex` in roughly three of five full-suite runs, which the namespace removes by construction rather than by timing.
 
-`GEN2_ADMIN` additionally has NO default, unlike generation 1's `ADMIN`, which defaults to the current governance EOA.
+`PUBLISH_ADMIN` additionally has NO default, unlike generation 1's `ADMIN`, which defaults to the current governance EOA.
 That EOA has no contract code and already holds `DEFAULT_ADMIN_ROLE` on four contracts plus `WHITELIST_ADMIN` and factory ownership.
 Inheriting it by default would quietly reproduce that concentration on the one deployment whose purpose is to harden the pointer, so the script refuses to choose the holder silently.
 
@@ -201,7 +223,7 @@ Nothing about either mistake looks wrong at publish time.
 - `verifier == verificationRegistry.zkVerifier()`
 - `rootIndex.isGeneration(factory)`, because the factory is not reachable from the registry in generation 2, and generation membership is the property that makes it a factory whose roots that root index can resolve
 
-The preflight lives in the SCRIPT rather than in the registry, following `DeployIssuerDomainRegistry.s.sol`, which preflights `factory.registry()` the same way.
+The preflight lives in the SCRIPT rather than in the registry, following the same shape an earlier deploy script used to preflight `factory.registry()`.
 The registry stores data and asserts nothing about the semantics of what it stores; binding it to one verification registry's ABI would mean a later generation with a differently-shaped registry could not be published at all.
 
 It deliberately does NOT check that the bound artifacts prove against `verifier`.
@@ -212,7 +234,7 @@ That is a governance judgement, which is why the binding is timelocked rather th
 
 Nothing is deployed, so NO address moves.
 Both mobile bundles (`apps/*/roax.json`) keep their generation-1 `ProtocolRegistry` address, and the deployment ledger is untouched.
-Adding a `ProtocolRegistryV2` key with a placeholder would be exactly the invented data this fleet forbids.
+Adding a `ProtocolRegistry` key with a placeholder would be exactly the invented data this fleet forbids.
 
 What changed:
 
@@ -227,7 +249,7 @@ What changed:
 - `stacks/vet/api/src/discovery.rs`: the manifest-to-anchor mapping carries both through.
   Never substitute `factory` for `root_index` here.
 - Both mobile `AnchorResolver`s: an exact-arity guard on the generation-1 decoder, a new `decodeDiscoverySet` for the 10-word record, and the `dogtag-levelb/2` constant.
-  Both are pinned against a golden ABI encoding that `contracts/test/ProtocolRegistryV2.t.sol` asserts from the other end, so a change to the record's shape fails in Solidity first and names the two files to regenerate.
+  Both are pinned against a golden ABI encoding that `contracts/test/ProtocolRegistry.t.sol` asserts from the other end, so a change to the record's shape fails in Solidity first and names the two files to regenerate.
 - Both UniFFI bindings were regenerated, which is mandatory after any FFI record change: Android CI bundles the committed `.kt` as-is and never regenerates it.
 
 Deferred, deliberately:
@@ -236,17 +258,17 @@ Deferred, deliberately:
   Those are cutover steps C-9 and C-10.
   Both `ScanScreen` call sites pass `nil`/`null` today with a comment naming what must change and where.
 - The mandatory issuer-whitelist pillar still asks the generation-1 `IssuerRegistry`, so it does not yet answer for a generation-2 root.
-  That is a cutover blocker recorded in `docs/ISSUER_V2_OWNERSHIP.md` section 8, not something this slice closes.
+  That is a client-side code change in each consumer rather than a configuration flip, and not something this slice closes.
   Carrying `providerRegistry` on the validated anchor is what gives those five consumers an attested address to migrate TO.
 
 ## Tests
 
-- `contracts/test/ProtocolRegistryV2.t.sol` (22): the constructor floor as a boundary rather than a `!= 0` check, the delay actually gating every write, the selector rename and the exact 10-word arity, `factory != rootIndex`, per-member zero refusals, R-5 independence in both directions, deprecate-cancels-a-stale-proposal, binding lifecycle, fail-closed reads, role gating, and the golden encoding the two mobile suites are pinned against.
-- `contracts/test/DeployProtocolRegistryV2.t.sol` (10): the mainnet guard, the testnet opt-in that cannot reach zero, the contract floor holding without the script, the real scripts end to end against a REAL stack (real router over real factories, real SBT, real verifier, real verification registry), each of the preflight's five relations broken in turn plus the accept case and an unmutated positive control, a real mid-window verifier swap driven through the verification registry's own 2-day timelock so the execute phase's re-preflight refuses it, and one re-staging test per axis so neither staged-versus-environment check is vacuous.
+- `contracts/test/ProtocolRegistry.t.sol` (22): the constructor floor as a boundary rather than a `!= 0` check, the delay actually gating every write, the selector rename and the exact 10-word arity, `factory != rootIndex`, per-member zero refusals, R-5 independence in both directions, deprecate-cancels-a-stale-proposal, binding lifecycle, fail-closed reads, role gating, and the golden encoding the two mobile suites are pinned against.
+- `contracts/test/Deploy.t.sol` (11; it absorbed the deploy-script coverage when the scripts collapsed into one): the mainnet guard, the testnet opt-in that cannot reach zero, the contract floor holding without the script, the real scripts end to end against a REAL stack (real router over real factories, real SBT, real verifier, real verification registry), each of the preflight's five relations broken in turn plus the accept case and an unmutated positive control, a real mid-window verifier swap driven through the verification registry's own 2-day timelock so the execute phase's re-preflight refuses it, and one re-staging test per axis so neither staged-versus-environment check is vacuous.
 
 ### No test in that file writes a NON-CANONICAL environment value, and that is what makes it deterministic
 
-`vm.setEnv` writes the PROCESS environment while forge 1.5.1 runs a suite's test functions CONCURRENTLY, so a test writing a non-canonical `GEN2_*` value is visible to every other test in the file for as long as it holds it.
+`vm.setEnv` writes the PROCESS environment while forge 1.5.1 runs a suite's test functions CONCURRENTLY, so a test writing a non-canonical `PUBLISH_*` value is visible to every other test in the file for as long as it holds it.
 Two tests used to do that to reach the preflight's negative cases, and the suite was nondeterministic as a result.
 
 Those cases are now asked of `preflight` directly: it is `public view` and takes the `DiscoverySet` by value, so a mis-transcribed record is built in memory and passed as an argument with no environment involved.
@@ -261,13 +283,13 @@ Measured on a 10-core machine, forge 1.5.1:
 
 | configuration | before | after |
 |---|---|---|
-| `--match-path test/DeployProtocolRegistryV2.t.sol`, default threads | 0/8 runs green | 10/10 runs green |
+| `--match-path test/Deploy.t.sol`, default threads | 0/8 runs green | 10/10 runs green |
 | whole `forge test`, default threads | not a reliable signal (see below) | 10/10 runs green |
 
 The "before" column is the isolated-file measurement, which is the one that matters: running the file alone gives its concurrent test functions maximum interleaving. An earlier reading of 21 consecutive clean WHOLE-SUITE runs was a false clean - with 14 suites competing for the thread pool the three env-writing tests were often scheduled sequentially, so the whole-suite configuration hid the race rather than disproving it.
 
 Separate observation, measured rather than assumed: the two other files that call `vm.setEnv` are NOT flaky by this mechanism.
-`contracts/test/PinConsentWitnessGraph.t.sol` ran 8/8 green and `contracts/test/DeployProtocolRegistry.t.sol` 8/8 green, each isolated by `--match-path` at default threads.
+`contracts/test/PinConsentWitnessGraph.t.sol` ran 8/8 green and the deploy-script suite (now `contracts/test/Deploy.t.sol`) 8/8 green, each isolated by `--match-path` at default threads.
 Generation 1's file has a single env-touching test writing only canonical values (its other tests pass explicit arguments to `validatePublishTimelock`), so it has no within-suite divergence to race on.
 Nothing outside this branch needed fixing.
 - `crates/dogtag-standard-rs` `discovery::tests`: the generation-2 anchor validating and surfacing both members, every unusable-address form failing closed, absence passing, the error naming the member, and a platform lie still outranking the shape check.

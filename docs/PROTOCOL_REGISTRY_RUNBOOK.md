@@ -4,28 +4,41 @@ Deploying the `ProtocolRegistry` and publishing the single owner-hidden protocol
 That version is keyed by the internal version string `dogtag-levelb/1` (artifact axis: `dogtag-levelb-artifacts/1`) - an internal identifier, not a product label.
 Its keccak keys the on-chain registry, so the string is never renamed.
 
-**Status: EXECUTED on ROAX (2026-07-23, the r8 fresh redeploy).**
-`ProtocolRegistry` is deployed at `0xf5492A671E69b1A13f7Fd123C021830eB1ea8081` (recorded in `contracts/deployments/roax.json`), with `PUBLISH_TIMELOCK = 0` (the explicit testnet opt-in below) and the single version published and **active** on both axes: `dogtag-levelb/1` + `dogtag-levelb-artifacts/1` + their binding (propose → immediate execute).
+**Status: PUBLISHED on the launch set.**
+`dogtag-levelb/1` is live and active on both axes with its binding, executed 2026-08-03.
+`getDiscoverySet(keccak256("dogtag-levelb/1"))` returns a nine-word record; `getActiveArtifactSet` resolves; `minAppVersion` is `1.4.0`.
+The registry's address, the publish transaction hashes and the reasoning are in `contracts/deployments/roax.json` (`_publication`, `_protocol_registry_redeploy`); they are deliberately not copied into this file.
 
-This document remains the reproducible procedure (a future environment, or a mainnet deploy with the full 2-day timelock).
+Note the getter is `getDiscoverySet`.
+Calling a name the contract does not have - `getContractSet`, say - reverts too, but at the DISPATCHER with empty returndata, and reading that as "nothing is published" would be a dispatcher refusal mistaken for an answer.
+The named reason **`"unknown discovery set"`** is what an UNKNOWN key returns from this contract: a deliberate fail-closed answer rather than an error, and the thing to compare against when you check a key that should not be there.
+
+The registry itself was REDEPLOYED before publishing, and the earlier instance is not a write target.
+`PUBLISH_TIMELOCK` is immutable, and the original carried the then-mandatory 1-hour floor, which put an hour between propose and execute on every testnet iteration.
+
+This document is the reproducible procedure for publishing.
 Executing it requires the governance/publisher key and is the captain's to authorize and run.
 
-**This document is about the DEPLOYED generation-1 registry.**
-The generation-2 discovery layer is a separate contract with a different record and a non-zero timelock floor, deployed by S-14 (cutover C-8) and carrying no published discovery set: see `docs/PROTOCOL_REGISTRY_V2.md` and `_s14_cutover` in `contracts/deployments/roax.json`.
-The `PUBLISH_TIMELOCK = 0` recorded above is the specific defect that registry exists to correct, and it is correctable only at deploy time because the value is immutable.
+**The steps below have already been run against this deployment**, which is what the status above records.
+They are kept in the imperative because they are both the reproducible record of that run and the runbook for the next registry - but do not walk them here expecting a first publication.
+`executeDiscoverySet` assigns unconditionally, so a re-run is an IN-PLACE re-publish: it restamps `publishedAt` and re-emits the event without adding a list entry.
+That is a deliberate operation (publishing an omitted identity, say), never something to reach by following a runbook.
+
+**The deployed `PUBLISH_TIMELOCK` is 0**, per the captain's 2026-08-03 ruling that testnet waits not at all and production keeps 2 days.
+So propose and execute land back to back on this deployment - no wait to plan for.
+The floor that used to make zero unrepresentable moved off the contract to `Deploy.validatePublishTimelock`; see "The timelock is immutable and selected at deploy time" below.
 
 ## Why this is the long pole
 
 The app-side anchor validation (M-4 PR3) resolves its `TrustedAnchor` from
-`ProtocolRegistry.getContractSet` + `getActiveArtifactSet`.
+`ProtocolRegistry.getDiscoverySet` + `getActiveArtifactSet`.
 There is no alternative source: the signed-manifest fallback is not usable because
 `DOGTAG_MANIFEST_PUBKEY_HEX` is `None` (`crates/dogtag-prover-rs/src/manifest.rs`) and no client
 fetches `/protocol/manifest`.
 On-chain resolution is therefore the only anchor path.
 
 Publication is a **two-phase, timelocked** operation. Mainnet keeps the full 2-day governance window;
-the ROAX testnet deploy uses the explicit zero-delay path so propose and execute can run immediately
-for iteration (still as two separate transactions).
+this ROAX deployment sits at the contract's 1-hour floor, so the two transactions are an hour apart.
 
 ### The timelock is immutable and selected at deploy time
 
@@ -36,8 +49,14 @@ provides the safe environment policy around that value:
 - Without `TESTNET_DEPLOY=true`, the script **requires exactly 2 days** and refuses zero, short, or
   otherwise non-default values. This is the loud mainnet guard; never set `TESTNET_DEPLOY` for a
   mainnet deployment.
-- With `TESTNET_DEPLOY=true`, a testnet may deliberately choose a shorter value. The ROAX deployment
-  uses `PUBLISH_TIMELOCK_SECS=0` for immediate execution.
+- With `TESTNET_DEPLOY=true`, a testnet may choose ANY value **including zero**. `MIN_PUBLISH_TIMELOCK`
+  is 0, so a zero-delay registry is representable and this ROAX deployment uses it: a development chain
+  deploys, publishes, tests and redeploys in one sitting, and a floor there buys nothing while costing
+  every iteration. The guard is a RELOCATION, not a removal - it used to sit on the contract because a
+  wrong immutable value could only be repaired by replacing the registry, and replacing it is routine
+  now that a mobile rebuild-and-reinstall accompanies every full redeploy as standing process. The cost
+  is stated rather than hidden: a direct `forge create` bypassing the script can pick any delay on any
+  chain, and the script is the only production guard where it used to be defence in depth.
 
 The selected value cannot be changed after deployment. The admin-transfer timelock remains a separate
 fixed 2-day governance control and is not affected by these variables.
@@ -51,33 +70,20 @@ fixed 2-day governance control and is not affected by these variables.
 
 ## Step 1 — deploy the registry
 
-ROAX testnet (fast path):
+**There is no separate registry-deploy script any more.** `DeployProtocolRegistry.s.sol` was removed;
+`Deploy.s.sol` stands the registry up together with the rest of the launch set, and it is the same
+script that carries the timelock policy described above (`PUBLISH_TIMELOCK_SECS`, `TESTNET_DEPLOY`).
+
+So on an already-deployed chain there is nothing to do in this step - take the address from the
+ledger:
 
 ```sh
-TESTNET_DEPLOY=true PUBLISH_TIMELOCK_SECS=0 \
-forge script contracts/script/DeployProtocolRegistry.s.sol:DeployProtocolRegistry \
-  --rpc-url $ROAX_RPC --broadcast --legacy --private-key $GOV_KEY
+export PROTOCOL_REGISTRY=$(python3 -c "import json;print(json.load(open('contracts/deployments/roax.json'))['ProtocolRegistry'])")
 ```
 
-`admin` and `publisher` both default to the governance authority; override with the `ADMIN` /
-`PUBLISHER` env vars if they must differ.
-
-Mainnet (safe default; do not set either timelock env var):
-
-```sh
-forge script contracts/script/DeployProtocolRegistry.s.sol:DeployProtocolRegistry \
-  --rpc-url $MAINNET_RPC --broadcast --legacy --private-key $GOV_KEY
-```
-
-The script prints the selected delay and whether testnet mode was enabled. On mainnet, verify the
-output says `172800 seconds` and `false` before recording the address.
-
-For the ROAX deployment, record the deployed address in `contracts/deployments/roax.json` under
-`ProtocolRegistry`, and export it for the next steps:
-
-```sh
-export PROTOCOL_REGISTRY=<deployed address>
-```
+Deploying a NEW chain's registry means running `Deploy.s.sol`, which deploys all ten contracts; see
+`docs/DEPLOY.md`. On mainnet, verify the script's printed delay says `172800 seconds` and testnet mode
+`false` before recording anything.
 
 ## Step 2 — propose (starts the configured timelock)
 
@@ -89,9 +95,9 @@ forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersi
 This stages **three** records in one batch - the `dogtag-levelb/1` contract set, its
 `dogtag-levelb-artifacts/1` artifact set, and their binding. Their timelocks run **concurrently**, so
 this is still a two-phase rollout, not three sequential waits.
-On the ROAX zero-delay deployment, every ETA equals the proposal block timestamp.
+On this deployment `PUBLISH_TIMELOCK` is 0, so every ETA is the proposal block timestamp itself and Phase 2 follows immediately.
 
-The script prints each ETA. Record them; Phase 2 is invalid before the latest one elapses.
+The script prints each ETA. On a deployment with a real delay, record them; Phase 2 is invalid before the latest one elapses.
 
 ## Step 3 — execute (once the printed ETAs are reached)
 
@@ -101,13 +107,12 @@ forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersi
 ```
 
 Sets are executed before bindings, because `executeArtifactBinding` requires both sides to already be
-published. With the ROAX zero-delay deploy, run this immediately after Step 2 confirms. Mainnet must
-wait the full 2 days. The script echoes back `active` and `minAppVersion` for `dogtag-levelb/1` — check them.
+published. On this deployment that is an hour after Step 2 confirms; mainnet must wait the full 2 days. The script echoes back `active` and `minAppVersion` for `dogtag-levelb/1` — check them.
 
 ## Verification
 
 ```sh
-cast call $PROTOCOL_REGISTRY "getContractSet(bytes32)" $(cast keccak "dogtag-levelb/1") --rpc-url $ROAX_RPC
+cast call $PROTOCOL_REGISTRY "getDiscoverySet(bytes32)" $(cast keccak "dogtag-levelb/1") --rpc-url $ROAX_RPC
 cast call $PROTOCOL_REGISTRY "getActiveArtifactSet(bytes32)" $(cast keccak "dogtag-levelb/1") --rpc-url $ROAX_RPC
 ```
 
@@ -131,7 +136,7 @@ being gated.
 like it, are never renamed.)
 M-4 PR4 locks all four values to **`1.4.0`**. Step 2 must publish that exact floor;
 re-publishing a corrected `minAppVersion` costs a fresh propose plus the registry's immutable
-timelock (2 days on mainnet; immediate on the ROAX fast-path deployment).
+timelock (2 days on mainnet; zero on this ROAX deployment, so a correction is one sitting).
 
 ## Rotating artifacts later
 

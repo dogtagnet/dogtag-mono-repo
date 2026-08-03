@@ -706,7 +706,7 @@ private suspend fun runLevelBFlow(
     // null here (fail closed) rather than falling back to the custom peer - `endpointRoute` takes its
     // `candidate == DEFAULT_RPC` branch, which has no custom candidate to fall back to.
     val cs = withContext(Dispatchers.IO) {
-        RoaxRpc.getContractSet(RoaxRpc.DEFAULT_RPC, roax.chainId, roax.protocolRegistry, version)
+        RoaxRpc.getDiscoverySet(RoaxRpc.DEFAULT_RPC, roax.chainId, roax.protocolRegistry, version)
     }
     val arti = withContext(Dispatchers.IO) {
         RoaxRpc.getActiveArtifactSet(
@@ -721,7 +721,7 @@ private suspend fun runLevelBFlow(
     // SEPARATELY (never AND-ed) — `validateDiscovery` requires both true independently.
     val anchor = TrustedAnchor(
         version = version,
-        versionId = cs.contractSetId,
+        versionId = cs.discoverySetId,
         artifactSet = AnchorResolver.ARTIFACT_SET,
         artifactSetId = arti.artifactSetId,
         chainId = roax.chainId.toULong(),
@@ -730,14 +730,17 @@ private suspend fun runLevelBFlow(
         minAppVersion = arti.minAppVersion,
         contractSetActive = cs.active,
         artifactSetActive = arti.active,
-        // `null` because this build reads generation 1's `ProtocolRegistry`, whose `ContractSet` struct
-        // has no provider-authority or root-index member. That is an accurate statement about the
-        // record's shape, not a could-not-check: a FAILED read aborts before reaching here. When this
-        // call site is repointed at `ProtocolRegistryV2.getDiscoverySet`
-        // (`AnchorResolver.decodeDiscoverySet`) both must be populated from that record — and `rootIndex`
-        // from its OWN member, never from `factory`.
-        providerRegistry = null,
-        rootIndex = null,
+        // Both come from the discovery record itself. `rootIndex` resolves to that record's `factory`,
+        // and on this contract set that is not a shortcut: there is one launch set and no earlier
+        // generation to bridge, `VerificationRegistryConsent` pins the factory in its immutable
+        // `rootIndex` slot, and the publish script's preflight refuses to stage a record whose
+        // `factory` is not `verificationRegistry.rootIndex()`. So the equality is asserted on chain
+        // before anything is published, rather than assumed here.
+        //
+        // Never source either from the app's own bundle instead: the whole point of reading them from
+        // the anchor is that a platform's claim gets CHECKED against a dogtag-governed record.
+        providerRegistry = cs.providerRegistry,
+        rootIndex = cs.rootIndex,
     )
     val ffiClaims = ConvenienceClaims(
         protocolVersion = claims.protocolVersion,

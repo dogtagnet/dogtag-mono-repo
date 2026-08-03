@@ -12,6 +12,47 @@ That guard test caught the drift and its pin was updated to 2 rather than delete
 What is genuinely unchanged is the `document.instructions` constraints above, the post-stage commit guard, and the standing `--skip=document` policy - which is why the practical exposure is small: every Dogtag run starts with `--skip=document`, so that step does not execute at all.
 Do not soften this into "no functional change".
 
+## No-mistakes gate policy - PAUSED, and the flags for when it returns
+
+**The gate is PAUSED fleet-wide by captain ruling (2026-08-03):** "pause on no mistakes for now ...
+just do development and e2e test and unit test ... only put it back up when i instruct you to." Do
+not run it until the captain says so. What replaces it is stated below, and it is a higher bar rather
+than a lower one.
+
+When it returns, the flags are `--skip=document,ci`, and the two halves are NOT the same kind of rule:
+
+- **`--skip=document` always.** Measured fleet-wide: 26 fixes out of 1371, about 2%. It is standing
+  policy for every dogtag run regardless of repository state.
+- **`,ci` ONLY where no workflow triggers on a pull request.** That is a CONDITION to re-derive, not a
+  value to inherit: `ci` waits on PR checks, so where none can be produced it monitors for a result
+  that never arrives and contributes zero safety. For dogtag it holds today - `.github/workflows/`
+  contains exactly `ios-mobile-e2e.yml` and `android-mobile-e2e.yml`, both `on: workflow_dispatch`
+  only. **If dogtag ever gains a PR-triggered workflow, drop the `ci` skip** - check the trigger, do
+  not copy this line forward.
+
+**Review is NEVER skipped.** It produced 1215 of those 1371 fixes, and on this branch alone it caught
+both mobile test modules silently failing to COMPILE - 17 call sites referencing symbols the change
+had deleted. That failure is worth naming because it is this repo's standing defect class: a module
+that does not compile reports NOTHING, and nothing is indistinguishable from success. Speed is never a
+reason to trim review.
+
+### What "legit tests" means now that the gate is off (captain, 2026-08-03)
+
+"The process just needs to make sure the e2e tests and the unit tests are legit and they pass before
+pushing." Four things, SHOWN rather than asserted, before any push:
+
+1. **They compiled AND ran** - paste the runner's own output with real counts. **A module reporting
+   zero tests is a FAILURE, never nothing-to-run.** That is exactly how both mobile suites went
+   silently dead here, and how a Gradle `BUILD SUCCESSFUL` can mean no test executed at all: read the
+   JUnit XML in `app/build/test-results/`, not the console summary.
+2. **They can fail** - break the behaviour you changed, watch the SPECIFIC test redden, revert, and
+   say which test and which mutation.
+3. **They cover the change** - the tests that ran must exercise what you actually changed, not a
+   suite that happens to be green.
+4. **Counts, not adjectives** - "832 passed, 0 failed", never "tests pass". Both platforms for mobile.
+
+Anything you cannot run, say so plainly and why. Could-not-check must never be reported as pass.
+
 ## No-mistakes Test safety (high priority, conditional)
 
 When acting as the no-mistakes Test or evidence agent, use the configured targeted command plus at most the smallest checks directly relevant to the submitted diff. Never run `cargo test --workspace` or another full monorepo suite locally, and do not expand into browsers or screenshots unless the diff changes that UI. Treat 15 minutes as a prompt/supervision budget, not a hard enforced timeout; park with a finding instead of broadening beyond it.
@@ -35,129 +76,141 @@ So:
 
 The default shell here is zsh, which applies **parameter modifiers** inside expansions: `"$SHA:refs/heads/foo"` silently becomes `<sha>efs/heads/foo`, because `:r` is "remove extension". A preservation push written that way fails with a confusing `src refspec … does not match any`. Always brace it: `"${SHA}:refs/heads/foo"`. Related: backticks inside a double-quoted `--instructions`/`--intent` argument are executed as command substitution and silently strip identifiers - write long arguments to a file with a quoted heredoc and pass `"$(cat file)"`.
 
-## ONE implementation, no generations (captain, 2026-08-03) - supersedes every A/B and cutover note
+## ONE implementation, one deployed set (captain, 2026-08-03) - supersedes every A/B, generation and cutover note
 
-**"do not have 2 different implementations."** There is one authority, one factory, one issuer, one
-registry, one verification path. Any surviving RUNTIME BRANCH that picks between an old and a new
-behaviour is a defect to remove, not a feature to preserve - that branching IS the confusion this
-work deleted. Name what remains PLAINLY: no `V2` suffix, no "generation-1/2" framing in code,
-comments, UI copy or error messages.
+**"even for the codes for the so called 'gen 1' old generation, delete them... I only want to see what
+will be implemented when we launch. At this point there is no need for backwards compatibility."**
 
-Read every older section in this file with that in mind. The cutover, client-repoint, C-9/C-10 and
-"deployed but unwired" material below is HISTORY of how the tree got here, not a description of it.
+`contracts/src/` is exactly the ten contracts we are launching. There is one authority, one factory,
+one issuer implementation, one SBT, one verifier, one verification registry, one discovery registry,
+two typed resolvers and one ERC interface. No file exists to explain history, and any RUNTIME BRANCH
+that picks between an old and a new behaviour is a defect to remove. Name what is there PLAINLY: no
+`V2` suffix, no "generation-1/2" framing in code, comments, UI copy or error messages.
 
-### What was kept and what died
+Read every older section in this file with that in mind. Where one still describes two coexisting
+generations, a cutover, a router, an `IssuerRegistry`, an `IssuerDomainRegistry` or a
+"deployed but unwired" contract, it is describing a tree that no longer exists.
 
-KEPT: `ProviderRegistry` as the authority, its self-service factory, provider-owned clones,
-`canCreateService`/`canIssue`, wallet-signed provider actions.
-DIED: `IssuerRegistry` whitelisting, the older factory and the admin deploy-on-your-behalf button,
-the older `VerificationRegistryConsent` path, the older `ProtocolRegistry` discovery reads, and every
-generation probe.
+### The launch set
 
-### THE PILLAR NOW FOLDS `IssuanceCapabilitySet`, AND THAT IS THE WHOLE UNBLOCK
+| contract | role |
+|---|---|
+| `ProviderRegistry` | provider identity, standing, service attachment, and every authority predicate |
+| `DogTagIssuer` | the clone implementation: `issue`/`revoke`/`isValid`, owned by its provider |
+| `DogTagIssuerFactory` | self-service clone deployment AND the write-once `rootIssuer` root index |
+| `DogTagSBTConsent` | the tag; write-once `profileRoot`, minted only to a neutral custodian |
+| `Groth16VerifierConsent` | the frozen consent ceremony VK, on chain |
+| `VerificationRegistryConsent` | owner-blind verify |
+| `ProviderDirectory` / `ServiceDomainResolver` | the typed resolvers, selected per provider/service |
+| `ProtocolRegistry` | the discovery trust anchor: two axes, one binding, timelocked writes |
 
-The mandatory issuer-whitelist pillar used to filter `Whitelisted`/`Delisted`, keyed on a RECORD-TYPE
-key in `topic1`. `ProviderRegistry` records grants as
-`IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed)` - different
-name, different `topic0`, different argument shape - so that filter matched NOTHING there, and
-`grant_in_force_at(&[], _)`'s empty-history rule rendered "we asked the wrong contract in the wrong
-language" as **"this credential is forged"**, on government's unauthenticated `POST /v1/verify`.
+Deployed live on ROAX chain 135 on 2026-08-03 by one run of `contracts/script/Deploy.s.sol`, blocks
+332371-332382. Addresses and their transaction hashes are in `contracts/deployments/roax.json`, which
+is the only place they belong - do not transcribe them into new prose.
 
-It is now read from `IssuanceCapabilitySet` on all five mirrored surfaces
-(`crates/dogtag-standard-rs/src/verify.rs`, vet `chain.rs`, government `chain.rs`,
-`packages/ui/src/wallet/contracts.ts`, Kotlin + Swift `RoaxRpc`). Five things are load-bearing:
+### Four facts about that set that are easy to get wrong
 
-- **Keyed on the SERVICE, not a record type.** A clone carries exactly one record type, so filtering
-  by service inherently scopes the history to it. The check that the DOCUMENT's claimed record type
-  matches `recordType()` stays AT THE CALLER, where a relabelled credential is refused - do not move
-  it into the read. `record_type` was consequently dropped from `whitelisted_at_issuance` and
-  `issuance_capability` on every surface; a dead parameter that used to carry the old key is exactly
-  the confusion this removed.
-- **ONE topic, and `allowed` is the DATA word.** Grant and withdrawal share `topic0`; they are told
-  apart by the log body, not by which topic matched. Every surface refuses a word that is neither 0
-  nor 1 (`allowedFromLogData`) rather than guessing - guessing states a grant or a withdrawal that
-  was never recorded.
-- **The empty-history refusal is UNCONDITIONAL again**, and the generation probe is gone with it.
-  `issue()` is `onlyIssuanceCapable`, so an honest clone cannot have anchored without a grant; a read
-  that FAILED returns undetermined earlier and never arrives as an empty one. There is no second
-  vocabulary left to disambiguate, so `AuthorityGeneration`, `generationFromProbe`,
-  `answered_with_execution_revert` / `isExecutionRevert`-as-discriminator and
-  `generationFromProbeData` were deleted from all five.
-- **The pillar folds the RAW capability grant, never `canIssue`.** `canIssue` additionally folds live
-  lifecycle terms (provider standing, service standing, the current pointer) that can change after
-  issuance - folding those would turn an ordinary repoint or suspension into a forgery verdict
-  against genuinely issued credentials. That is the current-state-getter mistake the pillar exists to
-  avoid, and it is easy to reintroduce because `canIssue` is right next door.
-- **The PREFLIGHT takes `canIssue` and nothing wider.** `DogTagIssuer.issue` is gated by
-  `onlyIssuanceCapable == registry.canIssue(address(this), msg.sender)`; a preflight on
-  `isRecognizedIssuer` passes where the write reverts, which is the one thing a preflight prevents.
+- **`VerificationRegistryConsent.rootIndex` IS the factory**, and it is immutable. There is no
+  separate provenance router: with one factory there is nothing to bridge, and the register-root
+  mapping the registry resolves through is the factory's own. The cost is stated rather than hidden -
+  replacing the factory means replacing the verification registry too, and repointing every client.
+- **The discovery record collapsed to nine words** and its getter is `getDiscoverySet`. The rule that
+  survives from the two-generation era is the useful one: a discovery record's SHAPE and its getter's
+  NAME move together, so a client built for the old shape reverts on dispatch instead of decoding
+  every member one slot out.
+- **There is ONE version key, `dogtag-levelb/1`**, and it is the same string the SDK stamps into every
+  credential's `protocol.version`, the prover's artifact registry resolves, and both mobile bundles
+  pin. A client validating a platform's claim compares the two directly; letting them differ makes
+  every discovery validation fail closed.
+- **`VerificationRegistryConsent` asks `ProviderRegistry.canVerify(purpose, relayer)`** rather than a
+  whitelist key it derives itself. Granting a relayer is `setVerifierCapability(purpose, relayer,
+  allowed)` on the core - NOT `whitelistFor`, which no longer exists anywhere.
 
-**The new topic is `0x831abb96b1c02fe346a944062a9367343ef9d09be41d65818b796cd1a8676941`** (`cast keccak
-"IssuanceCapabilitySet(address,address,bool)"`), pinned on BOTH phones. A topic derived at the wrong
-width matches no log at all, which reads exactly like "never granted" and refuses every credential -
-that silence is why it is pinned rather than reviewed.
+### The SBT rotated, and that was not free
 
-### The factory-less expected-signer branch CAN NO LONGER REFUSE, deliberately
+The fresh `DogTagSBTConsent` holds no `profileRoot` for any previously minted tag, so every existing
+testnet credential stops verifying, and a `dogTagId` that the old SBT had permanently retired is
+mintable again on this one. Reusing the old SBT would have preserved neither: `rootIndex` moved to the
+new factory, so every historical root already resolves to zero there whichever SBT answers. The
+captain has ruled repeatedly that testnet state is disposable.
 
-vet-api's `expectedSignerState` was the one place the current-state getter survived, asking this
-deployment's own registry `isWhitelistedFor(recordTypeKey, signer)`. Under one authority that read is
-unanswerable: every issuance-axis read is SERVICE-scoped and this branch is DEFINED by having no
-resolved clone to pass, while the one selector taking no service answers off the orthogonal VERIFY
-axis - handed a record-type key it returns a confident `false` for every genuine issuer signer.
-Supplying `documentStore` to satisfy the signature is strictly worse: it hands the attacker the
-choice of which contract answers.
+**No zero-knowledge artifact rotated.** `Groth16VerifierConsent` was redeployed from unmodified source
+and its runtime is byte-identical to the previously deployed frozen-ceremony verifier (1933 bytes,
+compared with `cast code`). The circuit, the ceremony, `consent_final.zkey`, `consent.graph` and both
+mobile bundles are untouched. That distinction is the one that matters: the SBT appears nowhere in the
+circuit or the VK.
 
-So it reports `unanchoredUnevaluable` and **gates nothing**. That is a real narrowing, pinned as a
-requirement by `a_factoryless_deployment_reports_the_signer_assertion_as_unevaluable` so nobody
-re-derives the old behaviour from the shape of the code. `FACTORY_ADDR` is what restores the anchor.
+### Clients are NOT repointed yet
 
-### MemChain models TWO axes now, on both backends
+Nothing under `stacks/`, `apps/`, `packages/` or `crates/` has been moved onto the new addresses, so
+the running demo stack and both mobile bundles still name contracts that no longer decide anything.
+Two landmines for whoever does that work:
 
-Issuance is keyed `(authority, service, signer)` and carries its own positioned log; verify is keyed
-`(authority, verifyKey, signer)` and is a plain current-state map. `set_issuance_capability` EMITS its
-event exactly as the real `setIssuanceCapability` does, so a test that grants and then issues
-produces the honest ordering and the pillar answers historically with no extra seeding.
-`set_grant_history` stays for the states the honest path cannot reach (withdrawn BEFORE the
-anchoring), and `whitelist`/`delist` now seed the VERIFY axis only - seeding issuance through them is
-the mistake that makes a fixture inert.
+- **The mandatory issuer-whitelist pillar is the sharpest one.** It resolves the clone's own
+  `registry()` and folds `IssuanceCapabilitySet` history, and a definite `false` there renders as
+  *"this credential is forged"* rather than as an error - on government's unauthenticated
+  `POST /v1/verify`. Verify it end to end against a real credential on the new addresses; do not infer
+  it from a compile.
+- **`apps/*/roax.json` are COMPILE-TIME.** Editing them is not a repoint; it takes effect only after a
+  rebuild and a reinstall on each handset.
 
-### Backend-delegated signing is DEFERRED BY DECISION, and here is where it attaches
+## Addresses, the publish timelock, and the mobile rebuild (captain, 2026-08-03)
 
-Wallet signing is the only signer this change builds. A server-held clinic key remains a legitimate
-deployment mode (receptionists are not going to hold browser wallets) and is deferred, not cancelled.
-The seam is already the right shape: the signer is an explicit INPUT to
-`issuance_capability(issuer_addr, signer)` and to the pillar, never an assumption baked through the
-layers, so a second signer source plugs into the existing shape. **Do not build a plugin framework
-for it, and do not hardwire "a connected wallet is the only conceivable signer" either.**
+Five rules that travel together, because they are one decision about where truth lives.
 
-**FINDING that corrects the obvious attach point:** `_isRecognizedIssuer` reads
-`_issuanceCapabilities[service][signer]` ONLY. `setServiceDelegate` grants CONTENT-WRITE permissions
-(`canWriteService`) and does **not** satisfy `canIssue`. So a delegated server key is granted by
-`setIssuanceCapability`, which is `onlyOwner` - the REGISTRAR, not the provider. "The provider grants
-its own server key" is NOT reachable on the deployed contract without a Solidity change.
+**1. Testnet publishes have NO wait; production defaults to 2 days.** `ProtocolRegistry` enforces no
+floor at all - `MIN_PUBLISH_TIMELOCK` is 0 - so a development chain deploys, publishes, tests and
+redeploys in one sitting. The captain's words: "no wait at all for testnet just straight multiple
+deployment and tests and iteration ... only have this wait for production". Production safety is
+`Deploy.validatePublishTimelock`, which DEFAULTS to `DEFAULT_PUBLISH_TIMELOCK` (2 days) and refuses
+anything else unless a testnet opt-in is stated aloud. What a timelock buys is unchanged and is why
+production keeps it: a zero lets the publisher key repoint the entire declared protocol set in one
+transaction with no window for anyone to notice.
 
-### The router is MANDATORY on chain and invisible on the client
+**2. The floor MOVED off the contract to the deploy script - it was not quietly dropped.** It lived on
+the contract because of a specific claim: `PUBLISH_TIMELOCK` is immutable, so a wrong value "cannot be
+repaired - only replaced, and replacing this registry means repointing every client including two
+compile-time mobile bundles". A contract-level guard was proportionate to a mistake that was
+effectively permanent, and a script guard is bypassable by a direct `forge create`. That premise
+expired with rule 4: a mobile rebuild+reinstall now accompanies every full redeploy, so replacing the
+registry is ROUTINE, and a script guard is proportionate to a repairable mistake in a way it was not
+to a permanent one. The cost is real and pinned by
+`test_the_contract_no_longer_guards_a_direct_deployment`: a deployment bypassing the script can pick
+any delay on any chain. Restoring the floor is one constant - the error and the comparison are still
+there.
 
-`CloneProvenanceRouter` exists to resolve roots across factories, but it cannot be removed:
-`DogTagIssuerFactory.priorIndex` is `immutable`, mandatory and behaviour-probed in the constructor,
-and `VerificationRegistryConsent.rootIndex` is `immutable` and points at it. The factory's own header
-says a wrong `priorIndex` is remedied only by a new factory AND a new verification registry. Removing
-it is a two-contract redeploy.
+**3. NEVER detect production from `block.chainid`.** ROAX 135 IS the live chain here, and that exact
+trap already shipped: a `require(block.chainid == 135)` guard passed on precisely the deployment it
+claimed to refuse. A condition that cannot fail on the case it names is worse than none, because it
+reads as protection. Production is a DEPLOY-TIME choice - the script's default plus an explicit
+opt-in - never sniffed at runtime.
 
-On the client nothing needs to know it bridges anything: `rootIssuer(R)` is a plain read whatever
-answers it. So it is described as **the root index**, and the split that matters is
-READER-vs-WRITER - a reader resolving a credential's issuing clone reads the ROUTER, a writer calling
-`predictIssuer`/`createIssuer` calls the FACTORY. Pointing a reader at the factory resolves only
-clones that factory deployed and answers zero for the rest, which surfaces as an indeterminate issuer
-pillar rather than an error.
+**4. Every full redeploy ends in a mobile rebuild + reinstall.** Standing process, in the captain's
+words: "everytime we redeploy the entire process we will then rebuild the mobile apps - rebuild and
+reinstall so that everything remains clear." Do not contort a design to avoid one, and do not write it
+up as a caveat - it is a normal step of redeploying, and `docs/DEPLOY.md` states it as one.
 
-### The indexer's multi-contract watching is NOT generation vocabulary - keep it
+**5. Contract addresses come from the deploy ledger; apps bundle only the `ProtocolRegistry` anchor.**
+`contracts/deployments/roax.json` is the only place an address lives. Backends and portals read theirs
+from configuration; the phones bundle ONE generated anchor address and resolve factory, verification
+registry, SBT, verifier and provider registry from `getDiscoverySet` at runtime.
 
-`stacks/indexer/api` watching SEVERAL contract sets at once, retaining every event ever observed, and
-anti-spoof gating by ROLE (a `Verified` from a known factory is still a spoof) is a REQUIRED
-capability: switching contracts APPENDS to the watched set and never replaces it, and events from
-superseded contracts stay queryable forever. Rename the word if it reads as version vocabulary; never
-delete the capability.
+That is NOT rebuild-avoidance - rule 4 says a rebuild happens anyway. It is so the app can CHECK a
+platform's version claim instead of trusting it, which is the property `ProtocolRegistry` exists for;
+build-time-generating all nine addresses would throw that away and leave the app trusting whatever it
+was told. It also removes eight chances to get one wrong.
+
+**OPERATOR-configurable YES, HOLDER-configurable NO.** A holder who can repoint the registry or the
+factory can change what "genuine" means - a forged registry verifies forged credentials cleanly, with
+every check passing. This is why only HALF the RPC-endpoint pattern transfers: for transport a holder
+override is safe because a wrong peer is caught by the `eth_chainId` guard, and addresses have no
+equivalent guard, since a forged registry answers every question consistently. The existing carve-out
+that forbids routing the anchor read through the holder's chosen endpoint stays, and extends to
+addresses absolutely.
+
+`make check-addresses` (`scripts/check-no-hardcoded-addresses.sh`) is what keeps rule 5 true rather
+than a promise that decays: it fails on any undeclared file carrying a ledger or retired address, AND
+on any declared file that no longer carries one, so `scripts/address-debt.json` can only shrink.
 
 ## Product model (non-negotiable)
 
@@ -230,29 +283,24 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   `PinConsentWitnessGraph.t.sol` pins every revert arm of the artifact-axis pin script's guard - the
   only thing keeping that script incapable of a rotation or of rewriting a pin it was not asked to
   move; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
-  subject-bearing `Verified` ABI; `CloneProvenanceRouter.t.sol` performs the real cross-generation
-  resurrection attack against the router's oldest-first resolution and pins the mirror direction it
-  deliberately does not close; `ProviderRegistry.t.sol` proves the deployed-but-unwired provider-authority
+  subject-bearing `Verified` ABI; `ProviderRegistry.t.sol` proves the provider-authority
   core's KYC-standing AND owner/delegate predicate, genuine-factory attachment/repoint, service-scoped
   capabilities, real controller/owner/admin key rotations, the widest-first
   `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` ladder against every lifecycle event that stops new
-  issuance, and the registrar-only provider-binding correction; `IssuerV2.t.sol` covers the
-  deployed-but-unwired generation-2 issuer pair (see "The generation-2 issuer pair is DEPLOYED BUT
-  UNWIRED"); `IssuerV2ProviderAuthority.t.sol` is the one suite that binds the generation-2 pair's
-  locally-declared oracle interface to the REAL provider core (`ProviderRegistry.t.sol` binds that core
-  too, for its own behaviour), pinning that the four functions the pair asks of it are the core's own on
-  both axes a signature has; `ProviderDirectory.t.sol` covers the build-only typed DIRECTORY
-  resolver against the REAL core rather than a mock (see "ProviderDirectory" below);
-  `ServiceDomainResolver.t.sol` is the one suite whose fixture binds the real core, the real router AND
-  real generation-2 clones from the real self-service factory at once, so it is where "these contracts
-  compose" is actually exercised rather than mocked (see "ServiceDomainResolver - three absences, and
-  the router term that is NOT redundant");
-  and `ProtocolRegistryV2.t.sol` + `DeployProtocolRegistryV2.t.sol` cover the deployed-but-unwired
-  generation-2 discovery registry, including the constructor timelock floor, the golden ABI encoding
-  both mobile anchor decoders are pinned against, and the publish script's execute-phase re-preflight
-  refusing a `zkVerifier` swapped inside the publish window plus its staged-versus-environment check on
-  BOTH axes (see "ProtocolRegistryV2 is DEPLOYED BUT UNWIRED"). **The preflight's negative cases are
-  asserted by calling `preflight` directly with a mutated struct, never by writing `GEN2_*` and running
+  issuance, and the registrar-only provider-binding correction; `DogTagIssuer.t.sol` covers the issuer
+  pair; `DogTagIssuerProviderAuthority.t.sol` is the one suite that binds the pair's locally-declared
+  oracle interface to the REAL provider core (`ProviderRegistry.t.sol` binds that core too, for its own
+  behaviour), pinning that the four functions the pair asks of it are the core's own on both axes a
+  signature has; `ProviderDirectory.t.sol` covers the typed DIRECTORY resolver against the REAL core
+  rather than a mock (see "ProviderDirectory" below); `ServiceDomainResolver.t.sol` binds the real core
+  AND real clones from the real self-service factory, so it is where "these contracts compose" is
+  actually exercised rather than mocked; `LaunchStack.sol` runs the REAL `Deploy.s.sol`, so every suite
+  that needs a working chain exercises the deployment path rather than a hand-wired equivalent; and
+  `ProtocolRegistry.t.sol` + `Deploy.t.sol` cover the discovery registry and both scripts, including the
+  constructor timelock floor, the golden ABI encoding both mobile anchor decoders are pinned against,
+  and the publish script's execute-phase re-preflight refusing a `zkVerifier` swapped inside the publish
+  window plus its staged-versus-environment check on BOTH axes. **The preflight's negative cases are
+  asserted by calling `preflight` directly with a mutated struct, never by writing `PUBLISH_*` and running
   the script**: `vm.setEnv` writes the PROCESS environment while forge runs a suite's test functions
   concurrently, so the env-driven form made that file fail 8 runs out of 8 at default threads under
   `--match-path` isolation. The invariant is DIVERGENCE, not abstinence: four tests still write the
@@ -337,7 +385,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
 - `gen-vectors.mjs` rewrites `poseidon-vectors.json` deterministically, so running `make parity` leaves the tree clean (no spurious diff).
 - `rust-analyzer` in this worktree can't find the proc-macro server and emits false `E0308`/`tokio::test` errors; trust `cargo`, not the IDE diagnostics.
 - Pre-existing harmless warning: unused import `BigInteger` in `crates/dogtag-standard-rs/src/bin/field-hash.rs`.
-- **Mobile `eth_call` selectors must be DERIVED from the signature, never hard-coded.** `apps/*` hand-encode selectors in `RoaxRpc.kt` / `Net.swift` (no ABI lib). `isValid`'s was once the stale literal `0x6d04f0bc` (its comment *claimed* to be the keccak but wasn't) - that selector REVERTS on the deployed ROAX `DogTagIssuer` clone, so every mobile validity read silently fell through to `Unknown`/accept-with-caveat and a revoked credential never showed as revoked. The canonical selector is `keccak256("isValid(bytes32)")[:4] = 0x6a938567` (what viem, the alloy `sol!` ABI, vet-api `verify_credential`, and the web direct-RPC path in `packages/ui` all bind). It is now derived on-device via `Keccak256` (`RoaxRpc.functionSelector` / `Net.swift` `functionSelector`). **BOTH platforms derive EVERY selector and neither client holds a selector literal any more**: `RoaxRpc.kt` and `Net.swift` each derive the same twelve signatures (`isValid`, `isWhitelistedFor`, `consumed`, `profileRoot`, `isClone`, `domainOf`, `name()`, `issuedBy`, `rootIssuer`, `recordType()`, `getContractSet`, `getActiveArtifactSet`; the retired `bindNonce`/`keyOf`/`ownerOf` reads went with the owner-revealing layer). **What is asymmetric is the PINNING, not the derivation.** Android pins ten of those twelve against `cast sig`-confirmed values (`RoaxRpcSelectorTest.kt` for the validity/whitelist/consumed/profileRoot set plus the issuer↔domain chain, `IssuerWhitelistPillarTest.kt` for `issuedBy`/`recordType()`); the two `ProtocolRegistry` getters are derived but unpinned. iOS pins none of its SELECTORS: `Net.swift` does compile into the host-less `DogTagTests` target (it is listed in `apps/ios/project.yml`), but `functionSelector` and every selector are `private static`, so no test in that bundle can call them - pinning them means widening that access, not adding a source file. That asymmetry is now NARROWED rather than closed: the grant-history LOG TOPICS and `registrySelector` the issuer-whitelist pillar added are deliberately internal, so `GrantAtIssuanceTests` pins them on both platforms. Topics were singled out because their failure mode is the worst in the set - a value derived at the wrong WIDTH matches no log at all, which reads exactly like "never granted". Verify any new mobile selector against the chain before shipping: `eth_call` a real clone (VACCINATION `0x1456f93f7376789c46408CC4616751eB853edD9A` on `https://devrpc.roax.net`) - the correct selector returns a 32-byte word, a wrong one returns `execution reverted`. Note mobile has only the single `isValid` bool (no `issuedAt`/`isRevoked` decomposition like web), so it renders revoked and never-anchored identically as "REVOKED / not anchored"; that is intentional, not a bug.
+- **Mobile `eth_call` selectors must be DERIVED from the signature, never hard-coded.** `apps/*` hand-encode selectors in `RoaxRpc.kt` / `Net.swift` (no ABI lib). `isValid`'s was once the stale literal `0x6d04f0bc` (its comment *claimed* to be the keccak but wasn't) - that selector REVERTS on the deployed ROAX `DogTagIssuer` clone, so every mobile validity read silently fell through to `Unknown`/accept-with-caveat and a revoked credential never showed as revoked. The canonical selector is `keccak256("isValid(bytes32)")[:4] = 0x6a938567` (what viem, the alloy `sol!` ABI, vet-api `verify_credential`, and the web direct-RPC path in `packages/ui` all bind). It is now derived on-device via `Keccak256` (`RoaxRpc.functionSelector` / `Net.swift` `functionSelector`). **BOTH platforms derive EVERY selector and neither client holds a selector literal any more**: `RoaxRpc.kt` and `Net.swift` each derive the same twelve signatures (`isValid`, `isWhitelistedFor`, `consumed`, `profileRoot`, `isClone`, `domainOf`, `name()`, `issuedBy`, `rootIssuer`, `recordType()`, `getDiscoverySet`, `getActiveArtifactSet`; the retired `bindNonce`/`keyOf`/`ownerOf` reads went with the owner-revealing layer). **The discovery getter is `getDiscoverySet`, never `getContractSet`** - both clients derived the latter until it was corrected, and it is the sharpest name in the set to get wrong, because a selector the contract lacks reverts at the DISPATCHER with empty returndata, which decodes to the same nil as an unpublished version. **What is asymmetric is the PINNING, not the derivation.** Android pins ten of those twelve against `cast sig`-confirmed values (`RoaxRpcSelectorTest.kt` for the validity/whitelist/consumed/profileRoot set plus the issuer↔domain chain, `IssuerWhitelistPillarTest.kt` for `issuedBy`/`recordType()`); the two `ProtocolRegistry` getters are derived but unpinned. iOS pins none of its SELECTORS: `Net.swift` does compile into the host-less `DogTagTests` target (it is listed in `apps/ios/project.yml`), but `functionSelector` and every selector are `private static`, so no test in that bundle can call them - pinning them means widening that access, not adding a source file. That asymmetry is now NARROWED rather than closed: the grant-history LOG TOPICS and `registrySelector` the issuer-whitelist pillar added are deliberately internal, so `GrantAtIssuanceTests` pins them on both platforms. Topics were singled out because their failure mode is the worst in the set - a value derived at the wrong WIDTH matches no log at all, which reads exactly like "never granted". Verify any new mobile selector against the chain before shipping: `eth_call` a real clone on `https://devrpc.roax.net` - the correct selector returns a 32-byte word, a wrong one returns `execution reverted`. **There is no clone to point that at yet** - `providerCount` on the deployed core is 0 - so until a provider is onboarded, pin the selector against `cast sig` and say that is what you did, rather than reporting a chain check you could not make. Note mobile has only the single `isValid` bool (no `issuedAt`/`isRevoked` decomposition like web), so it renders revoked and never-anchored identically as "REVOKED / not anchored"; that is intentional, not a bug.
 
 - **User-selectable RPC is chain transport only, and it is never a trust upgrade.** Android Profile
   persists `rpc_url` in DataStore, iOS Profile persists `roax_rpc_url` in UserDefaults, and the
@@ -352,7 +400,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   and injected/WalletConnect transactions still use the wallet's own provider. Runtime endpoint
   cache keys must preserve path/query case because API routes and tokens can be case-sensitive.
   **The `ProtocolRegistry` discovery-anchor pair is the ONE exception that does not honour the
-  setting, and that exception is load-bearing.** `getContractSet`/`getActiveArtifactSet` in the
+  setting, and that exception is load-bearing.** `getDiscoverySet`/`getActiveArtifactSet` in the
   native `runLevelBFlow` (the only caller on either platform; no web surface reads them at all) name
   the bundled endpoint explicitly - `AppConfig.roaxRpc` / `RoaxRpc.DEFAULT_RPC` - because the record
   they return IS the trust anchor `validateDiscovery` compares the platform's claimed
@@ -404,45 +452,16 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`. `verification.circom` and its
   fixture generators are retired; its retained build products and ceremony transcript remain
   historical provenance and are not inputs to new builds. The consent VK/zkey remain active and frozen.
-- `contracts` — live source consists of the shared `IssuerRegistry`, `DogTagIssuer` implementation +
-  factory/root index, `ProtocolRegistry`, and `IERC5192`, plus `Groth16VerifierConsent`,
-  `DogTagSBTConsent` (write-once `profileRoot`, neutral custodial sink), and
-  `VerificationRegistryConsent`. `Deploy.s.sol` deploys only the shared base;
-  `DeployCustodialIssuance.s.sol` explicitly deploys the frozen-ceremony verifier before the SBT and
-  registry and repoints only the canonical ledger keys. The retired owner-revealing contract sources
-  and deploy scripts are gone; their already-deployed addresses remain solely in the deployment ledger
-  for historical reads. Protocol publication keeps the exact compatibility key `dogtag-levelb/1` and
-  publishes one contract set plus one independently rotatable artifact set and their binding.
-  `CloneProvenanceRouter` is also in that live source and was **DEPLOYED BY S-14** (cutover C-4, with
-  generation 2 appended at C-4b): it has a ledger entry, but no `.env.example` entry and no consumer
-  points at it, because client repointing is C-9/C-10. **Every generation-2 contract named in this
-  paragraph now carries the SAME status - DEPLOYED BUT UNWIRED - and the distinction to keep is
-  deployed versus wired, never deployed versus built.** The two typed resolvers
-  (`ProviderDirectory`, `ServiceDomainResolver`) were the last exceptions and stopped being one when
-  C-7 deployed them on 2026-08-01; earlier revisions of this paragraph said they were "built and
-  tested only, NOT deployed" and told a reader that clause was still true, which it is not. See
-  "CloneProvenanceRouter" below, `_s14_cutover` and `_c7_typed_resolvers` in
-  `contracts/deployments/roax.json`.
-  `ProviderDirectory` is the S-10 typed DIRECTORY resolver selected through the S-6 core (pins,
-  contacts and profile anchors, keyed by `providerId`) and was **deployed by C-7 and is UNWIRED** -
-  it has a ledger entry, but `resolverApproved()` is false, every store is empty, the
-  `VITE_PROVIDER_DIRECTORY_ADDR` that S-15 added to both portal `.env.example` files ships BLANK with
-  no code fallback, and the indexer's provider directory still reads the admin business source. See
-  "ProviderDirectory" below.
-  `ServiceDomainResolver` is the S-9 successor to `IssuerDomainRegistry` and was likewise **deployed
-  by C-7 and is UNWIRED**; the deployed `IssuerDomainRegistry` remains the wired domain surface until
-  the cutover, so no consumer address moved with it. See "ServiceDomainResolver" below.
-  `ProviderRegistry` is the separately tested S-6 provider identity/authority core: it was **deployed
-  live on ROAX by S-14 and is UNWIRED** - it has a `ProviderRegistry` ledger entry, and both portal
-  `.env.example` files now NAME it (`VITE_PROVIDER_REGISTRY_ADDR`, added blank by S-15), but no
-  consumer resolves an address from it, because client repointing is C-9/C-10 (see "The
-  generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover` in `contracts/deployments/roax.json`;
-  do not transcribe the address here). It admits only
-  owner-bearing clones, matching the plan's retire/re-issue recommendation for the five ownerless V1
-  clones; C-2 therefore still needs that KYC/captain migration choice, because S-6 contains no legacy
-  controller adapter, and only C-2's chain half (`addFactoryGeneration`) was performed. Its legacy `isWhitelistedFor(bytes32,address)` issuance answer is deliberately
-  caller-scoped to an attached clone, so a direct reader (which cannot identify a service through that
-  two-argument selector) must migrate to a service-scoped read — but **which** one is the whole
+- `contracts` — live source is the ten launch contracts listed under "ONE implementation, one deployed
+  set" above, and `script/` is one `Deploy.s.sol` that stands the whole system up plus the operational
+  `PublishProtocolVersions.s.sol` (two-phase, timelocked) and `PinConsentWitnessGraph.s.sol`
+  (artifact-axis pin). Protocol publication uses the single version key `dogtag-levelb/1` and publishes
+  one discovery set plus one independently rotatable artifact set and their binding. Every address is
+  in `contracts/deployments/roax.json`.
+  `ProviderRegistry` is the provider identity/authority core. It admits only owner-bearing clones, so
+  a service must have a real `owner()` to be attached at all. Its `isWhitelistedFor(bytes32,address)`
+  answer is deliberately caller-scoped to an attached clone, so a direct reader (which cannot identify
+  a service through that two-argument selector) needs a service-scoped read — but **which** one is the whole
   question, because the three issuance-axis reads are a deliberate ladder, `isRecognizedIssuer` ⊇
   `canRevoke` ⊇ `canIssue`, and each rung answers something different. The migration therefore splits
   BY QUESTION, not by caller convenience: a direct client asking *may this signer issue now* migrates
@@ -503,7 +522,7 @@ The government `TRAVEL_CLEARANCE` credential is a CDC-modeled travel receipt (re
 - **Derived `effectiveStatus`** computed at read time everywhere a record renders: `revoked ? REVOKED : (status==expired || today > validUntil) ? EXPIRED : VALID` (a never-anchored draft → `DRAFT`). `routes.rs` has `derive_effective_status` (pure, for list/detail) and folds it against a LIVE `isValid(R)` read in `resolve_receipt_status` (public endpoints). Date math uses a self-contained civil-from-days helper (no chrono/time dep); ISO dates compare as strings.
 - **Public, PII-free endpoints (no auth):** `GET /v1/receipts/:receiptId/status` (JSON: effectiveStatus, recordType, receiptId, validUntil, issuanceDate, root, issuerAddr, explorer links, checkedAt — via a LIVE `isValid(R)` read, not a DB echo) and `GET /r/:receiptId` (server-rendered HTML status page, status-only by default per arch DP-5 — NO Section A/B/C content).
 - **Issue AND the operator record reads are now GATED** behind the `require_api_token` bearer: `/v1/travel-clearance/issue` (arch DP-6; was open) plus `GET /v1/records` and `GET /v1/records/:root`, which are gated because the CDC subject denormalizes Section A person PII (idNumber, dateOfBirth, email, phone, name) into the record — an unauthenticated read would leak it. Verify, health, the verifications audit log, and the PUBLIC PII-free receipt endpoints (`GET /v1/receipts/:receiptId/status`, `GET /r/:receiptId`) stay open; demo keeps the baked `dogtag-gov-demo-token`. Callers must send the bearer — the web app (`apiGet`/`apiPost(..., {auth:true})`), `scripts/e2e-roles.sh` (`$GTOK`), and the Rust integration tests were updated accordingly.
-- **OPS-0 (on-chain prereq, live on ROAX chainId 135).** The per-record-type `DogTagIssuer` clones are deployed via `DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business)`, and the government signer must be whitelisted on `IssuerRegistry.whitelistFor(keccak256(recordType), signer)` — `DogTagIssuer.issue` is `onlyWhitelisted`. **A clone is gated by its OWN `registry()`, so it must be bound to the same `IssuerRegistry` the stack reads** (`ISSUER_REGISTRY_ADDR`); a clone on a superseded registry fails closed with `NotWhitelisted` even after a correct `whitelistFor`, and nothing before the first issuance reveals it (`scripts/demo-up.sh` now preflights both the factory's and the clone's `registry()` to catch exactly this). Canonical addresses live in `contracts/deployments/roax.json` → `government_clones` (mirrored in `stacks/government/.env.example`): **TRAVEL_CLEARANCE `0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F`** (factory `0xED20269E`, `business ==` the governance signer `0x8E27E117…` which is the factory `Ownable` owner; verified `isClone` true, `registry() == 0xAEE54035…`), and **EU_HEALTH_CERT is NOT deployed on the fresh set** — leave `EU_HEALTH_CERT_ISSUER_ADDR` unset (the API reports the issuer as null and `/issue` dry-runs) until `scripts/demo-provision-government.sh` deploys one. **Do NOT wire the earlier `0x8e276BD4…` / `0xe30A1739…` pair:** they are bound to the RETIRED `IssuerRegistry 0x5d86e4CF…`, are not clones of the fresh factory, and are quarantined in the ledger as `government_clones_deadRegistry_legacy`. Governance Phase-2 moved factory ownership + `WHITELIST_ADMIN` to the governance signer, so every NEW clone deploy / whitelist grant flows through that holder (already-deployed clones are immutable and unaffected).
+- **OPS-0 (on-chain prereq) - NOT SATISFIED on the launch set, and the shape of it changed.** `providerCount` on the deployed `ProviderRegistry` is **0**, so no provider is registered, no per-record-type `DogTagIssuer` clone exists, and nothing has been issued. Leave BOTH `TRAVEL_CLEARANCE_ISSUER_ADDR` and `EU_HEALTH_CERT_ISSUER_ADDR` unset until a clone is genuinely deployed - the API then reports the issuer as null and `/issue` dry-runs rather than anchoring somewhere wrong. **`whitelistFor` no longer exists anywhere**: authority is service-scoped, and onboarding is a registrar SEQUENCE on the core - `registerProvider` (which writes standing `PENDING`, so it alone leaves the provider inert) -> `setProviderStanding(ACTIVE)` -> `setServiceCreationApproval(providerId, recordType, true)`, then the provider deploys its own clone from the factory and the registrar completes it with `attachService`, `confirmServiceOwner` and `setIssuanceCapability(service, signer, true)`. `scripts/demo-provision-government.sh` and `scripts/demo-up.sh` both still drive the old `whitelistFor` shape and have NOT been updated, so neither is a working path against this set. **The clone-must-be-bound-to-the-authority-the-stack-reads trap is unchanged in kind** and is why a preflight exists: a clone gated by its own `registry()` against a core nobody reads fails closed on the first issuance and passes every other check until then. Earlier government clones belong to a superseded factory, so `rootIssuer` resolves nothing for them here - they are not a target to reuse.
 
 ### Government receipt UI + portal shell (PR-2)
 The government web portal (`stacks/government/web`) was migrated from the hand-rolled dark SPA onto the shared **`@dogtag/ui` AppShell + Tailwind + tokens** (same stack as vet/groomer/admin) and gained the printable CDC-modeled receipt view. Structure + sharp edges:
@@ -711,7 +730,7 @@ The answer is reconstructed from LOGS, so any verifier with an RPC reproduces it
 **`MemChain` on both backends models this with a synthetic log clock**, so CALL ORDER IS LOG ORDER: a test writes "delisted after issuance" by delisting after it issued. "Delisted BEFORE" cannot be driven — issuance is itself gated on the whitelist, so the backend preflight refuses it — and is seeded with `set_grant_history`, for the same reason `with_hostile_clone` exists. **BOTH backends' `MemChain` now need `with_registry` when NOTHING is ever whitelisted** (vet gained it alongside government's): a real clone answers `registry()` regardless, so a fake that only learns the address from the first grant reports UNDETERMINED where the chain would report a definite refusal. That gap is no longer only a verify-path concern — the issuance preflight resolves its authority the same way, so a fixture with no grant at all makes an honest 403 arrive as a 502.
 
 **THE PILLAR IS ITSELF A RECORD-TYPE CALLER — via LOGS, not a getter — and against generation 2 it produced a CONFIDENT FORGERY VERDICT.**
-`Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in `topic1`, so the grant-history read fails against `ProviderRegistry` for exactly the reason `docs/CLIENT_REPOINT.md` gives for the getter — only far more quietly, because nothing reverts and no answer looks wrong.
+`Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in `topic1`, so the grant-history read fails against `ProviderRegistry` for exactly the reason the getter does — a record-type-keyed question asked of an authority that keys nothing by record type — only far more quietly, because nothing reverts and no answer looks wrong.
 That contract records grants as `IssuanceCapabilitySet(service, signer, allowed)`: different name, different `topic0`, different argument shape. The filter matches NOTHING, and `grant_in_force_at(&[], _)`'s empty-history rule — deliberately a definite `NotAuthorized`, because on generation 1 an empty log really is evidence that `onlyWhitelisted` could not have passed — renders "we asked the wrong contract in the wrong language" as "this credential is forged". It reaches the unauthenticated `POST /v1/verify`.
 **The guard: an empty history is a definite refusal ONLY when the authority positively speaks generation 1**, established by probing `isRecognizedIssuer` — the one selector `IssuerRegistry` provably does not implement (its entire external surface is `whitelistFor`/`delistFor`/`isWhitelistedFor`, and it has **no fallback**, so the call reverts there rather than answering).
 **It is on ALL FIVE mirrored surfaces**, and only the two Rust backends at first: vet `chain.rs` and government `chain.rs` shipped it while `packages/ui/src/wallet/contracts.ts` (`authorityGenerationOf`, consumed by `verifyCredential.ts`), Kotlin `RoaxRpc.grantAtIssuance` and Swift `RoaxRpc.grantAtIssuance` still refused. The claim went out ahead of the code, which is its own defect — a global guarantee resting on two of five, with the gap due to fire at the C-9/C-10 client repoint rather than at review. The SDK path (`crates/dogtag-standard-rs/src/verify.rs`) needs no sixth change: its `ChainRpcAdapter` delegates to vet's `whitelisted_at_issuance` and inherits the guard.
@@ -724,7 +743,7 @@ Four things about that guard are load-bearing and each is easy to undo:
 Answering the historical question for generation 2 needs an `IssuanceCapabilitySet` decoder on all five surfaces, which is NOT built — `ProviderRegistry` has no deployed address, so it could be validated against nothing. Until then a generation-2 root is honestly *unresolvable* on every one of the five, never refused.
 
 **The split is BY QUESTION, so "migrate the record-type callers to `isRecognizedIssuer`" is only half the rule.**
-A pre-issue gate takes **`canIssue`**: `DogTagIssuerV2.issue` is gated by `onlyIssuanceCapable` == `registry.canIssue(address(this), msg.sender)`, and a preflight on the wider `isRecognizedIssuer` passes where the write reverts — the one thing a preflight exists to prevent. A verifier asking whether a credential was genuinely issued takes neither getter; it asks the past, from events.
+A pre-issue gate takes **`canIssue`**: `DogTagIssuer.issue` is gated by `onlyIssuanceCapable` == `registry.canIssue(address(this), msg.sender)`, and a preflight on the wider `isRecognizedIssuer` passes where the write reverts — the one thing a preflight exists to prevent. A verifier asking whether a credential was genuinely issued takes neither getter; it asks the past, from events.
 **`ChainClient::issuance_capability` takes NO registry address**, same invariant as `whitelisted_at_issuance`: the authority is the resolved clone's own `registry()`. That is the actual unblock mechanism for `ISSUER_REGISTRY_ADDR` — one value was read by both key shapes in the same process, so there was nothing to split at the config layer while a record-type caller still read it. Sourcing it from the clone removes the record-type key shape from the variable AND makes each read generation-correct with no operator-asserted generation flag to get wrong.
 **Confirm asks the past too.** `credentials/confirm`'s whitelist re-check was current-state, which is #127's defect class reached from the issuance side: the tx has already mined and `issue()` is `onlyWhitelisted`, so the chain already established the authority — while a rotation between broadcast and confirm (or C-12's freeze, which delists every generation-1 signer at once) stranded a genuine mined issuance in `Prepared` with no way to advance it.
 **One record-type caller CANNOT be migrated at all:** vet's factory-less `expectedSignerState`. Every generation-2 issuance-axis read is service-scoped and that branch is *defined* by having no resolved clone to pass; supplying `documentStore` to satisfy the signature would hand the attacker the choice of which contract answers. It is the one surviving record-type-keyed read of `ISSUER_REGISTRY_ADDR`, and configuring `FACTORY_ADDR` is what clears it.
@@ -855,7 +874,7 @@ The admin portal's `/bench` (`stacks/admin/web/src/pages/VerificationBench.tsx`,
 - **`could-not-run` is load-bearing, and the reason field is part of the contract.** `verifyCredentialOnchain` fails closed (a failed read rejects the whole promise, yielding no verdict), which is right for a verifier and useless for an operator trying to tell "this credential is bad" from "we could not ask". `BenchCheck.couldNotRunReason` is present if and ONLY if the outcome is `could-not-run`, and the row renders NEUTRAL - never a softened red, never a green. `BenchReport.verdict` is `null` rather than `false` when the verifier produced none.
 - **Distinctions that must not collapse** (each has a named test): the factory answering the zero address is a `fail` (we asked; that IS evidence about the credential) while a failed `rootIssuer` READ is `could-not-run` (we could not ask); and an absent `validUntil` is `could-not-run`, not "not expired". The on-chain-domain-claim and DNS rows used to be a third example of this - kept SEPARATE because the TXT lookup is server-side (`dogtag-dns-rs`) and unreachable from the browser, so one merged green row would imply a lookup that never happened - but both rows were REMOVED; see "The bench's issuer-domain rows were REMOVED" below.
 - **Block pinning is additive across the seven `contracts.ts` readers + `roaxIssuerChainReader`.** Omitted still reads `latest`. A run whose head read fails reports itself unanchored rather than naming a block it never saw - do NOT read the head separately and stamp unpinned reads with it.
-- **The bench reads NO domain registry any more.** `IssuerDomainRegistry` used to be read from config with no fallback (`VITE_ISSUER_DOMAIN_REGISTRY_ADDR`); that variable and both rows it fed are gone - see "The bench's issuer-domain rows were REMOVED" below, and do not reinstate either.
+- **The bench reads NO domain registry any more.** One used to be read from config with no fallback (`VITE_ISSUER_DOMAIN_REGISTRY_ADDR`); that variable and both rows it fed are gone - see "The bench's issuer-domain rows were REMOVED" below, and do not reinstate either.
 - **`gatesVerdict` says which rows the verifier folds in.** Its verdict is integrity + on-chain status + the issuer pillar; expiry, the configured-registry row and the advisory grant-at-issuance row feed NONE of it, so an expired-but-anchored credential legitimately renders `verdict: true` above a red expiry row. That is a real property (the chain records anchoring and revocation and has no concept of a validity window), but unmarked it reads as a self-contradiction - so `GATES_VERDICT` is exhaustive over `BenchCheckId` and the page marks non-gating rows. If you add a check, decide whether the VERIFIER considers it; do not guess from whether it sounds important.
 - **The adversarial half declares what will NOT catch each lie** (`packages/ui/src/wallet/benchMutations.ts`). Relabelling `issuer.name` trips **nothing** on this path - `caughtBy: []` - and that is the honest answer, not a gap to paper over: the on-chain `name()` comparison that does catch it lives in the government verify route, which is server-side. A mutation returns `null` rather than inventing a field the record lacks.
 - **Tests**: `packages/ui/test/verificationBench.test.ts` + `test/contractsBlockPinning.test.ts` + `test/benchScenarios.test.ts`. Every read in both chain fakes is keyed on the contract it is put to - the six issuer/factory getters on the CONTRACT address, and both registry reads (the grant log and `DogTagIssuer.registry()`) on the REGISTRY address - because a fake that ignores which contract it is asked about cannot model "the hostile contract answers `true` while the clone the factory named answers `false`", which is how forged-issuer tests pass for the wrong reason (see the `MockChain` note in `crates/dogtag-standard-rs/src/verify.rs`). **State that per-reader, never as a blanket "address-keyed throughout"**: this file and both suites once carried the blanket claim while `grants` discarded its registry argument, and the blanket wording is exactly why that survived review - it read as a property of the module rather than of each reader. Both suites now assert the registry keying DIRECTLY (a read against a registry that never recorded the grant must come back empty), because a fake that agrees with itself cannot be caught by any assertion about the resulting report. Block-pinning is covered by `vi.mock`-ing viem's `createPublicClient` and asserting what reaches `readContract`/`getLogs`; typecheck alone would accept a `blockNumber` threaded halfway and dropped before the call.
@@ -986,7 +1005,7 @@ Every credential record is stamped with which protocol/contract it was created o
 - **Populated at issuance, mirrored to queryable columns** (persist, don't just transmit): vet `Record`, gov `IssuedCredential`, and admin `Pet`+`Credential` gain `chain_id`/`protocol_version`/`verification_registry`/`issuer_signer` (all `Option`, `#[serde(default)]`; whole-struct serde/BSON makes them a transparent Mongo migration). **Admin also gains `issuer_addr`** (the issuerClone) - it previously carried provenance ONLY inside the encrypted `sealed_doc`; this closes that gap.
 - **Where `issuerSigner` comes from per stack** (the honest claim, sourced from the issuer's OWN signer knowledge - never by reading `issuedBy[R]` and copying it, which would make the claim un-falsifiable): gov/admin backend-sign, so it's `chain.signer_address(...)` known at issue. **Vet's is POST-CONFIRM**: at prepare the block's `issuerSigner` is left `""` (wallet mode never learns the signer at build time); at confirm vet derives it from the `RootIssued(root, by)` log (the value it already stores as `signer_address`) and patches both the `issuer_signer` column AND `wrapped_doc.protocol.issuerSigner` (the block sits outside `R`, so patching never perturbs the root).
 - **Back-compat default (§4.4) - DELETED (decision D5).** `WrappedDoc::resolved_protocol` / TS `resolvedProtocol` defaulted an absent block to the retired protocol generation; both were deleted in the final cleanup slice because the testnet is disposable and was redeployed fresh (2026-07-23 r8), so no pre-unification record survives to need the default. A stamped block is read as-is; the admin import path assigns an unstamped doc the single owner-hidden version/registry inline (`stacks/admin/api/src/routes.rs` - there is no retired generation left to route to).
-- **Config**: gov + admin read `verification_registry_addr` (env `VERIFICATION_REGISTRY_ADDR`, default = the owner-hidden `VerificationRegistryConsent` `0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B`) for unstamped imported-document metadata; vet's routing key is `VERIFICATION_REGISTRY_CONSENT_ADDR`. Admin also gained a `chain_id` Config field (mirrors the chain client's id).
+- **Config**: gov + admin read `verification_registry_addr` (env `VERIFICATION_REGISTRY_ADDR`, whose compiled-in default is `0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B`) for unstamped imported-document metadata; vet's routing key is `VERIFICATION_REGISTRY_CONSENT_ADDR`. **That default is SUPERSEDED** - it names a registry the launch deployment replaced - and it is still in the code because moving it is part of the client repoint, which is a separate captain-authorized step. Read it as a description of what the binary does today, not as a live address. Admin also gained a `chain_id` Config field (mirrors the chain client's id).
 - **Deferred to M7 P5 (noted, not built here)**: live per-backend `issuedBy` eth-calls (vet ABI/`ChainRpcAdapter`, gov/admin `chain.rs`) so the backends enforce the signer check end-to-end, and the full §4.3 resolution loop (recognized-trio validation of `verificationRegistry`/`issuerClone` against a discovery anchor - that's what makes a forged *registry/clone* safe; P3/P4). This brick ships the envelope block + columns + default + the SDK-enforced signer property only.
 
 ## ProtocolRegistry discovery anchor + signed-manifest fallback (M7 P3)
@@ -1008,7 +1027,7 @@ The dogtag-governed discovery TRUST ANCHOR (M7 §5.1, lock B): a small read-most
 - **Resolvers read the axis they belong to.** `getContractSet(id)` is for anything checking trio addresses / verifier / circuitId; `getArtifactSet(id)` and `getActiveArtifactSet(contractSetId)` (which follows the binding) are for anything fetching a zkey or enforcing `minAppVersion`; `resolve(contractSetId)` returns both halves in one call. All fail closed on an unknown id, and artifact resolution fails closed with `no artifact binding` when a contract set has no artifacts bound yet (a valid intermediate rollout state).
 - **Pins are single-sourced from `crates/dogtag-prover-rs/src/artifact.rs`** (the consent descriptor; file-verified against `circuits/build/*` by the fail-closed loader plus the consent-prove tests, which stream-hash even the ~25 MB zkey). `contracts/script/ProtocolVersions.sol` reuses the SAME hex (the DRY source both the publish script AND `ProtocolRegistry.t.sol` import). The Solidity test can only re-hash the ~4 MB `.wasm` in-EVM (`vm.readFileBinary` MemoryOOGs at the 11+ MB r1cs / ~25 MB zkey), so the big-file pins are verified by the Rust tests - that split is intentional, not a gap. `foundry.toml` gained a `../circuits/build` read permission for the wasm hash.
 - **Signed-manifest fallback (1B)** = `crates/dogtag-prover-rs/src/manifest.rs`: an **ed25519** dogtag-key-signed JSON of the SAME version content (§5.2 TRUST tier), built DRY from the artifact descriptor + `VersionDeployment` (the on-chain axis: trio addresses) + `ArtifactRelease` (the artifact axis: artifact-set name, base URL, `minAppVersion`; `artifact_release_for(version)` is the off-chain mirror of `activeArtifactSetOf`). The manifest carries BOTH axis identities (`version_id` and `artifact_set_id`). It is a CACHE/FALLBACK, never a second authority: `reconcile(signed, pinned_pubkey, &OnchainContractSet, &OnchainArtifactSet)` takes the two axes SEPARATELY (they are read separately on-chain, and a caller must be able to reconcile against a freshly-rotated artifact set without re-reading the contract set), verifies the sig, then returns the ALWAYS-on-chain authoritative fields of both + any `FieldConflict`s - **on conflict, on-chain wins**. `verify()` checks against the PINNED pubkey (not the envelope's advertised key), so a wrong-signer/tampered manifest fails. Real anchor is a compile-pinned `DOGTAG_MANIFEST_PUBKEY` (`None` until go-live). Served by vet-api `GET /protocol/manifest?version=…` (`stacks/vet/api/src/protocol.rs`; `version` is a query param because it contains `/`; key from env `DOGTAG_MANIFEST_SIGNING_KEY`, unset ⇒ 503; a NEW route that does NOT touch the resolve GET).
-- **Publish scripts** (`DeployProtocolRegistry.s.sol` + `PublishProtocolVersions.s.sol`): deploy is admin/publisher = governance `0x8E27E117…`; `PUBLISH_TIMELOCK_SECS` defaults to 2 days and `TESTNET_DEPLOY=true` is the mandatory loud opt-in for any non-default delay. Publish is TWO phases (`…Propose`, then `…Execute` at/after the printed ETAs), reading the registry address from `PROTOCOL_REGISTRY`. `ProtocolVersions.sol` now authors the single owner-hidden `dogtag-levelb/1` version as THREE values - `levelBContracts()`, `levelBArtifacts()`, and the binding - so the FIRST publication uses the two-axis scheme from the start (there is nothing to migrate). Only `dogtag-levelb/1` publishes (the retired owner-revealing `dogtag-levela/1` is no longer authored here), with the confirmed roax.json trio addresses + the frozen pins. The registry is deployed + published on ROAX as of the 2026-07-23 r8 fresh redeploy: `ProtocolRegistry` `0xf5492A671E69b1A13f7Fd123C021830eB1ea8081` (`deployments/roax.json`), zero-timelock testnet opt-in, with the one version + artifact set + binding executed and `active` on both axes - see `docs/PROTOCOL_REGISTRY_RUNBOOK.md`.
+- **Publish scripts** (`PublishProtocolVersions.s.sol`; the separate `DeployProtocolRegistry.s.sol` is gone - `Deploy.s.sol` stands the registry up with everything else): deploy is admin/publisher = governance `0x8E27E117…`; `PUBLISH_TIMELOCK_SECS` defaults to 2 days and `TESTNET_DEPLOY=true` is the mandatory loud opt-in for any non-default delay. Publish is TWO phases (`…Propose`, then `…Execute` at/after the printed ETAs), reading the registry address from `PROTOCOL_REGISTRY`. `ProtocolVersions.sol` authors the single owner-hidden `dogtag-levelb/1` version as THREE values - `levelBContracts()`, `levelBArtifacts()`, and the binding - so the FIRST publication uses the two-axis scheme from the start (there is nothing to migrate). **`dogtag-levelb/1` IS PUBLISHED and active on both axes with its binding** (executed 2026-08-03): `getDiscoverySet(keccak256("dogtag-levelb/1"))` returns a nine-word record, `getActiveArtifactSet` resolves, `minAppVersion` is `1.4.0`, and the ledger's `_publication` note says the same. Note the registry was REDEPLOYED first so it could carry `PUBLISH_TIMELOCK` 0 and publish with no wait (`_protocol_registry_redeploy`); the earlier instance is not a write target. The getter is `getDiscoverySet` - a call to a selector the contract lacks reverts with EMPTY returndata, and reading that as "nothing is published" would be a dispatcher refusal mistaken for an answer, while an UNKNOWN key reverts with the contract's own named reason `"unknown discovery set"`. Publishing remains a deliberate captain-authorized step rather than part of the deploy. See `docs/PROTOCOL_REGISTRY_RUNBOOK.md`.
   - **`PublishProtocolVersions.s.sol` is the FIRST-ROLLOUT script and sends SIX transactions** (propose×3 + execute×3, across both axes AND the binding). Never reach for it to change ONE axis: for an artifact-axis-only change, four of those six re-publish a `ContractSet` and a binding nobody asked to move, and `executeContractSet` restamps `publishedAt` + re-emits `ContractSetPublished`, rewriting the trio's on-chain provenance for a change that moves no trio address. `contracts/script/PinConsentWitnessGraph.s.sol` is the narrow artifact-axis counterpart (exactly two txs) and is the shape to copy for any future single-axis operation.
   - **A published set CAN be re-published in place** - `executeArtifactSet` assigns `artifactSets[id] = a` unconditionally and uses `isNew` only to gate the `artifactSetList` push; `ArtifactSetPublished(id, isNew)` exists to tell the two apart. So publishing an omitted identity (the graph pin) is an in-place re-publish, NOT `…-artifacts/2`. Reserve a new id for a real bytes rotation, where apps must be able to tell the sets apart - it MOVES `artifactSetId`, which both mobile `AnchorResolver`s decode. Re-publishing does restamp that set's own `publishedAt`, so record the previous value before you do it or it is simply gone.
   - **`PUBLISHER_ROLE` is `keccak256("PUBLISHER")`, not `keccak256("PUBLISHER_ROLE")`.** Deriving it from the Solidity variable name yields a role no one holds, so a correctly-configured signer reads as unauthorized. Read the constant off the deployed contract (`cast call <reg> "PUBLISHER_ROLE()(bytes32)"`) rather than recomputing it. Governance `0x8E27E117…` holds it; the deployer EOA does NOT.
@@ -1368,12 +1387,14 @@ Check it on every build:
 # 1. hash the key you are bundling
 shasum -a 256 apps/ios/DogTag/consent_final.zkey
 # 2. read the deployed consent verifier (ROAX; addresses in contracts/deployments/roax.json)
-cast call 0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B "zkVerifier()(address)" --rpc-url https://devrpc.roax.net
+VR=$(python3 -c "import json;print(json.load(open('contracts/deployments/roax.json'))['VerificationRegistryConsent'])")
+cast call "$VR" "zkVerifier()(address)" --rpc-url https://devrpc.roax.net
 ```
 
 The bundled zkey's sha256 must be the ceremony output paired with whatever `zkVerifier()` returns.
-Currently (see `roax.json` `Groth16VerifierConsent` + `_r8_fresh_redeploy`) that is `Groth16VerifierConsent` `0x1A9027986B859dc3879896B053deA78F636BE9b1`, paired with the frozen consent zkey sha256 `f83a111f…`.
-Do not transcribe these values into new places - `roax.json` and its `_r8_fresh_redeploy` note own them.
+That is `Groth16VerifierConsent` in `roax.json`, paired with the frozen consent zkey sha256 `f83a111f…`.
+The launch verifier was redeployed from unmodified source and its runtime is byte-identical to the previously deployed frozen-ceremony verifier, so the on-chain VK did not move and the bundled pair is unchanged - see `_frozen_verifier`.
+Do not transcribe the address into new places; `roax.json` owns it.
 (The retired-generation registry's v1/v2 verifier history lives in the historical "ZK trusted-setup ceremony" section; it is not a target for new bundles.)
 
 **Rebuild + reinstall the app whenever the on-chain verifier is upgraded** - a trusted-setup/ceremony cutover done via `proposeZkVerifier(addr)` -> wait `ZK_TIMELOCK` (2 days) -> `executeZkVerifier()` (there is no single-call setter).
@@ -1388,530 +1409,6 @@ An already-installed app keeps proving against its **baked** key until you do, s
   equal the tag's write-once `profileRoot`, and `ownerOf` is called only as a token-existence gate—its
   neutral-custodian return value must never be compared as owner identity. Every relay ABI must stay in
   sync with this four-argument signature.
-
-### The generation-2 issuer pair is DEPLOYED BUT UNWIRED (registry-plan S-7, deployed by S-14)
-
-`DogTagIssuerV2` + `DogTagIssuerFactoryV2` exist in `contracts/src/` and are covered by
-`test/IssuerV2.t.sol` (63 tests). **Both were deployed live on ROAX by S-14 and NOTHING READS EITHER** -
-the ledger carries `DogTagIssuerV2Impl` and `DogTagIssuerFactoryV2` keys under their own names (see "The
-generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover` in `deployments/roax.json`; do not
-transcribe the addresses here). S-15 added a blank `VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR` to both portal
-`.env.example` files and to their env plumbing, so the KEY exists - but it ships EMPTY with no code
-fallback, so nothing in the tree resolves an address from it. Read a blank fallback-free var as
-STRONGER evidence of unwiredness than an absent one: an absent key can be added and silently pick up a
-bundled constant, and this one cannot. Say it that way rather than "the cutover is done": deployed is not wired, client
-repointing is C-9/C-10, and enabling generation-2 issuance is C-11 - all separately captain-authorized
-and all outstanding. The generation-1 `DogTagIssuer.sol` /
-`DogTagIssuerFactory.sol` are UNMODIFIED; the pair is purely additive, like `ProtocolRegistry` and
-`IssuerDomainRegistry` were.
-
-Full semantics live in **`docs/ISSUER_V2_OWNERSHIP.md`** - do not restate them here, or the copy rots.
-The six things worth knowing before touching either file:
-
-- **Generation-1 clones have NO owner at all.** Not "an owner that is hard to check" - `DogTagIssuer` is
-  `Initializable` only, so the captain's "whitelisted people AND owner of contracts" is *unimplementable*
-  against the deployed set, and `IssuerDomainRegistry._isSpawningBusiness` is a salt-recomputation stand-in
-  that authorizes whoever was passed as `business` (which `resolve_business` defaults to the operator's own
-  signer). V2 replaces that stand-in with a real `owner()`.
-- **The oracle is the S-6 `ProviderRegistry`, and generation 2 needs its OWN, separate from generation 1's
-  `IssuerRegistry`.** The pair asks it for FOUR functions, all four permanent and all four load-bearing:
-  `canCreateService` (the factory, per creation), `canIssue` and `canRevoke` (a clone, per write), and
-  `hasRole` (a clone, for `adminRevoke` - without it that mass-revoke lever reverts forever, unrepointably).
-  The legacy `isWhitelistedFor` cannot serve any of them: it cannot tell an issue call from a revoke call,
-  and on the core it branches on `msg.sender`, answering the orthogonal VERIFY-key capability for a caller
-  that is not itself an attached service. Sharing one core across generations also breaks the router's
-  C-12 freeze - see the `CloneProvenanceRouter` section below. This S-6 capability ladder supersedes every
-  older S-7 sentence saying generation 2 is gated solely by an issuer whitelist; that wording describes
-  generation 1, not this pair.
-  **Both halves are now in ONE tree, so that four-function claim is CHECKED rather than asserted, and it
-  holds:** `DogTagIssuerV2.sol`'s `IProviderAuthority` declares those four with signatures byte-identical to
-  `ProviderRegistry.sol`'s own `IProviderRegistry`, which is a strict superset (it also declares
-  `isRecognizedIssuer` and `isWhitelistedFor`, neither of which the pair consumes) - so the real core
-  satisfies the pair's oracle interface. `IssuerV2ProviderAuthority.t.sol` pins it against the REAL core on
-  both axes a signature has: selector equality for the argument lists, and single written external function
-  types both sides are assigned to, so a diverged return type or mutability fails the BUILD rather than
-  surviving to misdecode. It carries a negative control because the loop needs one - a well-formed
-  two-address call differing from `canIssue` in the SELECTOR ALONE, since an arity-mismatched probe reverts
-  inside the ABI decoder before dispatch is established and would pass while proving nothing.
-  Read it as a SIGNATURE fact and nothing more: the ladder tests still bind `MockProviderAuthority`, so no
-  test in this tree runs the pair against the real core, and a divergence in either contract's BEHAVIOUR
-  would leave all 231 green. Wiring the two together is a cutover step, not a coverage gap this branch left
-  open.
-- **`canIssue` and `canRevoke` are a nested ladder and must NOT be substituted for each other.** `issue`
-  asks the narrow rung, the ordinary `revoke` arm the wide one. They differ whenever a live-lifecycle
-  term unique to `canIssue` drops; a superseded clone and a suspended provider are both exercised examples.
-  Both swaps are real defects there: one reopens issuance, the other strands existing roots as unrevocable.
-  `test_a_superseded_clone_refuses_new_issuance_but_still_revokes` is the direct mutation catcher;
-  `test_a_suspended_provider_anchors_nothing_but_can_still_revoke` and
-  `test_the_authority_ladder_is_nested_not_three_independent_switches` also distinguish the rungs.
-- **Ownership is CONTROL and confers no capability - but MOVING it suspends everything.** Merging control
-  into issuance would silently disarm the grant-withdrawal lever (plan §3.3). The converse surprises
-  people: the core folds the CONFIRMED owner into both rungs, so a completed two-step handover pauses
-  issuance AND revocation until the registrar calls `confirmServiceOwner`. Transfer is two-step and
-  `owner()` can never become zero: `renounceOwnership` is disabled and `acceptOwnership` refuses
-  `msg.sender == address(0)` (OZ's `pendingOwner() != msg.sender` compares `0 == 0` with nothing pending
-  and would hand ownership to the zero address).
-- **A generation-2 clone's `name()` is permanently EMPTY, deliberately.** Generation 1's name was
-  authoritative ONLY because `onlyOwner` `createIssuer` wrote it at KYC time; self-service would make it a
-  provider-chosen string with genuine factory provenance, i.e. a fabricated authority beside a green check.
-  So `createIssuer` and `initialize` take no name and nothing writes the slot. A consumer must read it as
-  identity UNAVAILABLE and must not fall back to the document's claim; registrar-controlled identity comes
-  from the core's publication-safe identity anchor via its directory resolver. The existing readers that
-  still label the on-chain name authoritative (`stacks/government/api/src/routes.rs`,
-  `packages/ui/src/domain/issuerDomainBinding.ts`, and the event-detail path
-  `packages/ui/src/chain/provenance.ts`) are a LATER slice and are untouched.
-- **`priorIndex` is immutable, MANDATORY non-zero, and queried via the router's `isRootAnchored`** - not
-  via `rootIssuer`, which is generation-LOCAL and would leave every generation before the immediately
-  preceding one unguarded. Its occupant must answer both `isRootAnchored` and `isGeneration`, must not
-  revert, must answer `false` for an unanchored root, and must report this factory absent during
-  construction. **The topology is router FIRST, then the factory, then `appendGeneration`, then issuance -
-  it is NOT circular.** `registerRoot` checks `isGeneration(address(this))` first and loudly reverts
-  `FactoryNotRegisteredInPriorIndex(factory)` until append, before writing the factory's `rootIssuer`;
-  the transaction revert unwinds the clone's earlier `issuedAt` assignment. A
-  generation-1 factory is refused in the slot outright. A conforming always-`false` stub can still pass
-  construction, but now blocks every issuance rather than reinstating the bypass. Residual the code cannot
-  close: a lying/stateful occupant may later claim membership while omitting old roots, and even a real
-  router may omit an earlier generation, so the complete real router remains a cutover precondition.
-
-Two more constructor facts, since the factory has no admin and every dependency is permanent. All three
-must be non-zero contracts. The implementation is identified exactly:
-`impl.codehash == keccak256(type(DogTagIssuerV2).runtimeCode)`, so even an ABI-shaped impostor answering
-`owner()` / `pendingOwner()` / `recordType()` is refused with `ImplementationCodeMismatch`; this is pinned
-by `test_an_abi_shaped_impostor_implementation_is_refused`. The authority and prior index are
-behaviour-probed for their exact required reads (an EOA staticcall SUCCEEDS with empty returndata - the
-silent shape those probes must reject). Those probes are TRI-state and their diagnostics must stay
-split: `*DoesNotAnswer(dependency, selector)` means nothing was stated (revert, no such selector, wrong
-returndata width, or a word that is neither 0 nor 1), while `AuthorityAuthorizesUnconditionally` /
-`PriorIndexClaimsEveryRoot` / `PriorIndexPrematurelyClaimsThisFactory` are definite `true` answers. Both
-refuse construction identically; collapsing them sends an operator hunting a missing selector when the
-real cause is an authorization rule that authorizes everything.
-
-**The mandatory issuer-whitelist pillar does NOT yet answer for a generation-2 root, and that is a
-cutover blocker rather than a wiring note.** The pillar asks the verifier's OWN configured
-generation-1 `IssuerRegistry.isWhitelistedFor`, so a generation-2 root either resolves nowhere
-(`rootIssuer` is generation-local -> indeterminate) or resolves a signer whose authority lives only in
-the S-6 `ProviderRegistry` under `canIssue` -> a definite `false`, i.e. a genuine credential rendered as
-forged. `RpcAdapter::is_whitelisted_for` deliberately takes no registry address, so this is a code change
-in each of the five consumers (`packages/ui/src/wallet/verifyCredential.ts`, government-api `verify`,
-vet-api `verify_credential`, `crates/dogtag-standard-rs/src/verify.rs`, and the two mobile importers) -
-and C-12's delisting freeze makes the generation-1 answer worse, not transitional. Still ONE owner-hidden
-pillar; none of those files is touched by this branch. Full statement: `docs/ISSUER_V2_OWNERSHIP.md` §8.
-
-The doc's §9 "Historical mutation evidence" table (the thirty-three-row one, NOT the separate five-row
-table under §9's `IssuerV2ProviderAuthorityInterfaceTest` subsection) is true historical evidence from a
-one-off temporary mutation harness: thirty-three source mutations were actually applied/run/reverted and
-mapped to named red tests, while two no-behaviour changes were deliberately excluded. The harness was NOT
-committed, so the checked-in tree makes the source/test mappings reviewable but does not itself reproduce
-those mutations as a repeatable gate. `IssuerV2.t.sol`'s authority is a stand-in
-(`MockProviderAuthority`), so its three rungs are DERIVED from one set of registrar facts and never
-independently settable; keep it that way or the coverage becomes self-agreement.
-
-## ProtocolRegistryV2 is DEPLOYED BUT UNWIRED - and its timelock floor is the point (registry-plan S-11, deployed by S-14)
-
-`contracts/src/ProtocolRegistryV2.sol` + the `…V2` deploy/versions/publish scripts. Full rationale:
-**`docs/PROTOCOL_REGISTRY_V2.md`** - do not restate it here, or the copy rots. C-8 ran live on ROAX in
-S-14, so the ledger carries a `ProtocolRegistryV2` key (see "The generation-2 contracts ARE DEPLOYED on
-ROAX" and `_s14_cutover`; do not transcribe the address here), but there is still no `.env.example`
-entry and no consumer points at it - repointing is C-9 and nothing has been published on it.
-Generation 1's deployed `ProtocolRegistry` (`0xf5492A67…`) is untouched and stays
-live until clients are repointed, so **no consumer address moved** - both mobile bundles keep their
-generation-1 key, and a placeholder V2 entry in a consumer would be invented data.
-Its `PUBLISH_TIMELOCK` is the 1-hour floor and is IMMUTABLE; the S-14 section states why, and mainnet
-must still use exactly 2 days.
-
-The six things worth knowing before touching any of it:
-
-- **A new registry is FORCED by the struct, not chosen.** `ProtocolRegistry.ContractSet`
-  (`ProtocolRegistry.sol:97-106`) is a FIXED struct with no member for an authority core, a resolver
-  layer, or a provenance index, and the contract is not upgradeable. A struct's shape is part of its
-  storage layout AND its ABI. Say it that way; it is not a preference.
-- **A zero `PUBLISH_TIMELOCK` is UNREPRESENTABLE, enforced in the CONSTRUCTOR.** The live generation-1
-  registry carries `0` and the value is `immutable`, so its publisher key can repoint the whole declared
-  protocol set in one block and nothing but a redeploy can fix it. The floor
-  (`MIN_PUBLISH_TIMELOCK = 1 hours`) is on the CONTRACT because a script guard is bypassable by a direct
-  deploy and the mistake it would let through is unfixable. The value is derived: the oversight indexer
-  is finality-aware and ROAX's `finalized` tag sits ~80 blocks behind `latest`, so a shorter delay is a
-  timelock that exists only in the getter. Mainnet still requires exactly 2 days; the testnet opt-in may
-  go shorter but **cannot reach zero** - the deliberate divergence from generation 1's deploy script,
-  which has a passing `test_explicit_testnet_opt_in_accepts_zero_timelock`.
-- **The record is RENAMED (`DiscoverySet`, `getDiscoverySet`/`resolveDiscovery`) as a STRUCTURAL guard.**
-  Generation 1's `getContractSet` returns 8 words, this returns 10, and a selector is a function of the
-  name and arguments only - so keeping the name would let a generation-1 client DISPATCH and decode the
-  first 8 words, reading `providerRegistry` as `circuitId` and a truthy `publishedAt` as `active`. Same
-  trap as the two `recordVerificationZK` arities sharing `0xdd080593`. `ArtifactSet` is unchanged, so
-  `getArtifactSet`/`getActiveArtifactSet` deliberately KEEP their selectors. Both mobile decoders now
-  require the arity EXACTLY (they accepted `>= 8`, which is how that misdecode would have happened).
-- **`factory` is NOT the root index any more, and that is the easiest thing to get wrong.** Generation 1
-  documented `factory == verificationRegistry.rootIndex()`; generation 2 carries both because they are
-  different contracts. Reading the factory where `rootIndex` is meant resolves only that generation's
-  roots and misses every earlier one - the exact failure `CloneProvenanceRouter` exists to prevent. The
-  publish preflight asserts the difference against the chain.
-- **There is deliberately NO `providerDirectory` or `serviceDomainResolver` member, and the plan's S-11
-  is WRONG on this point.** The merged S-6 `ProviderRegistry` already owns the resolver layer:
-  `setResolverApproved` allowlists MANY resolvers per `ResolverKind.DIRECTORY`/`DOMAIN`, and each
-  provider/service selects its own. One protocol-wide address for either would be the wrong resolver for
-  every provider that selected another. `providerRegistry` is how a consumer reaches the real resolution
-  root (and must re-check `isResolverApproved`, since the core keeps a deapproved selection as history).
-- **The discovery key bumps to `dogtag-levelb/2`; the ARTIFACT key stays `dogtag-levelb-artifacts/1`.**
-  The artifacts are byte-for-byte generation 1's, so a second identity for them would be a falsehood -
-  and it would also swap the app-gate diagnostic from the actionable `AppTooOld` to a stitched-anchor
-  coherence error, because both mobile resolvers carry the artifact identity as a compile-time constant.
-  `minAppVersion` is a mandatory publish input with NO default: the generation-2 floor is the release
-  that reads the root index instead of the bundled factory, and guessing it would publish a number
-  nobody verified.
-
-Client-side, `TrustedAnchor`/`ValidatedVersion`/`Manifest`/`OnchainContractSet` gained
-`provider_registry` + `root_index` as `Option`. **`None` is a generation-1 record's honest shape, NOT a
-could-not-check** - a failed read must surface as a failed resolution and must never arrive as `None`. A
-value that IS reported must be usable (`0x` + 40 hex, non-zero) or `validate` fails closed with
-`MalformedAnchorAddress`; shape is the only check available because nothing CLAIMS these two, unlike
-`verification_registry`. The `Manifest` members are `skip_serializing_if`, so a generation-1 manifest's
-canonical bytes - and any signature over them - are unchanged. The mobile RPC call for
-`getDiscoverySet` and the `ScanScreen` repoint are deliberately DEFERRED to C-9/C-10; both call sites
-pass `nil`/`null` today with a comment naming what must change. The mandatory issuer-whitelist pillar
-still asks the generation-1 `IssuerRegistry` and does not yet answer for a generation-2 root - a cutover
-blocker recorded in `docs/ISSUER_V2_OWNERSHIP.md` §8, not something this slice closes; carrying
-`providerRegistry` on the validated anchor is what gives those five consumers an attested address to
-migrate TO.
-
-## The cutover order is NOT the registry plan's order (S-12 rehearsal)
-
-`docs/CUTOVER_REHEARSAL.md` is the step-by-step approval record and `docs/CUTOVER_TRANSACTIONS.md` is the
-generated transaction list. Reproduce with `make rehearse-cutover`; prove the assertions can fail with
-`make rehearse-cutover-mutations`. **Nothing is deployed live by either.**
-
-**Do not follow `dogtag-regplan-p3` §2's C-3-before-C-4 ordering, and do not deploy the router over
-`[factoryV2, factoryV1]`.** Both are wrong against the contracts as merged, and they fail in opposite
-ways. The corrected on-chain order is core -> impl -> **router over `[factoryV1]` alone** -> factoryV2 ->
-**`appendGeneration(factoryV2)`** -> `addFactoryGeneration` -> registry V2 -> discovery V2.
-
-- `DogTagIssuerFactoryV2.priorIndex` is immutable, mandatory and behaviour-probed in the constructor, so
-  at C-3 time there is nothing to bind to: it reverts `ZeroAddress`, and a placeholder EOA reverts
-  `NotAContract` (a staticcall to an EOA SUCCEEDS with empty returndata - the silent shape the probe
-  rejects). The router genuinely cannot come second.
-- `CloneProvenanceRouter`'s constructor stores the array as given and `rootIssuer` iterates from index 0,
-  so `[factoryV2, factoryV1]` resolves NEWEST first - the revocation bypass S-8 exists to prevent, and it
-  fails silently.
-- **`appendGeneration` is a step the plan does not contain at all.** Until it runs,
-  `registerRoot` reverts `FactoryNotRegisteredInPriorIndex` and every clone the factory makes is inert.
-
-**C-2's "attach the existing clones" is not executable and never was.** `ProviderRegistry.attachService`
-reads `owner()` off the service and refuses a failed or zero answer; a generation-1 `DogTagIssuer` has no
-owner at all, so all five live clones revert `InvalidServiceMetadata`. That matches the plan's own §4
-item 9 (retire and re-issue), which §2 was never updated against. Generation-1 clones stay unattached and
-keep issuing through the generation-1 `IssuerRegistry`. Separately, `registerProvider` refuses a zero
-identity digest/schema/hashAlgorithm (`BadIdentityAnchor`), so a provider cannot be registered at all
-without the §4 item 6 identity statement - a second blocker invisible from the plan text.
-
-### Three traps in rehearsing a cutover on a fork
-
-- **Assert BEFORE you broadcast, and fork UPSTREAM for the assertions - never the anvil you broadcast
-  into.** The broadcast deploys the issuer implementation onto exactly the address a fork test's own
-  `new DogTagIssuerV2()` takes, so asserting against the mutated node asks whether the cutover works on a
-  chain where it already happened. It surfaces as `ImplementationCodeMismatch`, which reads like a
-  compiler or profile problem and is neither.
-- **`forge script --broadcast --unlocked` needs `--skip-simulation`, and that is not ignoring a failure.**
-  Observed on Foundry 1.5.1: forge runs the script twice. The simulation attributes every CREATE to
-  `--sender` (its addresses are exactly `governance@nonce`, confirmed with `cast compute-address`), but
-  the second on-chain re-execution produces DIFFERENT CREATE addresses and hands the factory the
-  simulation's implementation address, which holds no code there - so it reverts
-  `ImplementationCodeMismatch` while the transactions are perfectly valid. The attribution rule for that
-  second phase was not established; state it as the divergence that was measured rather than as a
-  mechanism. Skip the redundant re-execution and verify the RECEIPTS and resulting state instead - never
-  the "ONCHAIN EXECUTION COMPLETE & SUCCESSFUL" banner.
-- **`!verify-wl` fires BEFORE root resolution** (`VerificationRegistryConsent.sol:153` vs `:187`), so any
-  test asserting "a generation-2 credential does not verify on the generation-1 registry" must whitelist
-  the relayer there FIRST and assert the exact string `"unknown root"`. A bare `vm.expectRevert()` goes
-  green on the relayer gate while proving nothing about root resolution.
-
-The rehearsal lives in `contracts/rehearsal/` under a separate `[profile.rehearsal]` (`test = "rehearsal"`),
-so it is NOT in the hermetic `forge test` gate, which stays at 363 tests and needs no endpoint. It does
-not self-skip: `setUp` reads `ROAX_FORK_RPC` with no default, because a rehearsal reporting green in
-exactly the case it did not run is worthless. `scripts/derive-cutover-inventory.sh` re-derives the
-historical-root inventory from `RootRegistered` logs at a pinned block (19 roots at block 304000,
-re-derived rather than carried forward from the plan), and the fork test refuses to run if that fixture's
-pinned block disagrees with the fork's.
-
-`scripts/rehearsal-mutations.sh` is a REPEATABLE mutation gate rather than a one-off log: it applies one
-break at a time, requires the named test to redden, and reports a mutation that stayed green as its own
-failure. **It has caught two inert mutations, so trust it over your own reading of a diff.** First,
-`_readServiceMetadata` folds the failed `owner()` read into a single `metadataOk`, so relaxing only the
-downstream `liveOwner == address(0)` guard changed nothing observable. Second, and the one worth
-remembering for ANY fork rehearsal: **an assertion that reads through a REAL DEPLOYED contract cannot be
-mutated from this tree at all** - the bytecode comes from the chain, so editing `src/` reaches nothing.
-On a fork the only mutable surface is what the rehearsal itself deploys or does. Every mutation's target
-file must also be listed in the harness's `TARGETS`, or `restore` silently leaves the tree mutated; that
-gap has already occurred once. Check the scrutinee, not just the diff.
-
-## An address inventory built with the obvious grep is wrong in BOTH directions (S-13)
-
-Full record: `docs/CLIENT_REPOINT.md`. The inventory is DATA in `scripts/cutover-consumers.json` and a
-gate in `scripts/check-cutover-consumers.sh` (`make check-cutover-consumers`), which fails when the tree
-and the manifest disagree in either direction. Do not re-derive the list by hand; run the gate.
-
-**`grep -rl "0xED20269E"` - the obvious inventory command - both MISSES real consumers and INVENTS
-non-consumers, and neither error is visible from reading its output.** The registry plan's own §9.6
-reports 17 tracked files for the factory. Both greps re-run at the plan's own commit `aa5f4c6`
-reproduce that 17 and show the true figure is **21**, reconciling exactly as `17 = 21 - 7 + 3`. The two
-errors partly cancel, which is why the total looks plausible.
-
-- **Case.** Addresses are stored EIP-55-checksummed in some files and lowercased in others - the
-  indexer and the government tests lowercase. A case-sensitive grep for the checksummed form is blind
-  to every lowercased consumer. That is how the plan's list omitted `stacks/indexer/api/src/main.rs`,
-  the one service whose late repoint is *silent* (its anti-spoof gate drops unrecognised emitters with
-  no error, so the oversight feed merely looks quiet) - and the very file the plan's own §9.7 is about.
-- **Prefix.** An 8-hex prefix matches synthetic addresses that share it, and elided prose.
-  `packages/ui/test/provenance.test.ts` uses `0xED20269E1234567890abcdefABCDEF1234567890`, which is not
-  the factory; `AGENTS.md` and `docs/ROLE_APPS.md` say `0xED20269E…` in prose and carry nothing to
-  repoint. Truncating the gate's pattern to 8 hex pulls in exactly those three.
-
-So match **full 40-hex, case-insensitively**. Both halves are mutation-proven: dropping `-i` makes seven
-real consumers vanish, and the prefix form invents three. Elided prose (`0xED20269E…`) is matchable by
-neither without reintroducing the false positives, so it is DECLARED in the manifest's
-`elidedReferences` and checked for presence instead.
-
-**`git grep` sees TRACKED files only, and that blinded this gate to its own manifest.**
-`scripts/cutover-consumers.json` holds every generation-1 address by design, so it is a file the gate
-must account for - but while it was untracked `git grep` could not see it and the gate reported a clean
-tree throughout. A check passing by not running, aimed at itself. It surfaced the instant the file was
-committed. The manifest now DECLARES itself (`inventory-manifest`) rather than being silently skipped,
-because an implicit self-exemption is a hole in the one check whose job is finding holes; and the gate
-separately scans the untracked-but-not-ignored set, since any file about to be committed is invisible
-to `git grep` for exactly as long as that matters. Generalize it: **never conclude "the tree is clean"
-from `git grep` alone while the thing you just wrote is still untracked.**
-
-**Write the gate in bash, never zsh.** zsh does not word-split an unquoted `"$var"`, so iterating a
-space-separated address list runs ONE iteration with the whole string as the pattern, every `git grep`
-misses, and the script reports a clean tree - a check that passes by not running. This bit during
-development, and it is the same trap AGENTS.md already records for `swiftc $SRC`. Also `export LC_ALL=C`
-for the WHOLE script, not just around each `sort`: `comm` needs one collation on both inputs, and locale
-ordering puts `AGENTS.md` differently from codepoint ordering, which made the gate report every file as
-*both* undeclared and stale. Qualifying only the `sort`s leaves the verdict dependent on the CALLER's
-locale - green in a `LC_COLLATE=C` shell and a dozen bogus pairs in an ordinary terminal - so an
-unqualified local run proves nothing about what CI or a captain's shell will say.
-
-**A grep for the CURRENT address is structurally blind to a consumer holding a SUPERSEDED one**, and
-that blind spot was live: `stacks/owner/web/src/lib/config.ts` pinned the retired M5
-`VerificationRegistryConsent` while its own comment called it live, so the owner wallet's
-`eth_getLogs` consent-history scan queried a dead contract and rendered "no consent history" for
-absence of evidence - permanently, with no error, because a retired contract answers `eth_getLogs`
-with nothing rather than reverting. The manifest's `retiredAddresses` closes it with the SAME
-declared-allowlist discipline as the inventory, never a blanket ban: the historical ledger records
-such an address by design, golden-ABI encodings are pinned to it, and hermetic MemChain/mocked
-fixtures reuse it cosmetically, so an UNDECLARED carrier is the error and a declared-but-absent one is
-only a note. The allowlist is scoped PER ADDRESS - a file cleared to carry one is not cleared to carry
-another - and the manifest declares ITSELF there for the same reason it declares itself in `consumers`.
-
-**THE GOVERNING CONDITION FOR ANY REPOINT: an address may be repointed only when the successor
-answers THE SAME QUESTION FOR THE SAME INPUTS.** Implementing the same selector is not sufficient
-evidence, and neither is a successful call - a call that returns a confident wrong answer is worse
-than one that reverts, because nothing reports it. Every repointed variable owes a stated answer to
-"what does the successor answer, and under what caller context", and an unestablished repoint is
-recorded UNVERIFIED rather than assumed (`semanticEquivalence` per address in the manifest). S-13
-produced TWO instances of this failing on opposite axes, both on `ISSUER_REGISTRY_ADDR`, which is why
-it is a rule and not an anecdote. Full record: `docs/CLIENT_REPOINT.md`.
-
-**`ISSUER_REGISTRY_ADDR` therefore moves NOWHERE at C-9 - neither axis.** *Write axis:*
-`ProviderRegistry` implements NEITHER `whitelistFor` NOR `delistFor` and has no fallback.
-**UPDATE: the admin grant/revoke console this paragraph was written around has since been DELETED**
-(see "The journey is COMPLETE now"), for exactly the reasons it gives - so there is no longer a
-console to keep on generation 1, and the "it would not even fail cleanly" hazard below is now
-historical rather than live. Recorded rather than cut, because the MECHANISM still binds any future
-caller: `hasRole(WHITELIST_ADMIN, owner)` returns true on the successor, so `governance::dispatch`
-would read the hosted key as the holder and BROADCAST a reverting transaction instead of proposing.
-**The consequence that IS still live: C-12's delisting freeze no longer has an admin UI.** It ran
-through that console, and it is the operational precondition for closing `CloneProvenanceRouter`'s
-open mirror direction - so it is now a `cast`/script operation against the generation-1
-`IssuerRegistry`. `whitelist_for` / `delist_for` survive in `stacks/admin/api/src/chain.rs` (the
-issuer-application approval flow still uses them), so the calldata builders are there; what is gone
-is the button. *Read axis, the one that looked safe:*
-`ProviderRegistry.isWhitelistedFor` (`ProviderRegistry.sol:787-793`) branches on `msg.sender` - an
-attached service gets its own grant, EVERY OTHER caller gets `_verifierCapabilities[key][signer]`,
-the orthogonal VERIFY axis. Every production read is a plain `eth_call` with NO `from`
-(`grep -c '\.from('` over vet/government/admin `chain.rs` returns 0; `packages/ui` `readContract`
-passes no account), so `msg.sender` is `0x0` and that branch ALWAYS runs. So the VERIFY-key reads are
-compatible (`verify_key_from_purpose_word` == `verificationKey`, four sites) while EVERY
-record-type-key read returns a definite `false` for genuine issuer signers (seven sites, including
-the mandatory issuer-whitelist pillar at vet `routes.rs:1258` / government `routes.rs:702`, which
-treats a definite false as an AUTHENTICITY FAILURE - so repointing refuses genuine credentials as
-forged FLEET-WIDE, and vet `routes.rs:549`/`:658` additionally stop issuance). And the variable cannot
-move for the compatible half alone, because ONE value serves both key shapes in the same process. The
-unblock is the `isRecognizedIssuer(service, signer)` migration in `docs/ISSUER_V2_OWNERSHIP.md` §8;
-leaving readers on generation 1 is not a fix either (indeterminate instead of false - both broken).
-Note the SHAPE: `isWhitelistedFor` returns `false` where the honest answer is "this contract cannot
-answer that for this caller" - could-not-check rendered as failed, in Solidity, which is why no caller
-could detect it by observing behaviour. The CONTRACT side is pinned and the CONSUMER side is not:
-`contracts/test/ProviderRegistry.t.sol` covers both caller contexts (`vm.prank` affects only the NEXT
-call, so `:598`, `:836` and `:845` run unpranked), and `:598` is the exact case - unpranked, keyed on
-`RECORD_TYPE`, asserting false - with `:599` asserting `isRecognizedIssuer` TRUE for the same signer.
-The residual gap is one layer up: nothing asserts what the CONSUMERS do with that false, since no Rust
-or TS suite references `ProviderRegistry` and `MemChain::is_whitelisted_for` is a flat map lookup that
-cannot model the `msg.sender` branch at all.
-
-**The factory is the ONE moving address with no single target**, so the manifest's top-level
-`supersededBy` for it names the split rather than an address, and the three diverging consumers carry
-their own `supersededBy`. The gate PRINTS those divergences on every run, because S-14 drives from that
-file and reading only the top-level entry would get two of them backwards.
-
-**The factory address splits in two at generation 2, and the halves move in OPPOSITE directions.**
-A READER resolving the write-once `rootIssuer[R]` repoints to the `CloneProvenanceRouter` (which answers
-across both generations, oldest-first); pointing it at `DogTagIssuerFactoryV2` resolves every historical
-root to `address(0)`, surfacing as an indeterminate issuer-whitelist pillar rather than an error. A
-WRITER calling `predictIssuer`/`createIssuer` repoints to the factory, because the router deploys
-nothing. Both spellings live inside the admin stack alone: backend `FACTORY_ADDR` is a writer, web
-`VITE_DOGTAG_ISSUER_FACTORY_ADDR` is a reader. `INDEXER_GENERATIONS.factory` is a third case - an
-EMITTER allowlist, so it takes the factory, and it is an APPEND (the list keeps generation 1 forever)
-rather than a value swap.
-
-**`VITE_DOGTAG_ISSUER_FACTORY_ADDR` FALLS BACK to the SDK default when unset**
-(`packages/ui/src/wallet/verificationBench.ts`), so leaving it unset after a cutover does not disable
-the bench's anchor check - it silently keeps reading generation 1. A fallback-free key fails closed
-instead; this one can lie, so check which kind you are editing. (Its neighbour
-`VITE_ISSUER_DOMAIN_REGISTRY_ADDR` was the fallback-free example until it was removed outright - see
-"The bench's issuer-domain rows were REMOVED"; `VITE_PROVIDER_REGISTRY_ADDR` and the other blank S-15
-keys are the surviving ones.)
-
-**A source edit to a mobile bundle is NOT a repoint.** `apps/*/roax.json` are compile-time, so the
-repoint takes effect only after a rebuild AND a reinstall on each handset (C-10, the cutover's long
-pole). Nothing between the edited file and the installed build says which state you are in.
-
-**A recognized version key with no on-chain record is not an unknown one.** `manifest::deployment_status`
-returns `AwaitingDeployment` for `dogtag-levelb/2`, and `GET /protocol/manifest` answers 404 `version not
-yet deployed` naming the outstanding STEPS rather than 404 `unknown version`. Both fail closed and serve
-nothing - only the DIAGNOSIS differs, because a typo is the caller's to fix while this key is fixed by
-publishing a discovery set. **Since S-14 the remedy is PUBLICATION, not deployment:** all six
-generation-2 contracts are deployed and `ProtocolRegistryV2` carries no discovery set, so a record that
-still named those contracts as pending would send an operator to redeploy what already exists - the
-wrong-remedy defect this split exists to prevent. Serving a manifest anyway would be worse: it would
-advertise a version whose on-chain discovery record does not exist, so clients would reconcile against
-nothing. The record carries no address field at all, so it cannot decay into a
-placeholder. Note the generation-2 DISCOVERY key is not an ARTIFACT key: the artifacts are byte-for-byte
-generation 1's and keep `dogtag-levelb-artifacts/1`, so `artifact::resolve` fails closed on it too.
-
-## The generation-2 contracts ARE DEPLOYED on ROAX, and nothing reads them yet (S-14)
-
-The eight-transaction on-chain cutover ran live on ROAX (chain 135) on 2026-08-01, captain-authorised, testnet only.
-Addresses, transaction hashes and blocks live in `contracts/deployments/roax.json` under `_s14_cutover` - do not transcribe them here, or this copy rots.
-The six new ledger keys are `ProviderRegistry`, `DogTagIssuerV2Impl`, `CloneProvenanceRouter`, `DogTagIssuerFactoryV2`, `VerificationRegistryConsentV2` and `ProtocolRegistryV2`.
-
-**Deployed is not wired, and the ledger key names are what keep those apart.**
-Client repointing is C-9/C-10 and did NOT happen, so `DogTagIssuerFactory`, `IssuerRegistry`, `VerificationRegistryConsent` and `ProtocolRegistry` remain the addresses every consumer reads.
-The generation-2 keys are recorded under DISTINCT names precisely so no consumer is repointed by a ledger edit - `scripts/demo-up.sh` resolves keys by name through `ledger_addr`, so reusing a generation-1 key would have silently repointed a running stack.
-Say "deployed, unwired" rather than "the cutover is done": everything from C-6 onward, and the rest of C-2, remains outstanding.
-
-**`RehearseCutover.s.sol` cannot perform a live cutover, and that is deliberate rather than a gap.**
-It requires `block.number == pinnedBlock`, which a live chain can never satisfy - that guard is what carries the rehearsal's safety, so it must not be relaxed.
-`contracts/script/ExecuteCutover.s.sol` is the live counterpart and refuses that same pinned block, so it cannot run on the rehearsal fork.
-Read that guard precisely, because it is NOT symmetric: it refuses the pinned block only, and deliberately still permits a fork at the CURRENT head - which is how the simulate-versus-broadcast behaviour below gets measured.
-Nothing in either script establishes that an endpoint is live, so which URL gets passed remains the operator's responsibility.
-Both call the same `CutoverSequence.cN_*` functions with the same arguments in the same order, which is the ONLY reason the S-12 rehearsal and its mutation harness are evidence about the live transactions.
-A live driver that re-derived the constructor arguments - in Solidity, or by hand-encoding `cast send --create` - would be a second definition free to drift by one argument with both looking correct.
-
-**`--skip-simulation` is NOT needed live, and using it would be strictly worse.**
-The §6 divergence that forced it on the S-12 fork was observed under `--unlocked`.
-With `--private-key`, simulation and broadcast attribute every CREATE to `governance@nonce` identically - confirmed against `cast compute-address` for the exact nonces BEFORE sending, which is a free check worth repeating on any future run.
-Keeping simulation ON is a safety property, not a cost: a failed precondition then broadcasts **nothing**, which was observed twice while proving the phase-2 guards refuse.
-Send with `--legacy` (every ROAX deploy does) and `--slow`, because C-3b's constructor behaviour-probes the router and C-4b needs C-3b's factory to exist - those are hard inter-transaction dependencies.
-
-**The driver is PHASED because C-4b is irreversible and its ordering must be read off the chain, not off a banner.**
-Phase 1 (C-1, C-3a, C-4, C-3b) is entirely abandonable; phase 2 (C-4b, C-2) cannot be undone by any transaction; phase 3 (C-5, C-8) is deployments again.
-Between them, verify by EFFECT: after C-4 `generationCount() == 1` with `generationAt(0)` the generation-1 factory - **not** `[factoryV2, factoryV1]`, which is the silent revocation bypass - and after C-4b `generationCount() == 2` with generation 1 still at index 0 and generation 2 at the TAIL.
-Both were checked live, and all 19 roots in `contracts/rehearsal/fixtures/historical-roots.json` were re-resolved at both points as `router.rootIssuer(r) == factoryV1.rootIssuer(r)`, non-zero, proving the append moved no existing answer.
-Phase 2 additionally re-reads the deployed router and factory as PRECONDITIONS - including `factoryV2.priorIndex() == router`, which is what stops a mistyped factory address being appended permanently - and requires `CUTOVER_CONFIRM_IRREVERSIBLE=true` stated aloud.
-
-**`ProtocolRegistryV2`'s `PUBLISH_TIMELOCK` is 3600 (the 1-hour floor) and it is IMMUTABLE.**
-The full reasoning is in the ledger's `_s14_cutover`; the part worth knowing here is that `docs/CUTOVER_REHEARSAL.md` §4 recommends the 2-day default in a mainnet-safety register, and **mainnet must use 2 days** - `DeployProtocolRegistryV2.s.sol` enforces exactly that unless a testnet deploy is stated.
-ROAX took the floor because its generation-1 registry deliberately ran `PUBLISH_TIMELOCK_SECS=0` so publication could be walked in one sitting, and a 2-day delay would block every discovery publish during testing.
-Redeploying C-8 is FREE today and only today: its stated rollback cost is repointing every client including two compile-time mobile bundles, and that cost is zero while no consumer carries the address.
-
-**C-12 was NOT performed, so `CloneProvenanceRouter`'s one open direction is live.**
-A later-generation root can still be re-anchored in an EARLIER generation, which oldest-first resolution then prefers.
-The next section explains why no contract can close it and why the generation-1 issuance freeze is the remedy.
-Nothing issues through generation 2 yet (C-11 is also outstanding), so nothing is exposed today - but do not read the deployment as having closed it.
-
-## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
-
-`contracts/src/CloneProvenanceRouter.sol`. Full rationale: `docs/CLONE_PROVENANCE_ROUTER.md`.
-**DEPLOYED BY S-14, AND UNWIRED.** C-4 deployed it and C-4b appended generation 2, so the ledger carries
-a `CloneProvenanceRouter` key (see "The generation-2 contracts ARE DEPLOYED on ROAX" and `_s14_cutover`;
-do not transcribe the address here). It IS the `rootIndex` of the generation-2
-`VerificationRegistryConsent` deployed at C-5 - but that registry is itself unwired, so no `.env.example`
-entry names the router and no client resolves a root through it; that is C-9/C-10.
-**C-12 was NOT performed**, so the one open direction below is live rather than closed.
-
-It occupies `VerificationRegistryConsent`'s **immutable** `rootIndex` slot in place of one factory and
-answers `rootIssuer(bytes32)` + `isClone(address)` over an ordered list of factory generations. That
-slot exists because `rootIndex` is `immutable` and a root can only ever be written into a factory's
-index by a clone of that same factory (`registerRoot` requires `isClone[msg.sender]`), so a new
-registry pointed straight at a new factory sees NO root any old clone anchored - every existing
-credential answers `unknown root`, permanently, unrepairably.
-
-**The one thing not to get wrong.** The write-once guards are per-CONTRACT: `DogTagIssuer.issue`
-reads its own `issuedAt[r]` (`DogTagIssuer.sol:53`), `registerRoot` reads its own `rootIssuer[root]`
-(`DogTagIssuerFactory.sol:52`). So a root anchored and then REVOKED on a generation-1 clone can be
-re-anchored on a generation-2 clone by any signer whitelisted for that clone's record type, and the
-shared SBT means `R == profileRoot(dogTagId)` still holds. Newest-first resolution - the natural way
-to write the loop - would then return the fresh clone, `isValid` reads true, and **a revoked
-credential verifies again**. Oldest-first binds a root to the clone in the EARLIEST GENERATION that
-holds it; a later-generation-only root is absent from every earlier mapping and falls through.
-
-**Read that as earliest-GENERATION-wins, never as first-anchor-wins, because the MIRROR DIRECTION is
-open and no version of the contract can close it.** A root first anchored on a LATER generation can be
-anchored afterwards on an EARLIER generation's clone by any signer still whitelisted for that clone's
-record type on the earlier registry - `issue` gates only on that registry's `isWhitelistedFor` plus
-its own `issuedAt[r]`, and `registerRoot` only on its own `rootIssuer[root]`, and neither earlier
-contract has ever seen that root. Oldest-first then resolves the earlier clone and the LATER
-generation's revocation stops being consulted. `isRootAnchored` cannot help: it is wireable only into
-a NEW generation's `registerRoot` and an already-deployed earlier factory is immutable, so the one
-open direction is exactly the one defence in depth cannot reach. It is closed OPERATIONALLY, and that
-is a PRECONDITION of deploying the router: delist every signer in the earlier `IssuerRegistry` at
-cutover (registry-plan step C-12), after which `onlyWhitelisted` refuses the mirror anchor at source.
-That remedy is available because `adminRevoke` is gated on the registry DEFAULT_ADMIN rather than the
-whitelist (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive the freeze. Pinned as
-a deliberate limitation - never as a passing property - by
-`test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation`.
-
-**That C-12 freeze has a precondition of its own: the later generation must be bound to a DIFFERENT
-`IssuerRegistry`.** `onlyWhitelisted` asks only `registry.isWhitelistedFor(recordType, msg.sender)`
-and never whether the caller owns or spawned the clone (`DogTagIssuer.sol:39-42`), and a clone pins
-its `registry` at `initialize` with no setter (`:44-50`, from the factory's immutable at
-`DogTagIssuerFactory.sol:41`). So under ONE shared registry a single whitelist entry authorizes
-`issue` on every clone of that record type in BOTH generations, and no delisting freezes the earlier
-generation without also stopping the later one. The registry plan already satisfies this (cutover C-5
-binds the generation-2 registry/factory to the new provider core while generation-1 clones keep
-reading the generation-1 registry, per plan C-2), but an operator who reaches C-12 with both
-generations on one registry must otherwise choose between breaking new issuance and skipping the
-freeze - and skipping it leaves the residual above open in production. Note the router's own test
-`setUp` deliberately shares one registry across both factories: that is a TEST topology chosen to make
-these cases reachable with a single whitelist, not a deployment shape to copy.
-
-Three things that look like improvements and are not:
-- **Do NOT revert when two generations answer.** That is a denial of service - anyone could kill an
-  honest credential by re-anchoring its root in a clone they control, with no remedy since the router
-  cannot be repointed. Oldest-first is deterministic and unperturbable by an attacker, which is the
-  property that matters.
-- **Do NOT add remove/insert/replace/reorder.** Append-at-tail is MONOTONE (a new last generation is
-  reached only after every existing one answered zero, so it can never move an existing answer) and
-  that monotonicity is the entire safety argument for allowing the list to change at all. Removal is
-  the same DoS aimed at a whole generation. `test_no_mutation_other_than_append_exists` scans the
-  bytecode for those selectors.
-- **Do NOT treat the write-side guard as the protection.** `DogTagIssuerFactoryV2.registerRoot` now
-  checks that the router recognizes this factory and then calls `isRootAnchored`, so a missing append
-  fails loudly before issuance and a prior-generation duplicate never exists. That remains DEFENCE IN
-  DEPTH.
-  Oldest-first is what holds against an unguarded, buggy or hostile later generation - which is why
-  the revocation-bypass tests use a second REAL `DogTagIssuerFactory` as generation 2 rather than the
-  guarded double. A guarded factory there would make the attack setup revert and the test would pass
-  while proving nothing.
-
-The ordering claim is pinned by mutation, not by assertion: reverse the loop to
-`for (uint256 i = n; i > 0; i--)` over `_generations[i - 1]` and four tests go red, including
-`test_resurrection_attempt_is_refused_by_the_real_registry`, which fails with `next call did not
-revert as expected` - the real registry emitting `Verified` for a revoked credential.
-
-`renounceOwnership` is overridden to revert. `Ownable2Step` (chosen to match `DogTagIssuerFactory`)
-makes the HANDOVER two-step, but the inherited renounce is a one-transaction drop to `address(0)` with
-no acceptance and no way back - exactly the permanent stranding two-step exists to prevent.
 
 ## ProviderDirectory - enumeration is NOT the pin scan, and that is the whole slice
 
@@ -2009,7 +1506,7 @@ provider as having no location.
 returned so a consumer can show it did. The moved word carries its own `(providerId, locationNo)`, so
 its index is repaired from the word itself rather than from a second bookkeeping structure.
 That hazard is pinned as a REAL limitation rather than left as prose - the same treatment
-`CloneProvenanceRouter.t.sol` gives its deliberately-unclosed mirror direction, so nobody later reads
+a suite gives a deliberately-unclosed limitation, so nobody later reads
 the doc as a solved problem: `test_paging_across_a_removal_can_skip_a_record` walks page 0, removes the
 record at index 0, walks page 1, and shows the record swapped into the hole is never returned by either
 page although it exists and was never removed. The same test then reads the whole scan at one block and
@@ -2137,13 +1634,7 @@ fields having shipped with no coverage at all).
 but the `VITE_SERVICE_DOMAIN_RESOLVER_ADDR` that S-15 added to both portal `.env.example` files
 ships BLANK with no code fallback, and it is approved by no registrar and selected by no service, so
 its store is empty and it answers nothing (registry plan slice S-9).
-Its source is FROZEN in the same sense as the S-14 six - an edit diverges from deployed bytecode.
-It SUPERSEDES `IssuerDomainRegistry`, which stays deployed and stays the wired domain surface until
-the cutover - so nothing moved and no `.env.example`/bundle/doc address changed. Abandoning the older deployed one is
-free and that was RE-VERIFIED rather than inherited from the plan: `boundCloneCount() == 0` **and zero
-logs of any kind** at head 303690 on 2026-07-30. Read the log count, not just the counter - the counter
-ignores `setDomainAdmin`, which appoints a self-service key without writing a binding, so only "no logs"
-establishes that nothing at all is stranded.
+It is the ONLY on-chain domain surface; there is no other.
 
 Four things are easy to get wrong here.
 
@@ -2162,7 +1653,8 @@ Four things are easy to get wrong here.
   pinned to the generation the service was ATTACHED under; the router carries the lineage
   `VerificationRegistryConsent`'s immutable `rootIndex` actually resolves roots through. Those lists are
   two separate `onlyOwner` calls on two separate contracts (`ProviderRegistry.addFactoryGeneration` and
-  `CloneProvenanceRouter.appendGeneration`) and can genuinely disagree, so without this term a service
+  the address chosen for `VerificationRegistryConsent.rootIndex`) and can genuinely disagree, so
+/// without this term a service
   attached under an unrouted generation could publish a verified-looking domain while every one of its
   credentials answers `unknown root`. Pinned by
   `test_a_service_the_verification_lineage_does_not_vouch_for_cannot_claim_a_domain`, which asserts the
@@ -2173,7 +1665,7 @@ Four things are easy to get wrong here.
   is refused with its own error, since `canWriteService` returns false for a zero permission). Publishing
   content and choosing which resolver holds it are different powers.
 - **`authorizeClone` is deliberately NOT composed**, against the handoff note in
-  `docs/ISSUER_V2_OWNERSHIP.md` §8 that names S-9 as an intended consumer. It requires
+  `docs/ISSUER_OWNERSHIP.md` §3 that names S-9 as an intended consumer. It requires
   `claimant == owner()` exactly, so composing it as the control term would make every owner-appointed
   delegate unable to publish and leave the core's `SERVICE_PERMISSION_RECORD` bit with no consumer; and it
   lives on a generation-specific factory. The anti-drift property that note protects is satisfied by
@@ -2194,7 +1686,7 @@ the RESOLVER's standing, and one bool must not answer two questions with differe
 `test_a_retired_service_freezes_its_claim_while_the_resolver_terms_stay_true` and
 `test_a_deprecated_factory_generation_freezes_its_claim_the_same_way` are two tests, not one, because the
 two causes reach the same state through different core fields. **There is no per-record withdrawal for a
-frozen claim, which IS a reduction against `IssuerDomainRegistry`'s tier-1 `WHITELIST_ADMIN` clear** - the
+frozen claim, which IS a reduction against a registrar-clearable tier-1** - the
 core has already ruled that out (`deprecateFactoryGeneration`'s own doc: a frozen selector "is history, not
 a live claim", and withdrawing what it resolves "is the typed resolver allowlist's job"), so the sanctioned
 lever is `setResolverApproved(DOMAIN, resolver, false)`, which is FLEET-WIDE and takes down every other
@@ -2336,8 +1828,8 @@ Its first term is `generationOfFactory[msg.sender]`, because the core is designe
 factory during `createIssuer`. A plain `eth_call` carries no `from`, so `msg.sender` is the zero address,
 no generation matches, and the answer is **`false` for every provider on earth** - a preflight without an
 explicit `account` tells a perfectly eligible provider it may not deploy.
-Same shape as `ProviderRegistry.isWhitelistedFor`'s `msg.sender` branch, which `docs/CLIENT_REPOINT.md`
-records as the reason `ISSUER_REGISTRY_ADDR` cannot move; it just fails in the opposite direction here.
+Same shape as `ProviderRegistry.isWhitelistedFor`'s `msg.sender` branch, which is the reason
+`ISSUER_REGISTRY_ADDR` cannot move; it just fails in the opposite direction here.
 It CANNOT be decomposed instead - the service-creation approval it folds lives in a private mapping with
 no getter, so the aggregate is the only way to observe that term at all.
 `createLiveProviderReader` passes `account: contracts.factory` on exactly that one read and on no other,
@@ -2475,10 +1967,10 @@ primitive: native `<details>`, so no state and no interaction with this package'
   one), which is exactly why the odd one out survived review. Audit each Check button's disabled
   terms against what is rendered when you add one.
 - **The `cloneNonce` explanation is the CREATE2 salt, and the contract already says so.**
-  `DogTagIssuerFactoryV2._salt = keccak256(abi.encode(recordType, business, cloneNonce))` with
+  `DogTagIssuerFactory._salt = keccak256(abi.encode(recordType, business, cloneNonce))` with
   `business == msg.sender`, so two of three inputs are fixed and the number is the only dial; without
   it there is exactly one possible address per record type per owner, forever, and nothing to repoint
-  TO. That reasoning was already written in `DogTagIssuerFactoryV2.sol`'s header and in a
+  TO. That reasoning was already written in `DogTagIssuerFactory.sol`'s header and in a
   `deployPlan.ts` comment - both places no user will ever read.
 - **A refusal says what happened, what it MEANS, and what to do.** The taken-nonce case is
   `isFactoryClone` - a STORAGE read of what the factory has already deployed - so it must be described
@@ -3203,7 +2695,7 @@ must never be deployed: `build/consent_000{0,1}.zkey`, the ptau (`circuits/ptau/
 ## Level-B `VerificationRegistryConsent` (M4) — the owner-blind on-chain verify path
 
 Source of truth: `/Users/zhenhaowu/firstmate/data/dogtag-zkverify-z2/level-b-spec.md`.
-Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: **`contracts/script/DeployCustodialIssuance.s.sol`**
+Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: **`contracts/script/Deploy.s.sol`**
 (M5) - `DeployConsentRegistry.s.sol` was the M4 script (now removed) and is **SUPERSEDED**: it defaulted `SBT` to the
 Level-A `DogTagSBT`, whose mutable `setProfileRoot` is the hijack M5 closes, and the registry's `sbt` is immutable so
 that mistake is unrepairable. Tests: `contracts/test/ConsentRegistry.t.sol` (16, real M3 proof; deliberately still
@@ -3339,7 +2831,7 @@ retired from the repo (its deployed instance remains on-chain as deployment hist
 was changed in M5 itself**; the M5 pair later became the sole consumer target, and the 2026-07-23 r8
 fresh redeploy has since superseded it - every consumer now points at the fresh owner-hidden set
 (roax.json `_r8_fresh_redeploy`).
-Deploy script: `script/DeployCustodialIssuance.s.sol`.
+Deploy script: `script/Deploy.s.sol`.
 
 **The issuance flow is TWO writes, both required:**
 ```solidity
@@ -4435,10 +3927,11 @@ outside the workspace cannot resolve the bare `@dogtag/standard` specifier.
 ### Reading credential state straight from chain 135
 
 `isValid(bytes32)` = `0x6a938567`, `isRevoked(bytes32)` = `0x4294857f`, `issuedAt(bytes32)` =
-`0x6240dded`, called on the per-recordType issuer clone (`TRAVEL_CLEARANCE`
-`0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F`, `EU_HEALTH_CERT`
-`0x421cacf2a526726635fe16ac2c26d3f95c7726de`) via `eth_call` against `https://devrpc.roax.net`. Useful
-to verify a revoke rather than trusting the API's echo.
+`0x6240dded`, called on the per-recordType issuer clone via `eth_call` against
+`https://devrpc.roax.net`. Useful to verify a revoke rather than trusting the API's echo.
+**No clone exists to call yet** - `providerCount` on the deployed core is 0, so there is no
+per-recordType clone address to substitute; the earlier government clones belong to a superseded
+factory and `rootIssuer` resolves nothing for them here.
 
 Confirmed by that read: **`expired` is a document-borne status with no on-chain effect**. A record the
 store reports as `expired` is still `isValid=true` on chain, so expiry alone does not revoke.
@@ -5345,8 +4838,7 @@ in particular **do not "fix" this by repointing the bench at `ServiceDomainResol
 C-9 repoint, and it would restore two permanently unanswered rows under a newer address.
 
 Both rows were dead, each for its own reason, and neither ever fed the verdict:
-`IssuerDomainRegistry` is deployed and EMPTY (`boundCloneCount()` reads 0 - re-check it before
-believing any of this), so the on-chain row could only ever report "published no domain claim"; and
+`ServiceDomainResolver` is deployed and EMPTY (no service has selected it and no domain is claimed - re-check before believing any of this), so the on-chain row could only ever report "published no domain claim"; and
 the DNS row was `could-not-run` BY CONSTRUCTION, since a TXT lookup is resolved server-side and the
 bench runs in a browser.
 
@@ -5362,10 +4854,12 @@ bench runs in a browser.
 - **The two mobile bundles still carry the address** (`apps/*/roax.json`). They are COMPILE-TIME, so
   changing them is a rebuild-and-reinstall (C-10), not an edit.
 
-**`make check-cutover-consumers` did NOT flag this, and that is not a bug in the gate.** The manifest
-declares CONSUMER FILES, not a per-address file list, and `stacks/admin/web/.env.example` still
-carries other moving addresses - so dropping one address from a still-declared file leaves the tree
-and the manifest in agreement. Do not read a green gate as proof that an address is untouched.
+**`make check-addresses` does NOT flag this, and that is not a bug in the gate.** The manifest
+declares address-bearing FILES, not a per-address file list, and `stacks/admin/web/.env.example` still
+carries other addresses - so dropping one address from a still-declared file leaves the tree and the
+manifest in agreement. Do not read a green gate as proof that a particular address is untouched: it
+proves no UNDECLARED file carries one and no declared file has quietly been cleaned, which is a
+different claim.
 
 ### The issuer↔domain DNS binding — read `docs/ISSUER_DOMAIN_BINDING.md` before touching it
 
@@ -5382,7 +4876,7 @@ published a record is worse than either answer.
 `IssuerRegistry.isWhitelistedFor`. `createIssuer` salts a clone with `keccak256(recordType, business)`
 and never stores `business`, so the clone→business relationship is verifiable only via
 `factory.predictIssuer(recordType, candidate) == clone` — one-way (verify, not enumerate), which is
-exactly what an authorization check needs. This is why `IssuerDomainRegistry` is a new additive contract:
+exactly what an authorization check needs. This is why the domain claim lives in a separate resolver:
 a field on the clone would need a new impl, `factory.implementation` is `immutable` so that means a new
 factory, and `VerificationRegistryConsent.rootIndex` is `immutable` too — a new factory strands
 `rootIssuer[R]` at `address(0)` and breaks owner-hidden consent for every credential issued after it.
@@ -5401,40 +4895,19 @@ verification response is real rather than decorative. DNS, by contrast, has NO h
 only ever observable now — so the DNS half of a binding is labelled `dnsObservation` / `dnsHistorical:
 false` and must never be presented as proving the past.
 
-**`IssuerDomainRegistry` is DEPLOYED on ROAX and EMPTY** - `0xD3B121FEaCde93b95288912EAdbB10824550FdBF`
-(2026-07-28; `deployments/roax.json` owns the address + provenance, do not transcribe it into new places).
-Deployed is not the same as working: `boundCloneCount() == 0`, so every clone still resolves
-`unavailable` on the on-chain-claim link until a domain is actually bound. Deploying the contract
-publishes no claims. State it that way rather than "domain verification now works".
+**The on-chain half of this binding is `ServiceDomainResolver`, and NOTHING has published a claim on
+it yet.** It is deployed and registrar-approved, but no service has selected it and no domain is
+claimed, so every consumer's on-chain-claim link resolves the typed absence rather than a domain. That
+is the honest state of a fresh deployment, not a fault: what a published claim would change is that a
+claim CAN be read, and until one exists the app's "the on-chain domain claim could not be read" is
+correct.
 
-**NEVER deploy it with `contracts/script/Deploy.s.sol`** - the trap is that that script DOES construct an
-`IssuerDomainRegistry`, so it looks correct. It first constructs a FRESH `IssuerRegistry`, `DogTagIssuer`
-implementation and `DogTagIssuerFactory` and overwrites those keys in the ledger. A new factory is
-UNRECOVERABLE on a live network: `VerificationRegistryConsent.rootIndex` is `immutable`, so the live
-registry keeps resolving `rootIssuer[R]` through the OLD index and every root issued by a new clone
-resolves to `address(0)` - which is the anchor the mandatory issuer-whitelist pillar and every
-owner-hidden consent verification rest on. Use `contracts/script/DeployIssuerDomainRegistry.s.sol`, which
-deploys ONLY this contract against mandatory `FACTORY` + `ISSUER_REGISTRY` env vars (no defaults - a
-default here is a stale-network address waiting to happen) and writes back only `.IssuerDomainRegistry`.
-It preflights `factory.registry() == ISSUER_REGISTRY`, because the two are not independent: a clone gates
-its own writes on the registry it was initialized with, so binding the domain registry to a different one
-makes tier-1 `WHITELIST_ADMIN` authorize against a registry governing none of the clones tier 2
-recognises.
-
-**The public getter is `issuerRegistry()`, not `registry()`** - the constructor param is `issuerRegistry_`
-and only the factory exposes `registry()`. Calling `registry()` on the domain registry reverts, which
-reads as "wrong address" when it is only the wrong name.
-
-**Wiring it is a THREE-file job and each failure is silent**, because the address is deliberately
-fallback-free (unset ⇒ that one check reports itself unavailable rather than reading a constant that may
-have moved). `stacks/government/.env.example` (`ISSUER_DOMAIN_REGISTRY_ADDR`), and the two COMPILE-TIME
-mobile bundles `apps/ios/DogTag/roax.json` + `apps/android/app/src/main/assets/roax.json` (both read the
-`IssuerDomainRegistry` key and default to `""`, which both apps render as `Unavailable`; they need an app
-rebuild + reinstall to take effect). `scripts/demo-up.sh` needs no edit - it already resolves the key from
-`deployments/roax.json` via `ledger_addr` and passes it to government-api. **`stacks/admin/web` was the
-fourth and no longer is**: its `VITE_ISSUER_DOMAIN_REGISTRY_ADDR` and the two bench rows it fed were
-removed - see "The bench's issuer-domain rows were REMOVED", and do not re-add it. `packages/ui` takes
-no such address.
+Wiring a consumer to it is a THREE-file job and each failure is silent, because the address is
+deliberately fallback-free (unset ⇒ that one check reports itself unavailable rather than reading a
+constant that may have moved): `stacks/government/.env.example`, and the two COMPILE-TIME mobile
+bundles `apps/ios/DogTag/roax.json` + `apps/android/app/src/main/assets/roax.json`. The mobile pair
+needs an app rebuild AND reinstall to take effect. `scripts/demo-up.sh` needs no edit — it already
+resolves ledger keys by name via `ledger_addr`.
 
 ### Android JVM unit tests and `org.json`
 
@@ -5674,8 +5147,8 @@ an inert provider. Only `ACTIVE`/`SUSPENDED`/`RETIRED` are settable (`_requireSe
 **`canCreateService` MUST be asked AS THE FACTORY, and with no `from` it answers FALSE FOR EVERY
 PROVIDER ON EARTH.** Its first term is `generationOfFactory[msg.sender]`, so a plain `eth_call`
 (`msg.sender == 0x0`) matches no generation. Confirmed empirically on ROAX against the live provider
-below: `--from <DogTagIssuerFactoryV2>` -> `true`, the identical call without `--from` -> `false`.
-This is the same `msg.sender` shape `docs/CLIENT_REPOINT.md` records for `isWhitelistedFor`, failing
+below: `--from <DogTagIssuerFactory>` -> `true`, the identical call without `--from` -> `false`.
+This is the same `msg.sender` shape recorded above for `isWhitelistedFor`, failing
 in the opposite direction - there it renders genuine issuers as forged, here it renders every
 eligible provider as unapproved. **The registrar surface therefore never makes this read at all**:
 it would be an aggregate of four terms, so a `false` is unattributable and is emphatically not "this
@@ -5903,11 +5376,13 @@ capability log becoming an empty holder set, and `setVerifierCapability` sending
 **Two pre-existing failures fixed along the way, both red on `origin/main`.**
 `packages/ui/src/wallet/contracts.ts` carried four orphans from phase 1's generation-probe deletion
 (`BaseError`, `encodeFunctionData`, `ExecutionRevertedError`, `PROVIDER_AUTHORITY_ABI`) that failed
-`tsc --noEmit`. And `make check-cutover-consumers` was RED: that same file was still declared in
-`scripts/cutover-consumers.json` while carrying no moving address, because phase 1 repointed it to
-the generation-2 set and left the entry behind. That is the manifest's stale direction, which the
-gate exists to catch, so the entry is dropped rather than the check loosened. **Run that gate after
-deleting or repointing any file** - it is the one check designed for exactly this.
+`tsc --noEmit`. And the consumer-inventory gate was RED: that same file was still declared while carrying no
+moving address, because phase 1 repointed it and left the entry behind. That is the manifest's stale
+direction, which the gate exists to catch, so the entry is dropped rather than the check loosened.
+**That gate is now `make check-addresses`** (`scripts/check-no-hardcoded-addresses.sh`), repurposed
+from the retired cutover check: its cutover framing is dead, but its function - assert the tree
+agrees with a declared inventory of address-bearing files, in BOTH directions - is the permanent
+guard the addresses-as-configuration work needs. **Run it after deleting or repointing any file.**
 
 ## The content-addressed profile and logo mirror (S-17) - and the one rule that defines it
 
@@ -6292,25 +5767,6 @@ product code.
 Use the PUBLIC anvil account-0 key for this, never a real one: it is printed by every anvil start, so
 it is not a secret, and the governance key must never enter a browser page. That address starts with
 zero balance on ROAX, so fund it first from the governance signer.
-
-## The generation-2 provider journey stops at ATTACH, and that is an admin gap rather than a provider one
-
-Walked 2026-08-02 end to end. The admin registrar surface covers register -> activate -> approve and
-**nothing else**; `attachService` has no call site anywhere outside contracts and their tests (it
-appears only in explanatory comments in `packages/ui/src/provider/*` and
-`ProviderSelfServicePanel.tsx`). Consequences, all observed on screen:
-
-- **Deploy WORKS.** A provider registered and approved through the portal can deploy its own
-  generation-2 clone from the self-service page; the predicted address is exact, and the resulting
-  contract's `owner()`, `recordType()` and factory `isClone` all check out.
-- **Repoint is refused with `Has DogTag attached this contract to your provider record? FAILED`**, and
-  the page names the remedy - send the address to DogTag - which no admin screen can currently perform.
-- **Domain and listing are refused by the typed-resolver gate**, which needs a registrar approval AND a
-  per-provider selection. `ProviderDirectory.resolverApproved()` reads `false`.
-
-So three of the four provider flows are blocked by registrar actions with no surface, and none of them
-is a misconfiguration the provider can fix. State it that way rather than as "the provider journey does
-not work".
 
 ## Restarting ONE backend by hand: `DEMO_MODE` comes from `contracts/.env`, not from a default
 

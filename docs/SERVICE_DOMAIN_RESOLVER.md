@@ -18,13 +18,13 @@ What moves is where the three questions behind a claim are answered: authority t
 
 ## Superseding the shipped registry costs nothing, and that was re-verified rather than inherited
 
-The plan's §9.4 records `boundCloneCount() == 0`.
-Re-verified live against `https://devrpc.roax.net` (chainId 135) at head **303690** on 2026-07-30, before any of this was written:
+The registry this supersedes held no bindings at all, so there was nothing to migrate.
+Re-verified live against `https://devrpc.roax.net` (chainId 135) at head **303690** on 2026-07-30, before any of this was written - reproduced here as the measurement that settled it, though that contract's source has since been deleted and the instance is no longer a read target:
 
 ```
-$ cast call 0xD3B121FEaCde93b95288912EAdbB10824550FdBF "boundCloneCount()(uint256)"
+$ cast call <the superseded IssuerDomainRegistry> "boundCloneCount()(uint256)"
 0
-$ eth_getLogs address=0xD3B121FE… fromBlock=0x0 toBlock=latest
+$ eth_getLogs address=<same> fromBlock=0x0 toBlock=latest
 0 logs
 ```
 
@@ -115,7 +115,7 @@ A definite zero is refused at construction with its own error, since `canWriteSe
 
 ### Why `authorizeClone` is deliberately not composed
 
-`docs/ISSUER_V2_OWNERSHIP.md` §8 names this contract as an intended consumer of `DogTagIssuerFactoryV2.authorizeClone`.
+`docs/ISSUER_OWNERSHIP.md` §3 names this contract as an intended consumer of `DogTagIssuerFactory.authorizeClone`.
 This slice does not call it, and that is a considered deviation rather than an oversight.
 Two reasons, either sufficient:
 
@@ -203,7 +203,7 @@ It is not an open question, though, and the ruling should be cited rather than r
 
 So the sanctioned lever is `setResolverApproved(DOMAIN, resolver, false)`.
 The honest residual: that lever is **fleet-wide**, so withdrawing one frozen claim through it takes down every other service's claim on the same resolver.
-That is a stated limitation and never a passing property, in the same register as the mirror direction `docs/CLONE_PROVENANCE_ROUTER.md` deliberately does not close.
+That is a stated limitation and never a passing property.
 Adding a per-record registrar withdrawal here would contradict the shipped ruling above, so it is out of scope for this slice and is the captain's call if it is ever revisited.
 
 ## The read surface, and the one getter that deliberately does not exist
@@ -332,4 +332,4 @@ Every other case that reads the fourth term asserts it `false`, and it is `false
 Only the quarantine case can tell the two apart, and it was added because running that mutation showed the term was pinned by its name and its comment rather than by the suite.
 Beside it, `_assertVerdictExcludesServiceStanding` pins the term as OUTSIDE the verdict rather than merely absent from the fold.
 
-The harness that applied these was not committed, so the table is historical evidence rather than a repeatable gate - the same standing as `docs/ISSUER_V2_OWNERSHIP.md` §9.
+The harness that applied these was not committed, so the table is historical evidence rather than a repeatable gate - the same standing as `docs/ISSUER_OWNERSHIP.md` §6.

@@ -3,12 +3,10 @@ pragma solidity 0.8.28;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {stdJson} from "forge-std/StdJson.sol";
-import {IssuerRegistry} from "../src/IssuerRegistry.sol";
 import {DogTagIssuer} from "../src/DogTagIssuer.sol";
-import {DogTagIssuerFactory} from "../src/DogTagIssuerFactory.sol";
 import {DogTagSBTConsent} from "../src/DogTagSBTConsent.sol";
 import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.sol";
-import {Groth16VerifierConsent} from "../src/Groth16VerifierConsent.sol";
+import {LaunchStack} from "./LaunchStack.sol";
 
 /// @notice M5 acceptance: custodial issuance produces owner-unlinkable tags that M4 actually verifies.
 ///
@@ -22,20 +20,18 @@ import {Groth16VerifierConsent} from "../src/Groth16VerifierConsent.sol";
 /// reintroduced the owner anywhere in issuance fails here rather than silently shipping.
 ///
 /// Fixture (a,b,c,pub + the hidden `_ownerAddress`) from `node circuits/scripts/gen-consent-fixture.mjs`.
-contract CustodialIssuanceTest is Test {
+contract CustodialIssuanceTest is LaunchStack {
     using stdJson for string;
 
-    IssuerRegistry registry;
-    DogTagIssuerFactory factory;
-    DogTagSBTConsent sbt;
     DogTagIssuer vacc;
-    VerificationRegistryConsent vr;
-    Groth16VerifierConsent verifier;
 
-    address admin = address(0xA11CE);
+    address admin; // == REGISTRAR, bound in setUp once the stack exists
     address vetSigner = address(0xBEEF);
     /// @dev The neutral custodian: the ONLY address `ownerOf` can ever return on this contract.
-    address custodian = address(0xC0FFEE);
+    address constant custodian = CUSTODIAN;
+
+    bytes20 constant VET_PROVIDER = bytes20(uint160(0x5E7));
+    address constant VET_PROVIDER_KEY = address(0x5E7C0);
 
     bytes32 constant VACCINATION = keccak256("VACCINATION");
 
@@ -75,25 +71,10 @@ contract CustodialIssuanceTest is Test {
         deadline = pub[6];
         ownerAddress = j.readAddress("._ownerAddress");
 
-        vm.startPrank(admin);
-        registry = new IssuerRegistry(admin);
-        DogTagIssuer impl = new DogTagIssuer();
-        factory = new DogTagIssuerFactory(address(impl), address(registry), admin);
-        sbt = new DogTagSBTConsent(admin, custodian); // the M5 custodial SBT
-        verifier = new Groth16VerifierConsent();
-        vr = new VerificationRegistryConsent( // the M5 redeploy: same registry code, new SBT
-            address(registry),
-            address(sbt),
-            address(verifier),
-            address(factory),
-            admin
-        );
-        vm.stopPrank();
+        _deployLaunchStack();
+        admin = REGISTRAR;
 
-        vm.prank(admin);
-        vacc = DogTagIssuer(factory.createIssuer("Vacc", VACCINATION, vetSigner));
-        vm.prank(admin);
-        registry.whitelistFor(VACCINATION, vetSigner);
+        vacc = DogTagIssuer(_onboardIssuingClone(VET_PROVIDER, VET_PROVIDER_KEY, VACCINATION, vetSigner));
 
         // Read the role BEFORE pranking: vm.prank only survives to the next CALL, and `sbt.ISSUER_ROLE()`
         // would otherwise consume it.
@@ -101,8 +82,7 @@ contract CustodialIssuanceTest is Test {
         vm.prank(admin);
         sbt.grantRole(issuerRole, vetSigner);
 
-        vm.prank(admin);
-        registry.whitelistFor(keccak256(abi.encode("VERIFY:", purpose)), relayer);
+        _approveRelayer(purpose, relayer);
     }
 
     /// @dev The full M5 issuance: `issue(R)` into the clone, then mint custodially. BOTH writes are

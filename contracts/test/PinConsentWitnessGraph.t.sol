@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {ProtocolRegistry} from "../src/ProtocolRegistry.sol";
+import {ProtocolRegistry, MIN_PUBLISH_TIMELOCK_SECONDS} from "../src/ProtocolRegistry.sol";
 import {PinConsentWitnessGraph} from "../script/PinConsentWitnessGraph.s.sol";
 import {ProtocolVersions} from "../script/ProtocolVersions.sol";
 
@@ -32,11 +32,12 @@ contract PinConsentWitnessGraphTest is Test {
     bytes32 internal constant WASM = bytes32(uint256(0xD06));
     bytes32 internal constant GRAPH = bytes32(uint256(0x94A94));
     string internal constant BASE_URL = "https://artifacts.dogtag.test/levelb1";
+    string internal constant MIN_APP_VERSION = "1.6.0";
 
     function setUp() public {
         admin = makeAddr("admin");
         publisher = makeAddr("publisher");
-        reg = new ProtocolRegistry(admin, publisher, 0);
+        reg = new ProtocolRegistry(admin, publisher, MIN_PUBLISH_TIMELOCK_SECONDS);
         script = new PinConsentWitnessGraph();
         id = ProtocolVersions.levelBArtifactsId();
     }
@@ -46,21 +47,25 @@ contract PinConsentWitnessGraphTest is Test {
     /// The set as it stands on chain before a pin: every field final EXCEPT the graph.
     function _publishedUnpinned() internal returns (ProtocolRegistry.ArtifactSet memory) {
         ProtocolRegistry.ArtifactSet memory a =
-            ProtocolVersions.levelBArtifacts(ZKEY, bytes32(0), R1CS, WASM, BASE_URL);
+            ProtocolVersions.levelBArtifacts(ZKEY, bytes32(0), R1CS, WASM, BASE_URL, MIN_APP_VERSION);
         _publish(a);
         return a;
     }
 
     /// What the script would build from a correctly-configured environment.
     function _next() internal pure returns (ProtocolRegistry.ArtifactSet memory) {
-        return ProtocolVersions.levelBArtifacts(ZKEY, GRAPH, R1CS, WASM, BASE_URL);
+        return ProtocolVersions.levelBArtifacts(ZKEY, GRAPH, R1CS, WASM, BASE_URL, MIN_APP_VERSION);
     }
 
+    /// @dev Waits out the registry's real timelock between the two phases. The fixture registry carries
+    /// the contract's own floor rather than zero, because a zero is unrepresentable — so a helper that
+    /// executed in the same block would be publishing through a path no deployment has.
     function _publish(ProtocolRegistry.ArtifactSet memory a) internal {
-        vm.startPrank(publisher);
+        vm.prank(publisher);
         reg.proposeArtifactSet(a);
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
+        vm.prank(publisher);
         reg.executeArtifactSet(a.artifactSetId);
-        vm.stopPrank();
     }
 
     // --- the guard admits exactly one operation ---------------------------------------------------
@@ -98,7 +103,7 @@ contract PinConsentWitnessGraphTest is Test {
     /// The property that makes this script structurally incapable of a rotation. Moving an EXISTING
     /// pin changes which bytes are authoritative; that needs the full runbook, not this two-tx script.
     function test_guard_refuses_a_rotation_when_the_graph_is_already_pinned() public {
-        _publish(ProtocolVersions.levelBArtifacts(ZKEY, GRAPH, R1CS, WASM, BASE_URL));
+        _publish(ProtocolVersions.levelBArtifacts(ZKEY, GRAPH, R1CS, WASM, BASE_URL, MIN_APP_VERSION));
 
         ProtocolRegistry.ArtifactSet memory next = _next();
         next.witnessMobileSha256 = bytes32(uint256(0xBEEF));
@@ -157,7 +162,9 @@ contract PinConsentWitnessGraphTest is Test {
         _publishedUnpinned();
 
         ProtocolRegistry.ArtifactSet memory next =
-            ProtocolVersions.levelBArtifacts(ZKEY, GRAPH, R1CS, WASM, "https://elsewhere.example/levelb1");
+            ProtocolVersions.levelBArtifacts(
+                ZKEY, GRAPH, R1CS, WASM, "https://elsewhere.example/levelb1", MIN_APP_VERSION
+            );
 
         vm.expectRevert(bytes("artifactBaseUrl would change"));
         script.requireOnlyTheGraphPinMoves(reg, id, next);
@@ -167,7 +174,7 @@ contract PinConsentWitnessGraphTest is Test {
     /// staged on the published side: a set published at an older floor, pinned against the helper's.
     function test_guard_refuses_a_changed_min_app_version() public {
         ProtocolRegistry.ArtifactSet memory published =
-            ProtocolVersions.levelBArtifacts(ZKEY, bytes32(0), R1CS, WASM, BASE_URL);
+            ProtocolVersions.levelBArtifacts(ZKEY, bytes32(0), R1CS, WASM, BASE_URL, MIN_APP_VERSION);
         published.minAppVersion = "1.3.0";
         _publish(published);
 
@@ -233,7 +240,7 @@ contract PinConsentWitnessGraphTest is Test {
     function _timelockedFixture() internal returns (PinConsentWitnessGraph, ProtocolRegistry) {
         ProtocolRegistry timelockedReg = new ProtocolRegistry(admin, DEFAULT_SENDER, 2 days);
         ProtocolRegistry.ArtifactSet memory a =
-            ProtocolVersions.levelBArtifacts(ZKEY, bytes32(0), R1CS, WASM, BASE_URL);
+            ProtocolVersions.levelBArtifacts(ZKEY, bytes32(0), R1CS, WASM, BASE_URL, MIN_APP_VERSION);
         vm.startPrank(DEFAULT_SENDER);
         timelockedReg.proposeArtifactSet(a);
         vm.warp(block.timestamp + 2 days);

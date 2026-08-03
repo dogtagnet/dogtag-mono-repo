@@ -2,14 +2,14 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {CloneProvenanceRouter} from "../src/CloneProvenanceRouter.sol";
 import {DogTagIssuer} from "../src/DogTagIssuer.sol";
 import {DogTagIssuerFactory} from "../src/DogTagIssuerFactory.sol";
-import {DogTagIssuerFactoryV2} from "../src/DogTagIssuerFactoryV2.sol";
-import {DogTagIssuerV2} from "../src/DogTagIssuerV2.sol";
-import {IssuerRegistry} from "../src/IssuerRegistry.sol";
 import {ProviderRegistry} from "../src/ProviderRegistry.sol";
-import {ICoreRecordPermission, ServiceDomainResolver} from "../src/ServiceDomainResolver.sol";
+import {
+    ICloneProvenance,
+    ICoreRecordPermission,
+    ServiceDomainResolver
+} from "../src/ServiceDomainResolver.sol";
 
 /// @dev A contract this repo's factory lineage never deployed. Nothing about it is malformed — it answers
 /// `owner()` and `recordType()` perfectly well — which is the point: the only thing standing between it and
@@ -26,7 +26,7 @@ contract StrangerService {
 
 /// @dev Answers `isClone` true for ANY address, including the zero address. The stub shape the resolver's
 /// constructor must refuse: a provenance oracle that vouches for everything vouches for nothing.
-contract PermissiveRouterStub {
+contract PermissiveFactoryStub {
     function isClone(address) external pure returns (bool) {
         return true;
     }
@@ -75,32 +75,32 @@ contract ZeroPermissionCoreStub {
 
 /// @notice S-9: the service-domain resolver, keyed by service contract.
 ///
-/// The fixture binds the REAL S-6 authority core, the REAL S-8 provenance router and REAL generation-2
-/// clones from the REAL self-service factory. No authority, provenance or ownership fact in these tests is
-/// supplied by a double, because the claims under test are precisely about how those three contracts
-/// compose — a mocked core would let the resolver agree with a stand-in rather than with the thing it will
-/// be deployed against.
+/// The fixture binds the REAL authority core and REAL clones from the REAL self-service factory. No
+/// authority, provenance or ownership fact in these tests is supplied by a double, because the claims
+/// under test are precisely about how those contracts compose — a mocked core would let the resolver
+/// agree with a stand-in rather than with the thing it will be deployed against.
 ///
 /// Headline claims:
 ///  * "nobody has said", "there is deliberately no domain" and "a claim was withdrawn" are three
 ///    distinguishable dispositions, and the stored string cannot express a claim that is not current;
 ///  * a write needs cleared standing AND confirmed owner-or-delegate authority, with the registrar and
 ///    every issuance signer deliberately excluded;
-///  * a write needs the provenance the ROUTER carries, which the core's generation-pinned check does not
-///    imply; and
+///  * a write needs the provenance the resolver's own FACTORY carries, which the core's
+///    generation-pinned check does not imply; and
 ///  * the canonical-domain grammar is preserved exactly.
 contract ServiceDomainResolverTest is Test {
     ProviderRegistry internal core;
-    CloneProvenanceRouter internal router;
-    DogTagIssuerFactoryV2 internal factory;
-    DogTagIssuerFactoryV2 internal unroutedFactory;
-    DogTagIssuerV2 internal implementation;
+    DogTagIssuerFactory internal factory;
+    /// @dev A second REAL factory, registered as a generation on the core but NOT the one the resolver
+    /// was constructed over. Its clones are genuine to the core and off-lineage to the resolver — the
+    /// exact disagreement the provenance term exists to catch.
+    DogTagIssuerFactory internal offLineageFactory;
+    DogTagIssuer internal implementation;
     ServiceDomainResolver internal resolver;
 
     address internal service;
 
     address internal constant AUTHORITY = address(0xA11CE);
-    address internal constant ROUTER_ADMIN = address(0x120D);
     address internal constant CONTROLLER = address(0xC011);
     address internal constant NEXT_OWNER = address(0xC012);
     address internal constant DELEGATE = address(0xDE1E);
@@ -121,31 +121,14 @@ contract ServiceDomainResolverTest is Test {
     string internal constant OTHER_DOMAIN = "vet.example-clinic.sg";
 
     function setUp() public {
-        // Generation 1 exists only so the router is constructed over a real earlier generation, which is
-        // the topology the cutover actually has. Nothing in these tests issues through it.
-        IssuerRegistry legacyRegistry = new IssuerRegistry(AUTHORITY);
-        DogTagIssuer legacyImplementation = new DogTagIssuer();
-        DogTagIssuerFactory generationOne =
-            new DogTagIssuerFactory(address(legacyImplementation), address(legacyRegistry), AUTHORITY);
-
-        address[] memory generations = new address[](1);
-        generations[0] = address(generationOne);
-        router = new CloneProvenanceRouter(generations, ROUTER_ADMIN);
-
         core = new ProviderRegistry(AUTHORITY);
-        implementation = new DogTagIssuerV2();
-        // Router first, then the factory, then the append — the ordering `CloneProvenanceRouter` and
-        // `DogTagIssuerFactoryV2` were built for. A factory cannot be appended before it exists, and its
-        // constructor refuses a prior index that already claims it.
-        factory = new DogTagIssuerFactoryV2(address(implementation), address(core), address(router));
-        unroutedFactory = new DogTagIssuerFactoryV2(address(implementation), address(core), address(router));
-
-        vm.prank(ROUTER_ADMIN);
-        router.appendGeneration(address(factory));
+        implementation = new DogTagIssuer();
+        factory = new DogTagIssuerFactory(address(implementation), address(core));
+        offLineageFactory = new DogTagIssuerFactory(address(implementation), address(core));
 
         vm.startPrank(AUTHORITY);
         core.addFactoryGeneration(GENERATION_2, address(factory));
-        core.addFactoryGeneration(GENERATION_2B, address(unroutedFactory));
+        core.addFactoryGeneration(GENERATION_2B, address(offLineageFactory));
         _registerProvider(PROVIDER, CONTROLLER);
         core.setProviderStanding(PROVIDER, ProviderRegistry.Standing.ACTIVE);
         core.setServiceCreationApproval(PROVIDER, RECORD_TYPE, true);
@@ -153,7 +136,7 @@ contract ServiceDomainResolverTest is Test {
 
         service = _createAndAttach(factory, GENERATION_2, PROVIDER, 0);
 
-        resolver = new ServiceDomainResolver(address(core), address(router));
+        resolver = new ServiceDomainResolver(address(core), address(factory));
         vm.prank(AUTHORITY);
         core.setResolverApproved(ProviderRegistry.ResolverKind.DOMAIN, address(resolver), true);
         vm.prank(CONTROLLER);
@@ -171,7 +154,7 @@ contract ServiceDomainResolverTest is Test {
     }
 
     function _createAndAttach(
-        DogTagIssuerFactoryV2 from,
+        DogTagIssuerFactory from,
         bytes32 generationId,
         bytes20 providerId,
         uint96 cloneNonce
@@ -458,9 +441,9 @@ contract ServiceDomainResolverTest is Test {
         // A completed clone-owner handover bumps the core's owner epoch, and the delegation was scoped to
         // the previous one.
         vm.prank(CONTROLLER);
-        DogTagIssuerV2(service).transferOwnership(NEXT_OWNER);
+        DogTagIssuer(service).transferOwnership(NEXT_OWNER);
         vm.prank(NEXT_OWNER);
-        DogTagIssuerV2(service).acceptOwnership();
+        DogTagIssuer(service).acceptOwnership();
         vm.prank(AUTHORITY);
         core.confirmServiceOwner(service, NEXT_OWNER, 1);
 
@@ -486,9 +469,9 @@ contract ServiceDomainResolverTest is Test {
     /// which is the core's rule and must not be softened here.
     function test_an_unconfirmed_owner_handover_quarantines_the_write() public {
         vm.prank(CONTROLLER);
-        DogTagIssuerV2(service).transferOwnership(NEXT_OWNER);
+        DogTagIssuer(service).transferOwnership(NEXT_OWNER);
         vm.prank(NEXT_OWNER);
-        DogTagIssuerV2(service).acceptOwnership();
+        DogTagIssuer(service).acceptOwnership();
 
         assertFalse(resolver.canWriteDomain(service, CONTROLLER));
         assertFalse(resolver.canWriteDomain(service, NEXT_OWNER));
@@ -507,9 +490,9 @@ contract ServiceDomainResolverTest is Test {
         _claim(CONTROLLER, service, DOMAIN);
 
         vm.prank(CONTROLLER);
-        DogTagIssuerV2(service).transferOwnership(NEXT_OWNER);
+        DogTagIssuer(service).transferOwnership(NEXT_OWNER);
         vm.prank(NEXT_OWNER);
-        DogTagIssuerV2(service).acceptOwnership();
+        DogTagIssuer(service).acceptOwnership();
 
         (,,,,, bool standing) = resolver.claimStanding(service);
         assertTrue(standing);
@@ -523,47 +506,52 @@ contract ServiceDomainResolverTest is Test {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Provenance against the router
+    // Provenance against the resolver's own factory lineage
     // ---------------------------------------------------------------------------------------------
 
-    /// @dev THE test for the router link, and the one that goes red if the check is removed.
+    /// @dev THE test for the lineage link, and the one that goes red if the check is removed.
     ///
     /// The service is genuinely a clone, genuinely attached, genuinely owned and genuinely cleared — the
-    /// core says so — but its factory generation was never appended to the router, so its roots would
-    /// answer `unknown root` at every verification. A domain claim it could publish would be a verified
-    /// identity beside credentials that cannot verify.
+    /// core says so — but it came from a DIFFERENT factory than the one the verification registry's
+    /// immutable `rootIndex` resolves roots through, so its roots would answer `unknown root` at every
+    /// verification. A domain claim it could publish would be a verified identity beside credentials
+    /// that cannot verify.
     function test_a_service_the_verification_lineage_does_not_vouch_for_cannot_claim_a_domain() public {
-        address unrouted = _createAndAttach(unroutedFactory, GENERATION_2B, PROVIDER, 0);
+        address offLineage = _createAndAttach(offLineageFactory, GENERATION_2B, PROVIDER, 0);
         vm.prank(CONTROLLER);
-        core.setDomainResolver(unrouted, address(resolver));
+        core.setDomainResolver(offLineage, address(resolver));
 
-        // Everything the CORE is asked holds.
-        assertTrue(core.canWriteService(unrouted, CONTROLLER, SERVICE_RECORD_PERMISSION));
-        assertTrue(unroutedFactory.isClone(unrouted));
-        // The ROUTER does not vouch for it, so the resolver refuses.
-        assertFalse(router.isClone(unrouted));
-        assertFalse(resolver.canWriteDomain(unrouted, CONTROLLER));
+        // Everything the CORE is asked holds, and the clone is genuine to the factory that made it.
+        assertTrue(core.canWriteService(offLineage, CONTROLLER, SERVICE_RECORD_PERMISSION));
+        assertTrue(offLineageFactory.isClone(offLineage));
+        // The resolver's OWN lineage does not vouch for it, so the resolver refuses.
+        assertFalse(factory.isClone(offLineage));
+        assertFalse(resolver.canWriteDomain(offLineage, CONTROLLER));
 
         vm.prank(CONTROLLER);
         vm.expectRevert(
-            abi.encodeWithSelector(ServiceDomainResolver.NotRecognizedByLineage.selector, unrouted)
+            abi.encodeWithSelector(ServiceDomainResolver.NotRecognizedByLineage.selector, offLineage)
         );
-        resolver.claimDomain(unrouted, DOMAIN);
+        resolver.claimDomain(offLineage, DOMAIN);
     }
 
-    /// @dev Shows the refusal above is about the router and nothing else: appending the generation, with
-    /// no other change, makes the identical call succeed.
-    function test_appending_the_generation_to_the_router_makes_the_same_claim_succeed() public {
-        address unrouted = _createAndAttach(unroutedFactory, GENERATION_2B, PROVIDER, 0);
+    /// @dev Shows the refusal above is about the lineage and nothing else: the identical service, the
+    /// identical caller and the identical domain succeed against a resolver whose lineage IS the factory
+    /// that made it. Without this the refusal above could be passing for any unrelated reason.
+    function test_the_same_claim_succeeds_against_a_resolver_on_that_services_own_lineage() public {
+        address offLineage = _createAndAttach(offLineageFactory, GENERATION_2B, PROVIDER, 0);
+
+        ServiceDomainResolver sibling =
+            new ServiceDomainResolver(address(core), address(offLineageFactory));
+        vm.prank(AUTHORITY);
+        core.setResolverApproved(ProviderRegistry.ResolverKind.DOMAIN, address(sibling), true);
         vm.prank(CONTROLLER);
-        core.setDomainResolver(unrouted, address(resolver));
+        core.setDomainResolver(offLineage, address(sibling));
 
-        vm.prank(ROUTER_ADMIN);
-        router.appendGeneration(address(unroutedFactory));
-
-        assertTrue(resolver.canWriteDomain(unrouted, CONTROLLER));
-        _claim(CONTROLLER, unrouted, DOMAIN);
-        assertEq(resolver.record(unrouted).domain, DOMAIN);
+        assertTrue(sibling.canWriteDomain(offLineage, CONTROLLER));
+        vm.prank(CONTROLLER);
+        sibling.claimDomain(offLineage, DOMAIN);
+        assertEq(sibling.record(offLineage).domain, DOMAIN);
     }
 
     /// @dev A stranger's contract must be told its address is not of this lineage, never that it merely
@@ -571,7 +559,7 @@ contract ServiceDomainResolverTest is Test {
     /// diagnoses.
     function test_a_stranger_contract_is_refused_by_lineage_and_not_by_authorization() public {
         StrangerService stranger = new StrangerService(RECORD_TYPE, CONTROLLER);
-        assertFalse(router.isClone(address(stranger)));
+        assertFalse(factory.isClone(address(stranger)));
 
         vm.prank(CONTROLLER);
         vm.expectRevert(
@@ -591,7 +579,7 @@ contract ServiceDomainResolverTest is Test {
     // ---------------------------------------------------------------------------------------------
 
     function test_a_resolver_the_service_never_selected_cannot_write_its_record() public {
-        ServiceDomainResolver other = new ServiceDomainResolver(address(core), address(router));
+        ServiceDomainResolver other = new ServiceDomainResolver(address(core), address(factory));
         vm.prank(AUTHORITY);
         core.setResolverApproved(ProviderRegistry.ResolverKind.DOMAIN, address(other), true);
 
@@ -786,7 +774,7 @@ contract ServiceDomainResolverTest is Test {
         _claim(CONTROLLER, service, DOMAIN);
         assertTrue(resolver.isAuthoritativeFor(service));
 
-        ServiceDomainResolver other = new ServiceDomainResolver(address(core), address(router));
+        ServiceDomainResolver other = new ServiceDomainResolver(address(core), address(factory));
         vm.prank(AUTHORITY);
         core.setResolverApproved(ProviderRegistry.ResolverKind.DOMAIN, address(other), true);
         vm.prank(CONTROLLER);
@@ -916,7 +904,7 @@ contract ServiceDomainResolverTest is Test {
 
     function test_construction_refuses_a_zero_dependency() public {
         vm.expectRevert(ServiceDomainResolver.ZeroAddress.selector);
-        new ServiceDomainResolver(address(0), address(router));
+        new ServiceDomainResolver(address(0), address(factory));
         vm.expectRevert(ServiceDomainResolver.ZeroAddress.selector);
         new ServiceDomainResolver(address(core), address(0));
     }
@@ -925,7 +913,7 @@ contract ServiceDomainResolverTest is Test {
     /// alone would miss — so both checks exist and this asserts the code one fires first.
     function test_construction_refuses_a_dependency_with_no_code() public {
         vm.expectRevert(abi.encodeWithSelector(ServiceDomainResolver.DependencyHasNoCode.selector, STRANGER));
-        new ServiceDomainResolver(STRANGER, address(router));
+        new ServiceDomainResolver(STRANGER, address(factory));
     }
 
     function test_construction_refuses_a_dependency_that_does_not_answer() public {
@@ -934,7 +922,7 @@ contract ServiceDomainResolverTest is Test {
             abi.encodeWithSelector(
                 ServiceDomainResolver.DependencyDoesNotAnswer.selector,
                 address(silent),
-                CloneProvenanceRouter.isClone.selector
+                ICloneProvenance.isClone.selector
             )
         );
         new ServiceDomainResolver(address(core), address(silent));
@@ -946,17 +934,17 @@ contract ServiceDomainResolverTest is Test {
                 ProviderRegistry.isResolverApproved.selector
             )
         );
-        new ServiceDomainResolver(address(silent), address(router));
+        new ServiceDomainResolver(address(silent), address(factory));
     }
 
     /// @dev A definite `true` from a stub is a DIFFERENT diagnosis from a non-answer, and collapsing them
     /// would send an operator hunting a missing selector when the real fault is a predicate that
     /// recognizes any address handed to it.
-    function test_construction_refuses_a_router_that_recognizes_every_address() public {
-        PermissiveRouterStub permissive = new PermissiveRouterStub();
+    function test_construction_refuses_a_factory_that_recognizes_every_address() public {
+        PermissiveFactoryStub permissive = new PermissiveFactoryStub();
         vm.expectRevert(
             abi.encodeWithSelector(
-                ServiceDomainResolver.RouterRecognizesEveryAddress.selector, address(permissive)
+                ServiceDomainResolver.FactoryRecognizesEveryAddress.selector, address(permissive)
             )
         );
         new ServiceDomainResolver(address(core), address(permissive));
@@ -967,7 +955,7 @@ contract ServiceDomainResolverTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(ServiceDomainResolver.CorePermissionIsZero.selector, address(zero))
         );
-        new ServiceDomainResolver(address(zero), address(router));
+        new ServiceDomainResolver(address(zero), address(factory));
     }
 
     /// @dev The permission mask is resolved from the core rather than restated, so this pins both the
@@ -984,7 +972,7 @@ contract ServiceDomainResolverTest is Test {
 
     function test_the_dependencies_are_immutable_and_are_the_ones_supplied() public view {
         assertEq(address(resolver.core()), address(core));
-        assertEq(address(resolver.router()), address(router));
+        assertEq(address(resolver.factory()), address(factory));
     }
 
     // ---------------------------------------------------------------------------------------------

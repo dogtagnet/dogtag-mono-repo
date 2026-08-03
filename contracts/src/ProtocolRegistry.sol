@@ -5,117 +5,167 @@ import {
     AccessControlDefaultAdminRules
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 
-// Safe production propose→execute delay, single-sourced so the deploy script's mainnet guard and env
-// default cannot drift from the contract's documented default. Exposed on-chain as
-// `ProtocolRegistry.DEFAULT_PUBLISH_TIMELOCK`.
+/// @dev Safe production propose→execute delay, single-sourced so the deploy script's mainnet guard and
+/// the env default cannot drift from the contract's documented default. Exposed on-chain as
+/// `ProtocolRegistry.DEFAULT_PUBLISH_TIMELOCK`.
 uint256 constant DEFAULT_PUBLISH_TIMELOCK_SECONDS = 2 days;
 
-/// @title ProtocolRegistry — the dogtag-governed discovery TRUST ANCHOR (M7 §5.1, lock B).
-/// @notice A small, read-mostly, dogtag-governed contract that records what dogtag has certified for a
-/// protocol version. It is the on-chain ROOT OF TRUTH an app validates a platform's version CLAIM
-/// against, so a platform can never steer a proof onto a contract dogtag did not publish (§5.3 step 4).
+/// @dev The floor the constructor enforces. ZERO — the contract permits any delay, including none.
 ///
-/// It is ADDITIVE: it neither deploys nor changes the trio/registry/verifier it references, and it does
-/// not touch the frozen circuit/VK/ceremony. It only records WHICH addresses+artifacts dogtag has
-/// certified as belonging together.
+/// This was 1 hour, and the reason it MOVED is recorded on [`ProtocolRegistry`] under "The timelock is
+/// a deploy-time choice". Read it before restoring a floor here: the safeguard was not dropped, it was
+/// relocated to the deploy script, which is where the production/testnet distinction is actually
+/// expressed.
+uint256 constant MIN_PUBLISH_TIMELOCK_SECONDS = 0;
+
+/// @title ProtocolRegistry — the discovery TRUST ANCHOR.
+/// @notice The dogtag-governed record of which contracts and which proving artifacts are current, read
+/// by every app before it acts on a platform's version CLAIM.
 ///
-/// # TWO INDEPENDENT VERSION AXES (R-5)
+/// An app is deliberately version-AGNOSTIC: it bundles no addresses and discovers them. That makes this
+/// registry the root of trust for the whole client side — a platform tells an app which protocol version
+/// it speaks, and the app checks that claim HERE before acting on it. Everything below follows from
+/// that: the record is a fixed-shape tuple so a client can decode it without trusting the platform, and
+/// every write that could steer a client is timelocked.
 ///
-/// The certified record is split across two SEPARATELY-KEYED, SEPARATELY-ROTATABLE axes:
+/// # Two axes, and they rotate independently
 ///
-///   * the **on-chain axis** — a [`ContractSet`], keyed by `contractSetId`
-///     (`keccak256("dogtag-levelb/1")`). It holds ONLY things that live on-chain: the trio addresses,
-///     the `verifier` (the on-chain VK identity), and the on-chain `circuitId`.
-///   * the **off-chain artifact axis** — an [`ArtifactSet`], keyed by `artifactSetId`
-///     (`keccak256("dogtag-levelb-artifacts/1")`). It holds ONLY things an app fetches and runs
-///     off-chain: the four artifact fetch-pins, the `artifactBaseUrl`, and `minAppVersion` (the app
-///     gate is a property of the proving artifacts an app must be new enough to load, not of the
-///     deployed contracts).
+/// A protocol version has an ON-CHAIN half (which deployed contracts belong together) and an OFF-CHAIN
+/// half (which proving artifacts an app must fetch, and their byte-integrity pins). They change at
+/// completely different rates and for completely different reasons, so they are separate records under
+/// separate ids, joined by one binding.
 ///
-/// Neither record references the other. The ONLY link is [`activeArtifactSetOf`], a governed pointer
-/// `contractSetId -> artifactSetId` that tells a resolver which artifact set is current for a given
-/// on-chain set. That means:
+/// Rotating a zkey therefore moves no address, and rotating an address forces no app to re-fetch
+/// anything. Collapsing them into one record would make every artifact rotation look like a contract
+/// rotation to every consumer, and vice versa.
 ///
-///   * rotating the proving artifacts (a new zkey, a new host, a raised `minAppVersion`) is ONE
-///     `ArtifactSet` publish plus ONE re-point. The `ContractSet` record is not written, so no trio or
-///     verifier address moves and no contract is redeployed.
-///   * rotating the on-chain set (new trio addresses) is ONE `ContractSet` publish. Every `ArtifactSet`
-///     record is untouched, and no app is forced to update.
+///   * `providerRegistry` — the `ProviderRegistry` authority core. It occupies the verification
+///     registry's immutable `providerRegistry` slot, and it is ALSO the root of the resolver layer: a
+///     provider's directory resolver and a service's domain resolver are selected THROUGH this core
+///     (`ProviderRegistry.setDirectoryResolver` / `setDomainResolver`, allowlisted per
+///     `ResolverKind.DIRECTORY` / `ResolverKind.DOMAIN`).
 ///
-/// Governance, not this contract, owns the SEMANTIC compatibility of a binding: the registry stores
-/// data and never asserts that a given zkey proves against a given verifier (see the VK note below).
-/// That is exactly why re-pointing is timelocked.
+/// There is deliberately NO single `providerDirectory` or `serviceDomainResolver` member. Publishing one
+/// address for either would be a false statement about the deployed design: the authority core
+/// allowlists MANY resolvers per kind and each provider/service selects its own, so a consumer that
+/// followed a protocol-wide resolver address would read the wrong resolver for every provider that
+/// selected another. The core is the resolution root, and `providerRegistry` is how a consumer reaches
+/// it. (A consumer must additionally re-check `isResolverApproved(kind, resolver)`, because the core
+/// keeps a deapproved selection as history.)
 ///
-/// # On-chain VK identity vs fetch pins (§3.2 — a conflation this contract keeps distinct)
+/// `factory` is BOTH roles at once, and the publish preflight asserts it against the chain rather than
+/// leaving it as a convention: it is where a provider's clone comes from, and it is the address the
+/// verification registry's immutable `rootIndex` resolves every anchored root through. One member,
+/// because two members holding one address invite a consumer to believe they can differ.
 ///
-/// Two DIFFERENT things live on the two axes and must never be conflated:
-///   * `verifier` + `verificationRegistry` (on-chain axis) — the **on-chain VK IDENTITY**. The
-///     authoritative verifying key is the one embedded in the on-chain `Groth16Verifier*` at
-///     `verifier`'s address; a proof is ultimately checked against it. The VK is identified by an
-///     ADDRESS, never by a hash.
-///   * `zkeySha256` / `witness*Sha256` (artifact axis) — **FETCH PINS** (byte-integrity of the
-///     downloaded artifact). An app hashes the bytes it fetched from any host against these before
-///     loading; a lying/compromised CDN is then a denial-of-service at worst, never a wrong-proof.
-/// The `verification_key.json` file hash (the OFF-CHAIN VK identity the prover crate carries) is
-/// deliberately NOT an on-chain field — on-chain the VK identity is the `verifier` address. It is
-/// carried only by the signed-manifest fallback (§5.1 1B).
+/// # The discovery record is named for what it is, and that name is a STRUCTURAL guard
 ///
-/// # Governance: timelocked publish, immediate deprecate
+/// A discovery record is read by decoding a fixed-width tuple, so a reader that dispatches successfully
+/// against the WRONG record misdecodes silently rather than failing: every word lands one slot out and
+/// each one is a plausible value of the field it was read into. Nothing in the ABI catches that.
 ///
-/// Every WRITE that a consumer could be steered by — publishing either kind of set, and re-pointing a
-/// binding — is a `propose…` → (deploy-time timelock) → `execute…` flow that MIRRORS
-/// `VerificationRegistryConsent.proposeZkVerifier`/`executeZkVerifier` (§5.1): nothing can be published
-/// or SWAPPED instantly, so a compromised publisher key cannot repoint discovery in one transaction —
-/// governance has the configured timelock window to react. Production deployments use the 2-day
-/// [`DEFAULT_PUBLISH_TIMELOCK`]; testnets may deliberately use a shorter delay. The `deprecate…` calls
-/// are NOT timelocked: they set
-/// `active=false` (a safety lever you want to be able to pull immediately) and NEVER delete the
-/// published record, so history stays pinned (§5.1 — "deprecate without deleting"). They DO cancel any
-/// in-flight proposal for that id, so re-publishing after a deprecate costs a fresh propose plus the
-/// full timelock and a stale proposal can never un-retire what was just retired.
+/// This codebase has already paid for that trap twice — the two `recordVerificationZK` arities sharing
+/// selector `0xdd080593`, and the stale hard-coded `isValid` selector — so the rule here is that the
+/// record's SHAPE and its getter's NAME move together. `DiscoverySet` is read through
+/// [`getDiscoverySet`] / [`resolveDiscovery`]; any future change to the tuple's width or member order
+/// takes a new name with it, so a client built for the old shape reverts on dispatch instead of
+/// decoding garbage. [`ArtifactSet`] is a separate record on a separately-rotatable axis and keeps its
+/// own name and selectors for the same reason: its shape is not changing.
+///
+/// # The timelock is a deploy-time choice, and the production guard is in the deploy script
+///
+/// `PUBLISH_TIMELOCK` is `immutable`, so a deployment picks its delay once. The contract enforces no
+/// floor: `MIN_PUBLISH_TIMELOCK` is 0 and a zero-delay registry is representable, which is what lets a
+/// development chain deploy, publish, test and redeploy in one sitting with no wait at all.
+///
+/// Production safety is expressed by the DEPLOY SCRIPT, which defaults to [`DEFAULT_PUBLISH_TIMELOCK`]
+/// (2 days) and refuses anything lower unless a testnet opt-in is stated aloud. What a timelock buys is
+/// unchanged and still the reason production keeps 2 days: a zero lets the publisher key repoint the
+/// entire declared protocol set in one transaction with no window for anyone to notice.
+///
+/// ## Why the floor moved off the contract, which is NOT the safeguard being quietly dropped
+///
+/// The floor was here because of a specific claim: `PUBLISH_TIMELOCK` is immutable, so a deployment
+/// that got it wrong "cannot be repaired — only replaced, and replacing this registry means repointing
+/// every client including two compile-time mobile bundles". A contract-level guard was proportionate
+/// because the mistake it prevented was effectively unfixable, and a script guard is bypassable by a
+/// direct `forge create`.
+///
+/// That premise has expired. A mobile rebuild-and-reinstall now accompanies every full redeploy as
+/// standing process, so replacing this registry is ROUTINE rather than unfixable — the cost that made
+/// an on-chain floor worth its rigidity is the cost that no longer applies. A script-level guard is
+/// proportionate to a repairable mistake in a way it was not to a permanent one.
+///
+/// ## Do not reintroduce a chain-id check
+///
+/// Production is NOT detectable from `block.chainid`, and an earlier `require(block.chainid == 135)`
+/// guard is the worked example: ROAX 135 is itself a live chain here, so that condition passed on
+/// exactly the deployment it claimed to refuse. A guard that cannot fail on the case it names is worse
+/// than none, because it reads as protection. Production is expressed by the deploy script's default
+/// plus an explicit opt-in, never by sniffing the chain.
+///
+/// # The write shape, once, for both axes
+///
+/// `propose…` → timelock → `execute…` on every write a consumer could be steered by, and an immediate
+/// un-timelocked `deprecate…` as the emergency lever. Deprecating never deletes history — a published
+/// record stays readable forever, so an old credential can still explain itself — but it DOES cancel an
+/// in-flight proposal, which is what makes it a genuine halt rather than a pause a stale proposal could
+/// undo the moment its window elapsed.
 contract ProtocolRegistry is AccessControlDefaultAdminRules {
-    /// @dev Two-step admin handover delay — mirrors `VerificationRegistryConsent` (2 days).
+    /// @dev Two-step admin handover delay — the same 2 days `VerificationRegistryConsent` uses.
     uint48 public constant ADMIN_TRANSFER_DELAY = 2 days;
 
     /// @notice May propose/execute/deprecate on either axis, and re-point bindings. Held by dogtag
-    /// governance.
+    /// governance. The derivation is `keccak256("PUBLISHER")`, NOT `keccak256("PUBLISHER_ROLE")` —
+    /// read it off the deployed contract rather than recomputing it from the variable name, which yields
+    /// a role nobody holds and reads as a correctly-configured signer being unauthorized.
     bytes32 public constant PUBLISHER_ROLE = keccak256("PUBLISHER");
 
-    /// @dev Safe production default, mirroring `VerificationRegistryConsent.ZK_TIMELOCK` (§5.1). Derived
-    /// from the file-level constant so the deploy script can single-source the same value.
+    /// @notice Safe production default (2 days), mirroring `VerificationRegistryConsent.ZK_TIMELOCK`.
     uint256 public constant DEFAULT_PUBLISH_TIMELOCK = DEFAULT_PUBLISH_TIMELOCK_SECONDS;
 
-    /// @notice The immutable propose→execute delay selected when this registry is deployed.
+    /// @notice The floor the constructor enforces, so a zero-delay registry cannot be deployed at all.
+    /// See the contract-level note for why this is a constructor invariant and how the value is derived.
+    uint256 public constant MIN_PUBLISH_TIMELOCK = MIN_PUBLISH_TIMELOCK_SECONDS;
+
+    /// @notice The immutable propose→execute delay selected when this registry is deployed. Always
+    /// `>= MIN_PUBLISH_TIMELOCK`.
     uint256 public immutable PUBLISH_TIMELOCK;
 
     // ---------------------------------------------------------------------------------------------
-    // Axis 1 — the ON-CHAIN contract set
+    // Axis 1 — the ON-CHAIN discovery set
     // ---------------------------------------------------------------------------------------------
 
     /// @notice The on-chain half of what dogtag certifies for a protocol version: which deployed
     /// contracts belong together. Rotating this axis moves addresses; it says nothing about artifacts.
-    struct ContractSet {
-        bytes32 contractSetId; // keccak256("dogtag-levelb/1") — the map key, must be non-zero
-        address factory; // trio leg (== verificationRegistry.rootIndex()); resolves rootIssuer[R]
-        address verificationRegistry; // trio leg — the registry a proof is submitted to
-        address sbt; // trio leg (== verificationRegistry.sbt())
+    ///
+    /// Its NAME and its SHAPE move together — see the contract note. A client decodes this as a
+    /// fixed-width tuple, so one built for a different shape must fail on dispatch rather than decode
+    /// every member one slot out.
+    struct DiscoverySet {
+        bytes32 discoverySetId; // keccak256("dogtag-levelb/1") — the map key, must be non-zero
+        address factory; // clone source AND root index — == verificationRegistry.rootIndex()
+        address verificationRegistry; // the registry a proof is submitted to — the anti-redirect anchor
+        address sbt; // == verificationRegistry.sbt() (immutable there; the SHARED, reused SBT)
         address verifier; // Groth16Verifier* — the on-chain VK identity (NOT a hash)
+        address providerRegistry; // == verificationRegistry.providerRegistry(); also the resolver root
         bytes32 circuitId; // keccak256("consent.circom/DogTagConsent(6)")
-        uint64 publishedAt; // stamped by executeContractSet (block.timestamp), NOT from calldata
-        bool active; // deprecateContractSet flips this false; the record is never deleted
+        uint64 publishedAt; // stamped by executeDiscoverySet (block.timestamp), NOT from calldata
+        bool active; // deprecateDiscoverySet flips this false; the record is never deleted
     }
 
-    /// @notice contractSetId -> the published ContractSet. Read the full record via [`getContractSet`].
-    mapping(bytes32 => ContractSet) public contractSets;
+    /// @notice discoverySetId -> the published set. Read the full record via [`getDiscoverySet`], which
+    /// fails closed on an unknown id; this auto-getter answers a zeroed record instead.
+    mapping(bytes32 => DiscoverySet) public discoverySets;
 
-    /// @notice Every contractSetId ever published — the enumerable "which on-chain sets exist" list. A
-    /// deprecated set stays here (history is pinned); a swap-republish does not duplicate its id.
-    bytes32[] public contractSetList;
+    /// @notice Every discoverySetId ever published — the enumerable list. A deprecated set stays here
+    /// (history is pinned); a swap-republish does not duplicate its id.
+    bytes32[] public discoverySetList;
 
-    /// @dev Staged, not-yet-executed contract-set proposals, keyed per-id (several can be in flight).
-    mapping(bytes32 => ContractSet) private _pendingContractSet;
-    /// @notice contractSetId -> earliest execute timestamp (0 == nothing pending for this id).
-    mapping(bytes32 => uint256) public contractSetEta;
+    /// @dev Staged, not-yet-executed proposals, keyed per-id (several can be in flight).
+    mapping(bytes32 => DiscoverySet) private _pendingDiscoverySet;
+    /// @notice discoverySetId -> earliest execute timestamp (0 == nothing pending for this id).
+    mapping(bytes32 => uint256) public discoverySetEta;
 
     // ---------------------------------------------------------------------------------------------
     // Axis 2 — the OFF-CHAIN proving-artifact set
@@ -123,10 +173,15 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
 
     /// @notice The off-chain half: the proving artifacts an app fetches, their byte-integrity pins, and
     /// the minimum app version able to load them. Rotating this axis moves no address.
+    ///
+    /// The pins are FETCH integrity, and are not the VK: `verifier` on the other axis is the VK's
+    /// on-chain identity, and no read here can relate the two. That a given zkey proves against a given
+    /// verifier is a governance judgement, which is exactly why the BINDING between the axes is
+    /// timelocked rather than validated.
     struct ArtifactSet {
         bytes32 artifactSetId; // keccak256("dogtag-levelb-artifacts/1") — the map key, non-zero
         bytes32 zkeySha256; // FETCH pin for the zkey (mandatory; NOT the VK)
-        bytes32 witnessMobileSha256; // FETCH pin for the .graph (0 == unpinned, §3.5 — optional, unlike the zkey)
+        bytes32 witnessMobileSha256; // FETCH pin for the .graph (0 == unpinned — optional, unlike the zkey)
         bytes32 witnessServerR1csSha256; // FETCH pin for the .r1cs
         bytes32 witnessServerWasmSha256; // FETCH pin for the .wasm
         string artifactBaseUrl; // where the bytes live (any host; integrity via the pins)
@@ -136,9 +191,7 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     }
 
     /// @notice artifactSetId -> the published ArtifactSet. NOTE: the auto-getter answers an UNKNOWN id
-    /// with a zeroed record rather than reverting, so a resolver must read via [`getArtifactSet`],
-    /// which fails closed. The auto-getter is the right call only when a zeroed record is itself the
-    /// answer you want - probing whether an id has ever been published.
+    /// with a zeroed record rather than reverting, so a resolver must read via [`getArtifactSet`].
     mapping(bytes32 => ArtifactSet) public artifactSets;
 
     /// @notice Every artifactSetId ever published — the enumerable list. Deprecated sets stay.
@@ -153,36 +206,45 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     // The binding — the ONLY link between the two axes
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice contractSetId -> the artifactSetId a resolver should currently use for it. This pointer
-    /// is the whole coupling: it is what makes an artifact rotation a one-line governance change
-    /// instead of a republish of the on-chain record.
+    /// @notice discoverySetId -> the artifactSetId a resolver should currently use for it. This pointer
+    /// is the whole coupling: it is what makes an artifact rotation a one-line governance change instead
+    /// of a republish of the on-chain record.
     mapping(bytes32 => bytes32) public activeArtifactSetOf;
 
-    /// @dev Staged, not-yet-executed binding changes: contractSetId -> proposed artifactSetId.
+    /// @dev Staged, not-yet-executed binding changes: discoverySetId -> proposed artifactSetId.
     mapping(bytes32 => bytes32) private _pendingBinding;
-    /// @notice contractSetId -> earliest execute timestamp for a pending binding (0 == none pending).
+    /// @notice discoverySetId -> earliest execute timestamp for a pending binding (0 == none pending).
     mapping(bytes32 => uint256) public bindingEta;
 
-    event ContractSetProposed(bytes32 indexed contractSetId, uint256 eta);
-    event ContractSetPublished(bytes32 indexed contractSetId, bool isNew);
-    event ContractSetDeprecated(bytes32 indexed contractSetId);
+    event DiscoverySetProposed(bytes32 indexed discoverySetId, uint256 eta);
+    event DiscoverySetPublished(bytes32 indexed discoverySetId, bool isNew);
+    event DiscoverySetDeprecated(bytes32 indexed discoverySetId);
 
     event ArtifactSetProposed(bytes32 indexed artifactSetId, uint256 eta);
     event ArtifactSetPublished(bytes32 indexed artifactSetId, bool isNew);
     event ArtifactSetDeprecated(bytes32 indexed artifactSetId);
 
-    event ArtifactBindingProposed(bytes32 indexed contractSetId, bytes32 indexed artifactSetId, uint256 eta);
-    event ArtifactBindingSet(bytes32 indexed contractSetId, bytes32 indexed artifactSetId);
+    event ArtifactBindingProposed(bytes32 indexed discoverySetId, bytes32 indexed artifactSetId, uint256 eta);
+    event ArtifactBindingSet(bytes32 indexed discoverySetId, bytes32 indexed artifactSetId);
 
-    /// @param admin The dogtag governance multisig; receives `DEFAULT_ADMIN_ROLE` under the two-step
-    /// ACDAR timelock. It alone can grant/revoke `PUBLISHER_ROLE`.
-    /// @param publisher The initial `PUBLISHER_ROLE` holder (dogtag governance / the publishing key).
-    /// @param publishTimelock The immutable delay applied to every publish proposal. Production uses
-    /// [`DEFAULT_PUBLISH_TIMELOCK`]; a zero/short value is reserved for explicitly opted-in testnets.
+    error PublishTimelockBelowFloor(uint256 given, uint256 floor);
+
+    /// @param admin The dogtag governance holder; receives `DEFAULT_ADMIN_ROLE` under the two-step ACDAR
+    /// timelock. It alone can grant/revoke `PUBLISHER_ROLE`.
+    /// @param publisher The initial `PUBLISHER_ROLE` holder (the publishing key).
+    /// @param publishTimelock The immutable delay applied to every publish proposal. MUST be at least
+    /// [`MIN_PUBLISH_TIMELOCK`]; production uses [`DEFAULT_PUBLISH_TIMELOCK`].
     constructor(address admin, address publisher, uint256 publishTimelock)
         AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, admin)
     {
         require(admin != address(0) && publisher != address(0), "zero");
+        // Retained at a ZERO floor rather than deleted, so the error and the comparison stay in the ABI
+        // and a deployment that wants a floor can restore one by moving a single constant. With
+        // MIN_PUBLISH_TIMELOCK == 0 this cannot fire; the production guard lives in the deploy script,
+        // for the reason recorded in this contract's "The timelock is a deploy-time choice" note.
+        if (publishTimelock < MIN_PUBLISH_TIMELOCK) {
+            revert PublishTimelockBelowFloor(publishTimelock, MIN_PUBLISH_TIMELOCK);
+        }
         PUBLISH_TIMELOCK = publishTimelock;
         _grantRole(PUBLISHER_ROLE, publisher);
     }
@@ -191,65 +253,71 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     // Axis 1 governance
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Stage an on-chain contract set for publication. After [`PUBLISH_TIMELOCK`] elapses, call
-    /// [`executeContractSet`]. Re-proposing an id before execute overwrites the pending record and
-    /// RESETS its timelock (mirrors `proposeZkVerifier`). `publishedAt`/`active` in `c` are IGNORED —
-    /// they are stamped at execute — so a publisher cannot back-date or pre-activate a set.
-    function proposeContractSet(ContractSet calldata c) external onlyRole(PUBLISHER_ROLE) {
-        require(c.contractSetId != 0, "contractSetId=0");
+    /// @notice Stage an on-chain discovery set for publication. After [`PUBLISH_TIMELOCK`] elapses, call
+    /// [`executeDiscoverySet`]. Re-proposing an id before execute overwrites the pending record and
+    /// RESETS its timelock. `publishedAt`/`active` in `d` are IGNORED — they are stamped at execute — so
+    /// a publisher cannot back-date or pre-activate a set.
+    ///
+    /// Every address member is required non-zero. A zero would not be a smaller record, it would be a
+    /// published claim that some component is at `address(0)`: a consumer reading it would `staticcall`
+    /// nothing, get empty returndata, and have to decide what that means — the exact
+    /// could-not-check-rendered-as-an-answer this registry exists to remove. A generation that genuinely
+    /// has no such component publishes no set here.
+    function proposeDiscoverySet(DiscoverySet calldata d) external onlyRole(PUBLISHER_ROLE) {
+        require(d.discoverySetId != 0, "discoverySetId=0");
         require(
-            c.factory != address(0) && c.verificationRegistry != address(0) && c.sbt != address(0)
-                && c.verifier != address(0),
+            d.factory != address(0) && d.verificationRegistry != address(0) && d.sbt != address(0)
+                && d.verifier != address(0),
             "zero trio/verifier"
         );
-        require(c.circuitId != 0, "circuitId=0");
+        require(d.providerRegistry != address(0), "zero providerRegistry");
+        require(d.circuitId != 0, "circuitId=0");
 
-        _pendingContractSet[c.contractSetId] = c;
+        _pendingDiscoverySet[d.discoverySetId] = d;
         uint256 eta = block.timestamp + PUBLISH_TIMELOCK;
-        contractSetEta[c.contractSetId] = eta;
-        emit ContractSetProposed(c.contractSetId, eta);
+        discoverySetEta[d.discoverySetId] = eta;
+        emit DiscoverySetProposed(d.discoverySetId, eta);
     }
 
-    /// @notice Execute a previously-proposed contract set once its timelock has elapsed. Appends to
-    /// [`contractSetList`] only on FIRST publication of an id (a swap-republish updates in place).
+    /// @notice Execute a previously-proposed discovery set once its timelock has elapsed. Appends to
+    /// [`discoverySetList`] only on FIRST publication of an id (a swap-republish updates in place).
     /// Stamps `publishedAt = block.timestamp` and `active = true` authoritatively.
-    function executeContractSet(bytes32 id) external onlyRole(PUBLISHER_ROLE) {
-        uint256 eta = contractSetEta[id];
+    function executeDiscoverySet(bytes32 id) external onlyRole(PUBLISHER_ROLE) {
+        uint256 eta = discoverySetEta[id];
         require(eta != 0, "none pending");
         require(block.timestamp >= eta, "timelock");
 
-        ContractSet memory c = _pendingContractSet[id];
-        c.publishedAt = uint64(block.timestamp);
-        c.active = true;
+        DiscoverySet memory d = _pendingDiscoverySet[id];
+        d.publishedAt = uint64(block.timestamp);
+        d.active = true;
 
-        bool isNew = contractSets[id].contractSetId == 0;
+        bool isNew = discoverySets[id].discoverySetId == 0;
         if (isNew) {
-            contractSetList.push(id);
+            discoverySetList.push(id);
         }
-        contractSets[id] = c;
+        discoverySets[id] = d;
 
-        delete _pendingContractSet[id];
-        delete contractSetEta[id];
-        emit ContractSetPublished(id, isNew);
+        delete _pendingDiscoverySet[id];
+        delete discoverySetEta[id];
+        emit DiscoverySetPublished(id, isNew);
     }
 
-    /// @notice Deprecate a published contract set: flips `active=false`, NEVER deletes (history is
-    /// pinned so an old record still self-routes and verifies; §7.3). Not timelocked. Reverts only on
-    /// an unknown id, not on an already-deprecated one.
+    /// @notice Deprecate a published discovery set: flips `active=false`, NEVER deletes (history stays
+    /// pinned so an old record still self-routes). Not timelocked — it is the lever you want to be able
+    /// to pull immediately. Reverts only on an unknown id, not on an already-deprecated one.
     ///
     /// It ALSO cancels any in-flight proposal for `id`, which is what makes deprecate a true EMERGENCY
     /// HALT rather than a bit a stale proposal can flip straight back: without this, a swap proposed
     /// before the compromise was found — and whose timelock has already elapsed — could be executed
-    /// afterwards and silently re-activate the retired set with no fresh review window. Re-publishing
-    /// after a deprecate therefore requires a fresh propose plus the full [`PUBLISH_TIMELOCK`], which is
-    /// the point. Deleting the PENDING proposal is not deleting history: the published record and its
-    /// place in [`contractSetList`] are untouched.
-    function deprecateContractSet(bytes32 id) external onlyRole(PUBLISHER_ROLE) {
-        require(contractSets[id].contractSetId != 0, "unknown contract set");
-        contractSets[id].active = false;
-        delete _pendingContractSet[id];
-        delete contractSetEta[id];
-        emit ContractSetDeprecated(id);
+    /// afterwards and silently re-activate the retired set with no fresh review window. Cancelling a
+    /// PENDING proposal is not deleting history: the published record and its place in
+    /// [`discoverySetList`] are untouched.
+    function deprecateDiscoverySet(bytes32 id) external onlyRole(PUBLISHER_ROLE) {
+        require(discoverySets[id].discoverySetId != 0, "unknown discovery set");
+        discoverySets[id].active = false;
+        delete _pendingDiscoverySet[id];
+        delete discoverySetEta[id];
+        emit DiscoverySetDeprecated(id);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -260,10 +328,10 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     /// the on-chain axis; `publishedAt`/`active` are stamped at execute.
     function proposeArtifactSet(ArtifactSet calldata a) external onlyRole(PUBLISHER_ROLE) {
         require(a.artifactSetId != 0, "artifactSetId=0");
-        // The zkey is the ceremony-bound artifact; a set with no zkey pin is unrepresentable (a
-        // swapped key would silently prove against the wrong VK). The graph pin MAY be 0 (§3.5): a
-        // deployment may publish its contract set before it has a graph identity to attest, and the
-        // window between the two must be representable, so it is deliberately NOT required here.
+        // The zkey is the ceremony-bound artifact; a set with no zkey pin is unrepresentable (a swapped
+        // key would silently prove against the wrong VK). The graph pin MAY be 0: a deployment may
+        // publish its set before it has a graph identity to attest, and that window must be
+        // representable, so it is deliberately NOT required here.
         require(a.zkeySha256 != 0, "zkeySha256=0");
 
         _pendingArtifactSet[a.artifactSetId] = a;
@@ -296,12 +364,10 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
 
     /// @notice Deprecate a published artifact set: flips `active=false`, never deletes. Not timelocked.
     ///
-    /// Like [`deprecateContractSet`] it ALSO cancels any in-flight proposal for `id`, so a stale
-    /// swap-proposal cannot un-retire the set without a fresh propose + full timelock. This matters more
+    /// Like [`deprecateDiscoverySet`] it ALSO cancels any in-flight proposal for `id`. This matters more
     /// on this axis: a deprecate leaves [`activeArtifactSetOf`] still pointing at the retired set, so a
-    /// re-activation would instantly restore compromised artifacts as the live ones for every contract
-    /// set bound to it. The published record and [`artifactSetList`] are untouched — only the pending
-    /// proposal is dropped.
+    /// re-activation would instantly restore compromised artifacts as the live ones for every discovery
+    /// set bound to it.
     function deprecateArtifactSet(bytes32 id) external onlyRole(PUBLISHER_ROLE) {
         require(artifactSets[id].artifactSetId != 0, "unknown artifact set");
         artifactSets[id].active = false;
@@ -314,110 +380,112 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     // Binding governance
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Stage "contract set `contractSetId` should now resolve to artifact set `artifactSetId`".
-    /// TIMELOCKED for the same reason `proposeZkVerifier` is: this pointer is what an app follows to
-    /// decide which bytes to fetch, so a one-transaction repoint by a compromised publisher key is
-    /// exactly the attack the window exists to catch.
+    /// @notice Stage "discovery set `discoverySetId` should now resolve to artifact set `artifactSetId`".
+    /// TIMELOCKED because this pointer is what an app follows to decide which bytes to fetch, so a
+    /// one-transaction repoint by a compromised publisher key is exactly the attack the window catches.
     ///
-    /// The pointer can never dangle: both ids must be PUBLISHED, and that is enforced at EXECUTE (see
+    /// The pointer can never dangle: both ids must be PUBLISHED and ACTIVE, enforced at EXECUTE (see
     /// [`executeArtifactBinding`]) rather than here. Checking at execute is both stricter — a set
-    /// deprecated-and-never-republished during the window cannot slip through — and what lets the FIRST
-    /// rollout run its three timelocks CONCURRENTLY: propose the two sets and their binding together,
-    /// wait once, then execute sets-then-binding.
+    /// deprecated during the window cannot slip through — and what lets a FIRST rollout run its three
+    /// timelocks CONCURRENTLY: propose the two sets and their binding together, wait once, then execute
+    /// sets-then-binding.
     ///
     /// Whether the artifacts are CRYPTOGRAPHICALLY compatible with the set's `verifier` is a governance
     /// judgement this contract deliberately does not (and cannot) make: pins are byte-integrity, the
     /// verifier is VK identity.
-    function proposeArtifactBinding(bytes32 contractSetId, bytes32 artifactSetId)
+    function proposeArtifactBinding(bytes32 discoverySetId, bytes32 artifactSetId)
         external
         onlyRole(PUBLISHER_ROLE)
     {
-        require(contractSetId != 0, "contractSetId=0");
+        require(discoverySetId != 0, "discoverySetId=0");
         require(artifactSetId != 0, "artifactSetId=0");
 
-        _pendingBinding[contractSetId] = artifactSetId;
+        _pendingBinding[discoverySetId] = artifactSetId;
         uint256 eta = block.timestamp + PUBLISH_TIMELOCK;
-        bindingEta[contractSetId] = eta;
-        emit ArtifactBindingProposed(contractSetId, artifactSetId, eta);
+        bindingEta[discoverySetId] = eta;
+        emit ArtifactBindingProposed(discoverySetId, artifactSetId, eta);
     }
 
     /// @notice Execute a previously-proposed binding once its timelock has elapsed. This is the write
-    /// that makes an artifact rotation visible to resolvers — and it touches NO `ContractSet` field.
-    /// BOTH sides must be published AND ACTIVE AT THIS MOMENT, so the pointer can never be made to
-    /// dangle and a set retired mid-window (deprecate is the compromise lever) cannot be bound.
-    function executeArtifactBinding(bytes32 contractSetId) external onlyRole(PUBLISHER_ROLE) {
-        uint256 eta = bindingEta[contractSetId];
+    /// that makes an artifact rotation visible to resolvers — and it touches NO `DiscoverySet` field.
+    /// BOTH sides must be published AND ACTIVE AT THIS MOMENT.
+    function executeArtifactBinding(bytes32 discoverySetId) external onlyRole(PUBLISHER_ROLE) {
+        uint256 eta = bindingEta[discoverySetId];
         require(eta != 0, "none pending");
         require(block.timestamp >= eta, "timelock");
 
-        bytes32 artifactSetId = _pendingBinding[contractSetId];
-        require(contractSets[contractSetId].contractSetId != 0, "unknown contract set");
-        require(contractSets[contractSetId].active, "inactive contract set");
+        bytes32 artifactSetId = _pendingBinding[discoverySetId];
+        require(discoverySets[discoverySetId].discoverySetId != 0, "unknown discovery set");
+        require(discoverySets[discoverySetId].active, "inactive discovery set");
         require(artifactSets[artifactSetId].artifactSetId != 0, "unknown artifact set");
         require(artifactSets[artifactSetId].active, "inactive artifact set");
-        activeArtifactSetOf[contractSetId] = artifactSetId;
+        activeArtifactSetOf[discoverySetId] = artifactSetId;
 
-        delete _pendingBinding[contractSetId];
-        delete bindingEta[contractSetId];
-        emit ArtifactBindingSet(contractSetId, artifactSetId);
+        delete _pendingBinding[discoverySetId];
+        delete bindingEta[discoverySetId];
+        emit ArtifactBindingSet(discoverySetId, artifactSetId);
     }
 
     // ---------------------------------------------------------------------------------------------
     // Resolution
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice The FULL published on-chain record for `id`. Fails closed on an unknown id (reverts) so
-    /// a consumer never mistakes a zeroed struct for a valid set. THIS is the axis an on-chain
-    /// resolver — anything checking trio addresses, the verifier, or the circuitId — must read.
-    function getContractSet(bytes32 id) external view returns (ContractSet memory) {
-        ContractSet memory c = contractSets[id];
-        require(c.contractSetId != 0, "unknown contract set");
-        return c;
+    /// @notice The FULL published on-chain record for `id`. Fails closed on an unknown id (reverts) so a
+    /// consumer never mistakes a zeroed struct for a valid set. THIS is the axis an on-chain resolver —
+    /// anything checking the trio, the authority core, the root index, the verifier or the circuitId —
+    /// must read.
+    ///
+    /// Deliberately NOT named `getContractSet`: see the structural-guard note on the contract.
+    function getDiscoverySet(bytes32 id) external view returns (DiscoverySet memory) {
+        DiscoverySet memory d = discoverySets[id];
+        require(d.discoverySetId != 0, "unknown discovery set");
+        return d;
     }
 
     /// @notice The published artifact record for `id`, REVERTING when there is none — unlike the
-    /// `artifactSets` auto-getter, which answers a zeroed record. THIS is the axis an artifact/app-gate
-    /// resolver — anything fetching a zkey or enforcing `minAppVersion` — must read, because a zeroed
-    /// record would read as an unpinned set at version "" rather than as "no such set".
+    /// `artifactSets` auto-getter, which answers a zeroed record that would read as an unpinned set at
+    /// version "" rather than as "no such set".
     function getArtifactSet(bytes32 id) external view returns (ArtifactSet memory) {
         ArtifactSet memory a = artifactSets[id];
         require(a.artifactSetId != 0, "unknown artifact set");
         return a;
     }
 
-    /// @notice Follow the binding: the artifact set currently published for `contractSetId`. Reverts if
-    /// no binding is set (an on-chain set with no artifacts bound yet is a valid intermediate state
+    /// @notice Follow the binding: the artifact set currently published for `discoverySetId`. Reverts if
+    /// no binding is set (a discovery set with no artifacts bound yet is a valid intermediate state
     /// during a two-axis rollout, and a resolver must fail closed rather than read a zeroed record).
-    function getActiveArtifactSet(bytes32 contractSetId) external view returns (ArtifactSet memory) {
-        bytes32 artifactSetId = activeArtifactSetOf[contractSetId];
+    function getActiveArtifactSet(bytes32 discoverySetId) external view returns (ArtifactSet memory) {
+        bytes32 artifactSetId = activeArtifactSetOf[discoverySetId];
         require(artifactSetId != 0, "no artifact binding");
         ArtifactSet memory a = artifactSets[artifactSetId];
         require(a.artifactSetId != 0, "unknown artifact set");
         return a;
     }
 
-    /// @notice One-call discovery for an app: both halves of what dogtag certifies for `contractSetId`.
-    /// A convenience over [`getContractSet`] + [`getActiveArtifactSet`] — the axes stay independent,
-    /// this only saves a round trip.
-    function resolve(bytes32 contractSetId)
+    /// @notice One-call discovery for an app: both halves of what dogtag certifies for `discoverySetId`.
+    /// A convenience over [`getDiscoverySet`] + [`getActiveArtifactSet`] — the axes stay independent,
+    /// this only saves a round trip. Named for the record it returns, for the same reason as
+    /// [`getDiscoverySet`].
+    function resolveDiscovery(bytes32 discoverySetId)
         external
         view
-        returns (ContractSet memory contractSet, ArtifactSet memory artifactSet)
+        returns (DiscoverySet memory discoverySet, ArtifactSet memory artifactSet)
     {
-        contractSet = contractSets[contractSetId];
-        require(contractSet.contractSetId != 0, "unknown contract set");
+        discoverySet = discoverySets[discoverySetId];
+        require(discoverySet.discoverySetId != 0, "unknown discovery set");
 
-        bytes32 artifactSetId = activeArtifactSetOf[contractSetId];
+        bytes32 artifactSetId = activeArtifactSetOf[discoverySetId];
         require(artifactSetId != 0, "no artifact binding");
         artifactSet = artifactSets[artifactSetId];
         require(artifactSet.artifactSetId != 0, "unknown artifact set");
     }
 
-    /// @notice The full pending (proposed, not-yet-executed) contract set for `id`. Reverts if nothing
-    /// is pending. Lets governance inspect exactly what an execute would write during the window.
-    function getPendingContractSet(bytes32 id) external view returns (ContractSet memory) {
-        require(contractSetEta[id] != 0, "none pending");
-        return _pendingContractSet[id];
+    /// @notice The full pending (proposed, not-yet-executed) discovery set for `id`. Reverts if nothing
+    /// is pending. Lets governance inspect exactly what an execute would write during the window — which
+    /// is what makes the delay a review period rather than just a delay.
+    function getPendingDiscoverySet(bytes32 id) external view returns (DiscoverySet memory) {
+        require(discoverySetEta[id] != 0, "none pending");
+        return _pendingDiscoverySet[id];
     }
 
     /// @notice The full pending artifact set for `id`. Reverts if nothing is pending.
@@ -426,16 +494,16 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
         return _pendingArtifactSet[id];
     }
 
-    /// @notice The pending binding target for `contractSetId`. Reverts if nothing is pending.
-    function getPendingBinding(bytes32 contractSetId) external view returns (bytes32) {
-        require(bindingEta[contractSetId] != 0, "none pending");
-        return _pendingBinding[contractSetId];
+    /// @notice The pending binding target for `discoverySetId`. Reverts if nothing is pending.
+    function getPendingBinding(bytes32 discoverySetId) external view returns (bytes32) {
+        require(bindingEta[discoverySetId] != 0, "none pending");
+        return _pendingBinding[discoverySetId];
     }
 
     /// @notice How many distinct on-chain sets have ever been published (enumerate via
-    /// `contractSetList`).
-    function contractSetCount() external view returns (uint256) {
-        return contractSetList.length;
+    /// `discoverySetList`).
+    function discoverySetCount() external view returns (uint256) {
+        return discoverySetList.length;
     }
 
     /// @notice How many distinct artifact sets have ever been published (enumerate via

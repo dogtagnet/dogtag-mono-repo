@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.28;
 
-import {CloneProvenanceRouter} from "./CloneProvenanceRouter.sol";
+import {DogTagIssuerFactory} from "./DogTagIssuerFactory.sol";
+
+/// @dev `DogTagIssuerFactory.isClone` is a public MAPPING, so its auto-generated getter cannot be named
+/// as `Type.member` for `abi.encodeCall` or `.selector`. This redeclares that one signature so the
+/// constructor probe can encode it. It cannot drift undetected: {ServiceDomainResolver} also CALLS
+/// `factory.isClone` through the real contract type, so a renamed or reshaped getter fails to compile
+/// here rather than producing a probe of a selector nothing implements.
+interface ICloneProvenance {
+    function isClone(address candidate) external view returns (bool);
+}
 import {ProviderRegistry} from "./ProviderRegistry.sol";
 
 /// @dev The authority core's auto-generated getter for its content-write permission bit. Declared as an
@@ -15,15 +24,15 @@ interface ICoreRecordPermission {
 
 /// @title ServiceDomainResolver — the domain claim a service contract publishes, and its typed absence.
 ///
-/// @notice Supersedes `IssuerDomainRegistry`. Same product fact — "this service contract asserts that its
-/// domain is D, and the zone at D asserts this contract back" — with the authority question moved to the
-/// S-6 authority core, the provenance question moved to the S-8 cross-generation router, and the three
-/// different meanings of "no domain" given three different names.
+/// @notice Records one product fact — "this service contract asserts that its domain is D, and the zone
+/// at D asserts this contract back". Authorization comes from the {ProviderRegistry} core, provenance
+/// from the {DogTagIssuerFactory} lineage, and the three different meanings of "no domain" get three
+/// different names.
 ///
 /// # Absence is THREE facts, not an empty string
 ///
-/// `IssuerDomainRegistry` had exactly one way to say "no domain": an empty `domain` string, reached both
-/// by a clone nobody had ever written and by a clone whose claim had been withdrawn. Those are different
+/// An empty `domain` string is reached both by a service nobody has ever written a record for and by a
+/// service whose claim was withdrawn. Those are different
 /// facts with different remedies, and a third — "this provider has deliberately published no domain" —
 /// could not be said at all, so a provider with no website was indistinguishable from one whose record
 /// had never been filled in.
@@ -59,8 +68,9 @@ interface ICoreRecordPermission {
 /// implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in
 /// this codebase already.
 ///
-/// The three tiers `IssuerDomainRegistry` carried are all gone, and each for its own reason. Its tier 2
-/// recomputed the creation salt because generation-1 clones have no owner to ask — generation-2 clones do,
+/// Three authorization tiers that a domain registry might plausibly carry are all absent here, each for
+/// its own reason. A tier that
+/// recomputed the creation salt because a clone with no owner cannot be asked — these clones can be,
 /// so the stand-in is unnecessary. Its tier 3 `domainAdmin` existed only to rescue clones whose salted
 /// `business` was the operator's own signer; owner-epoch-scoped delegation in the core replaces it with a
 /// revocable grant that a clone-owner rotation invalidates automatically. And its tier 1 was a
@@ -69,32 +79,32 @@ interface ICoreRecordPermission {
 /// all. A registrar that needs a claim gone reaches for the fleet-wide lever below, not for the record.
 ///
 /// **`authorizeClone` is deliberately NOT composed, and this is a considered deviation** from the handoff
-/// note in `docs/ISSUER_V2_OWNERSHIP.md` §8, which names this contract as an intended consumer. Two
+/// note in `docs/ISSUER_OWNERSHIP.md` §8, which names this contract as an intended consumer. Two
 /// reasons, either sufficient. It requires `claimant == owner()` exactly, so composing it as the control
 /// term would make every owner-appointed delegate unable to publish a domain and would leave the core's
 /// `SERVICE_PERMISSION_RECORD` bit with no consumer — a functional loss, not a tightening. And it lives on
 /// a generation-specific factory, so reaching it means either pinning this resolver to one generation or
 /// hopping through the core's generation record to find the right factory. What that note is actually
 /// protecting is that the rule lives in ONE place; composing the core's `canWriteService` satisfies that,
-/// and reconciling the core's own derivation with `authorizeClone` is recorded there as S-6's obligation.
+/// and reconciling the core's own derivation with `authorizeClone` is recorded there as open.
 ///
-/// # Provenance: the router, and why the core's own check does not cover it
+/// # Provenance: the root index, and why the core's own check does not cover it
 ///
-/// Every write also requires `router.isClone(service)` — the S-8 {CloneProvenanceRouter}, the union across
-/// factory generations. Without it a stranger's hand-rolled contract could claim a domain, publish a
-/// matching TXT record, and present as verified with nothing behind it.
+/// Every write also requires `factory.isClone(service)` — the {DogTagIssuerFactory} whose `rootIssuer`
+/// mapping the verification registry's immutable `rootIndex` resolves every credential through. Without
+/// it a stranger's hand-rolled contract could claim a domain, publish a matching TXT record, and present
+/// as verified with nothing behind it.
 ///
 /// This is **not** redundant with the core's own provenance check, and the difference is the whole point.
-/// `canWriteService` proves clone-hood against the factory pinned to the generation the service was
-/// attached under; the router proves it against the generation list that the verification registry's
-/// immutable `rootIndex` actually resolves roots through. Those two lists are administered by two separate
-/// owner-only calls on two separate contracts (`ProviderRegistry.addFactoryGeneration` and
-/// `CloneProvenanceRouter.appendGeneration`), so they can genuinely disagree. A service attached under a
-/// core generation whose factory was never appended to the router is one whose credentials answer
-/// `unknown root` at every verification — and without this check it could still publish a domain, so a
-/// verified-looking identity would sit beside credentials that cannot verify at all. Requiring both makes
-/// that unrepresentable: a domain claim is honoured only for a service whose lineage is the same lineage
-/// that resolves its roots.
+/// `canWriteService` proves clone-hood against the factory the core has pinned for the service; this
+/// proves it against the factory the verification registry actually resolves roots through. Those are two
+/// separate facts under two separate owner-only administrations — `ProviderRegistry.addFactoryGeneration`
+/// on one side, and the address chosen for `VerificationRegistryConsent.rootIndex` at its deployment on
+/// the other — so they can genuinely disagree. A service whose clone-hood the core recognises but whose
+/// roots the verification registry cannot resolve is one whose credentials answer `unknown root` at every
+/// verification; without this check it could still publish a domain, so a verified-looking identity would
+/// sit beside credentials that cannot verify at all. Requiring both makes that unrepresentable: a domain
+/// claim is honoured only for a service whose lineage is the same lineage that resolves its roots.
 ///
 /// # The resolver must still be selected AND still be approved
 ///
@@ -121,8 +131,8 @@ interface ICoreRecordPermission {
 /// and for the registrar, which has no bypass by design. A `CLAIMED` record on such a service is frozen
 /// as history.
 ///
-/// None of the three terms above notices: the router's generation list is append-only, fleet approval is
-/// unrelated, and the core never clears a stored selector. So {claimStanding} reports the core's own
+/// None of the three terms above notices: the factory keeps recognising its own clones forever, fleet
+/// approval is unrelated, and the core never clears a stored selector. So {claimStanding} reports the core's own
 /// standing as a SEPARATE fourth term, sourced from `core.effectiveService` rather than re-derived here.
 /// It is deliberately NOT folded into {isAuthoritativeFor}, which answers whether THIS RESOLVER's record
 /// is the effective one for the service - and a retired service's record genuinely is still the last
@@ -130,7 +140,7 @@ interface ICoreRecordPermission {
 ///
 /// # What this contract deliberately does not hold
 ///
-/// **No name, no legal identity.** A generation-2 clone's `name()` is permanently empty by construction,
+/// **No name, no legal identity.** A clone's `name()` is permanently empty by construction,
 /// and a provider-chosen string beside a green check is a fabricated authority. Registrar-controlled
 /// identity comes from the core's `publicIdentityAnchor`; never add an identity field here.
 ///
@@ -188,16 +198,16 @@ contract ServiceDomainResolver {
     /// values.
     uint256 private constant EFFECTIVE_SERVICE_RETURN_WORDS = 5;
 
-    /// @notice The S-6 authority core. Answers authorization, resolver selection and resolver approval.
+    /// @notice The authority core. Answers authorization, resolver selection and resolver approval.
     /// @dev Immutable. The core holds the standing, ownership and delegation facts a domain write depends
     /// on; a settable reference would let one transaction redefine who may publish an identity.
     ProviderRegistry public immutable core;
 
-    /// @notice The S-8 cross-generation provenance router — the same lineage the verification registry's
-    /// immutable `rootIndex` resolves roots through.
-    /// @dev Immutable for the same reason. Its generation list is append-only, so the lineage can grow
-    /// without this reference moving.
-    CloneProvenanceRouter public immutable router;
+    /// @notice The clone lineage — the {DogTagIssuerFactory} that the verification registry's immutable
+    /// `rootIndex` resolves roots through.
+    /// @dev Immutable for the same reason as the core: a settable reference would let one transaction
+    /// redefine what counts as a genuine clone.
+    DogTagIssuerFactory public immutable factory;
 
     /// @notice The core's content-write permission bit, RESOLVED FROM THE CORE at deployment.
     ///
@@ -246,9 +256,9 @@ contract ServiceDomainResolver {
     error ZeroAddress();
     error DependencyHasNoCode(address dependency);
     error DependencyDoesNotAnswer(address dependency, bytes4 selector);
-    error RouterRecognizesEveryAddress(address router);
+    error FactoryRecognizesEveryAddress(address factory);
     error CorePermissionIsZero(address core);
-    /// @dev The router's generation list does not vouch for this address. Deliberately distinct from
+    /// @dev The factory does not vouch for this address. Deliberately distinct from
     /// {NotAuthorized}: a provider whose contract is genuine must never be told its address is a forgery,
     /// and a stranger's contract must never be told it merely lacks a permission.
     error NotRecognizedByLineage(address service);
@@ -260,28 +270,28 @@ contract ServiceDomainResolver {
     error AlreadyDeclaredNoDomain(address service);
     error BadPage();
 
-    /// @param core_ the S-6 `ProviderRegistry`.
-    /// @param router_ the S-8 `CloneProvenanceRouter`.
+    /// @param core_ the `ProviderRegistry` authority core.
+    /// @param factory_ the `DogTagIssuerFactory` — the lineage `rootIndex` resolves roots through.
     /// @dev Both are behaviour-probed rather than merely code-checked, because an EOA staticcall SUCCEEDS
     /// with empty returndata — the silent shape a code-size check alone would miss. The probes are
     /// TRI-state on purpose and their diagnostics stay split: {DependencyDoesNotAnswer} means nothing was
     /// stated (a revert, no such selector, or a word of the wrong width), while
-    /// {RouterRecognizesEveryAddress} is a definite `true` from a stub that authorizes everything.
+    /// {FactoryRecognizesEveryAddress} is a definite `true` from a stub that authorizes everything.
     /// Collapsing them would send an operator hunting a missing selector when the real cause is a
     /// predicate that recognizes any address handed to it.
-    constructor(address core_, address router_) {
-        if (core_ == address(0) || router_ == address(0)) revert ZeroAddress();
+    constructor(address core_, address factory_) {
+        if (core_ == address(0) || factory_ == address(0)) revert ZeroAddress();
         _requireCode(core_);
-        _requireCode(router_);
+        _requireCode(factory_);
 
-        // A router that vouches for the zero address vouches for anything, which would make the
+        // A factory that vouches for the zero address vouches for anything, which would make the
         // provenance term above pass for a hand-rolled contract.
         bool vouchesForTheZeroAddress = _probeBool(
-            router_,
-            abi.encodeCall(CloneProvenanceRouter.isClone, (address(0))),
-            CloneProvenanceRouter.isClone.selector
+            factory_,
+            abi.encodeCall(ICloneProvenance.isClone, (address(0))),
+            ICloneProvenance.isClone.selector
         );
-        if (vouchesForTheZeroAddress) revert RouterRecognizesEveryAddress(router_);
+        if (vouchesForTheZeroAddress) revert FactoryRecognizesEveryAddress(factory_);
 
         // Every core read this contract depends on must answer with the expected width, so a core that
         // cannot serve one is refused here rather than at the first call that needs it. `canWriteService`
@@ -313,7 +323,7 @@ contract ServiceDomainResolver {
         );
 
         core = ProviderRegistry(core_);
-        router = CloneProvenanceRouter(router_);
+        factory = DogTagIssuerFactory(factory_);
         recordPermission = _readRecordPermission(core_);
     }
 
@@ -436,7 +446,7 @@ contract ServiceDomainResolver {
 
     /// @notice The claim, with its disposition first.
     ///
-    /// @dev Deliberately a tuple rather than a bare `string`. `IssuerDomainRegistry.domainOf` returned
+    /// @dev Deliberately a tuple rather than a bare `string`. A bare-string `domainOf` would return
     /// `""` for three different facts, and a caller could consume it without ever learning which — the
     /// overload this contract exists to remove. A caller that wants only the string must write
     /// `(, string memory d) = resolveDomain(s)`, which discards the disposition visibly.
@@ -532,7 +542,7 @@ contract ServiceDomainResolver {
     // ---------------------------------------------------------------------------------------------
 
     function _lineageRecognizes(address service) internal view returns (bool) {
-        return router.isClone(service);
+        return factory.isClone(service);
     }
 
     function _resolverApproved() internal view returns (bool) {
@@ -638,7 +648,7 @@ contract ServiceDomainResolver {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Domain validation — the grammar `IssuerDomainRegistry` established, preserved verbatim
+    // Domain validation — the canonical-domain grammar
     // ---------------------------------------------------------------------------------------------
 
     /// @dev Rejects anything a DNS resolver could not use verbatim as a query suffix. Enforcing this

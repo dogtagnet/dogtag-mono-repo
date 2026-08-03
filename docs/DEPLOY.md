@@ -9,48 +9,27 @@
 > For go-live hardening see [`docs/PRODUCTION_DEPLOYMENT.md`](./PRODUCTION_DEPLOYMENT.md); for building +
 > installing the phone apps see [`docs/MOBILE_BUILD.md`](./MOBILE_BUILD.md).
 
-> **ALREADY DEPLOYED.** The contract set is **deployed on ROAX (chainId 135)** - addresses below and in
-> `contracts/deployments/roax.json`; the live protocol surface is the **owner-hidden consent set**
-> (`DogTagSBTConsent` + `VerificationRegistryConsent` + `Groth16VerifierConsent`).
-> The retired owner-revealing contracts remain in the ledger only as historical records.
+> **ALREADY DEPLOYED.** The contract set is **deployed on ROAX (chainId 135)**; every address is in
+> `contracts/deployments/roax.json`.
+> There is one set and one owner-hidden model - the ledger carries no retired generation, and no
+> contract in it is superseded by another.
 > This runbook is the reproducible procedure; to just run the live demo see `docs/DEMO.md` /
 > `docs/DEMO_CLICKS.md`.
 >
-> Snapshot — authoritative copy is `contracts/deployments/roax.json`.
+> Snapshot - the authoritative copy is `contracts/deployments/roax.json`, and the addresses are
+> deliberately not transcribed here.
+> This block used to carry the full table, and every entry in it went stale at once when the launch
+> set was deployed; a runbook that names superseded addresses is worse than one that names none,
+> because it reads as a checked fact.
 >
-> | Contract | Address |
-> |---|---|
-> | IssuerRegistry | `0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21` |
-> | DogTagSBT (RETIRED owner-revealing SBT; source deleted; historical reads only) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
-> | DogTagSBTConsent (**the live owner-hidden SBT**; write-once `profileRoot`; minted via `POST /profiles/issue/custodial-bind` → `mintCustodial(dogTagId, R)`) | `0xBEbc45A838643D27004827b797b30A464b2b02c0` |
-> | DogTagIssuerFactory | `0xED20269E3eBF0119739aaB5258741F3aEb49F140` |
-> | DogTagIssuerImpl | `0xe4aC139eB257C309Ec448C116A6F657Dab5590BA` |
-> | ProtocolRegistry (two-axis discovery anchor; zero-timelock testnet instance; `dogtag-levelb/1` published + active) | `0xf5492A671E69b1A13f7Fd123C021830eB1ea8081` |
-> | IssuerDomainRegistry (on-chain half of the issuer↔domain binding; deployed but **EMPTY** - `boundCloneCount == 0`, so every clone's on-chain domain claim still reads `unavailable` until one is published) | `0xD3B121FEaCde93b95288912EAdbB10824550FdBF` |
-> | ConsentKeyRegistry (RETIRED; the consent key is now a per-tag leaf inside the tree - no on-chain key registry) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
-> | Poseidon6 (deployed with the retired owner-revealing set; historical) | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
-> | VerificationRegistry (RETIRED owner-revealing registry; source deleted; final instance kept for historical reads) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
-> | VerificationRegistryConsent (**the live owner-hidden registry**; 4-arg `recordVerificationZK`; owner-blind `Verified`) | `0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B` |
-> | ~~VerificationRegistryConsent~~ `_M4_mutableRoot_legacy` (**DEPRECATED / DO NOT USE for Level-B**; never live; zero `Verified`) | `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` |
-> | ~~VerificationRegistryConsent~~ `_preErasureGate_legacy` (RETIRED; lacks the erasure gate, never live) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
-> | Groth16Verifier (RETIRED; paired with the retired verification circuit) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
-> | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
-> | Groth16VerifierConsent (**the live consent verifier**; wired into the registry above) | `0x1A9027986B859dc3879896B053deA78F636BE9b1` |
-> | deployer EOA (genesis; governance/admin authority removed; legacy issuer/whitelist capabilities remain, so **not a neutral custodian**) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
-> | **governance authority / admin** (signer-1; live since Phase-2) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` |
-> | demo clone VACCINATION | `0x1456f93f7376789c46408CC4616751eB853edD9A` |
-> | demo clone DOG_PROFILE | `0x0e56Ae2e1ef684d3e90d7699B981C6B76df922bf` |
-> | ~~VerificationRegistry~~ `_4arg_legacy` (RETIRED) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
-> | ~~VerificationRegistry~~ `_preMetaTx_legacy` (RETIRED) | `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` |
-> | ~~VerificationRegistry~~ `_zk0_legacy` (RETIRED) | `0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8` |
-> | ~~ConsentKeyRegistry~~ `_preMetaTx_legacy` (RETIRED) | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` |
->
-> There are **FOUR generations of the retired VerificationRegistry** - `0xb4FbbDb5…` (`_zk0_legacy`,
-> deployed with `zkVerifier = 0`), `0x19C1B5f8…` (`_preMetaTx_legacy`), `0x8bA836eCe9…` (`_4arg_legacy`),
-> and the final `0x4E2f0996…` - plus the retired CKRs `0xA74DDe4a9b…` (final) and `0xFD277b9B…`
-> (`_preMetaTx_legacy`).
-> The whole owner-revealing line is retired; none of these is a live write target.
-> See §3.2 for that wiring history and the live consent registry's timelock path.
+> What is deployed is one set of ten contracts, deployed by a single run of
+> `contracts/script/Deploy.s.sol`: `ProviderRegistry`, `DogTagIssuer` (the clone implementation),
+> `DogTagIssuerFactory`, `DogTagSBTConsent`, `Groth16VerifierConsent`,
+> `VerificationRegistryConsent`, `ProviderDirectory`, `ServiceDomainResolver` and `ProtocolRegistry`.
+> Read the ledger's `_roles`, `_root_index`, `_frozen_verifier` and `_provisioning` notes before
+> deploying anything against it - between them they record which key must broadcast, why replacing
+> the factory means replacing the verification registry too, that no zero-knowledge artifact rotated,
+> and that no provider is onboarded yet.
 
 ---
 
@@ -90,15 +69,20 @@ forge script script/Deploy.s.sol:Deploy \
   --private-key $PRIVATE_KEY --broadcast -vvvv --legacy   # ROAX needs LEGACY gas (EIP-1559 txs are accepted but never mined)
 ```
 
-Deployed set (order in `Deploy.s.sol`): `IssuerRegistry` → `DogTagIssuer` (clone impl) →
-`DogTagIssuerFactory` — **the shared base only**. The owner-hidden stack (`Groth16VerifierConsent` →
-`DogTagSBTConsent` → `VerificationRegistryConsent`) is deployed separately by
-`DeployCustodialIssuance.s.sol`, which wires the consent verifier into the registry at construction.
-The on-chain `ProtocolRegistry` discovery anchor has its own script, `DeployProtocolRegistry.s.sol`
-(see `docs/PROTOCOL_REGISTRY_RUNBOOK.md`).
-The retired owner-revealing contracts (`DogTagSBT`/`ConsentKeyRegistry`/`PoseidonT6`/`VerificationRegistry`)
-are no longer deployed by any script; their earlier instances remain in the deployment ledger for
-historical reads.
+**`Deploy.s.sol` stands up the whole system in one run** - there is no longer a separate script per
+layer, and `DeployCustodialIssuance.s.sol` / `DeployProtocolRegistry.s.sol` no longer exist.
+Order: `ProviderRegistry` → `DogTagIssuer` (clone impl) → `DogTagIssuerFactory` → `DogTagSBTConsent`
+→ `Groth16VerifierConsent` → `VerificationRegistryConsent` → `ProviderDirectory` →
+`ServiceDomainResolver` → `ProtocolRegistry`, followed by three `onlyOwner` registrar-wiring calls -
+`addFactoryGeneration`, then `setResolverApproved` for the directory and the domain resolver.
+
+**The broadcasting key must be the `admin` the script hands the core to**, because that wiring is
+`onlyOwner` on a core the script has just transferred; a different key deploys nine contracts and
+then reverts on the tenth transaction.
+
+`PublishProtocolVersions.s.sol` (two-phase, timelocked) and `PinConsentWitnessGraph.s.sol` are the
+only other scripts, and both are operational rather than part of standing the system up - see
+`docs/PROTOCOL_REGISTRY_RUNBOOK.md`.
 
 ### Verify on Blockscout
 
@@ -109,15 +93,34 @@ forge verify-contract --rpc-url $ROAX_RPC \
 # repeat per contract; addresses are in deployments/roax.json
 ```
 
-## 3. Post-deploy wiring
+## 3. Rebuild and reinstall the mobile apps
 
-1. **Whitelist issuers (admin).** Each issuer entity is approved per `recordType` after **DNS-TXT
-   verification** of its `DEPLOYMENT_DOMAIN`. The central admin flow triggers the on-chain
-   `whitelistFor(recordType, signer)` — the registry supports **multiple signer addresses per issuer
-   entity** (one-to-many). Delist inactive-mode addresses.
-2. **Wire the Groth16 verifier.** The live `VerificationRegistryConsent` is deployed with its
-   `Groth16VerifierConsent` wired in at construction (`DeployCustodialIssuance.s.sol`), so no separate
-   activation step exists.
+A full redeploy ends here, every time. Vendor the artifacts, rebuild both apps and reinstall them on
+each handset - `docs/MOBILE_BUILD.md` has the per-platform steps.
+
+This is a normal step of redeploying, not a caveat or a cost to work around. The apps bundle one
+generated address - the `ProtocolRegistry` anchor - and resolve the rest of the set from it at
+runtime, so a redeploy that moves the anchor needs the bundle regenerated. Everything else the app
+needs comes from `getDiscoverySet`, which is what lets it CHECK a platform's version claim rather than
+trust it.
+
+Publish the discovery set before or with the reinstall: until `getDiscoverySet` answers, the apps
+resolve nothing and fail closed, which is correct for an unpublished deployment but leaves them
+unable to verify. See `docs/PROTOCOL_REGISTRY_RUNBOOK.md`.
+
+## 4. Post-deploy wiring
+
+1. **Onboard the provider (registrar, `onlyOwner` on `ProviderRegistry`).** `whitelistFor` no longer
+   exists anywhere; authority is service-scoped now, and it is a SEQUENCE rather than one call:
+   `registerProvider` (which writes standing `PENDING`, so this alone leaves the provider inert) →
+   `setProviderStanding(providerId, ACTIVE)` → `setServiceCreationApproval(providerId, recordType,
+   true)`. The provider then deploys its own clone from the factory, and the registrar completes it
+   with `attachService`, `confirmServiceOwner` and `setIssuanceCapability(service, signer, true)`.
+   Verify capability is a separate axis: `setVerifierCapability(purpose, relayer, true)` - an issuer
+   is not implicitly a verifier.
+2. **Wire the Groth16 verifier.** `VerificationRegistryConsent` is deployed with its
+   `Groth16VerifierConsent` wired in at construction by `Deploy.s.sol`, so no separate activation
+   step exists.
    A later verifier swap (e.g. after a production ceremony) goes through the registry's **2-day timelock**:
    ```solidity
    VerificationRegistryConsent.proposeZkVerifier(newVerifierAddr);   // starts ZK_TIMELOCK = 2 days
@@ -140,7 +143,7 @@ forge verify-contract --rpc-url $ROAX_RPC \
    The prod ceremony + timelock procedure are in `docs/CEREMONY_RUNBOOK.md` (concise version:
    `docs/CEREMONY.md`) and `docs/PRODUCTION_DEPLOYMENT.md` §3.2.
 
-## 4. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
+## 5. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
 
 > **RETIRED / HISTORICAL - not runnable.**
 > This section covered the retired owner-revealing `verification.circom` ceremony + verifier deploy.
@@ -156,7 +159,7 @@ forge verify-contract --rpc-url $ROAX_RPC \
 > public random beacon, published transcript, pinned zkey hash enforced by the prover) live in those
 > docs and still BLOCK a production ZK go-live.
 
-## 5. Bring up the stacks (Docker)
+## 6. Bring up the stacks (Docker)
 
 Each stack is `web` (nginx serving the Vite build) + `api` (Rust) + `mongo` (**internal to the compose
 network only — NEVER published to the host**). Build context for all images is the **monorepo root**
@@ -184,7 +187,7 @@ make up-groomer   # groomer : web 43617, api 43618  (vet-api binary, BUSINESS_TY
 The **groomer** stack has **no separate api crate** — its `api` service runs the **`vet-api` binary**
 with `BUSINESS_TYPE=groomer` (host `43618` → container `43618`).
 
-## 6. Post-up custody bring-up (per business stack)
+## 7. Post-up custody bring-up (per business stack)
 
 The vet/groomer api boots **locked**. Via the operator/admin portal (custody routes are
 localhost/session-bound, `/admin/*`):

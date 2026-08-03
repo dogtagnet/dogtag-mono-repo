@@ -34,53 +34,36 @@ between them:
 Demo runbook + literal click-through: **[`docs/DEMO.md`](docs/DEMO.md)** + **[`docs/DEMO_CLICKS.md`](docs/DEMO_CLICKS.md)**.
 
 ## ROAX addresses (chainId 135)
-Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.json).
 
-| Contract | Address |
+Every address, transaction hash and block is in
+[`contracts/deployments/roax.json`](contracts/deployments/roax.json), which is the only place they
+belong.
+They are deliberately not transcribed here: this section used to carry the full table, and every
+entry in it went stale at once when the launch set was deployed - a reader trusting the README would
+have pointed a client at contracts that no longer decide anything.
+
+What is deployed is one set of ten contracts, deployed by a single run of
+`contracts/script/Deploy.s.sol` and each represented exactly once in the ledger:
+
+| contract | role |
 |---|---|
-| IssuerRegistry | `0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21` |
-| DogTagSBT (RETIRED owner-revealing SBT; source deleted; instance kept for historical reads only) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
-| DogTagSBTConsent (**the live owner-hidden SBT**; write-once `profileRoot`; custodial mint target of `POST /profiles/issue/custodial-bind`) | `0xBEbc45A838643D27004827b797b30A464b2b02c0` |
-| DogTagIssuerFactory | `0xED20269E3eBF0119739aaB5258741F3aEb49F140` |
-| DogTagIssuerImpl (clone impl) | `0xe4aC139eB257C309Ec448C116A6F657Dab5590BA` |
-| ProtocolRegistry (two-axis discovery anchor; zero-timelock testnet instance; `dogtag-levelb/1` published + active) | `0xf5492A671E69b1A13f7Fd123C021830eB1ea8081` |
-| IssuerDomainRegistry (on-chain half of the issuer↔domain binding; deployed but **EMPTY** - `boundCloneCount == 0`, so every clone's on-chain domain claim still reads `unavailable` until one is published) | `0xD3B121FEaCde93b95288912EAdbB10824550FdBF` |
-| ConsentKeyRegistry (RETIRED; the consent key now lives inside the tree as the per-tag `owner.consentKey` leaf - there is no on-chain key registry) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
-| Poseidon6 (deployed with the retired owner-revealing set; historical) | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
-| VerificationRegistry (RETIRED owner-revealing registry; source deleted; final instance kept for historical reads) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
-| ~~VerificationRegistry~~ `_4arg_legacy` (RETIRED) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
-| VerificationRegistryConsent (**the live owner-hidden registry**; 4-arg `recordVerificationZK`, owner-blind `Verified`) | `0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B` |
-| ~~VerificationRegistryConsent~~ `_M4_mutableRoot_legacy` (**DEPRECATED / DO NOT USE for Level-B**; bound to mutable Level-A SBT; never live; zero `Verified`) | `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` |
-| ~~VerificationRegistryConsent~~ `_preErasureGate_legacy` (RETIRED; lacks the erasure gate, never live) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
-| Groth16Verifier (RETIRED; paired with the retired verification circuit) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
-| ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
-| Groth16VerifierConsent (**the live consent verifier**; wired into `VerificationRegistryConsent`) | `0x1A9027986B859dc3879896B053deA78F636BE9b1` |
-| deployer EOA (genesis; governance/admin authority removed in Phase-2; still has legacy issuer/whitelist capabilities, so **not a neutral custodian**) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
-| **governance authority / admin** (signer-1; live since Phase-2) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` |
-| demo clone — VACCINATION | `0x1456f93f7376789c46408CC4616751eB853edD9A` |
-| demo clone — DOG_PROFILE | `0x0e56Ae2e1ef684d3e90d7699B981C6B76df922bf` |
+| `ProviderRegistry` | provider identity, standing, service attachment, and every authority predicate |
+| `DogTagIssuer` | the clone implementation: `issue`/`revoke`/`isValid`, owned by its provider |
+| `DogTagIssuerFactory` | self-service clone deployment AND the write-once `rootIssuer` root index |
+| `DogTagSBTConsent` | the tag; write-once `profileRoot`, minted only to a neutral custodian |
+| `Groth16VerifierConsent` | the frozen consent ceremony VK, on chain |
+| `VerificationRegistryConsent` | owner-blind verify |
+| `ProviderDirectory` / `ServiceDomainResolver` | the typed resolvers, selected per provider/service |
+| `ProtocolRegistry` | the discovery trust anchor: two axes, one binding, timelocked writes |
 
-> **Six of these addresses MOVE in the generation-2 cutover** — `IssuerRegistry`,
-> `DogTagIssuerFactory`, `DogTagIssuerImpl`, `VerificationRegistryConsent`, `ProtocolRegistry` and
-> `IssuerDomainRegistry` — while `DogTagSBTConsent` and `Groth16VerifierConsent` are deliberately
-> **reused** and must not move. `docs/CLIENT_REPOINT.md` is the record of what each becomes and in
-> what order; `make check-cutover-consumers` is the gate that fails if any consumer of a moving
-> address is unaccounted for. Do not re-derive the consumer list with `grep -rl <8-hex-prefix>` — it
-> misses every lowercased consumer and invents synthetic ones (see the S-13 entry in `AGENTS.md`).
+Two facts about that set are easy to get wrong and are recorded in the ledger rather than here:
+`VerificationRegistryConsent.rootIndex` IS the factory and is immutable (`_root_index`), and the
+consent verifier was redeployed with byte-identical runtime, so no zero-knowledge artifact rotated
+(`_frozen_verifier`).
 
-> **Historical.** The retired owner-revealing VerificationRegistry went through four generations: the
-> original was deployed with `zkVerifier = 0` (`VerificationRegistry_zk0_legacy` `0xb4FbbDb5…`), a
-> testnet **redeploy** wired in the then-live v1 verifier, a later **meta-tx migration** produced VR
-> `0x8bA836eCe9…` + CKR `0xA74DDe4a9b…` (retiring the `_preMetaTx_legacy` VR `0x19C1B5f8…` and CKR
-> `0xFD277b9B…`), and a final **registry-only redeploy** produced VR `0x4E2f0996…` (carrying the 6-arg
-> `recordVerificationZK`; `0x8bA836eCe9…` becomes `_4arg_legacy`).
-> The whole line is retired; none of these is a live write target.
-> On the live `VerificationRegistryConsent`, a verifier swap goes through the registry's 2-day timelock
-> (`proposeZkVerifier(addr)` → wait ≥ 2 days → `executeZkVerifier()`) - see
-> [`docs/DEPLOY.md`](docs/DEPLOY.md).
-> The live consent-circuit trusted setup is recorded in
-> [`docs/CEREMONY_TRANSCRIPT.consent.md`](docs/CEREMONY_TRANSCRIPT.consent.md); the retired circuit's
-> transcript remains at [`docs/CEREMONY_TRANSCRIPT.md`](docs/CEREMONY_TRANSCRIPT.md).
+No provider is onboarded yet - `providerCount` is 0, so no clone exists and nothing has been issued.
+Nothing under `stacks/`, `apps/`, `packages/` or `crates/` resolves these addresses yet, so the
+running demo stack and both mobile bundles still name superseded contracts.
 
 ## Start here
 - **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** — **deployment index — start here** (tier decision-guide, system model, address book, routing).
@@ -108,7 +91,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
 | `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
 | `stacks/admin` | Central registry, issuer whitelisting, mobile API, appointment source-of-truth, erasure | We host |
-| `contracts` | shared base (`IssuerRegistry` · `DogTagIssuer` clones + factory/root index · `ProtocolRegistry` · `IERC5192`) + the owner-hidden set `Groth16VerifierConsent` · `DogTagSBTConsent` (write-once `profileRoot`, neutral custodial sink) · `VerificationRegistryConsent` (owner-blind `Verified`). The retired owner-revealing sources (`DogTagSBT`/`VerificationRegistry`/`ConsentKeyRegistry`/`Groth16Verifier`) are deleted from the repo; their already-deployed instances remain on-chain only for historical reads | ROAX |
+| `contracts` | the ten launch contracts, one set: `ProviderRegistry` (provider identity + every authority predicate) · `DogTagIssuer` clones + `DogTagIssuerFactory` (self-service deployment + the write-once root index) · `DogTagSBTConsent` (write-once `profileRoot`, neutral custodial sink) · `Groth16VerifierConsent` · `VerificationRegistryConsent` (owner-blind `Verified`) · `ProviderDirectory` / `ServiceDomainResolver` (the typed resolvers) · `ProtocolRegistry` (discovery anchor) · `IERC5192`. No superseded generation exists in source | ROAX |
 | `circuits` | Groth16 owner-hidden consent circuit `DogTagConsent(6)` (reserved-owner-leaf Merkle membership + EdDSA consent + hidden-owner nullifier; depth 6, ≤64 leaves); the retired owner-revealing `verification.circom` is gone from source, its frozen build products kept as provenance | Prover image |
 | `crates/dogtag-standard-rs`, `packages/dogtag-standard-ts` | The open data standard: canonicalization + Poseidon-Merkle + verify + consent | Shared (UniFFI → mobile) |
 | `crates/dogtag-prover-rs` | ark-circom + ark-groth16 proof builder — **test oracle** for `scripts/e2e-zk.sh` (prod proving is **on-device** via mopro) | test/e2e |
@@ -187,8 +170,8 @@ Cross-cutting CI guardrails enforce the privacy claims:
 |---|---|---|
 | 0 | Monorepo scaffold (pnpm + Cargo + Foundry workspaces, Makefile) | ✅ Done |
 | 1 | Shared Poseidon standard SDKs (4-language bit-identical parity) | ✅ Done |
-| 2 | Smart contracts (SBT, IssuerRegistry, DogTagIssuer clones, factory) | ✅ Done |
-| 2.5 | ZK verification subsystem (circuit, VerificationRegistry, ConsentKeyRegistry) | ✅ Done |
+| 2 | Smart contracts (SBT, provider authority core, DogTagIssuer clones, factory) | ✅ Done |
+| 2.5 | ZK verification subsystem (consent circuit, verifier, verification registry) | ✅ Done |
 | 3 | Vet business backend (Rust): issue→share→verify, dual signing, custody | ✅ Done |
 | 4 | Central/admin backend: discovery, whitelisting, appointments, erasure | ✅ Done |
 | 5 | Web portals (vet/groomer/admin; light/dark, wallet-connect, Export UI) | ✅ Done |

@@ -677,7 +677,7 @@ object RoaxRpc {
         }
     }
 
-    private val GET_CONTRACT_SET_SELECTOR = functionSelector("getContractSet(bytes32)")
+    private val GET_DISCOVERY_SET_SELECTOR = functionSelector("getDiscoverySet(bytes32)")
     private val GET_ACTIVE_ARTIFACT_SET_SELECTOR = functionSelector("getActiveArtifactSet(bytes32)")
 
     /** keccak256 of a version string as a 32-byte word — the `ProtocolRegistry` map key
@@ -686,20 +686,28 @@ object RoaxRpc {
         Keccak256.digest(version.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
     /**
-     * `ProtocolRegistry.getContractSet(versionId)` → the on-chain contract-set record (M-4 PR3).
+     * `ProtocolRegistry.getDiscoverySet(versionId)` → the on-chain discovery record.
+     *
+     * The getter is `getDiscoverySet`, NOT `getContractSet` — that name belongs to an earlier record
+     * shape and is absent from this contract. Calling the absent one reverts at the dispatcher with
+     * EMPTY returndata, which arrives here as [CallResult.Err] and is indistinguishable from an
+     * unpublished version; the app then fails closed for a reason that is not the real one. The
+     * rename is deliberate: a record's SHAPE and its getter's NAME move together precisely so a stale
+     * client reverts on dispatch instead of decoding every member one slot out.
+     *
      * Null when the registry is unconfigured/unreachable OR the version is unpublished (the getter
-     * reverts "unknown contract set"), so verification fails closed. A blank address is null.
+     * reverts "unknown discovery set"), so verification fails closed. A blank address is null.
      */
-    suspend fun getContractSet(
+    suspend fun getDiscoverySet(
         rpcUrl: String,
         expectedChainId: Long,
         protocolRegistry: String,
         version: String,
-    ): AnchorResolver.ContractSetRecord? {
+    ): AnchorResolver.DiscoverySetRecord? {
         if (protocolRegistry.isBlank()) return null
-        val data = GET_CONTRACT_SET_SELECTOR + versionId(version)
+        val data = GET_DISCOVERY_SET_SELECTOR + versionId(version)
         return when (val r = ethCall(rpcUrl, expectedChainId, protocolRegistry, data)) {
-            is CallResult.Ok -> AnchorResolver.decodeContractSet(r.hex)
+            is CallResult.Ok -> AnchorResolver.decodeDiscoverySet(r.hex)
             is CallResult.Err -> null
         }
     }

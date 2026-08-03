@@ -1,256 +1,38 @@
 {
-  "ConsentKeyRegistry": "0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671",
-  "ConsentKeyRegistry_preMetaTx_legacy": "0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b",
-  "DogTagIssuerFactory": "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
-  "DogTagIssuerImpl": "0xe4aC139eB257C309Ec448C116A6F657Dab5590BA",
-  "DogTagSBT": "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
-  "DogTagSBTConsent": "0xBEbc45A838643D27004827b797b30A464b2b02c0",
-  "Groth16Verifier": "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
-  "Groth16Verifier_v1_legacy": "0x138b433071Ad806E841B5AD53623290a9bf21761",
-  "Groth16VerifierConsent": "0x1A9027986B859dc3879896B053deA78F636BE9b1",
-  "_m3_consent_verifier": {
-    "status": "DEPLOYED (M3). The Level-B DogTagConsent verifier is deployed + validated on ROAX and wired into the canonical M5 VerificationRegistryConsent 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87. It remains separate from the live Level-A Groth16Verifier 0xEEFCf..., and the M5 pairing is additive and NOT LIVE until the M7 consumer cutover. The former M4 registry 0x53F988Ae... is superseded because it is bound to the mutable Level-A SBT.",
-    "address": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
-    "deployer": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
-    "deploy_tx": "0xcd1cd5fa968981c5d18a41e38346622b917f3b2e78bd1e4a1880989e3c0540af",
-    "deploy_block": 190760,
-    "onchain_verify": "cast code == compiled Groth16VerifierConsent runtime (1933 bytes); verifyProof(valid consent proof)=true, verifyProof(tampered R)=false",
-    "circuit": "circuits/consent.circom -> DogTagConsent(6), 38501 constraints, 7 public outputs [dogTagId,purpose,relayer,nullifier,R,recordType,deadline]",
-    "contract": "Groth16VerifierConsent (contracts/src/Groth16VerifierConsent.sol, renamed to avoid colliding with the live Groth16Verifier)",
-    "ceremony": "TESTNET-GRADE single-contributor phase-2 (public Hermez powersOfTau28_hez_final_17.ptau sha256 6b662a32...; one contribution + drand beacon chain 8990e7a9... round 6286835); see docs/CEREMONY_TRANSCRIPT.consent.md",
-    "vk_sha256": "27879dd7c4eabb6acea4d1be1249ba3c4212f95a27237e7e1e1220557b4e2d7f",
-    "zkey_sha256": "f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868"
-  },
-  "IssuerRegistry": "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",
-  "Poseidon6": "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
-  "VerificationRegistry": "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
-  "VerificationRegistryConsent": "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
-  "VerificationRegistryConsent_M4_mutableRoot_legacy": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125",
-  "VerificationRegistryConsent_preErasureGate_legacy": "0x57A2998668B0F6332f7342016F5Df2Bb05cB900F",
-  "_m4_consent_registry": {
-    "status": "SUPERSEDED / DEPRECATED / DO NOT USE FOR LEVEL-B. This former M4 owner-blind registry is permanently bound to the mutable-root Level-A DogTagSBT 0x1FB89865... It was never live and had zero Verified events before M5 deployment. The canonical Level-B pairing is DogTagSBTConsent 0x96Cba458... + VerificationRegistryConsent 0xb9B313C1...; the Level-A VerificationRegistry 0x4E2f0996... remains live until M7.",
-    "address": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125",
-    "deployer": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
-    "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
-    "deploy_tx": "0xbdcbb27d5940246212de43b5d08c017e832ffcb56ef024344811ded22d92d1af",
-    "deploy_block": 195443,
-    "script": "contracts/script/DeployConsentRegistry.s.sol",
-    "contract": "VerificationRegistryConsent (contracts/src/VerificationRegistryConsent.sol)",
-    "components_reused": "IssuerRegistry, DogTagSBT, DogTagIssuerFactory (rootIndex) - unchanged. NOT wired: ConsentKeyRegistry (D2 retires it - the consent key lives in the tree) and Poseidon6 (the nullifier is a public signal, never derived on-chain). Constructor is 5-arg (ir, sbt, zk, ridx, admin), not Level-A's 7.",
-    "onchain_verify": "cast code == compiled runtime BYTE-IDENTICAL once the 3 immutables are blanked (6317 bytes); zkVerifier()==0x272be146...; sbt()==0x1FB89865...; admin role -> governance 0x8E27E117 (deployer 0x119F8c7F holds NO admin); recordVerificationZK dispatches and executes Level-B logic (reverts a proper Error(string) '!verify-wl', NOT the bare 0x that broke the 4-arg redeploy - see _selector_collision_WARNING); verifyProof(real consent proof)=true, (tampered R)=false against the registry's configured verifier.",
-    "public_signals": "[dogTagId, purpose, relayer, nullifier, R, recordType, deadline] - NO subject, NO keyHash. Order is frozen with the M3 VK (circuits/README.consent.md).",
-    "_selector_collision_WARNING": "recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7]) = 0xdd080593, which is BYTE-IDENTICAL to the RETIRED Level-A 4-arg selector (see _verification_registry_redeploy) - same ABI shape, COMPLETELY different pub semantics (Level-A pub[3]=subject/pub[4]=nullifier/pub[6]=R vs Level-B pub[3]=nullifier/pub[4]=R/pub[6]=deadline). A stale pre-PR#7 client aimed at this registry would DISPATCH rather than bounce, but fails closed twice (R!=profileRoot, then a Level-A proof cannot verify against the consent VK). Conversely a Level-B client aimed at the LIVE Level-A registry 0x4E2f0996 (which only dispatches the 6-arg 0x423a45b6) gets the bare `execution reverted, data: 0x` - the exact confusing symptom from data/dogtag-zkfail-z9. Check the ADDRESS first when debugging either.",
-    "m5_requirements": {
-      "profileRoot": "M5 MUST set profileRoot(dogTagId) = R, the per-tag Merkle root of the M1-engine tree (3 reserved owner leaves + attribute leaves). The SBT already stores profileRoot as bytes32 - NO SBT change is needed for M4. The registry asserts R == profileRoot(dogTagId); this is the ONLY place dogTagId <-> R is bound (the circuit deliberately does not).",
-      "issue_the_root": "M5 MUST ALSO issue(R) the per-tag root into a DogTagIssuer clone, not only setProfileRoot. The registry keeps the Level-A revocation path (resolve rootIssuer[R] -> clone, require isValid(R)), so a root that is only set as profileRoot and never issued reverts 'unknown root' on EVERY verify. This preserves revocation under Level-B: revoke(R) stops the tag verifying.",
-      "custodial_mint": "D1: mint to a neutral custodian, never the owner. The registry reads profileRoot for the binding and ownerOf for token EXISTENCE only (value DISCARDED, never compared), so a custodial ownerOf is correct and inert - ConsentRegistry.t.sol proves verification passes with ownerOf == custodian. The ownerOf call is NOT an owner-identity check: it exists because DogTagSBT.burn (GDPR-erasure) does not clear profileRoot[id], so R == profileRoot still passes for an erased tag, and OZ ownerOf (_requireOwned) reverting on a burned token is what fails erasure closed - see test_burned_tag_cannot_verify.",
-      "profileRoot_mutability_RESOLVED_IN_M5": "M5 resolves the mutable-root gap structurally with DogTagSBTConsent: profileRoot is set only by mintCustodial and there is no setProfileRoot function. The canonical M5 registry is constructed against that SBT. This M4 registry remains unsafe for real Level-B credentials because its immutable sbt pointer cannot be changed."
-    },
-    "m7_cutover": {
-      "_note": "TWO canonical Level-B addresses must move TOGETHER in M7, not one: (1) VerificationRegistry 0x4E2f0996... -> VerificationRegistryConsent 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87, AND (2) DogTagSBT 0x1FB8986573Ac36d532cF7d5a5352202B094D4233 -> DogTagSBTConsent 0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc. Repoint ONLY in M7, when the apps prove against the M3 consent VK and the Level-B custodial issuance path is ready. The on-chain M5 prerequisite is deployed, but repointing now would break the live flow because today's clients still send Level-A proofs. Never point a consumer at the superseded M4 registry 0x53F988Ae.... Repointing only ONE of the two addresses, or only some consumers, is exactly the split-brain recorded in _verification_registry_redeploy - the swap is not done until BOTH keys move everywhere below.",
-      "canonical": "contracts/deployments/roax.json (this file)",
-      "_two_key_warning": "Most files below carry BOTH keys. A file listed here is NOT 'done' after its registry value is swapped - check it for a DogTagSBT / SBT_ADDR / VITE_DOGTAG_SBT_ADDR / PROFILE_DOCUMENT_STORE value too. The SBT swap is also NOT a pure address substitution: DogTagSBTConsent has no setProfileRoot and its mint entrypoint is mintCustodial(dogTagId, root) (no `to`), so callers of DogTagSBT.mint(to,id,root) need a code rework, not a config edit - see backend_zk_path and _m5_custodial_issuance.issuance_is_two_writes.",
-      "mobile_bundles_compile_time_rebuild_and_reinstall": [
-        "apps/ios/DogTag/roax.json (BOTH keys: VerificationRegistry + DogTagSBT)",
-        "apps/android/app/src/main/assets/roax.json (BOTH keys: VerificationRegistry + DogTagSBT)"
-      ],
-      "web_shared_config": [
-        "packages/ui/src/wallet/contracts.ts (BOTH keys: VerificationRegistry + DogTagSBT)",
-        "stacks/owner/web/src/lib/config.ts (BOTH keys: VerificationRegistry + DogTagSBT)"
-      ],
-      "indexer": "stacks/indexer/api/src/main.rs DEFAULT_VREG + stacks/indexer/.env.example. NOTE (M8): the owner-blind Verified has a DIFFERENT topic0 than the Level-A one - stacks/indexer/api/src/chain.rs decodes by Verified::SIGNATURE_HASH and will silently skip Level-B events until M8 teaches it the new shape (dogTagId, relayer, purpose, nullifier, deadline, ts).",
-      "backend_zk_path": "stacks/vet/api/src/chain.rs (the recordVerificationZK sol! ABI is the 6-arg Level-A shape and must become 4-arg; the IDogTagSBT sol! block + mint_calldata bind DogTagSBT.mint(to,id,root) and must become DogTagSBTConsent.mintCustodial(id,root)) + src/verify.rs. The ECDSA recordVerification path has NO Level-B equivalent (see _levelb_ecdsa_path).",
-      "backend_issuance_path_SBT_swap": "stacks/vet/api/src/routes.rs is the LIVE Level-A mint site (register-pet mints to the OWNER's wallet and asserts ownerOf == wallet) - under D1 custodial issuance that becomes mintCustodial with no owner recipient, so this is a CODE rework, not an address swap, and it is the whole point of the M5 unlinkability work. Also stacks/vet/api/src/main.rs (SBT_ADDR / PROFILE_DOCUMENT_STORE env wiring) and src/app.rs (the sbt_addr config field). No longer blocked on the server side: M-2 added POST /profiles/issue/custodial-bind, which DOES accept a device-built R and drives issue(R) + mintCustodial - see levelB_config_surface_M2. That route is ADDITIVE and off by default, and no shipped device posts to it, so the live register-pet mint above is still the Level-A owner-revealing one and still needs this rework at M7 (see _m5_custodial_issuance.m7_handoff, which correctly still lists completing the owner-device tree flow). NOTE: vet-api is NOT the only backend that binds the SBT - stacks/admin/api binds it independently, see backend_admin_api_SBT_swap.",
-      "backend_admin_api_SBT_swap": "stacks/admin/api ALSO binds the SBT directly, with its own copy of the ABI - swapping only its SBT_ADDR to DogTagSBTConsent 0x96Cba458... yields reverting mints/grants, because DogTagSBTConsent has NO mint(to,id,root) entrypoint (only mintCustodial(id,root)) and no setProfileRoot. Files/symbols: src/chain.rs (its own IDogTagSBT sol! block declaring mint(to,id,root) + ownerOf + grantRole + hasRole, plus mint_calldata / grant_issuer_role_calldata / has_issuer_role - vet-api's mint_calldata is commented as mirroring this one, so the two must be reworked together), src/main.rs (SBT_ADDR + PROFILE_DOCUMENT_STORE env wiring), src/app.rs (the sbt_addr config field), src/routes.rs (a central-signer mint that mints to the pet owner's wallet - the same mint(to,id,root) -> mintCustodial(id,root) rework vet-api needs - plus the has_issuer_role reads and the PR-E whitelist-console DOG_PROFILE ISSUER_ROLE grant, which under Level-B must target DogTagSBTConsent's ISSUER_ROLE and pairs with the M7 issuance-actor grant). The admin stack's env is listed under env_examples; the env entry alone does NOT make the admin stack done.",
-      "demo_e2e_scripts": [
-        "scripts/e2e-zk.sh",
-        "scripts/demo-up.sh",
-        "scripts/e2e-smoke.sh",
-        "scripts/demo-bootstrap.sh (SBT only - grants DogTagSBT ISSUER_ROLE to the vet signer; the Level-B analogue is the M7 issuance-actor grant on DogTagSBTConsent)",
-        "scripts/demo-prepare-phone.sh (SBT only - reads .DogTagSBT from this file and calls mint(to,id,root); becomes mintCustodial under Level-B)"
-      ],
-      "env_examples": [
-        "stacks/vet/.env.example",
-        "stacks/vet/web/.env.example (VITE_DOGTAG_SBT_ADDR)",
-        "stacks/groomer/.env.example",
-        "stacks/groomer/web/.env.example (VITE_DOGTAG_SBT_ADDR)",
-        "stacks/admin/.env.example (SBT_ADDR + PROFILE_DOCUMENT_STORE - SBT only; was missing from this list. Env alone is NOT enough: admin-api binds the SBT in code too - see backend_admin_api_SBT_swap)",
-        "stacks/admin/web/.env.example (VITE_DOGTAG_SBT_ADDR)",
-        "stacks/indexer/.env.example"
-      ],
-      "levelB_config_surface_M2": {
-        "_note": "M-2 (POST /profiles/issue/custodial-bind) introduced a SECOND, Level-B-namespaced address pair that is NOT the SBT_ADDR / PROFILE_DOCUMENT_STORE values listed above and is NOT swapped by touching them. Listed here because the split-brain recorded in _verification_registry_redeploy happened precisely by updating only some of the surfaces that carry an address. These two are the Level-B ON-switch: they are unset everywhere today (the route 503s), so at M7 they must be SET, not repointed - the inverse of every other row on this checklist. Both are required together; setting only one still 503s.",
-        "SBT_CONSENT_ADDR": "The Level-B DogTagSBTConsent 0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc. Deliberately a SEPARATE config field from SBT_ADDR rather than an overload, because both SBTs run side by side through the migration (mirroring the indexer's DEFAULT_VREG / DEFAULT_VREG_CONSENT pair). The vet signer must hold ISSUER_ROLE on it - see _m5_custodial_issuance.role_separation: the new SBT's ISSUER_ROLE member count is ZERO at deployment, so granting the issuance actor is an M7 action, not an assumption.",
-        "PROFILE_ISSUER_ADDR": "A real factory-deployed DogTagIssuer clone that Level-B profile roots are anchored into via issue(R), so rootIssuer[R] resolves and revoke(R) keeps working - see _m5_custodial_issuance.issuance_is_two_writes. NOT PROFILE_DOCUMENT_STORE and never a copy of it: PROFILE_DOCUMENT_STORE defaults to the SBT address because under Level-A the SBT doubles as the DOG_PROFILE document store and issue() is never called on it, so issue(R) sent to the SBT REVERTS. The vet signer must be whitelisted for the clone's recordType.",
-        "files_carrying_these": [
-          "stacks/vet/.env.example (also listed under env_examples for its Level-A SBT_ADDR - the Level-B pair is a SEPARATE edit in the same file)",
-          "stacks/groomer/.env.example (same - vet-api serves groomer via BUSINESS_TYPE, so both stacks carry the pair)",
-          "stacks/vet/api/src/main.rs (reads both env vars; fail-closed validation runs BEFORE the bind token is consumed, so a half-wired stack never burns an operator QR)",
-          "stacks/vet/api/src/app.rs (the sbt_consent_addr + profile_issuer_addr config fields)",
-          "stacks/vet/api/src/routes.rs (POST /profiles/issue/custodial-bind - the only consumer)",
-          "scripts/demo-up.sh (deliberately leaves BOTH unset; the demo runs Level-A only - do not seed placeholder addresses)",
-          "docs/REMOTE_DEPLOYMENT.md, docs/PRODUCTION_DEPLOYMENT.md, docs/LOCAL_DEPLOYMENT.md, docs/DEPLOYMENT.md, docs/DEPLOY.md (the env-var and address tables)"
-        ]
-      },
-      "docs": [
-        "README.md",
-        "AGENTS.md",
-        "docs/DEPLOY.md",
-        "docs/DEPLOYMENT.md",
-        "docs/DEMO.md",
-        "docs/GROOMER_ZK_DEMO.md",
-        "docs/REMOTE_DEPLOYMENT.md",
-        "docs/CEREMONY_RUNBOOK.md"
-      ],
-      "docs_normative_levelA_semantics": "These carry the NORMATIVE Level-A verify semantics (the subject-bearing Verified event, the keyOf/ownerOf==subject checks, the pub=[dogTagId,purpose,relayer,subject,nullifier,keyHash,R] vector, the ECDSA path) and go STALE the moment Level-B is the live path - they are deliberately untouched by M4 (Level-A is still live and they describe it accurately), but M7 MUST revise them, not just swap addresses: docs/architecture.md (\u00a74.1 contract set + \u00a74.7 VerificationRegistry normative body), docs/implementation.md (\u00a72.6 'Three new contracts' + the \u00a711.8 normative bodies), docs/ROLE_APPS.md (the contract list + the verifier-role descriptions).",
-      "docs_dpia": "docs/DPIA.md is a self-declared LIVING document that 'MUST be refreshed whenever the on-chain data model, the verification subsystem, or the erasure flow change'. Level-B changes all three: the Verified linkage row (line ~36) is scored on `subject`+dogTagId+relayer and its mitigation is 'fresh per-pet subject' - under Level-B there IS no subject, so the row must be RE-SCORED, not just edited. The re-scoring itself needs a data-protection judgement (DPO/captain) and is deliberately NOT done while Level-B is not live - crediting the live system with a privacy improvement it does not yet have is the dangerous direction to be wrong in for a regulatory artifact. M4 instead added docs/DPIA.md section 2.1, a FORWARD-LOOKING note recording the refresh as QUEUED and naming the three rows that must be re-scored (verification-event linkage, wallet<->SBT link, and the erasure-flow burn mitigation); every current Level-A risk row/rating/mitigation is untouched and still accurate. M7 MUST perform the actual re-scoring, and GDPR Art. 35 wants it done BEFORE processing starts, i.e. before the cutover - not after."
-    },
-    "_levelb_ecdsa_path": "There is deliberately NO ECDSA recordVerification on this registry. That path asserts ownerOf(dogTagId) == subject, which under D1 (custodial mint) resolves to the custodian and can never match a real owner - it is structurally dead under Level-B, and its subject-revealing Verified event would undo the circuit's purpose. Legacy ECDSA verification keeps working, unchanged, on the Level-A registry 0x4E2f0996 for as long as Level-A tags exist. If Level-B ever needs a non-ZK fallback that is a NEW spec decision (the owner has no on-chain identity to sign as), not a port of the Level-A path.",
-    "_supersedes_stale_deploy": "This address REPLACES the first M4 deploy 0x57A2998... (kept above as VerificationRegistryConsent_preErasureGate_legacy, block 194489, runtime 6179 bytes). That instance was deployed BEFORE the review-round hardening that added the ownerOf token-existence gate, so its bytecode LACKS the erasure gate: a GDPR-burned tag would still verify there. It was never live and no consumer ever pointed at it. This redeploy (runtime 6317 bytes) carries the gate and is byte-identical to the committed source, so the recorded address and the shipped code agree - which is the point: a canonical address whose bytecode differs from source is the same landmine class as data/dogtag-zkfail-z9. Do NOT use 0x57A2998."
-  },
-  "_m5_custodial_issuance": {
-    "status": "DEPLOYED + BYTECODE/WIRING VERIFIED (M5); CANONICAL LEVEL-B PAIRING; NOT LIVE. DogTagSBTConsent 0x96Cba458... and its fresh VerificationRegistryConsent 0xb9B313C1... close the Level-B go-live gate. They supersede the mutable-root M4 pairing for all future Level-B credentials. No vet-api, app, indexer, script, or environment was repointed: Level-A remains live until M7.",
-    "script": "contracts/script/DeployCustodialIssuance.s.sol",
-    "contracts": {
-      "DogTagSBTConsent": "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
-      "VerificationRegistryConsent": "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87"
-    },
-    "deployment": {
-      "deployer": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
-      "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
-      "custodian": "0x637A514628d06Af711e3C9A2636fdBe5AE0E5A10",
-      "sbt_deploy_tx": "0xbf4b52f574bc1af46f5f5b829f2d13520a7ca86ba8a0598602eb63099b995d65",
-      "sbt_deploy_block": 202601,
-      "registry_deploy_tx": "0xc215d98044268fe00beda455f271ac62786b5f0d8dea33b00a64a79540abbeb4",
-      "registry_deploy_block": 202602,
-      "finality_check": "Both receipts succeeded and both canonical block hashes were finalized at ROAX finalized block 202612 on 2026-07-16."
-    },
-    "constructor_wiring": {
-      "registry_sbt": "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
-      "registry_zkVerifier": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
-      "registry_issuerRegistry": "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c",
-      "registry_rootIndex": "0xd3179AbBfb0274D0a5F7017d76015A93C159511D",
-      "registry_restrictionEnabled": true
-    },
-    "role_separation": "The immutable custodian is the dedicated neutral platform address 0x637A514628d06Af711e3C9A2636fdBe5AE0E5A10, not the admin and not an issuer/whitelisted signing key. Governance 0x8E27E117... alone holds DEFAULT_ADMIN_ROLE. The new SBT's ISSUER_ROLE member count is zero at deployment and the custodian does not hold ISSUER_ROLE; granting a dedicated issuance actor is an M7 cutover action.",
-    "onchain_verify": {
-      "DogTagSBTConsent": "Exact 9670-byte runtime matches the compiled source after inserting the custodian immutable; keccak256 0xe09f0775184c655126a6ef8e753a7da7830cf74ab048705a049da3aad7419518; normalized compiler-runtime hash 0x5d828262cc6e109c9977a0743f7475f13d397e922d9eb7e8b7d0b6414be27b5c; custodian(), default admin, 3-day admin delay, zero ISSUER members, and write-once ABI all checked by RPC.",
-      "VerificationRegistryConsent": "Exact 6317-byte runtime matches the compiled source after inserting the three constructor immutables; keccak256 0xc8b251bf2cf219286f49b76accccdd087d5cd3cd74066d58a561d3891aa6f3de; normalized compiler-runtime hash 0x0eea105f6adcdbec21ad0fc154f0566b9bc0e7a5d8a3b9a6f53949fcd0e3649d; sbt(), zkVerifier(), issuerRegistry(), rootIndex(), default admin, 2-day admin delay, and restriction gate checked by RPC. The M3 fixture verifies and tampered R fails.",
-      "explorer_submissions": "ROAX explorer verification submissions returned GUID c9654f4427f8e686a7939adf2e2ae27b (SBT) and 4e511356953eefd15a2f59d272e8ddc5 (registry), but its legacy status API cannot poll them and getsourcecode still reports unverified. Exact finalized RPC creation/runtime parity is the authoritative verification; do not infer explorer source publication from these GUIDs."
-    },
-    "old_instance_safety_check": "Immediately before deployment and again through ROAX block 202680 on 2026-07-16, the superseded M4 registry 0x53F988Ae0124b96069d90CBC78E6245FeB01E125 had ZERO Verified events and exactly one total log, its deployment RoleGranted event.",
-    "supersedes": {
-      "VerificationRegistryConsent_M4_mutableRoot_legacy": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125 - DEPRECATED / DO NOT USE for Level-B; immutable sbt points at the mutable-root Level-A SBT; never live; zero Verified events",
-      "DogTagSBT_LevelA_mutableRoot": "0x1FB8986573Ac36d532cF7d5a5352202B094D4233 - DEPRECATED / DO NOT USE for new Level-B credentials; remains live only for the existing Level-A flow until M7"
-    },
-    "issuance_is_two_writes": "vacc.issue(R) into a DogTagIssuer clone AND sbt.mintCustodial(dogTagId, R). Minting alone yields a tag that reverts 'unknown root' on EVERY verify, because the registry resolves the issuing clone from the root (rootIssuer[R] -> isValid(R)) to keep revoke(R) working. The spec's step list names only profileRoot, so this is the trap.",
-    "m7_handoff": "M7 must explicitly grant the intended issuance actor, complete the owner-device tree flow, update Level-B proof/event consumers, and repoint every consumer on the file-by-file list at _m4_consent_registry.m7_cutover. That cutover is a TWO-ADDRESS swap and both halves must land together: VerificationRegistry 0x4E2f0996... -> VerificationRegistryConsent 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87, AND DogTagSBT 0x1FB8986573Ac36d532cF7d5a5352202B094D4233 -> DogTagSBTConsent 0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc. The SBT half is not a config-only edit: DogTagSBTConsent replaces mint(to,id,root) with mintCustodial(id,root) and has no setProfileRoot, so the vet-api AND admin-api issuance paths are a code rework, not a config edit (see _m4_consent_registry.m7_cutover.backend_issuance_path_SBT_swap and .backend_admin_api_SBT_swap). The m4 key is DEPRECATED as an address but still owns the canonical cutover checklist - read it, do not skip it because of its status header; repointing only one address, or only some consumers, is exactly the split-brain recorded in _verification_registry_redeploy. This M5 deployment changed no consumer configuration.",
-    "profileRoot_is_write_once": "DogTagSBTConsent has NO setProfileRoot at all - the root is set at mint and sealed. This structurally closes the setProfileRoot hijack that AGENTS.md flagged for M5 (R == profileRoot is the SOLE tag<->owner binding once M4 removed the ownerOf/keyOf identity checks, so a mutable root is a forgery vector). The seal also survives a burn/re-mint: mintCustodial rejects any id whose profileRoot is already set, because ERC-721 _burn leaves no tombstone and _mint only rejects a re-mint when the previous owner was non-zero, so without that guard an ISSUER holder could burn a tag and re-mint the same id under an attacker root. Consequence: a tag's tree is FROZEN at issuance and a dogTagId is single-use FOREVER (a burned/GDPR-erased id can never be re-minted) - any change means a fresh tag, exactly as D3 already mandates for recovery."
-  },
-  "VerificationRegistry_4arg_legacy": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
-  "VerificationRegistry_preMetaTx_legacy": "0x19C1B5f80c41EE864149500bdF998Dd18aec2a43",
-  "VerificationRegistry_zk0_legacy": "0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8",
-  "_zk_ceremony": "Repo ships testnet self-run v2 (public Hermez ptau + 3 contributions + drand beacon round 6245947); zkey sha256 9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992; see docs/CEREMONY_TRANSCRIPT.md. The v2 Groth16Verifier 0xEEFCfAF026931b7325472A88fd14Ee780Da13559 is the ACTIVE on-chain verifier since executeZkVerifier() ran on 2026-07-02 (block 103419); the prior verifier 0x138b433071Ad806E841B5AD53623290a9bf21761 (sha 45d0b6fb...03e) is retired. See _zk_verifier_swap below and docs/PRODUCTION_DEPLOYMENT.md \u00a73.2.",
-  "_zk_verifier_swap": {
-    "status": "EXECUTED - executeZkVerifier() ran after the 2-day timelock; the v2 verifier is live on the registry",
-    "registry": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
-    "old_verifier": "0x138b433071Ad806E841B5AD53623290a9bf21761",
-    "new_verifier_v2": "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
-    "new_verifier_zkey_sha256": "9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992",
-    "deploy_tx": "0x8204fb78957a87d5cdc775012b89cdc516cfed0755ab6d8501b968848cfa3f54",
-    "deploy_block": 88968,
-    "propose_tx": "0xa0d0d1f94a65716999bccccb1b1e33c92a78d797bafaa87f9f654278fe4e08ce",
-    "propose_block": 88971,
-    "zkVerifierEta": 1782988652,
-    "execute_eta_utc": "2026-07-02T10:37:32Z",
-    "executed_tx": "0xe2e3270f991b901443dacd58158265f7b26c6ac0dc6925385c993c5a24940e70",
-    "executed_block": 103419,
-    "executed_utc": "2026-07-02T10:47:08Z"
-  },
-  "_verification_registry_redeploy": {
-    "status": "EXECUTED - the live VerificationRegistry was redeployed to carry the v2 six-arg recordVerificationZK(a,b,c,pub,recordType,deadline) (selector 0x423a45b6). The prior registry 0x8bA836 (now VerificationRegistry_4arg_legacy) was deployed at 21c9b15, BEFORE PR #7 (64ea1f8) added recordType/deadline, so its bytecode only dispatches the OLD 4-arg selector 0xdd080593; the v2 server/phone send 0x423a45b6, which the old bytecode had no case for -> bare revert -> `execution reverted, data: 0x` on the groomer ZK export. Diagnosis + repro: data/dogtag-zkfail-z9/report.md; deployed via contracts/script/RedeployVerificationRegistry.s.sol reusing all six live component contracts (incl. the existing ConsentKeyRegistry) with admin = the governance authority 0x8E27E117.",
-    "new_registry": "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
-    "old_registry_4arg": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
-    "deploy_tx": "0x10806b6768e7a645a7cbb980708858031ed3404bb4c5fd429f26d91cfdf9ff12",
-    "deploy_block": 188169,
-    "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
-    "components_reused": "IssuerRegistry, DogTagSBT, Groth16Verifier (v2), ConsentKeyRegistry, DogTagIssuerFactory, Poseidon6 - all unchanged; every cross-contract call in the ZK path is a view, so no role grants were needed on the components."
-  },
-  "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
-  "_governance": {
-    "status": "HANDOVER EXECUTED (Phase-2). Governance authority moved off the original deployer EOA to governance signer 'signer-1' 0x8E27E117..., which now holds the IssuerRegistry DEFAULT_ADMIN_ROLE + WHITELIST_ADMIN and owns DogTagIssuerFactory. The historical deployer 0x119F8c7F... lost governance/admin authority but still holds legacy Level-A DogTagSBT ISSUER_ROLE and known record-type whitelists, so it is not role-free and must not be used as a neutral custodian. Migration shipped as reviewable code and merged to mainline (PR #8): contracts/script/GovernanceMigration.sol + MigrateGovernance.s.sol (two-phase Begin/Accept) + test/GovernanceMigration.t.sol; runbook docs/GOVERNANCE_MIGRATION.md.",
-    "authority": "0x8E27E117...",
-    "authority_label": "signer-1 (governance signer)",
-    "former_deployer_eoa": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
-    "tooling_note": "The demo/relayer/admin ADMIN_PRIVATE_KEY (the control-plane GovernanceAction signer) MUST now be signer-1 0x8E27E117... The former deployer cannot perform current governance writes (createIssuer / whitelistFor / adminRevoke), but its legacy issuance capabilities remain and should be separately retired. Private key values are captain-managed env and NEVER committed; only addresses are recorded here.",
-    "authorities": {
-      "factory_owner": "DogTagIssuerFactory (Ownable2Step) -> 0x8E27E117... (createIssuer)",
-      "whitelist_admin": "IssuerRegistry WHITELIST_ADMIN -> 0x8E27E117... (whitelistFor / delistFor)",
-      "default_admin": "IssuerRegistry + VerificationRegistry + DogTagSBT DEFAULT_ADMIN -> 0x8E27E117... (adminRevoke / role-admin / verifier+consent-key swaps, behind the 2-3 day ACDAR timelock)"
-    }
-  },
+  "_": "The deployed DogTag system on ROAX. One set. Every address here was deployed by contracts/script/Deploy.s.sol in a single run, and every contract in contracts/src is represented exactly once. This file describes what is running, not how it came to be.",
   "chainId": 135,
-  "demo_clones": {
-    "DOG_PROFILE": "0x0e56Ae2e1ef684d3e90d7699B981C6B76df922bf",
-    "VACCINATION": "0x1456f93f7376789c46408CC4616751eB853edD9A"
+  "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
+  "custodian": "0x637A514628d06Af711e3C9A2636fdBe5AE0E5A10",
+  "ProviderRegistry": "0x429c2ac735B1268FB0C65F7Cf7746A1C0e8452Aa",
+  "DogTagIssuerImpl": "0x90076d03fD5F3f0B8cf378857B51642aD36E40DD",
+  "DogTagIssuerFactory": "0x5AbDb6D61495f8b753069d582088D1f46283cC69",
+  "DogTagSBTConsent": "0x49aa0Ed542Bb3811452AF93be45B2559aee8b0c8",
+  "Groth16VerifierConsent": "0x868B0B5768D07e635686a0637614Ef2716a5680F",
+  "VerificationRegistryConsent": "0x5cc19aB043BE52bEcD4043aA66d40fB98FF66dff",
+  "ProviderDirectory": "0x9BD44afD0Aed1fD650DD3FDbB30d9ac8623B7cAa",
+  "ServiceDomainResolver": "0xEeBd44A3Fa1421c1cF8049ba21eFF540B00b69a7",
+  "ProtocolRegistry": "0x5192e5257BDF47Dc3e6A46Fc4e955c2CAf195215",
+  "_roles": "admin is the protocol authority: it owns ProviderRegistry (Ownable2Step) and holds DEFAULT_ADMIN_ROLE on DogTagSBTConsent, VerificationRegistryConsent and ProtocolRegistry, plus PUBLISHER_ROLE on the last. It is also the key that must broadcast Deploy.s.sol, because the registrar wiring in that script is onlyOwner on a core the script has just handed to it.",
+  "_custodian": "The SBT's immutable neutral custodian. Every dog tag is minted here and never to an owner's wallet, so ownerOf carries no owner meaning and can never be compared as identity. It must have no code, hold no role anywhere, and never sign - it is a sink, not an actor.",
+  "_frozen_verifier": "Groth16VerifierConsent is redeployed rather than reused, and its runtime bytecode is byte-identical to the previously deployed frozen-ceremony verifier - checked directly with cast code against the prior live verifier before and after the broadcast, and 1933 bytes in both. So the on-chain VK is unchanged and NO zero-knowledge artifact rotated: the consent circuit, its ceremony, consent_final.zkey (sha256 f83a111f...), consent.graph and both mobile bundles are untouched by this deployment. Changing any of them would be a ceremony decision, not a deployment one.",
+  "_root_index": "VerificationRegistryConsent.rootIndex is the DogTagIssuerFactory. It is immutable, so the factory named here is the one this registry resolves every anchored root through for its whole life - replacing the factory means replacing the registry too, and repointing every client. That is the deliberate price of the pointer not being rewritable by anyone.",
+  "_publication": "PUBLISHED. dogtag-levelb/1 is live and active on both axes with its binding, executed 2026-08-03. getDiscoverySet(keccak256(\"dogtag-levelb/1\")) returns a 9-word record; getActiveArtifactSet resolves; minAppVersion 1.4.0. Note the getter is getDiscoverySet - getContractSet belongs to an earlier record shape and is absent here, and calling it reverts at the dispatcher with EMPTY returndata, which reads identically to an unpublished version.",
+  "_deployment": "2026-08-03, ROAX chain 135. All nine contracts deployed by one run of contracts/script/Deploy.s.sol, broadcast by admin 0x8E27E117... at blocks 332371-332382 (12 transactions: 9 CREATEs then the 3 onlyOwner registrar-wiring calls). VERIFIED: every receipt status 0x1; all nine deployed runtimes compared against the compiled artifacts (Groth16VerifierConsent, DogTagIssuer and ProviderRegistry byte-for-byte EXACT, the other six exact once their immutable slots are blanked on both sides); and every immutable read back from the chain - vr.rootIndex/providerRegistry/sbt/zkVerifier, factory.registry/implementation, core.owner, sbt.custodian, domainResolver.factory, directory.core - each equal to the address deployed for it. The whole sequence was rehearsed first on an anvil fork of ROAX and produced identical addresses.",
+  "_tx": {
+    "ProviderRegistry": "0x34db41d44627bf341e2807879c117620f672ae1c4a1875118a928064a0af5e17 @332371",
+    "DogTagIssuerImpl": "0x6acf2361d01bd0c312d91412f5b10343400413c87d66bec3f91246725e69cb36 @332372",
+    "DogTagIssuerFactory": "0xb67f2c35b9025b200aefda76ec741c5d28433a1ef9a868bdf42c58b0e6eeba1f @332373",
+    "DogTagSBTConsent": "0x9ef56b9cd1bc982ae89b0d008cb720dab2ed4b1731ffd576903db6d52b0dccde @332374",
+    "Groth16VerifierConsent": "0xfbde8c97f7ce1f93b14e70531b03630539aca0afb7d9170166ae73860f01294b @332375",
+    "VerificationRegistryConsent": "0x6f190cbc9dcf4877e10fb4ab68d112499b2dde518294799c56fa6f642d199ea5 @332376",
+    "ProviderDirectory": "0xacf4df24789950226f3c992a68b0d89f1f75298579e90673ee6c5511a989769f @332377",
+    "ServiceDomainResolver": "0xa15226a21bf59fdcd11934064dba4a278e2a9662cbc578d94b202fb4420fd15a @332378",
+    "ProtocolRegistry": "0xa6fb18d739e4fc31f06b7ff64232a92d634eaffee334f6172f2a7a4c0b6090b1 @redeploy",
+    "addFactoryGeneration": "0xa048b34c78bba8f8b68b134a7f19f3a7a7092f95d9b21eca5dcfa5352f364694 @332380",
+    "approveDirectoryResolver": "0x08f1562b7f7a23c84e925dc584930d7e20588373af1dd98ed62024e2f268d123 @332381",
+    "approveDomainResolver": "0xed9bff112b26a00c4518931d1f4e2d6170ea88282f29fa9033250b4d22e6ea2a @332382"
   },
-  "government_clones": {
-    "_note": "Per-record-type DogTagIssuer clones for the government credential authority on the FRESH owner-hidden set, deployed via DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business) on factory 0xED20269E with business == the governance signer 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2 (which is the factory Ownable owner, so createIssuer is authorised). Provisioned + re-runnable via scripts/demo-provision-government.sh. DogTagIssuer.issue is onlyWhitelisted against clone.registry(), so the GOV_SIGNER_KEY address must be whitelisted on IssuerRegistry 0xAEE54035 for keccak256(recordType) - the script does that too. Consumed by stacks/government via TRAVEL_CLEARANCE_ISSUER_ADDR / EU_HEALTH_CERT_ISSUER_ADDR.",
-    "TRAVEL_CLEARANCE": "0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F",
-    "_TRAVEL_CLEARANCE_provenance": "2026-07-26: createIssuer tx 0x589e30891c6494ad695e526b657c1f5ed90f92c5820cf875d78419bdc3b4be89 (block 276167). Verified: isClone == true on factory 0xED20269E, registry() == 0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21, recordType() == keccak256(TRAVEL_CLEARANCE). First real government issuance anchored into it: root 0x02ae43c046bf1a933d652cce654ec03fc94f13ccec82047c82ea9e2251f266e9, tx 0x50a7ca02c643cb9a33f308eede54a10d908503ddfa67f3abaed2456f0719e2d1 (block 276218), issuedBy 0xc6c0904fB8445CDBCaB76823788522586712e39D, factory.rootIssuer(root) == this clone.",
-    "EU_HEALTH_CERT": null,
-    "_EU_HEALTH_CERT_note": "NOT deployed on the fresh set. predictIssuer(keccak256(EU_HEALTH_CERT), 0x8E27E117...) gives its deterministic address; run scripts/demo-provision-government.sh (or createIssuer directly) when the EU_HEALTH_CERT flow is needed. Leave EU_HEALTH_CERT_ISSUER_ADDR unset until then - the government API reports the issuer as null and /issue falls back to dry_run rather than anchoring somewhere wrong."
-  },
-  "ProtocolRegistry": "0xf5492A671E69b1A13f7Fd123C021830eB1ea8081",
-  "_r8_fresh_redeploy": "2026-07-23: the flat keys above (factory/impl/SBTConsent/VerifierConsent/IssuerRegistry/VRegConsent/ProtocolRegistry/admin/demo_clones) are the FRESH owner-hidden set deployed per data/dogtag-roaxdeploy-r8/report.md and SUPERSEDE every address named inside the historical _m3/_m4/_m5 annotation blocks in this file; those blocks are kept as deployment history only.",
-  "government_clones_deadRegistry_legacy": {
-    "status": "SUPERSEDED / DO NOT USE. These clones are bound to the RETIRED IssuerRegistry 0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c and are NOT clones of the fresh DogTagIssuerFactory 0xED20269E (isClone == false). Verified on-chain 2026-07-26: registry() == 0x5d86e4CF..., so their onlyWhitelisted gate reads a registry no verifier uses. Wiring TRAVEL_CLEARANCE_ISSUER_ADDR at one of these makes government issuance fail closed (NotWhitelisted) even after a correct whitelistFor on the live registry. Use the government_clones block instead.",
-    "TRAVEL_CLEARANCE": "0x8e276BD4c57740766A7e173D05F4f02013681c6a",
-    "EU_HEALTH_CERT": "0xe30A17396c0fb75D3e8bFc862a49677B3dd568E2",
-    "_original_note": "Per-record-type DogTagIssuer clones for the government credential authority, deployed via DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business) with business == the protocol admin 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 (single-authority topology, arch DP-3). The government signer (the same admin address on testnet) is whitelisted on IssuerRegistry for keccak256(recordType); DogTagIssuer.issue is onlyWhitelisted. Consumed by stacks/government via TRAVEL_CLEARANCE_ISSUER_ADDR / EU_HEALTH_CERT_ISSUER_ADDR."
-  },
-  "_test_artifact_clones": {
-    "_note": "Throwaway clones deployed only to PROVE a control-plane path works end to end. Not consumed by any service, not part of any flow. Listed so a factory IssuerCreated enumeration does not turn one into a mystery.",
-    "DEMOFIX_F6_PROOF": "0xe989dbb92641674b4e78350adbf59e4ee9628845",
-    "_DEMOFIX_F6_PROOF_provenance": "2026-07-26: deployed THROUGH the admin portal's Issuers/Factory UI (POST /v1/admin/factory/issuers) to prove the FACTORY_ADDR fix - that path previously answered 'FACTORY_ADDR not configured'. createIssuer tx 0x84a68890e872f15b8bc853fb3788f8a91c3e9c6fe25691d173f185df85823e22 (block 276180), disposition executed by 0x8E27E117. No root was ever issued into it. Safe to ignore."
-  },
-  "IssuerDomainRegistry": "0xD3B121FEaCde93b95288912EAdbB10824550FdBF",
-  "_IssuerDomainRegistry_provenance": "2026-07-28: deployed STANDALONE against the EXISTING fresh-set factory + registry via contracts/script/DeployIssuerDomainRegistry.s.sol - deliberately NOT Deploy.s.sol, which also constructs a fresh IssuerRegistry/DogTagIssuerImpl/DogTagIssuerFactory and overwrites those keys here; a new factory is unrecoverable because VerificationRegistryConsent.rootIndex is immutable, so every root issued by a new clone would resolve rootIssuer[R] == 0 and strand the issuer-whitelist pillar. deploy tx 0x44e385c28a655ab22056ea9e41390de4665fe3ef1efb69560289d6238195ac66 (block 292145), signer = deployer 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 (this deploy needs NO role; it only constructs). Constructor args factory 0xED20269E3eBF0119739aaB5258741F3aEb49F140 + issuerRegistry 0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21, both preflighted live and cross-checked via factory.registry() == ISSUER_REGISTRY before broadcast. VERIFIED: deployed runtime is byte-identical to the compiled source once the 8 immutable slots are blanked (5023 bytes); factory() and issuerRegistry() (NOTE: the getter is issuerRegistry(), not registry()) return exactly those two addresses; setDomain from an unauthorized sender on the REAL TRAVEL_CLEARANCE clone reverts NotAuthorized 0xea8e4eb5, setDomain on a non-clone reverts NotAClone 0x3ce914e4, and an uppercase or single-label domain reverts BadDomain 0x9d135ed2. SCOPE: the registry is EMPTY (boundCloneCount == 0, no domain bound). This changes nothing a user sees until domains are bound - it does NOT make domain verification work. What it does is move the app's honest 'the on-chain domain claim could not be read' into a state where a claim CAN be read once one is published. Consumers wired in the same change: stacks/admin/web/.env.example (VITE_ISSUER_DOMAIN_REGISTRY_ADDR), stacks/government/.env.example (ISSUER_DOMAIN_REGISTRY_ADDR), and the two compile-time mobile bundles apps/ios/DogTag/roax.json + apps/android/app/src/main/assets/roax.json (both need an app rebuild + reinstall to take effect). scripts/demo-up.sh needed no edit - it already resolves this key from this ledger.",
-  "ProviderRegistry": "0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9",
-  "DogTagIssuerV2Impl": "0x91E210AD9A5CCe4aF2C49221f0584E2ad6d13691",
-  "CloneProvenanceRouter": "0xf374f4cA5ebBBAFf0dFcE48D8Cda2e47F9D5da01",
-  "DogTagIssuerFactoryV2": "0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6",
-  "VerificationRegistryConsentV2": "0xE49f30D6677f019f11298B3294377E6B817d43Da",
-  "ProtocolRegistryV2": "0xe98BFf66367F74F413414228adD91c16A24F7fdb",
-  "_s14_cutover": "2026-08-01: registry-plan S-14 - the LIVE generation-2 cutover on ROAX, executed via contracts/script/ExecuteCutover.s.sol (the live counterpart of RehearseCutover.s.sol, which refuses a live endpoint by design because it requires block.number == the pinned rehearsal block). Both drivers call the SAME contracts/script/CutoverSequence.sol functions with the same arguments in the same order, which is what makes the S-12 rehearsal and its mutation harness evidence about THESE transactions. Signer for all eight: governance 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2 (six are plain deployments needing no authority; C-4b and C-2 are onlyOwner). Sent with --legacy --slow and WITH simulation - --skip-simulation was NOT used and is NOT needed here: it was required on the S-12 fork only under --unlocked, whereas a --private-key run attributes every CREATE to governance@nonce identically in both phases (verified against cast compute-address for nonces 84-87 before sending). Keeping simulation on is strictly safer, because a failed precondition then broadcasts nothing - observed twice while proving the phase-2 guards refuse. TRANSACTIONS, in order: C-1 ProviderRegistry 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 tx 0x8c9e9c2be629be9a82f67d4a5c82a33989994042988353f39c4c2ca44d74ff53 block 313874; C-3a DogTagIssuerV2 impl 0x91E210AD9A5CCe4aF2C49221f0584E2ad6d13691 tx 0x286df6bbf7f9d01381dd04deee833dbb8d5b09392063eba4f0ac6485dfa0944e block 313875; C-4 CloneProvenanceRouter 0xf374f4cA5ebBBAFf0dFcE48D8Cda2e47F9D5da01 tx 0x06bea9cb58fb9e681e5d5aad7be473fc860cbcd9fee01a552d29e7522399304a block 313876; C-3b DogTagIssuerFactoryV2 0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6 tx 0x07f1645c3ad0cf433e0174000d2a135d876e77eb9551e580a724e97968cac080 block 313877; C-4b router.appendGeneration(factoryV2) tx 0x299c8246323b71f113e6e35dccbeb2d9c6294c71c940286356b07f62364689bc block 313888; C-2 core.addFactoryGeneration(keccak('dogtag-issuer-factory/2') = 0xdf903c31f91b1997ce19d3ba27ac4228ab01dafb5fa20b9e2a3bcb2ed6f2a243, factoryV2) tx 0x516e6faed817804737c5159f644d1d92d1d0eb6d3cb7f4988c04e7e822e27108 block 313889; C-5 VerificationRegistryConsent V2 0xE49f30D6677f019f11298B3294377E6B817d43Da tx 0xf5d4835cd3c9d47bc99f5236ebf8a4944aaa7e716fe2ccbb71cb2d8361039091 block 313898; C-8 ProtocolRegistryV2 0xe98BFf66367F74F413414228adD91c16A24F7fdb tx 0x8a4c3e42f1b585e0654ccd9b3251a6bd297c43fe052e45c0eb1fa86bbb231e93 block 313899. Every receipt status 0x1; governance nonce advanced exactly 84 -> 92. THE ROUTER ORDERING WAS VERIFIED ON CHAIN TWICE, because reversing it is a silent revocation bypass: after C-4, generationCount() == 1 with generationAt(0) == the generation-1 factory (NOT [factoryV2, factoryV1]); after C-4b, generationCount() == 2 with generation 1 still at index 0 and generation 2 at the TAIL. All 19 historical roots in contracts/rehearsal/fixtures/historical-roots.json were checked against the LIVE chain at both points and resolve router.rootIssuer(r) == factoryV1.rootIssuer(r), non-zero - so the append is monotone and moved no existing answer. THESE KEYS DO NOT SUPERSEDE THEIR GENERATION-1 COUNTERPARTS YET. Client repointing is C-9/C-10 and is OUT OF SCOPE of S-14, so DogTagIssuerFactory, IssuerRegistry, VerificationRegistryConsent and ProtocolRegistry above remain the addresses every consumer reads; the generation-2 keys are recorded under distinct names precisely so no consumer is repointed by a ledger edit. Nothing reads the six new addresses today. C-8's PUBLISH_TIMELOCK is 3600 seconds (1 hour) - the contract's MIN_PUBLISH_TIMELOCK floor, taken with the testnet opt-in stated aloud. IT IS IMMUTABLE, so record the reasoning: the point of C-8 is that generation 1's live ProtocolRegistry carries PUBLISH_TIMELOCK == 0 (re-confirmed on chain here), and the V2 constructor makes zero unrepresentable. DeployProtocolRegistryV2.s.sol encodes the policy this follows - mainnet takes exactly the 2-day DEFAULT_PUBLISH_TIMELOCK, a stated testnet deploy may go shorter but never below the floor. ROAX is the disposable testnet whose generation-1 registry deliberately ran PUBLISH_TIMELOCK_SECS=0 so publication could be walked through in one sitting, and the floor is the nearest sanctioned V2 equivalent; a 2-day delay would block every discovery publish during testing. docs/CUTOVER_REHEARSAL.md section 4 recommends the 2-day default, written in a mainnet-safety register - if that value is wanted here instead, redeploying C-8 is FREE TODAY and only today, because its stated rollback cost (repointing every client, including two compile-time mobile bundles) is zero while no consumer carries the address. MAINNET MUST USE 2 DAYS. STEPS DELIBERATELY NOT PERFORMED, per docs/CUTOVER_TRANSACTIONS.md: the rest of C-2 (registering providers, mirroring issuance grants - and attaching the five generation-1 clones is not possible at all, they have no owner()), C-6, C-7 (SINCE PERFORMED on 2026-08-01 - see _c7_typed_resolvers below, which deployed both typed resolvers DEPLOYED AND UNWIRED; this clause records S-14's own scope, not the current state), C-9, C-10, C-10b, C-11 and C-12. Each is one transaction per signer or relayer whose membership is KYC work, so no address is invented for them here. In particular C-12 (the generation-1 issuance freeze) is what closes CloneProvenanceRouter's one open direction - a later-generation root re-anchored in an EARLIER generation - and it has NOT been performed.",
-  "ProviderDirectory": "0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0",
-  "ServiceDomainResolver": "0x4AB4a70CFa9CE9415B96dF543C218F90a2619c33",
-  "_c7_typed_resolvers": "2026-08-01: registry-plan C-7 - the two typed generation-2 RESOLVERS, the pair S-14 left out. Deployed with `forge create --legacy` rather than a script, deliberately: each is a single construction with address-only arguments, no ledger mutation, no onlyOwner call and no ordering between them, so a purpose-written script would have been new unreviewed logic standing between the reviewed source and the chain. NOT Deploy.s.sol, for the reason recorded under _IssuerDomainRegistry_provenance: that script also constructs a fresh IssuerRegistry / DogTagIssuerImpl / DogTagIssuerFactory and overwrites those keys, and a new factory is unrecoverable because VerificationRegistryConsent.rootIndex is immutable. SIGNER for both: the deployer EOA 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96, NOT governance - neither constructor takes an owner or grants a role, so the deploy confers no authority and the key that holds authority had no reason to be exposed to it. Same precedent and same signer as the IssuerDomainRegistry standalone deploy. TRANSACTIONS: ProviderDirectory 0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0 tx 0x8e1e1b02df54ae5b117e6b1a496985a7cf3daf20974b4b37ad14f0ce7a670d03 block 316864, constructor arg core = ProviderRegistry 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9; ServiceDomainResolver 0x4AB4a70CFa9CE9415B96dF543C218F90a2619c33 tx 0x70cdb26e3723ac0431c13e3c90da8edba7f3bb5519a3c434163a8119015b414a block 316865, constructor args core = the same ProviderRegistry and router = CloneProvenanceRouter 0xf374f4cA5ebBBAFf0dFcE48D8Cda2e47F9D5da01. Both receipts status 0x1; deployer nonce 172 -> 174. REHEARSED FIRST on `anvil --fork-url https://devrpc.roax.net` against the LIVE core and router (anvil killed by its recorded PID, never by name), because both constructors BEHAVIOUR-PROBE their dependencies and a probe that refuses is the whole point of them: ServiceDomainResolver reverts RouterRecognizesEveryAddress for a router that vouches for everything and CorePermissionIsZero for a core reporting a zero content-write permission, and ProviderDirectory reads PROVIDER_PERMISSION_RECORD() in its constructor. Preflighted live before broadcast: chainId 135, core PROVIDER_PERMISSION_RECORD() == 1, router isClone(0x0) == false, router generationCount() == 2 with generationAt(0) the generation-1 factory and generationAt(1) DogTagIssuerFactoryV2 - oldest-first, unchanged by this step. VERIFIED after broadcast: each deployed runtime is BYTE-IDENTICAL to the compiled source once its 11 immutable spans are blanked (12129 bytes and 6944 bytes respectively); ProviderDirectory.core() and ServiceDomainResolver.core()/router() return exactly the constructor arguments above; both report a record permission of 1. SCOPE - DEPLOYED AND UNWIRED, exactly like the six S-14 keys. ProviderDirectory.resolverApproved() is FALSE and both stores are empty (listingTotal 0, pinTotal 0, recordedServiceCount 0), because a typed resolver does nothing until the registrar calls ProviderRegistry.setResolverApproved(kind, resolver, true) AND each provider selects it via setDirectoryResolver / setDomainResolver. Both are onlyOwner-or-provider calls and both are KYC work; neither was performed here. NO consumer reads either address: there is no .env.example entry and no client config, and the deployed IssuerDomainRegistry 0xD3B121FE... remains the wired domain surface until C-9/C-10. Deploying these changed nothing a user sees. CONSEQUENCE WORTH RECORDING: these two sources were the last generation-2 contracts still freely editable, and they are now frozen in the same sense as the S-14 six - an edit makes the source diverge from deployed bytecode. Two items AGENTS.md records as open against ProviderDirectory are therefore now redeploy-gated rather than edit-gated: the unowned uint8 kind-code-to-label mapping, and the permanent scan weight of a provider that has lost ACTIVE standing (recorded there as a design question and not a live risk). Redeploying either contract is FREE while no consumer carries its address, which is today.",
-  "_c2_first_provider": {
-    "what": "The first provider ever registered on the generation-2 ProviderRegistry, driven end to end through the admin portal's new registrar surface (registry plan C-2, partial).",
-    "date": "2026-08-02",
-    "registry": "0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9",
-    "providerId": "0x2ee0cd9517174eb28df3523bb5791767d18b4ecc",
-    "controller": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-    "controllerNote": "The well-known anvil account 0. Chosen deliberately for a walkthrough registration on a disposable testnet: its key is public, so anyone can act as this provider. Do NOT copy this choice for a real provider.",
-    "identityDigest": "0x4dedb55a6a13c72f7c0e9894446e38542e2f3a3f0be24e1796a831ee882dc510",
-    "identitySchema": "dogtag/provider-identity/1 (schema 1, hashAlgorithm 0x1b keccak-256). The REGISTRAR's assertion - a separate namespace from ProviderDirectory's provider-written ProfileAnchor.",
-    "transactions": {
-      "registerProvider": {
-        "txHash": "0x71374d5eaa676707de0fd962a93f235118107f6ff6937a8bb4a902d735024c3e",
-        "block": 324312
-      },
-      "setProviderStanding_ACTIVE": {
-        "txHash": "0x775bebe767f0a7d4be6e23bc590f6f40c9d68d4dd301903cb636b5f16ac91d25",
-        "block": 324315
-      },
-      "setServiceCreationApproval_VACCINATION": {
-        "txHash": "0xb4302721ffa24747bae0e692db3753be9efe181f204cef3f027f468576995e8e",
-        "block": 324317
-      }
-    },
-    "signer": "The governance key 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2, which is ProviderRegistry.owner(). Every write routed through admin-api's GovernanceAction dispatch, which reads owner() live.",
-    "verifiedAfter": "providerCount()==1; provider().standing==2 (ACTIVE); publicIdentityAnchor().revision==1; canCreateService(providerId, keccak(VACCINATION), controller) called AS DogTagIssuerFactoryV2 -> true, and -> false for the unapproved BOARDING. The SAME call with no `from` answers false, because its first term is generationOfFactory[msg.sender].",
-    "notDone": "The provider's own createIssuer send is NOT exercised - it needs the controller's key in a browser wallet. C-9/C-10 client repointing and C-11 generation-2 issuance remain outstanding; no generation-1 consumer was repointed."
-  }
+  "_provisioning": "Deployed and wired, with NO provider onboarded: providerCount is 0, so no clone exists and nothing has been issued. Registering a provider, clearing it for a record type, attaching its clone and granting an issuance capability are registrar KYC decisions about a particular business, deliberately outside the deploy script - drive them from the admin portal's registrar surface.",
+  "_sbt_rotation_ruling": "CAPTAIN RULING 2026-08-03: KEEP this fresh DogTagSBTConsent. Settled - do not re-litigate, and do not 'restore' the previous SBT as a compatibility measure. WHAT ROTATING COST: this SBT holds no profileRoot for any previously minted tag, so every credential issued before this deployment stops verifying, and a dogTagId the old SBT had permanently retired (mintCustodial refuses an id whose root is already set, and that refusal survives a burn) is mintable again here. WHY IT WAS RULED RIGHT ANYWAY: reusing the old SBT would have preserved NOTHING. Verification needs BOTH R == profileRoot(dogTagId) AND rootIndex.rootIssuer(R) != 0, and rootIndex moved to the new factory, which has never seen a historical root - so every pre-existing credential answers 'unknown root' whichever SBT is in the slot. The old profileRoots would have been preserved into a state where they could not verify. Testnet state is disposable by standing ruling. WHY THIS IS NOT THE ZK CONSTRAINT: the must-not-rotate rule exists so no zero-knowledge artifact needs regenerating, and the SBT appears nowhere in the circuit or the VK. Nothing ZK rotated - see _frozen_verifier. Rotating the VERIFIER would be a ceremony decision and remains captain-gated; this was not that.",
+  "_protocol_registry_redeploy": "This ProtocolRegistry REPLACES the one deployed with the rest of the launch set, and the earlier instance is not a write target. Reason: PUBLISH_TIMELOCK is immutable and the original carried the then-mandatory 1-hour floor, which put an hour between propose and execute on every testnet iteration. Captain's ruling 2026-08-03: no wait at all on testnet, production keeps 2 days. The contract floor moved to the deploy script (Deploy.validatePublishTimelock), this instance carries PUBLISH_TIMELOCK 0, and DEFAULT_PUBLISH_TIMELOCK is still 172800. Redeploying is routine rather than unfixable now, because a mobile rebuild+reinstall accompanies every full redeploy as standing process."
 }

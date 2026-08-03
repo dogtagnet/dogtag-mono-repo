@@ -148,7 +148,7 @@ old custom preference. If neither endpoint establishes the bundled chain, the re
 rather than querying those addresses on another chain.
 
 **Two reads deliberately ignore your choice, and they are the only ones that do.** The
-`ProtocolRegistry` pair `getContractSet`/`getActiveArtifactSet` always names the bundled endpoint
+`ProtocolRegistry` pair `getDiscoverySet`/`getActiveArtifactSet` always names the bundled endpoint
 (`AppConfig.roaxRpc` / `RoaxRpc.DEFAULT_RPC`). It is read in `runLevelBFlow`, once per owner-hidden
 verification, from iOS `apps/ios/DogTag/ScanScreen.swift` and Android
 `apps/android/app/src/main/java/io/liberalize/dogtag/ui/screens/ScanScreen.kt` - the only caller on
