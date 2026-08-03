@@ -126,11 +126,7 @@ async fn issue_root(chain: &MemChain, root: &str) {
     let signer = chain
         .signer_address()
         .expect("MemChain has an emulated signer");
-    chain.whitelist(
-        "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c",
-        &government_api::app::record_type_key("TRAVEL_CLEARANCE"),
-        &signer,
-    );
+    chain.set_issuance_capability("0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c", CLONE, &signer, true);
     // Declare the clone's own immutable `recordType()`, as the factory's `createIssuer` does on a real
     // clone. The mandatory issuer-whitelist pillar asks the RESOLVED clone which record type it issues
     // rather than trusting the envelope, so an undeclared clone leaves that pillar indeterminate — and
@@ -863,7 +859,6 @@ impl ChainClient for PinRecordingChain {
     async fn whitelisted_at_issuance(
         &self,
         issuer_addr: &str,
-        record_type: &str,
         signer: &str,
         root: &str,
         at_block: Option<u64>,
@@ -873,7 +868,7 @@ impl ChainClient for PinRecordingChain {
         // about reads that did not all happen at that height.
         self.record("whitelistedAtIssuance", at_block);
         self.inner
-            .whitelisted_at_issuance(issuer_addr, record_type, signer, root, at_block)
+            .whitelisted_at_issuance(issuer_addr, signer, root, at_block)
             .await
     }
     async fn issue(

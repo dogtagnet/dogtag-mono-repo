@@ -43,11 +43,7 @@ fn demo_state() -> AppState {
     };
     let chain = MemChain::new();
     if let Some(signer) = chain.signer_address() {
-        chain.whitelist(
-            REGISTRY_ADDR,
-            &government_api::app::record_type_key(TRAVEL_CLEARANCE),
-            &signer,
-        );
+        chain.set_issuance_capability(REGISTRY_ADDR, ISSUER_ADDR, &signer, true);
     }
     AppState {
         store: Arc::new(MemStore::new()) as Arc<dyn Store>,

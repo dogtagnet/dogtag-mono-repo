@@ -45,11 +45,7 @@ fn gov_state(feed: Arc<dyn OversightFeed>) -> (AppState, MemChain) {
     };
     let chain = MemChain::new();
     if let Some(signer) = chain.signer_address() {
-        chain.whitelist(
-            REGISTRY_ADDR,
-            &government_api::app::record_type_key(TRAVEL_CLEARANCE),
-            &signer,
-        );
+        chain.set_issuance_capability(REGISTRY_ADDR, ISSUER_ADDR, &signer, true);
     }
     let store: Arc<dyn Store> = Arc::new(MemStore::new());
     let state = AppState {

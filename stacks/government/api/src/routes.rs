@@ -720,7 +720,7 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
             // sequence against) becomes `None`: indeterminate, never a pass and never an accusation.
             let authorised_then = match st
                 .chain
-                .whitelisted_at_issuance(&clone, &chain_rt_key, &signer, &claimed_root, at_block)
+                .whitelisted_at_issuance(&clone, &signer, &claimed_root, at_block)
                 .await?
             {
                 GrantAtIssuance::Authorized => Some(true),
