@@ -27,6 +27,7 @@ interface IProviderRegistry {
     function isRecognizedIssuer(address service, address signer) external view returns (bool);
     function isWhitelistedFor(bytes32 key, address signer) external view returns (bool);
     function hasRole(bytes32 role, address account) external view returns (bool);
+    function rightsOf(address account) external view returns (uint256);
 }
 
 /// @title ProviderRegistry — canonical provider identity and service authority core.
@@ -54,6 +55,49 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     uint32 public constant SERVICE_PERMISSION_RECORD = 1 << 0;
     uint32 public constant SERVICE_PERMISSION_DOMAIN_RESOLVER = 1 << 1;
     uint32 public constant SERVICE_PERMISSION_REPOINT = 1 << 2;
+
+    // ---------------------------------------------------------------------------------------------
+    // Address rights bitmask — see `rightsOf`
+    //
+    // ONE FLAT NAMESPACE. Every bit below is pinned to this exact position FOREVER. A bit is never
+    // reused for a second meaning and never reordered, because a bit whose meaning changed silently
+    // grants the WRONG right: no revert, no error, just wrong. That is the same failure class as the
+    // `getContractSet` -> `getDiscoverySet` rename this codebase already paid for, where a stale client
+    // decoded one slot out of a record whose shape had moved underneath it.
+    //
+    // The remedy is the one this codebase already chose there: SHAPE AND GETTER NAME MOVE TOGETHER. If
+    // this layout ever changes — a bit retired and its position recycled, the meanings reordered, the
+    // stored/derived split moved — the lookup TAKES A NEW NAME with it, so a client built against the
+    // old layout reverts at the dispatcher rather than reading a plausible wrong answer. Adding a bit at
+    // a fresh, previously-unused position is the one change that does NOT require a rename: an old
+    // client masks it off and reads every bit it knows about correctly.
+    // ---------------------------------------------------------------------------------------------
+
+    /// @notice May anchor new roots, and (with the further terms `canRevoke` folds) invalidate them.
+    /// The ONLY stored bit: written by the registrar through `setRights`.
+    uint256 public constant RIGHT_ISSUE = 1 << 0;
+
+    /// @notice Holds this core's protocol-admin authority — exactly what `hasRole` answers for both
+    /// role names. DERIVED from `owner()`, so a two-step key rotation moves it with no second write.
+    uint256 public constant RIGHT_PROTOCOL_ADMIN = 1 << 1;
+
+    /// @notice The registrar has attached this address as a service. DERIVED.
+    uint256 public constant RIGHT_SERVICE_ATTACHED = 1 << 2;
+
+    /// @notice This service's live `owner()` still equals the owner the registrar confirmed. DERIVED.
+    uint256 public constant RIGHT_SERVICE_OWNER_CONFIRMED = 1 << 3;
+
+    /// @notice This service, its provider, and its factory generation are all currently effective.
+    /// DERIVED.
+    uint256 public constant RIGHT_SERVICE_STANDING = 1 << 4;
+
+    /// @notice This service is its provider's current selection for its record type. DERIVED.
+    uint256 public constant RIGHT_SERVICE_CURRENT = 1 << 5;
+
+    /// @notice Exactly the bits `setRights` accepts. Every other bit in `rightsOf` is DERIVED from state
+    /// this core already holds, so writing one would be recording a claim rather than a grant — the
+    /// stored value and the fact would then be free to disagree, with the stored one winning.
+    uint256 public constant SETTABLE_RIGHTS = RIGHT_ISSUE;
 
     enum Standing {
         NONE,
@@ -131,8 +175,19 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     mapping(bytes20 => mapping(address => Delegation)) private _providerDelegates;
     mapping(address => mapping(address => Delegation)) private _serviceDelegates;
 
-    mapping(address => mapping(address => bool)) private _issuanceCapabilities;
-    mapping(address => uint256) private _activeIssuerCount;
+    /// @dev The registrar's grants, keyed on the ADDRESS alone. This is the whole re-keying: it was
+    /// `_issuanceCapabilities[service][signer]`, and the service dimension is gone. Holds only bits in
+    /// `SETTABLE_RIGHTS`; `rightsOf` masks anyway, so a future widening of that constant cannot
+    /// retroactively activate a bit some historical write happened to leave set.
+    mapping(address => uint256) private _grantedRights;
+
+    /// @dev How many addresses currently hold `RIGHT_ISSUE`. It replaces the per-service
+    /// `_activeIssuerCount`, which is not expressible once the grant carries no service: "some signer
+    /// can issue here" is now a property of the whole registry rather than of one service. Kept so
+    /// `effectiveService.hasActiveIssuer` still answers the question it always answered instead of
+    /// quietly becoming a restatement of its four neighbours.
+    uint256 private _issueRightHolders;
+
     mapping(bytes32 => mapping(address => bool)) private _verifierCapabilities;
     mapping(bytes20 => mapping(bytes32 => bool)) private _serviceCreationApprovals;
 
@@ -219,7 +274,12 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         address setBy
     );
 
-    event IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed);
+    /// @dev The whole grant history for one address, in this core's own log. `rights` is the address's
+    /// COMPLETE settable mask after the write, not a delta, so folding the sequence needs no prior
+    /// state — the last event at or before a block IS the mask in force then. That is what the
+    /// at-issuance verification pillar reconstructs, and why the mask (not a per-bit bool) is emitted:
+    /// a reader interested in one bit masks the word, and a bit added later needs no second event.
+    event RightsSet(address indexed account, uint256 rights);
     event VerifierCapabilitySet(
         bytes32 indexed purpose, bytes32 indexed compatibilityKey, address indexed relayer, bool allowed
     );
@@ -665,18 +725,80 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     // Capabilities: service issuance and orthogonal verifier relayers
     // ---------------------------------------------------------------------------------------------
 
-    function setIssuanceCapability(address serviceAddress, address signer, bool allowed) external onlyOwner {
-        _requireService(serviceAddress);
-        if (signer == address(0)) revert ZeroAddress();
-        bool oldAllowed = _issuanceCapabilities[serviceAddress][signer];
-        if (oldAllowed == allowed) revert NoChange();
-        _issuanceCapabilities[serviceAddress][signer] = allowed;
-        if (allowed) {
-            _activeIssuerCount[serviceAddress]++;
-        } else {
-            _activeIssuerCount[serviceAddress]--;
+    /// @notice Grants or withdraws rights on ONE ADDRESS. `rights` is the address's complete settable
+    /// mask afterwards, so withdrawing everything is `setRights(account, 0)`.
+    ///
+    /// The address is deliberately not classified. It may be an externally-owned account or a contract,
+    /// and this function does not look at `account.code.length` to find out — for two reasons, and the
+    /// second is the one that matters. Such a check is UNRELIABLE (a contract calling from inside its
+    /// own constructor reports zero code length and reads as an EOA), and it is WRONG FOR THE PRODUCT:
+    /// that indifference is exactly what lets a clinic — a company contract, or a multisig — and an
+    /// individual practitioner on a plain wallet participate on identical terms.
+    ///
+    /// Only bits in `SETTABLE_RIGHTS` may be written; every other bit `rightsOf` reports is derived from
+    /// state this core already holds and is not a grant to make.
+    ///
+    /// A grant made here is NOT scoped to a service, and that is the point rather than an omission: at
+    /// the moment a registrar approves an applicant, that applicant's clone does not exist yet, so there
+    /// is nothing to key a grant against. See `rightsOf` for what the unscoped grant widens.
+    function setRights(address account, uint256 rights) external onlyOwner {
+        if (account == address(0)) revert ZeroAddress();
+        if (rights & ~SETTABLE_RIGHTS != 0) revert UnsettableRights();
+        uint256 oldRights = _grantedRights[account];
+        if (oldRights == rights) revert NoChange();
+
+        bool hadIssue = oldRights & RIGHT_ISSUE != 0;
+        bool hasIssue = rights & RIGHT_ISSUE != 0;
+        if (hasIssue && !hadIssue) {
+            _issueRightHolders++;
+        } else if (!hasIssue && hadIssue) {
+            _issueRightHolders--;
         }
-        emit IssuanceCapabilitySet(serviceAddress, signer, allowed);
+
+        _grantedRights[account] = rights;
+        emit RightsSet(account, rights);
+    }
+
+    /// @notice THE rights lookup: one address in, one bitmask out, and nothing else.
+    ///
+    /// It takes no service, no record type, no purpose and no caller context. It answers "what may this
+    /// address do AT ALL", never "may this address act through that particular contract". Where narrower
+    /// authority is genuinely required, the caller combines this answer with what it already knows —
+    /// which is what `canIssue` and `canRevoke` below do with the service facts this core holds, and what
+    /// a clone would do with its own `owner()`. Adding a scoping parameter here would collapse that
+    /// separation back into the lookup.
+    ///
+    /// The bits are pinned at the constants above; read the never-reuse/never-reorder rule there before
+    /// changing anything about this layout.
+    ///
+    /// The same function serves an EOA and a contract, and it never asks which it is holding. A plain
+    /// wallet typically reports the granted bits alone; an address the registrar has attached as a
+    /// service additionally reports that service's live lifecycle bits. The difference comes from what
+    /// this core KNOWS about the address — a registrar fact — never from sniffing its code.
+    ///
+    /// # What the unscoped grant widens, stated rather than left to be discovered
+    ///
+    /// `RIGHT_ISSUE` was `_issuanceCapabilities[service][signer]`. A signer holding it now holds it
+    /// wherever it is checked, so it may anchor a root on ANY service in effective standing, not only on
+    /// the one it was approved alongside. `canIssue` still folds every lifecycle term it ever folded —
+    /// none was dropped — but none of those terms is about WHICH provider the signer belongs to, because
+    /// after this change no such term exists. The verification pillar reads this same grant from the
+    /// `RightsSet` log and therefore answers `Authorized` for such a root: correct under this model, and
+    /// a genuine reduction against the per-service grant it replaces.
+    function rightsOf(address account) public view override returns (uint256 rights) {
+        rights = _grantedRights[account] & SETTABLE_RIGHTS;
+        if (account == owner()) rights |= RIGHT_PROTOCOL_ADMIN;
+
+        Service storage s = _services[account];
+        // Not an attached service: there are no service facts to report, and the external reads below
+        // would be made against an address this core knows nothing about.
+        if (s.providerId == bytes20(0)) return rights;
+
+        rights |= RIGHT_SERVICE_ATTACHED;
+        if (_isOwnerConfirmed(account, s)) rights |= RIGHT_SERVICE_OWNER_CONFIRMED;
+        if (_serviceStandingIsEffective(account, s)) rights |= RIGHT_SERVICE_STANDING;
+        if (_currentService[s.providerId][s.recordType] == account) rights |= RIGHT_SERVICE_CURRENT;
+        return rights;
     }
 
     /// The three issuance-axis reads are a deliberate ladder, widest first, and each rung answers a
