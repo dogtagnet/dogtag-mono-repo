@@ -19,6 +19,21 @@ const CONTRACTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../contr
 // anvil default account 0 (admin/deployer/funder).
 const PK0: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const ACC0: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+/// Anvil account 1 — the PROVIDER's key, deliberately distinct from the registrar's `ACC0`.
+/// `createIssuer` and `repointService` are the provider's own transactions; every registrar call is
+/// `onlyOwner`. Running both halves from one key would assert a journey no provider can walk.
+const PK1: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+const ACC1: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+/// A registrar-issued `bytes20` provider id. Arbitrary and permanent by design — it means nothing.
+const PROVIDER_ID: &str = "0x00000000000000000000000000000000000000a1";
+const IDENTITY_DIGEST: &str =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
+/// `ProviderRegistry.Standing.ACTIVE`.
+const STANDING_ACTIVE: &str = "2";
+/// The factory generation string `Deploy.s.sol` registers its factory under. `attachService`
+/// requires the factory to carry it, so it is DERIVED from the same string the script hashes rather
+/// than pasted as a digest — a literal here could drift from the protocol constant silently.
+const FACTORY_GENERATION_LABEL: &str = "dogtag-issuer-factory/1";
 
 struct Anvil {
     child: Child,
@@ -150,31 +165,94 @@ async fn anvil_full_flow() {
     let anvil = start_anvil();
     let rpc = anvil.rpc();
     let rt = record_type_key("VACCINATION"); // 0x6510...
+    let generation = format!(
+        "0x{}",
+        hex::encode(alloy::primitives::keccak256(FACTORY_GENERATION_LABEL.as_bytes()).0)
+    );
 
-    // --- deploy contract set ---
-    let registry = forge_create(&rpc, "src/IssuerRegistry.sol:IssuerRegistry", &[ACC0]);
+    // --- deploy the launch set ---
+    //
+    // Mirrors `script/Deploy.s.sol::deploy` for the contracts this flow needs. Deliberately not
+    // driven by running that script: its `run()` entry ends in `_writeLedger`, which overwrites
+    // `contracts/deployments/roax.json` — the repo's single source of truth for every address — with
+    // whatever chain it just deployed to. The script is covered where it can be driven safely, by
+    // `contracts/test/LaunchStack.sol` under `forge test`.
+    let registry = forge_create(&rpc, "src/ProviderRegistry.sol:ProviderRegistry", &[ACC0]);
     let impl_addr = forge_create(&rpc, "src/DogTagIssuer.sol:DogTagIssuer", &[]);
     let factory = forge_create(
         &rpc,
         "src/DogTagIssuerFactory.sol:DogTagIssuerFactory",
-        &[&impl_addr, &registry, ACC0],
+        &[&impl_addr, &registry],
     );
-
-    // create the VACCINATION clone (onlyOwner == ACC0) and resolve its address.
+    // A factory in no generation cannot have a service attached under it.
     cast_send(
         &rpc,
         PK0,
+        &registry,
+        "addFactoryGeneration(bytes32,address)",
+        &[&generation, &factory],
+    );
+
+    // --- the provider journey, up to the point that needs a signer ---
+    //
+    // Issuance is SERVICE-scoped: `DogTagIssuer.issue` is gated by
+    // `ProviderRegistry.canIssue(address(this), msg.sender)`, keyed on the clone rather than on a
+    // record type. `canIssue` folds SIX registrar facts, and the issuance grant is the only one that
+    // names a signer — so everything else happens here and the grant waits until custody genesis has
+    // produced the backend address below.
+    cast_send(
+        &rpc,
+        PK0,
+        &registry,
+        "registerProvider(bytes20,address,bytes32,uint32,uint16,uint8,bytes)",
+        &[PROVIDER_ID, ACC1, IDENTITY_DIGEST, "1", "0xe3", "0x12", "0x"],
+    );
+    cast_send(
+        &rpc,
+        PK0,
+        &registry,
+        "setProviderStanding(bytes20,uint8)",
+        &[PROVIDER_ID, STANDING_ACTIVE],
+    );
+    cast_send(
+        &rpc,
+        PK0,
+        &registry,
+        "setServiceCreationApproval(bytes20,bytes32,bool)",
+        &[PROVIDER_ID, &rt, "true"],
+    );
+    // The provider deploys its own clone, from its own key.
+    cast_send(
+        &rpc,
+        PK1,
         &factory,
-        "createIssuer(string,bytes32,address)",
-        &["VACC", &rt, ACC0],
+        "createIssuer(bytes20,bytes32,uint96)",
+        &[PROVIDER_ID, &rt, "0"],
     );
     let clone = cast_call(
         &rpc,
         &factory,
-        "predictIssuer(bytes32,address)(address)",
-        &[&rt, ACC0],
+        "predictIssuer(bytes32,address,uint96)(address)",
+        &[&rt, ACC1, "0"],
     );
     let clone = clone.to_lowercase();
+    cast_send(
+        &rpc,
+        PK0,
+        &registry,
+        "attachService(bytes20,address,bytes32,address)",
+        &[PROVIDER_ID, &clone, &generation, ACC1],
+    );
+    cast_send(
+        &rpc,
+        PK0,
+        &registry,
+        "setServiceStanding(address,uint8)",
+        &[&clone, STANDING_ACTIVE],
+    );
+    // The provider's CURRENT pointer for this record type — its own decision, so its own
+    // transaction. Without it the clone is attached and still anchors nothing.
+    cast_send(&rpc, PK1, &registry, "repointService(address)", &[&clone]);
 
     // --- backend state: real AlloyChain on anvil + MemStore ---
     let chain = Arc::new(AlloyChain::new(rpc.clone()));
@@ -197,18 +275,18 @@ async fn anvil_full_flow() {
         &rpc,
         PK0,
         &registry,
-        "whitelistFor(bytes32,address)",
-        &[&rt, &backend_addr],
+        "setIssuanceCapability(address,address,bool)",
+        &[&clone, &backend_addr, "true"],
     );
     assert_eq!(
         cast_call(
             &rpc,
             &registry,
-            "isWhitelistedFor(bytes32,address)(bool)",
-            &[&rt, &backend_addr]
+            "canIssue(address,address)(bool)",
+            &[&clone, &backend_addr]
         ),
         "true",
-        "backend signer must be whitelisted on-chain"
+        "the journey must leave the backend signer able to anchor on this clone"
     );
 
     // --- non-whitelisted signer fails preflight: query a random unwhitelisted addr ---

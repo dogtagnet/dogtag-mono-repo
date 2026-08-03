@@ -43,6 +43,15 @@ const ACC0: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 /// unrelated to the relayer and to the fixture's hidden owner, so a registry that ever reintroduced
 /// an owner-identity comparison would fail this test rather than silently pass.
 const CUSTODIAN: &str = "0x00000000000000000000000000000000c0ffee00";
+/// Anvil account 1 — the PROVIDER's key, deliberately distinct from the registrar's `ACC0`.
+const PK1: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+const ACC1: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+/// A registrar-issued `bytes20` provider id. Arbitrary and permanent by design — it means nothing.
+const PROVIDER_ID: &str = "0x00000000000000000000000000000000000000a1";
+const IDENTITY_DIGEST: &str =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
+/// `ProviderRegistry.Standing.ACTIVE`.
+const STANDING_ACTIVE: &str = "2";
 
 // ------------------------------------------------------------------------------------------------
 // anvil / forge harness
@@ -152,10 +161,175 @@ fn forge_create(rpc: &str, contract: &str, args: &[&str]) -> String {
 }
 
 fn cast_send(rpc: &str, to: &str, sig: &str, args: &[&str]) {
+    cast_send_as(rpc, PK0, to, sig, args);
+}
+
+/// `cast send` from an explicit key.
+///
+/// The two-key split in the provider journey is REAL and is preserved rather than collapsed:
+/// `createIssuer` and `repointService` are the provider's own transactions while every registrar
+/// call is `onlyOwner`. Running both halves from one key would let this suite assert a journey no
+/// provider can actually walk.
+fn cast_send_as(rpc: &str, pk: &str, to: &str, sig: &str, args: &[&str]) {
     let mut cmd = Command::new("cast");
-    cmd.args(["send", "--rpc-url", rpc, "--private-key", PK0, to, sig])
+    cmd.args(["send", "--rpc-url", rpc, "--private-key", pk, to, sig])
         .args(args);
     run(&mut cmd);
+}
+
+/// The launch-set addresses, as the real deploy script reports them.
+struct Deployed {
+    provider_registry: String,
+    factory: String,
+    sbt: String,
+    verification_registry: String,
+}
+
+/// Stand up the launch set, mirroring `script/Deploy.s.sol::deploy` — including
+/// `addFactoryGeneration`, WITHOUT which `attachService` reverts on an unregistered generation.
+///
+/// Deliberately NOT driven by running that script. `Deploy.s.sol::run` ends in `_writeLedger`, which
+/// writes `contracts/deployments/roax.json` unconditionally — the repo's single source of truth for
+/// every address — so a test that ran it would overwrite the real ROAX ledger with anvil's
+/// deterministic addresses on every run. Measured, not theorised: a probe run did exactly that.
+/// The script itself is separately covered where it can be driven safely, by
+/// `contracts/test/LaunchStack.sol`, which calls the ledger-free `deploy()` entry point directly and
+/// backs `Deploy.t.sol`, `ConsentRegistry.t.sol` and `CustodialIssuance.t.sol` under `forge test`.
+fn deploy_launch_contracts(rpc: &str) -> Deployed {
+    let core = forge_create(rpc, "src/ProviderRegistry.sol:ProviderRegistry", &[ACC0]);
+    let issuer_impl = forge_create(rpc, "src/DogTagIssuer.sol:DogTagIssuer", &[]);
+    let factory = forge_create(
+        rpc,
+        "src/DogTagIssuerFactory.sol:DogTagIssuerFactory",
+        &[&issuer_impl, &core],
+    );
+    // `mintCustodial` has no recipient — the tag goes to the immutable custodian.
+    let sbt = forge_create(
+        rpc,
+        "src/DogTagSBTConsent.sol:DogTagSBTConsent",
+        &[ACC0, CUSTODIAN],
+    );
+    let verifier = forge_create(
+        rpc,
+        "src/Groth16VerifierConsent.sol:Groth16VerifierConsent",
+        &[],
+    );
+    // VerificationRegistryConsent(core, sbt, zk, rootIndex(=factory), admin).
+    let verification_registry = forge_create(
+        rpc,
+        "src/VerificationRegistryConsent.sol:VerificationRegistryConsent",
+        &[&core, &sbt, &verifier, &factory, ACC0],
+    );
+
+    // The wiring that makes the above a system, and the one step no previous version of this harness
+    // had: a factory in no generation cannot have a service attached under it.
+    cast_send(
+        rpc,
+        &core,
+        "addFactoryGeneration(bytes32,address)",
+        &[&factory_generation(), &factory],
+    );
+    assert_eq!(
+        cast_call(
+            rpc,
+            &core,
+            "generationOfFactory(address)(bytes32)",
+            &[&factory]
+        ),
+        factory_generation(),
+        "the core must carry this factory's generation"
+    );
+
+    Deployed {
+        provider_registry: core,
+        factory,
+        sbt,
+        verification_registry,
+    }
+}
+
+/// Walk the provider journey end to end and return a clone that can actually anchor.
+///
+/// `canIssue` folds SIX registrar facts — a registered provider in ACTIVE standing, a service
+/// attached under a registered factory generation, a confirmed live owner, an effective service
+/// standing, that service being the provider's CURRENT pointer for its record type, and an issuance
+/// grant for the signer. Missing any one of them reverts the anchor rather than failing a check the
+/// test can see, so all of them are performed here. `repointService` is the one most easily missed:
+/// a live ROAX walk recorded `canRevoke` and `isRecognizedIssuer` already true while `canIssue`
+/// stayed false until the provider designated its clone.
+fn onboard_issuing_clone(rpc: &str, d: &Deployed, record_type: &str, signer: &str) -> String {
+    let core = &d.provider_registry;
+    cast_send(
+        rpc,
+        core,
+        "registerProvider(bytes20,address,bytes32,uint32,uint16,uint8,bytes)",
+        &[PROVIDER_ID, ACC1, IDENTITY_DIGEST, "1", "0xe3", "0x12", "0x"],
+    );
+    cast_send(
+        rpc,
+        core,
+        "setProviderStanding(bytes20,uint8)",
+        &[PROVIDER_ID, STANDING_ACTIVE],
+    );
+    cast_send(
+        rpc,
+        core,
+        "setServiceCreationApproval(bytes20,bytes32,bool)",
+        &[PROVIDER_ID, record_type, "true"],
+    );
+
+    // The provider deploys its own clone, from its own key.
+    cast_send_as(
+        rpc,
+        PK1,
+        &d.factory,
+        "createIssuer(bytes20,bytes32,uint96)",
+        &[PROVIDER_ID, record_type, "0"],
+    );
+    let clone = cast_call(
+        rpc,
+        &d.factory,
+        "predictIssuer(bytes32,address,uint96)(address)",
+        &[record_type, ACC1, "0"],
+    )
+    .to_lowercase();
+
+    cast_send(
+        rpc,
+        core,
+        "attachService(bytes20,address,bytes32,address)",
+        &[PROVIDER_ID, &clone, &factory_generation(), ACC1],
+    );
+    cast_send(
+        rpc,
+        core,
+        "setServiceStanding(address,uint8)",
+        &[&clone, STANDING_ACTIVE],
+    );
+    cast_send(
+        rpc,
+        core,
+        "setIssuanceCapability(address,address,bool)",
+        &[&clone, signer, "true"],
+    );
+    // The provider's CURRENT pointer for this record type — the provider's own decision, so its own
+    // transaction. Without it the clone is attached and granted and still anchors nothing.
+    cast_send_as(rpc, PK1, core, "repointService(address)", &[&clone]);
+
+    assert_eq!(
+        cast_call(rpc, core, "canIssue(address,address)(bool)", &[&clone, signer]),
+        "true",
+        "the journey must leave the signer able to anchor on this clone"
+    );
+    clone
+}
+
+/// `keccak256("dogtag-issuer-factory/1")` — the generation `Deploy.s.sol` registers its factory under.
+fn factory_generation() -> String {
+    format!(
+        "0x{}",
+        hex::encode(alloy::primitives::keccak256(b"dogtag-issuer-factory/1").0)
+    )
 }
 
 fn cast_call(rpc: &str, to: &str, sig: &str, args: &[&str]) -> String {
@@ -226,25 +400,6 @@ fn load_fixture() -> Fixture {
     }
 }
 
-/// `keccak256(abi.encode("VERIFY:", purpose))` — the IssuerRegistry whitelist key the registry checks
-/// for the relayer on a given purpose.
-fn verify_key_word(purpose_word: &str) -> String {
-    use alloy::primitives::keccak256;
-    let purpose = hex::decode(purpose_word.trim_start_matches("0x")).expect("purpose hex");
-    let mut buf = Vec::with_capacity(128);
-    let mut off = [0u8; 32];
-    off[31] = 0x40;
-    buf.extend_from_slice(&off);
-    buf.extend_from_slice(&purpose);
-    let mut len = [0u8; 32];
-    len[31] = 7;
-    buf.extend_from_slice(&len);
-    let mut lit = [0u8; 32];
-    lit[..7].copy_from_slice(b"VERIFY:");
-    buf.extend_from_slice(&lit);
-    format!("0x{}", hex::encode(keccak256(&buf).0))
-}
-
 struct Stack {
     registry: String,
     factory: String,
@@ -253,76 +408,49 @@ struct Stack {
     clone: String,
 }
 
-/// Deploy the LEVEL-B contract set and establish exactly the on-chain state the fixture's `pub[]`
-/// demands, so all twelve registry gates can pass.
-fn deploy_level_b(rpc: &str, f: &Fixture) -> Stack {
-    let registry = forge_create(rpc, "src/IssuerRegistry.sol:IssuerRegistry", &[ACC0]);
-    let impl_addr = forge_create(rpc, "src/DogTagIssuer.sol:DogTagIssuer", &[]);
-    let factory = forge_create(
-        rpc,
-        "src/DogTagIssuerFactory.sol:DogTagIssuerFactory",
-        &[&impl_addr, &registry, ACC0],
-    );
-    // The Level-B SBT: `mintCustodial` has no recipient — the tag goes to the immutable custodian.
-    let sbt = forge_create(
-        rpc,
-        "src/DogTagSBTConsent.sol:DogTagSBTConsent",
-        &[ACC0, CUSTODIAN],
-    );
-    let verifier = forge_create(
-        rpc,
-        "src/Groth16VerifierConsent.sol:Groth16VerifierConsent",
-        &[],
-    );
-    // VerificationRegistryConsent(ir, sbt, zk, ridx(=factory), admin) — note there is no
-    // ConsentKeyRegistry leg and no on-chain Poseidon6: Level-B retires both.
-    let verification_consent = forge_create(
-        rpc,
-        "src/VerificationRegistryConsent.sol:VerificationRegistryConsent",
-        &[&registry, &sbt, &verifier, &factory, ACC0],
-    );
+/// Deploy the launch set and establish exactly the on-chain state the fixture's `pub[]` demands, so
+/// all twelve registry gates can pass.
+///
+/// The stack comes from the REAL `script/Deploy.s.sol` rather than from a hand-assembled sequence of
+/// `forge create` calls, for the reason `contracts/test/LaunchStack.sol` gives for doing the same:
+/// a hand-wired equivalent lets this suite pass against a topology no deployment has, and leaves the
+/// script — the one thing a real deployment runs — covered by nothing on the Rust side. It also
+/// supplies `addFactoryGeneration`, which `attachService` requires and which no hand-wired stack had.
+fn deploy_launch_set(rpc: &str, f: &Fixture) -> Stack {
+    let d = deploy_launch_contracts(rpc);
 
-    // A DogTagIssuer clone for the fixture's recordType — this is what makes `rootIssuer[R]` resolve
-    // (gate #11) and `isValid(R)` hold (gate #12).
-    cast_send(
-        rpc,
-        &factory,
-        "createIssuer(string,bytes32,address)",
-        &["Profile", &f.record_type, ACC0],
-    );
-    // The clone address is CREATE2-deterministic from (recordType, business), so it can be resolved
-    // without decoding the IssuerCreated log.
-    let clone = cast_call(
-        rpc,
-        &factory,
-        "predictIssuer(bytes32,address)(address)",
-        &[&f.record_type, ACC0],
-    )
-    .to_lowercase();
-    cast_send(
-        rpc,
-        &registry,
-        "whitelistFor(bytes32,address)",
-        &[&f.record_type, ACC0],
-    );
+    // Issuance is SERVICE-scoped now: `DogTagIssuer.issue` is gated by
+    // `ProviderRegistry.canIssue(address(this), msg.sender)`, keyed on the clone rather than on a
+    // record type, so a clone anchors nothing until the registrar has walked the whole journey and
+    // its provider has designated it. `_onboard_issuing_clone` performs every step.
+    let clone = onboard_issuing_clone(rpc, &d, &f.record_type, ACC0);
 
-    // Gate #6: the relayer must be whitelisted for keccak256(abi.encode("VERIFY:", purpose)).
+    // Gate #6, the orthogonal VERIFY axis. `setVerifierCapability` takes the RAW purpose and derives
+    // `verificationKey` itself, so passing an already-derived key would derive twice and grant a
+    // capability `canVerify` never reads — a transaction that succeeds, costs gas and authorises
+    // nothing. That is why the old `verify_key_word` helper is gone rather than repointed.
     cast_send(
         rpc,
-        &registry,
-        "whitelistFor(bytes32,address)",
-        &[&verify_key_word(&f.purpose), ACC0],
+        &d.provider_registry,
+        "setVerifierCapability(bytes32,address,bool)",
+        &[&f.purpose, ACC0, "true"],
     );
 
     // The vet signer needs ISSUER_ROLE to mint.
-    let issuer_role = cast_call(rpc, &sbt, "ISSUER_ROLE()(bytes32)", &[]);
+    let issuer_role = cast_call(rpc, &d.sbt, "ISSUER_ROLE()(bytes32)", &[]);
     cast_send(
         rpc,
-        &sbt,
+        &d.sbt,
         "grantRole(bytes32,address)",
         &[&issuer_role, ACC0],
     );
 
+    let (registry, factory, sbt, verification_consent) = (
+        d.provider_registry,
+        d.factory,
+        d.sbt,
+        d.verification_registry,
+    );
     Stack {
         registry,
         factory,
@@ -369,7 +497,7 @@ async fn level_b_consent_proof_records_owner_blind_verification_onchain() {
     let anvil = start_anvil();
     let rpc = anvil.rpc();
     let f = load_fixture();
-    let stack = deploy_level_b(&rpc, &f);
+    let stack = deploy_launch_set(&rpc, &f);
     issue_then_mint(&rpc, &stack, &f.dog_tag_id, &f.root);
 
     // The binding the whole Level-B model rests on (gate #7): the proof's R must be THIS tag's
@@ -459,7 +587,7 @@ async fn level_b_submit_fails_closed_on_a_mismatched_root() {
     let anvil = start_anvil();
     let rpc = anvil.rpc();
     let f = load_fixture();
-    let stack = deploy_level_b(&rpc, &f);
+    let stack = deploy_launch_set(&rpc, &f);
 
     // Anchor and mint a DIFFERENT root for this dogTagId. Everything else — the proof, the relayer,
     // the whitelist, the deadline — stays valid, so `R !profileRoot` is the only thing that can fail.
@@ -508,7 +636,7 @@ async fn level_b_submit_fails_closed_on_a_consumed_nullifier() {
     let anvil = start_anvil();
     let rpc = anvil.rpc();
     let f = load_fixture();
-    let stack = deploy_level_b(&rpc, &f);
+    let stack = deploy_launch_set(&rpc, &f);
     issue_then_mint(&rpc, &stack, &f.dog_tag_id, &f.root);
 
     let chain = AlloyChain::new(rpc.clone());
@@ -553,7 +681,7 @@ async fn records_without_any_consent_key_registry() {
     let rpc = anvil.rpc();
     let f = load_fixture();
     // deploy_level_b deploys NO ConsentKeyRegistry — that is the assertion.
-    let stack = deploy_level_b(&rpc, &f);
+    let stack = deploy_launch_set(&rpc, &f);
     issue_then_mint(&rpc, &stack, &f.dog_tag_id, &f.root);
 
     let chain = AlloyChain::new(rpc.clone());

@@ -18,7 +18,7 @@ mod common;
 use axum::http::StatusCode;
 use common::*;
 use std::sync::Arc;
-use vet_api::chain::{record_type_key, MemChain};
+use vet_api::chain::MemChain;
 
 const REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
 const ISSUER: &str = "0x00000000000000000000000000000000000000bb";
@@ -91,8 +91,7 @@ async fn dual_signing_http_both_modes_reach_identical_build() {
         );
         let app = vet_api::router(state);
         let (_admin, op, backend_addr) = boot_custody(&app).await;
-        let rt = record_type_key("VACCINATION");
-        mem.whitelist(REGISTRY, &rt, &backend_addr);
+        mem.set_issuance_capability(REGISTRY, ISSUER, &backend_addr, true);
 
         // Set the requested signing mode (backend is default; switch to wallet explicitly).
         let (s, _b) = call(

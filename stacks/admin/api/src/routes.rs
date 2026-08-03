@@ -17,8 +17,30 @@ use crate::app::{AppState, DOG_PROFILE};
 use crate::auth::{self, keccak256_hex, ShareClaims};
 // NOTE `whitelist_for_calldata` / `delist_for_calldata` / `grant_issuer_role_calldata` are no longer
 // imported here, because the deleted whitelist console was their only caller in this file. All three
-// still exist and are still used inside `chain.rs`, backing the generation-1 `IssuerRegistry`
-// issuer-application approval flow - a DIFFERENT contract, still live, deliberately untouched.
+// still exist inside `chain.rs`, backing the issuer-application approval flow below.
+//
+// CORRECTION, and it is not a nuance. This said those calls target "a DIFFERENT contract, still
+// live, deliberately untouched". That was true when it was written and is not true now: #140 deleted
+// `contracts/src/IssuerRegistry.sol` with the rest of generation 1, and no `IssuerRegistry` key
+// exists in `contracts/deployments/roax.json`. `whitelistFor` and `delistFor` are implemented by NO
+// contract in the launch set, and `ISSUER_REGISTRY_ADDR` ships blank with no fallback.
+//
+// So `approve_application` and `delist_application` below still build those calls against an address
+// that resolves to nothing. What each of their two loops needs is NOT the same:
+//
+//   * the VERIFY loop has an exact successor - `ProviderRegistry.setVerifierCapability(purpose,
+//     relayer, allowed)`, which is what `VerificationRegistryConsent` reads via `canVerify`. Note it
+//     takes the RAW purpose and derives `verificationKey` itself, so feeding it `verify_key(purpose)`
+//     would derive twice and grant a capability nothing reads.
+//   * the ISSUANCE loop has NONE. `setIssuanceCapability` is keyed on a SERVICE address, and an
+//     issuer application has no deployed clone at approval time. The replacement for that half is the
+//     registrar journey on `/v1/admin/providers*`, walked live on chain in #139.
+//
+// Rewiring this is a live-behaviour change to two admin surfaces (`IssuerApplications.tsx`,
+// `Wizard.tsx`), so it is left for a deliberate decision rather than made silently here. The on-chain
+// acceptance test that covered the retired write (`tests/whitelist.rs`) has been deleted, since it
+// deployed a contract that no longer exists; the route keeps its hermetic coverage in `central.rs`
+// and `dns_gate.rs`.
 use crate::chain::{
     attach_service_calldata, create_issuer_calldata, default_admin_role, purpose_key,
     record_type_key, register_provider_calldata, set_issuance_capability_calldata,
