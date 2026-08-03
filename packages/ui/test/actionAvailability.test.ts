@@ -103,10 +103,13 @@ describe("an unreported chain is not the wrong chain", () => {
   });
 });
 
-describe("a Check button carries no chain term", () => {
-  it("is available on any chain, because it reads through the page's own connection", () => {
-    // Gating a preflight on the wallet's network would refuse a read that would have answered
-    // correctly and usefully.
+describe("a Check button's gate is narrower than a send's", () => {
+  // The "no chain term" half is STRUCTURAL rather than behavioural: `checkBlock` takes no chain, so
+  // no mutation of this module can add one and no test here can pin its absence. What pins it is the
+  // COMPONENT - `providerSelfServiceExplains.test.tsx` asserts a wrong-chain wallet leaves the Check
+  // button with no reason while the send has one. Stated because a test named for a property it
+  // cannot fail is worse than no test.
+  it("blocks nothing when its own preconditions are met", () => {
     expect(checkBlock({ ...OK })).toBeNull();
   });
 
