@@ -1086,6 +1086,12 @@ impl ChainClient for MemChain {
             .get(&account_index)
             .cloned()
             .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
+        // The contract refuses any bit outside `SETTABLE_RIGHTS`, so the fake does too. Without this
+        // the fake would accept a mask the chain rejects, and a route that sent one would look fine
+        // here and revert on ROAX.
+        if rights & !dogtag_standard::verify::RIGHT_ISSUE != 0 {
+            return Err(ChainError::Other("tx reverted: UnsettableRights".into()));
+        }
         let holds_issue = rights & dogtag_standard::verify::RIGHT_ISSUE != 0;
         let account = account.to_lowercase();
         let log = g
@@ -2706,6 +2712,37 @@ pub fn verify_key(label: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The fake refuses exactly what the contract refuses.
+    ///
+    /// `RIGHT_ISSUE` is the ONLY settable bit today, so "the mask equals 1" and "bit 0 is set" agree
+    /// on every value the chain accepts - which makes a whole-word comparison in `set_rights` a
+    /// BEHAVIOUR-PRESERVING change right now rather than an unpinned claim. What is pinnable, and
+    /// what actually keeps the fake honest, is that an unsettable bit is REFUSED here exactly as
+    /// `setRights` refuses it with `UnsettableRights()` - so a route that ever sends a compound mask
+    /// fails in tests instead of reverting on ROAX.
+    #[tokio::test]
+    async fn set_rights_refuses_a_bit_the_contract_would_refuse() {
+        let c = MemChain::new();
+        c.register_signer(0, [0u8; 32], "0xabc".into()).await;
+        let reg = "0x00000000000000000000000000000000000000aa";
+        let who = "0x00000000000000000000000000000000000000bb";
+
+        // The settable grant lands.
+        assert!(c
+            .set_rights(0, reg, who, dogtag_standard::verify::RIGHT_ISSUE)
+            .await
+            .is_ok());
+
+        // A derived bit, and a bit at an unallocated position, are both refused.
+        for bad in [1u64 << 1, 1 << 5, 1 << 6, dogtag_standard::verify::RIGHT_ISSUE | (1 << 1)] {
+            let e = c.set_rights(0, reg, who, bad).await.unwrap_err();
+            assert!(
+                format!("{e}").contains("UnsettableRights"),
+                "mask {bad:#x} must be refused as unsettable, got: {e}"
+            );
+        }
+    }
+
     use super::*;
 
     const RT_A: &str = "0x00000000000000000000000000000000000000000000000000000000000000aa";
