@@ -2296,6 +2296,31 @@ primitive: native `<details>`, so no state and no interaction with this package'
   the contracts rather than of today's chain state. The checks report what is true now; the notice
   reports what the flow needs. `providerSelfServiceExplains.test.tsx` pins that these notices contain
   no "currently"/"is blocked" wording.
+- **A DISABLED CONTROL MUST RENDER A REASON, AND THE FIRST-RUN STATE IS THE ONE THAT SHIPS BROKEN.**
+  Found on a live stack, and it is the sharpest instance of everything above: **Deploy** is gated on
+  a plan (`!deploy?.canDeploy`), no plan exists before the first check, and `retiredBecause` answers
+  `null` when no plan is HELD - so the one notice that could have spoken rendered nothing for the
+  state every new provider is in. A dead button, in silence, under "You deploy it and you own it".
+  The words "run the check first" appeared nowhere in the 1,118-line file. Note the shape: the
+  explanation path covered `spent` and `edited` - the two states you reach by USING the page - and
+  not `never`, the one you start in, which is exactly the state a developer never sits in long
+  enough to notice. `provider/actionAvailability.ts` is now the ONE decision, and eleven controls
+  render it.
+  - **Eight reasons, kept apart.** Not connected, wrong chain, an action in flight, never checked,
+    checked-then-edited, already sent, refused, could-not-resolve. They had all rendered identically
+    - as nothing - and collapsing them into one "unavailable" would fix the silence while keeping
+    the part that costs time. `providerSelfServiceExplains.test.tsx` asserts no two share a sentence.
+  - **The never-checked sentence must ALSO explain the form-match gating**, or a provider who checks
+    once, edits a field and finds the button dead again has no way to have predicted it.
+  - **WRONG CHAIN GATES SENDS ONLY.** `ready` never had a chain term and still does not: the checks
+    read through the page's own configured endpoint and are correct on any network, so gating them
+    would refuse a preflight that would have answered usefully. Only a transaction is bound to the
+    wallet's chain. A connector reporting NO chain id is not accused of being on the wrong one -
+    could-not-check is not a definite answer, here as everywhere else in this repo.
+  - **Enumerate the rendered buttons in the invariant test, never a hand list.** A hand list is
+    precisely how flow 3's three sends - `domain-claim-send`, `domain-none-send`,
+    `domain-withdraw-send`, with genuinely different gates - came to share one reason; the
+    enumerating test caught it in the same run that introduced it.
 - **A DISABLED CONTROL MUST RENDER A REASON, and one gate had none for its whole life.** Flow 3's
   Check is gated on flow 2's **Contract address** (`!candidate`), not on the Domain field beside it,
   so typing a domain and finding the button dead was the page's most confusing state with nothing

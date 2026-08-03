@@ -457,6 +457,10 @@ preflight that reports whether an action would succeed* is made from the provide
 **You should see:** the **Connect wallet** button disappears, your address appears under the provider
 id field, and **two** of the four **Check** buttons come alive - flow 1's and flow 4's.
 
+**Every send button - Deploy, and the rest - stays disabled**, and each says why underneath: it only
+sends something a check has already approved.
+That is the normal first-run state, not a fault; running the check in the next step is what enables it.
+
 That is not a partial failure: flows 2 and 3 are additionally gated on the **Contract address** field,
 which you have not filled in yet because you have not deployed anything.
 They come alive in §2.5, and the page says as much in amber under each of them.
@@ -475,6 +479,9 @@ You send the transaction and you own the result - DogTag does not deploy it for 
    underneath it. Short version: your contract's address is computed in advance from the record type,
    your wallet and this number, so it is the only part of the address you get to choose.)
 2. Click **Check what this would deploy**.
+   **Deploy is disabled until you do**, and says so underneath - it only ever sends something a check
+   has approved, for the values in the form at that moment.
+   Change any field afterwards and it goes back to disabled, with a line saying that too.
 
 **You should see** verdict **Ready**, the exact address this will deploy to shown *before* anything is
 sent, and two checks:
