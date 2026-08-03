@@ -379,6 +379,36 @@ stays short.
 There is **no backend on this path at all**: every read and every write is made from the provider's
 own wallet, straight to the chain.
 
+### Read this before you start: one flow completes, three stop
+
+**Three of the four flows stop, at the same missing step, and none of them stops because of anything
+you did.**
+Knowing that first is the difference between a walk and half an hour of wondering what you got wrong.
+
+| Flow | Outcome |
+|---|---|
+| 1. Deploy your own contract | **Completes.** Walked to a mined transaction and an independently verified contract. |
+| 2. Choose which contract is current | **Stops** - DogTag has to attach it first, and there is no admin screen for that. |
+| 3. Your domain | **Stops** - the domain register is neither approved nor selected. |
+| 4. Your listing | **Stops** - the provider directory is neither approved nor selected. |
+
+**Why, in one sequence.** Making a contract live takes **three moves, and only two of them are
+yours**:
+
+> provider deploys (`createIssuer`) → **REGISTRAR attaches** (`attachService`) → provider selects it
+> as current
+
+The middle move is DogTag's, not yours: `attachService` is `onlyOwner` on the provider registry, so
+no provider key can send it however correctly everything else is set up.
+It is also the move with **no screen anywhere** - not on this page, and not in the admin portal,
+whose registrar page covers register, activate and approve and nothing else.
+That is what flow 2 runs into, and flows 3 and 4 hit the same shape one layer along: a registrar
+approval that has no button yet.
+
+So walk all four anyway.
+The checks are worth reading, they tell you exactly which term is missing, and flow 1 genuinely
+completes.
+
 ### Before you start
 
 Four things, and the middle two are the ones people arrive without:
@@ -532,10 +562,15 @@ Put `1` in **Contract number** and check again.
 **What you are about to do:** tell your provider record that the contract you just deployed is the one
 new credentials should anchor to.
 
-**This flow stops, and the page tells you so before you click.** A notice at the top of the card reads
-that DogTag has to attach the contract to your provider record first, that the step is theirs rather
-than yours, and that there is no page for it yet.
-Do it anyway - the checks are worth seeing, and the first two pass.
+**THIS IS THE ONE THAT STOPS, and it is the middle move of the three: DogTag has to attach your
+contract before you can select it.**
+`attachService` is `onlyOwner` on the provider registry, so no provider key can send it - and there is
+no admin screen for it either, so nobody can send it for you today.
+Nothing you deployed is wrong, and there is no setting on your side that fixes it.
+The page says the same thing in a notice at the top of the card, before you click.
+
+Walk it anyway: the first two checks pass, and seeing which one fails is what makes the shape of the
+gap obvious.
 
 1. Paste the address you deployed in flow 1 into **Contract address**.
 2. Click **Check this contract**.
@@ -554,12 +589,10 @@ and the remedy, in the product's own words:
 > record - that step is DogTag's, not yours. Send this address to DogTag to attach it to your provider
 > record. You can select it here once that is done.
 
-**This is where the provider journey genuinely stops, and the blocker is on the admin side.**
-Attaching a contract to a provider record is a registrar action, and **it has no admin surface**: the
-registrar page in §1.2 covers register, activate and approve, and nothing else.
-Searched across the portal, backend and shared-client sources, the attach call appears only in
-explanatory comments, never as a call - so there is no button to press and no route to post to.
-Until that surface exists, a provider can deploy a contract and can go no further.
+How the "no admin surface" claim above was established, since it is the load-bearing one: searched
+across the portal, backend and shared-client sources, the attach call appears only in explanatory
+comments, never as a call - so there is no button to press and no route to post to.
+The registrar page in §1.2 covers register, activate and approve, and nothing else.
 
 **Leave the contract address in the field.** Flow 3 reads it.
 
@@ -568,9 +601,12 @@ Until that surface exists, a provider can deploy a contract and can go no furthe
 **What you are about to do:** publish the domain your clinic is known by, against the contract from
 flow 2.
 
-**This one also stops, for a different reason**, and the card says so up front: publishing a domain
-needs the domain register switched on for your contract, which is DogTag approving it and only then it
-being selected - and neither has a page here yet.
+**THIS ONE STOPS TOO, one layer along from flow 2's gap.**
+A domain is published through a typed register, and that register answers nothing until DogTag
+approves it and it is then selected for your contract - two steps, in that order, fixed by the
+contract itself.
+Neither has a page here yet, so this refuses however correct everything you type is.
+The card says so before you click.
 
 1. **Check the Contract address in step 2 is still filled in.** This is the trap on this page: the
    **Check the domain record** button is gated on *that* field, not on the Domain field beside it, so
@@ -599,9 +635,10 @@ Neither has happened, and neither has an admin surface.
 **What you are about to do:** publish your contact details, and optionally a location, so owners can
 find you.
 
-**This stops too**, and again the card says so first: the provider directory has to be approved by
-DogTag and then selected for your record, and neither has a page here yet.
-Four of the five checks still pass, which makes it the most informative refusal on the page.
+**THIS STOPS AT THE SAME SHAPE AS FLOW 3**: the provider directory has to be approved by DogTag and
+then selected for your record, and neither has a page here yet.
+Four of the five checks still pass, which makes it the most informative refusal on the page - and a
+good one to read closely, because it shows the single failing term sitting among four that are fine.
 
 1. Click **Fill demo data** to populate the contacts and a Singapore location.
 2. Click **Check what this would publish**.
@@ -634,16 +671,13 @@ Two properties of this flow are worth knowing for when it does open:
 
 ### 2.8 Where §2 leaves you
 
-| Flow | Outcome |
-|---|---|
-| 1. Deploy your own contract | **Works.** Walked to a mined transaction and an independently verified contract. |
-| 2. Choose which contract is current | **Blocked** - needs DogTag to attach it; no admin surface exists. |
-| 3. Your domain | **Blocked** - the domain register is neither approved nor selected. |
-| 4. Your listing | **Blocked** - the provider directory is neither approved nor selected. |
+As the map at the top said: flow 1 completed and left you a real contract on the testnet that you own.
+Flows 2, 3 and 4 each stopped at a registrar step - attach, approve the domain register, approve the
+directory - and all three are the same shape: DogTag's move, with no screen yet.
 
-All three blockers are the same shape: a registrar step with no admin surface yet.
-None of them is a misconfiguration you can fix from the provider's side, and both the product and this
-section say so at the point you hit them rather than leaving you to work it out.
+None of them is a misconfiguration you can fix from the provider's side.
+Both the product and this section say so at the point you hit them, and the summary is at the top
+rather than here, because a reader needs it before the confusion rather than after.
 
 ---
 

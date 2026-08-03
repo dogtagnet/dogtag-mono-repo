@@ -2339,6 +2339,60 @@ primitive: native `<details>`, so no state and no interaction with this package'
   transaction outcome from a storage read is the conflation every could-not-run state here exists to
   prevent. Pinned in both directions by `providerDomainAndDeploy.test.ts`.
 
+### The wallet layer must never speak for the subject of the page
+
+Four live findings, all on the shared wallet path, all one root shape: a wallet's answer read at one
+fixed depth and then presented where an answer about the PROVIDER belongs.
+
+- **NEVER `window.ethereum`.** Connection goes through AppKit/wagmi EIP-6963 discovery - the wallet
+  the USER picked - while the global is whichever extension won a race for it. With two extensions
+  installed those are routinely different wallets: a captain connected one, the switch request opened
+  in another sitting on Ethereum Mainnet, and its dialog reported chain `0x1` against a site asking
+  for `0x87`. `useSwitchChain` reaches the connected connector by construction; anything else needs
+  `useAccount().connector.getProvider()`. `WalletButton` is shared, so this reached EVERY portal.
+- **4902 is MetaMask's dialect, not the protocol's.** The add-chain fallback keyed on it alone, so a
+  wallet answering `4100` fell through to a dead end and the captain added ROAX by hand. Providers
+  also WRAP - viem under `cause`, extensions under `data.originalError` - so a top-level `err.code`
+  read misses a code plainly present two levels down. `wallet/walletError.ts` walks the whole chain
+  and matches message text too, since some wallets put the only usable information there.
+- **`4100 Unauthorized` IS THE MOST DANGEROUS STRING A WALLET CAN RETURN TO THIS PAGE.** It reads as
+  "not authorized", and it was rendered unlabelled in red inside the card headed "Your provider
+  record" directly under the provider id - so it was read as a verdict about the provider while the
+  admin portal showed that same provider ACTIVE and approved. `run()`'s own comment asserted that
+  reading was impossible. **Being true about an error's origin is not the same as being unmistakable
+  on screen, and only the second is a property of the product** - fix the rendering, not the comment.
+  A fault is now labelled, placed OUTSIDE that card, and states what was not established.
+- **A fault must not outlive its cause.** The message cleared only at the start of the next action,
+  so it survived the wallet switch it had just asked for and went on reading as current.
+
+**THE SEND PATH HAD NONE OF THE GUARDS THE RECEIPT PATH HAD, AND IT LOST A MINED TRANSACTION.**
+`sendAndFollow` did `await send()` FIRST and recorded the attempt only after that promise resolved,
+with no timeout. A captain's deploy mined - the clone is on chain, his account nonce was 1 - and the
+page showed nothing at all, forever. Meanwhile the receipt path a few lines below had a bounded wait
+AND an explicit `unknown` whose comment says an unfetchable receipt is neither success nor failure.
+Generalize it: **the place a promise can hang indefinitely is the place that most needs the
+three-state treatment, and it is easy to miss precisely because nothing is rendered there to look
+wrong.** `awaitingWallet` and `walletSilent` are separate states from `submitted` and `unknown` - a
+wallet that has not answered has no hash, so it must never be sent to an explorer, and it has not
+failed either.
+
+### A guide can be entirely correct and still unreachable
+
+The captain read the section covering flow 2's stop - twice over, in the closing paragraph and in the
+outcome table - and still could not tell whether it was his mistake. Nothing was inaccurate; the
+important fact was simply in the wrong PLACE. Three rules came out of it, and they generalize past
+this document:
+
+- **A summary of what will happen goes BEFORE the steps, not after them.** An outcome table at the
+  end sits after the sections it would have explained, so the reader meets each surprise first and
+  the explanation only once it can no longer help.
+- **Assemble the sequence; do not leave the reader to.** Every fact about the three-move
+  deploy → attach → select flow was already in the guide, and none of it was stated as a sequence, so
+  a reader had to build it themselves from four sections. `provider/types.ts` already carried exactly
+  that sequence in a comment - lift a framing that exists rather than inventing a second one.
+- **The crucial sentence must not be the last paragraph.** Lead a section that stops with the fact
+  that it stops and why; the table and the blockquote are evidence and belong after.
+
 **A MUTATION HARNESS THAT RESTORES WITH `git checkout --` DESTROYS UNCOMMITTED WORK - COMMIT FIRST.**
 `scripts/verify-provider-selfservice-mutations.sh` and any ad-hoc equivalent take git as the pristine
 baseline, so running one over uncommitted edits reverts every file in its `TARGETS` and reports every
