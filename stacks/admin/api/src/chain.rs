@@ -20,6 +20,23 @@ use crate::provider_registry::{
 pub const ROAX_CHAIN_ID: u64 = 135;
 
 sol! {
+    /// The retired generation-1 `IssuerRegistry` surface.
+    ///
+    /// NO CONTRACT IN THE LAUNCH SET IMPLEMENTS `whitelistFor` OR `delistFor`. `IssuerRegistry.sol`
+    /// was deleted with generation 1 in #140 and has no key in `contracts/deployments/roax.json`, so
+    /// this interface names a contract that is neither in the repo nor in the deployed set, and
+    /// `ISSUER_REGISTRY_ADDR` ships blank with no fallback.
+    ///
+    /// It is retained rather than removed because `approve_application` / `delist_application` still
+    /// call it and both are reachable from live admin surfaces, so deleting it would change what two
+    /// shipped pages do. The two halves need different answers - the verify capability has an exact
+    /// successor in `ProviderRegistry.setVerifierCapability`, the record-type issuance grant has none
+    /// - and choosing is a product decision. Full reasoning at the callers in `routes.rs`.
+    ///
+    /// `isWhitelistedFor` is a DIFFERENT case and must not be swept up with the two writes:
+    /// `ProviderRegistry` does implement it, answering the orthogonal VERIFY axis for a caller that
+    /// is not itself an attached service. Do not repoint a record-type-keyed read at it - the answer
+    /// would be a confident `false` for every genuine issuer signer.
     #[sol(rpc)]
     contract IIssuerRegistry {
         function whitelistFor(bytes32 recordType, address signer) external;
