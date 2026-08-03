@@ -104,7 +104,13 @@ abstract contract LaunchStack is Test {
         vm.startPrank(REGISTRAR);
         core.attachService(providerId, clone, FACTORY_GENERATION, providerKey);
         core.setServiceStanding(clone, ProviderRegistry.Standing.ACTIVE);
-        core.setIssuanceCapability(clone, signer, true);
+        // The grant is on the SIGNER's address and carries no service. Idempotent because `setRights`
+        // refuses a no-op, and a harness that stands up two services for the same signer would
+        // otherwise revert on the second.
+        uint256 issueRight = core.RIGHT_ISSUE();
+        if (core.rightsOf(signer) & issueRight == 0) {
+            core.setRights(signer, issueRight);
+        }
         vm.stopPrank();
 
         // The provider's CURRENT pointer for this record type. `canIssue` requires it, so a clone that

@@ -307,6 +307,8 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     error InvalidStanding();
     error RetiredStanding();
     error NoChange();
+    /// @dev `setRights` was handed a bit outside `SETTABLE_RIGHTS` — a derived bit is not a grant.
+    error UnsettableRights();
     error NoPendingController();
     error PendingControllerNotAccepted();
     error NotPendingController();
@@ -808,22 +810,26 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
 
     /// @notice The issuer-status question in the PRESENT TENSE, with `whitelistFor`/`delistFor`
     /// semantics. It folds exactly two facts: the registrar attached this clone, and the registrar's
-    /// forward-only issuance grant for this signer still stands.
+    /// forward-only `RIGHT_ISSUE` grant for this signer still stands.
+    ///
+    /// The `serviceAddress` argument survives the re-keying to `rightsOf` and still carries the FIRST of
+    /// those two facts — the clone is attached here at all — so a stranger address is still refused. What
+    /// it no longer does is select WHICH grant is read: there is one grant per signer now, so this rung
+    /// answers the same for every attached service. That is the widening, and `rightsOf` states it.
     ///
     /// CORRECTION, and it matters because the earlier wording sent a reader the wrong way. This was
     /// documented as "THE historical issuer-status question, and the only sound migration target for
     /// a direct `isWhitelistedFor(recordTypeKey, signer)` reader such as the mandatory issuer-whitelist
     /// verification pillar". It is NOT: the pillar asks whether a grant was in force AT THE BLOCK A ROOT
-    /// WAS ANCHORED, reconstructed from this contract's own `IssuanceCapabilitySet` log, because
-    /// withdrawing a grant is forward-only and a current-state read would refuse every credential a
-    /// since-rotated signer ever issued (`adminRevoke` is the retroactive lever, not this).
+    /// WAS ANCHORED, reconstructed from this contract's own `RightsSet` log, because withdrawing a grant
+    /// is forward-only and a current-state read would refuse every credential a since-rotated signer ever
+    /// issued (`adminRevoke` is the retroactive lever, not this).
     ///
-    /// This function reads CURRENT STORAGE — `_issuanceCapabilities[service][signer]`, with no block
-    /// and no root parameter — so it cannot answer that question and is NOT the pillar's migration
-    /// target. Consuming its boolean there would revert the pillar to a current-state getter under a
-    /// new name. Verifiers use it only to establish that an authority speaks this generation's
-    /// vocabulary at all; the historical question is answered from this contract's own
-    /// `IssuanceCapabilitySet` log.
+    /// This function reads CURRENT STORAGE — `_grantedRights[signer]`, with no block and no root
+    /// parameter — so it cannot answer that question and is NOT the pillar's migration target. Consuming
+    /// its boolean there would revert the pillar to a current-state getter under a new name. Verifiers use
+    /// it only to establish that an authority speaks this generation's vocabulary at all; the historical
+    /// question is answered from this contract's own `RightsSet` log.
     ///
     /// It remains the sound target for a PRESENT-TENSE record-type reader that is not a pre-issue
     /// gate — a console asking "is this signer a recognized issuer for this service now".
@@ -844,7 +850,7 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         override
         returns (bool)
     {
-        return _isRecognizedIssuer(serviceAddress, _services[serviceAddress], signer);
+        return _isRecognizedIssuer(_services[serviceAddress], signer);
     }
 
     /// @notice Preserves an originator's ability to revoke roots on a replaced service without
@@ -860,7 +866,7 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     /// originator that anchored it.
     function canRevoke(address serviceAddress, address signer) public view override returns (bool) {
         Service storage s = _services[serviceAddress];
-        return _isRecognizedIssuer(serviceAddress, s, signer) && _isOwnerConfirmed(serviceAddress, s);
+        return _isRecognizedIssuer(s, signer) && _isOwnerConfirmed(serviceAddress, s);
     }
 
     /// @notice CURRENT eligibility to mint a NEW root: everything `canRevoke` requires, plus every
@@ -869,16 +875,15 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     /// is a pre-issue gate ONLY and never a verification input.
     function canIssue(address serviceAddress, address signer) public view override returns (bool) {
         Service storage s = _services[serviceAddress];
-        return _isRecognizedIssuer(serviceAddress, s, signer)
-            && _serviceIssuanceEligible(serviceAddress, s);
+        return _isRecognizedIssuer(s, signer) && _serviceIssuanceEligible(serviceAddress, s);
     }
 
-    function _isRecognizedIssuer(address serviceAddress, Service storage s, address signer)
-        internal
-        view
-        returns (bool)
-    {
-        return s.providerId != bytes20(0) && _issuanceCapabilities[serviceAddress][signer];
+    /// @dev Takes no service ADDRESS any more, only the attached service RECORD. That is the re-keying
+    /// visible in a signature: the address used to select which grant was read, and there is now one
+    /// grant per signer. The record is still required, so an address the registrar never attached is
+    /// still refused.
+    function _isRecognizedIssuer(Service storage s, address signer) internal view returns (bool) {
+        return s.providerId != bytes20(0) && (_grantedRights[signer] & RIGHT_ISSUE) != 0;
     }
 
     /// @dev The signer-agnostic half of `canIssue`, shared with `effectiveService` so the gate and the
@@ -1038,12 +1043,12 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         return _currentService[providerId][recordType];
     }
 
-    function issuanceCapability(address serviceAddress, address signer) external view returns (bool) {
-        return _issuanceCapabilities[serviceAddress][signer];
-    }
-
-    function activeIssuerCount(address serviceAddress) external view returns (uint256) {
-        return _activeIssuerCount[serviceAddress];
+    /// @notice How many addresses currently hold `RIGHT_ISSUE` anywhere in this registry. It takes no
+    /// service, because after the re-keying there is no per-service issuer set to count: any holder can
+    /// anchor on any service in effective standing. Kept as the honest replacement for the removed
+    /// per-service `activeIssuerCount`, which would now always have answered this same number.
+    function issueRightHolders() external view returns (uint256) {
+        return _issueRightHolders;
     }
 
     function providerDelegate(bytes20 providerId, address delegate)
@@ -1085,7 +1090,7 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         factoryActive = generation.active && _factoryRecognizes(generation.factory, serviceAddress);
         ownerConfirmed = _isOwnerConfirmed(serviceAddress, s);
         hasActiveIssuer =
-            _activeIssuerCount[serviceAddress] != 0 && _serviceIssuanceEligible(serviceAddress, s);
+            _issueRightHolders != 0 && _serviceIssuanceEligible(serviceAddress, s);
     }
 
     function providerCount() external view returns (uint256) {

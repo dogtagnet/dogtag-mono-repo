@@ -142,6 +142,60 @@ contract CustodialIssuanceTest is LaunchStack {
         assertEq(uint8(sbt.status(dogTagId)), uint8(DogTagSBTConsent.Status.Active));
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Address-keyed rights, checked where they are actually enforced: at the clone
+    // ---------------------------------------------------------------------------------------------
+
+    /// @dev An address the registrar granted nothing is refused by the REAL clone against the REAL core.
+    /// `ProviderRegistry.t.sol` asserts the predicate; this asserts that the predicate is what stands
+    /// between a stranger and an anchored root, which is the property a user of this system relies on.
+    function test_an_address_without_the_issue_bit_is_refused_at_the_clone() public {
+        address stranger = address(0xDEAD10CC);
+        assertEq(core.rightsOf(stranger), 0, "granted nothing");
+
+        vm.prank(stranger);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
+        vacc.issue(keccak256("a root a stranger must not be able to anchor"));
+
+        // Owning the clone is still not an issuance right, and holding a DIFFERENT provider's clone
+        // address is not one either — only the bit is.
+        vm.prank(VET_PROVIDER_KEY);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
+        vacc.issue(keccak256("a root the clone owner must not be able to anchor"));
+    }
+
+    /// @dev THE WIDENING, at the clone. `ProviderRegistry.t.sol` pins the predicate; this pins that a
+    /// real anchored root results — one provider's approved signer writing into ANOTHER provider's
+    /// clone, with `issuedBy` recording that signer and the factory's write-once index attributing the
+    /// root to the clone it was written through.
+    ///
+    /// This is a REDUCTION against the per-service grant it replaces, and it is asserted as intended
+    /// behaviour so that a later reader cannot quietly "fix" it by putting a service key back into the
+    /// rights lookup — which is exactly the key that cannot exist, because a registrar approves an
+    /// applicant before that applicant has a clone.
+    function test_a_signer_approved_for_one_provider_can_anchor_on_another_providers_clone() public {
+        bytes20 GOV_PROVIDER = bytes20(uint160(0x60F));
+        address GOV_PROVIDER_KEY = address(0x60FC0);
+        address govSigner = address(0x60F516);
+        DogTagIssuer travel = DogTagIssuer(
+            _onboardIssuingClone(GOV_PROVIDER, GOV_PROVIDER_KEY, keccak256("TRAVEL_CLEARANCE"), govSigner)
+        );
+
+        // Two providers, two clones, two separately approved signers.
+        assertTrue(core.rightsOf(vetSigner) & core.RIGHT_ISSUE() != 0);
+        assertTrue(core.rightsOf(govSigner) & core.RIGHT_ISSUE() != 0);
+
+        bytes32 crossTenant = keccak256("anchored by the vet's signer on the government's clone");
+        vm.prank(vetSigner);
+        travel.issue(crossTenant);
+
+        assertTrue(travel.isValid(crossTenant), "the cross-tenant root really anchored");
+        assertEq(travel.issuedBy(crossTenant), vetSigner, "issuedBy records the foreign signer");
+        // The factory attributes the root to the clone it was written through, so the credential reads
+        // as the government's. Nothing on chain records that a different provider's signer wrote it.
+        assertEq(factory.rootIssuer(crossTenant), address(travel));
+    }
+
     /// @notice M5 app-side: the root the OWNER'S APP builds locally is exactly what the contract seals as
     /// `profileRoot`. Spec §"Issuance" steps 2-3: *the owner's app builds the tree locally, computes `R`;
     /// the issuer sets `profileRoot(dogTagId) = R`*.

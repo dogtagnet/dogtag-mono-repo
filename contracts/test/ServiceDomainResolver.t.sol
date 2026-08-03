@@ -403,8 +403,9 @@ contract ServiceDomainResolverTest is Test {
     /// @dev A hot issuance key is exactly the key most likely to be exposed, and publishing an identity is
     /// not its job.
     function test_an_issuance_signer_has_no_content_write_authority() public {
+        uint256 issueRight = core.RIGHT_ISSUE();
         vm.prank(AUTHORITY);
-        core.setIssuanceCapability(service, ISSUANCE_SIGNER, true);
+        core.setRights(ISSUANCE_SIGNER, issueRight);
         assertTrue(core.canRevoke(service, ISSUANCE_SIGNER));
 
         assertFalse(resolver.canWriteDomain(service, ISSUANCE_SIGNER));
