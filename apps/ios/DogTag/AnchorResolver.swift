@@ -10,7 +10,7 @@ import Foundation
 /// (`dogtag_standard::discovery::validate`); this file does the two jobs that binding leaves to the
 /// caller (its own docs: "RESOLVING the anchor is the CALLER's job"):
 ///
-///   1. DECODING the two `ProtocolRegistry` getter returns — [`decodeContractSet`] /
+///   1. DECODING the two `ProtocolRegistry` getter returns — [`decodeDiscoverySet`] /
 ///      [`decodeArtifactSet`] — into plain records. Kept PURE (Foundation only, no FFI, no chain I/O)
 ///      so they compile into the host-less test bundle and are unit-tested against fixed hex vectors.
 ///

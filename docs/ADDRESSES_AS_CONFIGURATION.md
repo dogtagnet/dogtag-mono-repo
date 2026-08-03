@@ -52,18 +52,17 @@ The comment beside a hardcoded address is frequently a dangling pointer, so read
 following it. `docs/CLIENT_REPOINT.md`, `docs/ISSUER_V2_OWNERSHIP.md` and `docs/CLONE_PROVENANCE_ROUTER.md`
 were deleted with the generation they described, and `scripts/check-cutover-consumers.sh` /
 `make check-cutover-consumers` were repurposed into `scripts/check-no-hardcoded-addresses.sh` /
-`make check-addresses`. Still citing one or both:
+`make check-addresses`. Still citing one or both - and the split below is what decides whether you may
+fix one on its own, so check which list a file is in before you touch it.
+
+**Twelve are declared entries in `scripts/address-debt.json`**, so the citation is corrected by the
+same edit that clears the entry:
 
 ```
-apps/android/app/src/main/java/io/liberalize/dogtag/data/RoaxConfig.kt
-apps/ios/DogTag/Models.swift
 crates/dogtag-prover-rs/src/manifest.rs
-packages/ui/src/provider/liveReader.ts
 packages/ui/src/wallet/contracts.ts
 packages/ui/test/providerDomainAndDeploy.test.ts
 stacks/owner/web/src/lib/config.ts
-stacks/vet/api/src/chain.rs
-stacks/vet/api/tests/issuance_authority.rs
 stacks/admin/.env.example
 stacks/admin/web/.env.example
 stacks/government/.env.example
@@ -74,12 +73,23 @@ stacks/vet/.env.example
 stacks/vet/web/.env.example
 ```
 
-Every one is a declared entry in `scripts/address-debt.json`, so the comment is corrected by the same
-edit that clears the entry - which is why they are recorded here rather than swept now. **Do not
-"tidy" a citation on its own in one of these files**: the gate is bidirectional, and a declared file
-that stops carrying an address fails it until you also delete the entry. What the deleted docs said
-that still binds is in `AGENTS.md` - the record-type-keyed reads under the issuer-whitelist pillar,
-and the `msg.sender` branch that is the reason `ISSUER_REGISTRY_ADDR` cannot simply be repointed.
+**Do not "tidy" a citation on its own in one of those twelve**: the gate is bidirectional, and a
+declared file that stops carrying an address fails it until you also delete its entry.
+
+**The other five are NOT declared**, so the gate does not watch them at all and the dangling citation
+can be corrected on its own, today, at no cost:
+
+```
+apps/android/app/src/main/java/io/liberalize/dogtag/data/RoaxConfig.kt
+apps/ios/DogTag/Models.swift
+packages/ui/src/provider/liveReader.ts
+stacks/vet/api/src/chain.rs
+stacks/vet/api/tests/issuance_authority.rs
+```
+
+What the deleted docs said that still binds is in `AGENTS.md` - the record-type-keyed reads under the
+issuer-whitelist pillar, and the `msg.sender` branch that is the reason `ISSUER_REGISTRY_ADDR` cannot
+simply be repointed.
 
 ## The layers, in the order they were approved
 

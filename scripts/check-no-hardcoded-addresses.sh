@@ -90,7 +90,22 @@ PY
 )
 
 cd "$ROOT_DIR"
-PATTERN="$(printf '%s\n' "${LIVE[@]}" "${RETIRED[@]}" | paste -sd'|' -)"
+
+# A ledger that parses to zero addresses cannot produce a pattern, and every way of carrying on from
+# here is worse than stopping: an omitted element leaves an EMPTY ERE alternative, which grep rejects
+# outright (`empty (sub)expression`), and the `|| true` on the search below would swallow that into an
+# empty result set - so the run would end up blaming 65 innocent declared files instead of the parse.
+# The realistic causes are a moved or renamed ledger and a change to its shape, so name both.
+if [[ ${#LIVE[@]} -eq 0 ]]; then
+  echo "::error:: no contract addresses parsed out of the ledger: $LEDGER"
+  echo "          Expected top-level keys whose value is a 42-character 0x address."
+  echo "          The gate cannot run without them, and will not guess."
+  exit 1
+fi
+
+# RETIRED may legitimately be empty - that is the goal state, every retired address cleared out of the
+# tree. `${A[@]+"${A[@]}"}` expands to NOTHING when empty; the `:-` form would inject an empty string.
+PATTERN="$(printf '%s\n' "${LIVE[@]}" ${RETIRED[@]+"${RETIRED[@]}"} | paste -sd'|' -)"
 
 # Tracked files only, and never the ledger itself - it is where addresses belong.
 read_lines OFFENDERS < <(
