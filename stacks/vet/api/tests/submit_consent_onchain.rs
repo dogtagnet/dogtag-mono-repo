@@ -306,12 +306,10 @@ fn onboard_issuing_clone(rpc: &str, d: &Deployed, record_type: &str, signer: &st
         "setServiceStanding(address,uint8)",
         &[&clone, STANDING_ACTIVE],
     );
-    cast_send(
-        rpc,
-        core,
-        "setIssuanceCapability(address,address,bool)",
-        &[&clone, signer, "true"],
-    );
+    // The grant is on the SIGNER's ADDRESS and names no service - `RIGHT_ISSUE` is bit 0 of the
+    // rights bitmask. The `repointService` below still matters: `canIssue` folds this clone's own
+    // lifecycle terms, none of which the re-keying dropped.
+    cast_send(rpc, core, "setRights(address,uint256)", &[signer, "1"]);
     // The provider's CURRENT pointer for this record type — the provider's own decision, so its own
     // transaction. Without it the clone is attached and granted and still anchors nothing.
     cast_send_as(rpc, PK1, core, "repointService(address)", &[&clone]);
