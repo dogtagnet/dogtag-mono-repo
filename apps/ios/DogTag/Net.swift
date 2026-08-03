@@ -778,7 +778,7 @@ enum RoaxRpc {
         }
     }
 
-    private static let getContractSetSelector = functionSelector("getContractSet(bytes32)")
+    private static let getDiscoverySetSelector = functionSelector("getDiscoverySet(bytes32)")
     private static let getActiveArtifactSetSelector = functionSelector("getActiveArtifactSet(bytes32)")
 
     /// keccak256 of a version string as a 32-byte word — the `ProtocolRegistry` map key
@@ -787,15 +787,23 @@ enum RoaxRpc {
         Keccak256.digest(Data(version.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// `ProtocolRegistry.getContractSet(versionId)` → the on-chain contract-set record (M-4 PR3).
+    /// `ProtocolRegistry.getDiscoverySet(versionId)` → the on-chain discovery record.
+    ///
+    /// The getter is `getDiscoverySet`, NOT `getContractSet` — that name belongs to an earlier record
+    /// shape and is absent from this contract. Calling the absent one reverts at the dispatcher with
+    /// EMPTY returndata, which arrives here as `.refused` and is indistinguishable from an unpublished
+    /// version; the app then fails closed for a reason that is not the real one. The rename is
+    /// deliberate: a record's SHAPE and its getter's NAME move together precisely so a stale client
+    /// reverts on dispatch instead of decoding every member one slot out.
+    ///
     /// Returns nil when the registry is unconfigured/unreachable OR the version is unpublished (the
-    /// getter reverts "unknown contract set"), so verification fails closed. `protocolRegistry`
-    /// empty (not yet deployed) is a nil, by design.
-    static func getContractSet(rpcUrl: String, protocolRegistry: String, version: String) async -> AnchorResolver.ContractSetRecord? {
+    /// getter reverts "unknown discovery set"), so verification fails closed. `protocolRegistry`
+    /// empty is a nil, by design.
+    static func getDiscoverySet(rpcUrl: String, protocolRegistry: String, version: String) async -> AnchorResolver.DiscoverySetRecord? {
         guard !protocolRegistry.isEmpty else { return nil }
-        let data = getContractSetSelector + versionId(version)
+        let data = getDiscoverySetSelector + versionId(version)
         switch await ethCall(rpcUrl: rpcUrl, to: protocolRegistry, data: data) {
-        case let .success(hex): return AnchorResolver.decodeContractSet(hex)
+        case let .success(hex): return AnchorResolver.decodeDiscoverySet(hex)
         case .refused, .unreachable: return nil
         }
     }

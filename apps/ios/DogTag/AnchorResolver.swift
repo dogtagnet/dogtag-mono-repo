@@ -26,24 +26,6 @@ enum AnchorResolver {
     static let artifactSet = "dogtag-levelb-artifacts/1"
     static let circuitId = "consent.circom/DogTagConsent(6)"
 
-    /// The GENERATION-2 discovery key, published to `ProtocolRegistryV2` (`ProtocolVersionsV2.sol`).
-    ///
-    /// The artifact key and the circuit id are NOT versioned alongside it: generation 2 rotates the
-    /// factory, the verification registry, the authority core and the root index, and rotates no proving
-    /// artifact — the circuit, the ceremony and all four pins are unchanged. Bumping `artifactSet` would
-    /// also make an old build fail with a stitched-anchor coherence error instead of the `minAppVersion`
-    /// refusal that actually tells the holder to update.
-    static let protocolVersionV2 = "dogtag-levelb/2"
-
-    /// The fields of `ProtocolRegistry.ContractSet` an app-side anchor needs. `active` →
-    /// `TrustedAnchor.contractSetActive`; `verificationRegistry` is the anti-redirect address;
-    /// `contractSetId` → `TrustedAnchor.versionId`.
-    struct ContractSetRecord: Equatable {
-        let contractSetId: String // 0x-hex bytes32
-        let verificationRegistry: String // 0x-hex address (lowercased)
-        let circuitId: String // 0x-hex bytes32
-        let active: Bool
-    }
 
     /// The fields of `ProtocolRegistry.ArtifactSet` an app-side anchor needs. `minAppVersion` is the
     /// only dynamic-string member we decode (`artifactBaseUrl` is not needed on-device: we bundle the
@@ -55,22 +37,24 @@ enum AnchorResolver {
     }
 
     /// The fields of `ProtocolRegistryV2.DiscoverySet` an app-side anchor needs — the generation-1 set
-    /// plus the two members generation 2 adds.
-    ///
-    /// A separate type from `ContractSetRecord` on purpose, decoded by a separate function: the two
-    /// on-chain records have different arities and different member positions, so one record type
-    /// carrying optional extras would let a generation-1 return populate a generation-2 record with
-    /// whatever happened to sit at those indices.
+    /// needs.
     struct DiscoverySetRecord: Equatable {
         let discoverySetId: String // 0x-hex bytes32
+        /// `DogTagIssuerFactory` — where a provider's clone comes from AND the write-once root index.
+        let factory: String // 0x-hex address (lowercased)
         let verificationRegistry: String // 0x-hex address (lowercased)
         /// The `ProviderRegistry` authority core — also the root of the resolver layer.
         let providerRegistry: String // 0x-hex address (lowercased)
-        /// The `CloneProvenanceRouter`. NOT the factory: reading `rootIssuer`/`isClone` from the factory
-        /// resolves only that generation's roots and silently misses every earlier one.
-        let rootIndex: String // 0x-hex address (lowercased)
         let circuitId: String // 0x-hex bytes32
         let active: Bool
+
+        /// The address `rootIssuer`/`isClone` are read from. There is ONE launch set and no earlier
+        /// generation to bridge, so the factory IS the root index — `VerificationRegistryConsent`
+        /// pins it in its immutable `rootIndex` slot, and `ProtocolRegistry.DiscoverySet.factory`
+        /// carries that same address. It is exposed as its own name because the QUESTION differs
+        /// ("where does a clone come from" vs "what resolves an anchored root"), and a future
+        /// generation could separate them again.
+        var rootIndex: String { factory }
     }
 
     // MARK: - ABI decoding (pure)
@@ -99,40 +83,26 @@ enum AnchorResolver {
     /// A 32-byte word as an Int byte offset (small values only — offsets/lengths fit in Int here).
     private static func intOf(_ word: String) -> Int? { Int(word.suffix(16), radix: 16) }
 
-    /// Decode `ProtocolRegistry.getContractSet` — a STATIC tuple, so the return is 8 inline words:
-    /// `[contractSetId, factory, verificationRegistry, sbt, verifier, circuitId, publishedAt, active]`.
-    /// Only `contractSetId`(0), `verificationRegistry`(2), `circuitId`(5), `active`(7) are kept.
+    /// Decode `ProtocolRegistry.getDiscoverySet` — a STATIC tuple, so the return is 9 inline words:
+    /// `[discoverySetId, factory, verificationRegistry, sbt, verifier, providerRegistry, circuitId,
+    /// publishedAt, active]`. Kept: `discoverySetId`(0), `factory`(1), `verificationRegistry`(2),
+    /// `providerRegistry`(5), `circuitId`(6), `active`(8).
     ///
-    /// The arity is required EXACTLY, not as a lower bound. A static tuple's encoding is one word per
-    /// member, so 8 is the only width this record can have — and a `>= 8` check would happily decode the
-    /// 10-word generation-2 record at generation-1 indices, reading `providerRegistry` as `circuitId` and
-    /// `publishedAt` as `active`, which yields a plausible-looking live record for the wrong generation.
-    /// Refusing a width this record cannot have is a cheap structural guard against exactly that.
-    static func decodeContractSet(_ hex: String) -> ContractSetRecord? {
-        guard let w = words(hex), w.count == 8 else { return nil }
-        return ContractSetRecord(
-            contractSetId: b32(w[0]),
-            verificationRegistry: addr(w[2]),
-            circuitId: b32(w[5]),
-            active: boolOf(w[7]))
-    }
-
-    /// Decode `ProtocolRegistryV2.getDiscoverySet` — also a STATIC tuple, 10 inline words:
-    /// `[discoverySetId, factory, verificationRegistry, sbt, verifier, providerRegistry, rootIndex,
-    /// circuitId, publishedAt, active]`. Kept: `discoverySetId`(0), `verificationRegistry`(2),
-    /// `providerRegistry`(5), `rootIndex`(6), `circuitId`(7), `active`(9).
-    ///
-    /// The arity is required exactly, for the mirror of the reason above: a generation-1 return decoded
-    /// here would read `publishedAt` as `circuitId` and run off the end for `active`.
+    /// The arity is required EXACTLY, not as a lower bound. A static tuple encodes one word per member,
+    /// so 9 is the only width this record can have, and an inexact check is how a differently-shaped
+    /// return gets decoded at the wrong indices into a plausible-looking live record. This app shipped
+    /// a decoder demanding 10 words (a design with a separate `rootIndex`) against a contract that
+    /// returns 9 — that guard is why the mismatch surfaced as a refusal rather than as an anchor
+    /// naming whatever sat at those offsets.
     static func decodeDiscoverySet(_ hex: String) -> DiscoverySetRecord? {
-        guard let w = words(hex), w.count == 10 else { return nil }
+        guard let w = words(hex), w.count == 9 else { return nil }
         return DiscoverySetRecord(
             discoverySetId: b32(w[0]),
+            factory: addr(w[1]),
             verificationRegistry: addr(w[2]),
             providerRegistry: addr(w[5]),
-            rootIndex: addr(w[6]),
-            circuitId: b32(w[7]),
-            active: boolOf(w[9]))
+            circuitId: b32(w[6]),
+            active: boolOf(w[8]))
     }
 
     /// Decode `ProtocolRegistry.getActiveArtifactSet` — a DYNAMIC tuple (two `string` members), so the

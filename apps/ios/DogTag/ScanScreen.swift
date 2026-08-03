@@ -581,7 +581,7 @@ struct ScanScreen: View {
         // (fail closed) rather than falling back to the custom peer - `endpointRoute` takes its
         // `requested == bundled` branch, which has no custom candidate to fall back to.
         let version = AnchorResolver.protocolVersion
-        async let csTask = RoaxRpc.getContractSet(
+        async let csTask = RoaxRpc.getDiscoverySet(
             rpcUrl: AppConfig.roaxRpc,
             protocolRegistry: roax.protocolRegistry, version: version)
         async let asTask = RoaxRpc.getActiveArtifactSet(
@@ -596,7 +596,7 @@ struct ScanScreen: View {
         // records SEPARATELY (never AND-ed) — `validateDiscovery` requires both true independently.
         let anchor = TrustedAnchor(
             version: version,
-            versionId: cs.contractSetId,
+            versionId: cs.discoverySetId,
             artifactSet: AnchorResolver.artifactSet,
             artifactSetId: arti.artifactSetId,
             chainId: UInt64(roax.chainId),
@@ -605,14 +605,17 @@ struct ScanScreen: View {
             minAppVersion: arti.minAppVersion,
             contractSetActive: cs.active,
             artifactSetActive: arti.active,
-            // `nil` because this build reads generation 1's `ProtocolRegistry`, whose `ContractSet`
-            // struct has no provider-authority or root-index member. That is an accurate statement about
-            // the record's shape, not a could-not-check: a FAILED read is the `guard let cs` above, which
-            // aborts. When this call site is repointed at `ProtocolRegistryV2.getDiscoverySet`
-            // (`AnchorResolver.decodeDiscoverySet`) both must be populated from that record — and
-            // `rootIndex` from its OWN member, never from `factory`.
-            providerRegistry: nil,
-            rootIndex: nil)
+            // Both come from the discovery record itself. `rootIndex` resolves to that record's
+            // `factory`, and on this contract set that is not a shortcut: there is one launch set and
+            // no earlier generation to bridge, `VerificationRegistryConsent` pins the factory in its
+            // immutable `rootIndex` slot, and the publish script's preflight refuses to stage a record
+            // whose `factory` is not `verificationRegistry.rootIndex()`. So the equality is asserted
+            // on chain before anything is published, rather than assumed here.
+            //
+            // Never source either from the app's own bundle instead: the whole point of reading them
+            // from the anchor is that a platform's claim gets CHECKED against a dogtag-governed record.
+            providerRegistry: cs.providerRegistry,
+            rootIndex: cs.rootIndex)
         let ffiClaims = ConvenienceClaims(
             protocolVersion: claims.protocolVersion,
             chainId: claims.chainId,
