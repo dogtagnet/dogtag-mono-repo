@@ -158,6 +158,47 @@ val buildHostRustCore by tasks.registering(Exec::class) {
     commandLine("cargo", "build", "-p", "dogtag-standard-rs", "--features", "prover", "--lib")
 }
 
+// ---- the generated address bundle must exist before anything is assembled ----------------------
+//
+// `src/main/assets/roax.json` is GENERATED from the deploy ledger by
+// `scripts/gen-mobile-roax-config.sh` and gitignored, so a fresh checkout does not have it.
+//
+// Without this check its absence is SILENT at build time and fatal at runtime: assets are copied
+// verbatim, so an APK simply ships without the file, and `RoaxConfig.load` calls
+// `context.assets.open("roax.json")` with no catch - the app crashes on the first screen that reads
+// an address. A crash on a user's phone is a far worse failure than a build that refuses, and it is
+// discovered much later. iOS gets this for free, because its `pbxproj` names the file as a Copy
+// Bundle Resource and `xcodebuild` fails on a missing build input; this is the Android equivalent.
+//
+// Matching the repo's standing doctrine for the vendored zkey/graph: an absent generated artifact is
+// a loud failure and THAT FAILURE IS THE GUARD, not a project bug. Never "fix" this by making the
+// asset optional or by committing a fallback copy - a committed copy is the hardcoded address
+// `make check-addresses` exists to refuse, and it is exactly how both bundles came to name a
+// superseded generation-1 ProtocolRegistry.
+val roaxConfigAsset = File(projectDir, "src/main/assets/roax.json")
+
+val requireRoaxConfig by tasks.registering {
+    group = "verification"
+    description = "Fails the build when the generated address bundle is missing."
+    // Declared as an input so Gradle re-checks when the file appears or changes, rather than caching
+    // a pass from a build that ran before it was deleted.
+    inputs.files(project.files(roaxConfigAsset)).withPathSensitivity(PathSensitivity.RELATIVE)
+    doLast {
+        if (!roaxConfigAsset.isFile) {
+            throw GradleException(
+                "missing ${roaxConfigAsset.path}\n" +
+                    "It is generated from contracts/deployments/roax.json and gitignored, so a fresh\n" +
+                    "checkout has none. Generate it, then build:\n" +
+                    "    make gen-mobile-config\n" +
+                    "Shipping without it is not an option: the APK would build clean and then crash on\n" +
+                    "the first screen that reads a contract address."
+            )
+        }
+    }
+}
+
+tasks.named("preBuild") { dependsOn(requireRoaxConfig) }
+
 tasks.withType<Test>().configureEach {
     dependsOn(buildHostRustCore)
     // Where `Native.load("dogtag_standard")` looks for lib{dogtag_standard}.{dylib,so}.

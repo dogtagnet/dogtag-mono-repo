@@ -34,6 +34,9 @@ test-consent-parity: ## consent prove<->VK parity - LOUD gate, fails if artifact
 vendor-mobile-artifacts: ## copy the consent zkey+graph from circuits/build into both app bundles
 	scripts/vendor-mobile-artifacts.sh
 
+gen-mobile-config: ## write both apps/*/roax.json address bundles from the deploy ledger
+	scripts/gen-mobile-roax-config.sh
+
 contracts: ## compile Foundry contracts
 	cd contracts && forge build
 

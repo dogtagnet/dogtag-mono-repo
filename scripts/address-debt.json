@@ -35,10 +35,8 @@
   ],
   "stillHardcoded": {
     "AGENTS.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "apps/android/app/src/main/assets/roax.json": "compile-time mobile bundle; collapses to the ProtocolRegistry anchor alone when the phones resolve the rest from getDiscoverySet",
     "apps/android/app/src/test/java/io/liberalize/dogtag/net/AnchorResolverTest.kt": "mobile source; anchor-resolution work",
     "apps/android/app/src/test/java/io/liberalize/dogtag/net/IssuerDomainBindingTest.kt": "mobile source; anchor-resolution work",
-    "apps/ios/DogTag/roax.json": "compile-time mobile bundle; collapses to the ProtocolRegistry anchor alone when the phones resolve the rest from getDiscoverySet",
     "apps/ios/DogTagTests/AnchorResolverTests.swift": "mobile source; anchor-resolution work",
     "apps/ios/DogTagTests/IssuerDomainBindingTests.swift": "mobile source; anchor-resolution work",
     "contracts/test/ProtocolRegistry.t.sol": "test fixture; keep only if the test's MEANING needs the real deployed address, else replace with a synthetic one",

@@ -82,6 +82,13 @@ jobs:
           done
           scripts/vendor-mobile-artifacts.sh
 
+      # The address bundle is generated from the deploy ledger and gitignored, so the runner's
+      # checkout does not have it. `roax.json` is a Copy Bundle Resource in the committed pbxproj, so
+      # without this step xcodebuild fails on a missing build input. It must run BEFORE any xcodegen,
+      # which sweeps apps/ios/DogTag/ and drops references to files that are not there.
+      - name: Generate the mobile address bundle from the deploy ledger
+        run: scripts/gen-mobile-roax-config.sh
+
       - name: Build the on-device prover xcframework (cargo → UniFFI → DogTagFFI.xcframework)
         run: |
           set -euo pipefail
