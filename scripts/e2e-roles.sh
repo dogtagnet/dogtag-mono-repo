@@ -14,6 +14,13 @@
 #                                   # (gasless) -> GOVERNMENT issues a TRAVEL_CLEARANCE. Requires
 #                                   # demo-up running + contracts/.env (funded DEPLOYER key), curl,
 #                                   # jq, python3, cast.
+#
+# --live IS STALE AGAINST THE LAUNCH SET, and resolving its addresses from the ledger does not change
+# that: it drives `scripts/demo-bootstrap.sh`, whose grants call `whitelistFor` - a function
+# `ProviderRegistry` does not implement on the issuance axis. Onboarding is now the registrar
+# SEQUENCE (see that script's own header). Rewriting the flow onto it is C-2 work, deliberately not
+# done inside a configuration change. What IS fixed here is that the addresses are no longer
+# literals. DEMO mode is unaffected - it drives a simulated chain and reads no deployment.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -22,8 +29,21 @@ VET="${VET_BASE:-http://localhost:41874}"
 RPC="${ROAX_RPC:-https://devrpc.roax.net}"
 # Government operator bearer gating the issue endpoint (demo-mode default matches the API's baked token).
 GTOK="${GOV_API_TOKEN:-dogtag-gov-demo-token}"
-IR=0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21          # IssuerRegistry
-VACC_CLONE=0x1456f93f7376789c46408CC4616751eB853edD9A   # VACCINATION issuer clone (live ROAX)
+
+# THE LEDGER IS THE SOURCE. Resolved by ledger KEY NAME with an env override for a one-off
+# deployment - never a literal pinned here, which is the shape that keeps working after a redeploy
+# while driving contracts that decide nothing. Both are used by --live only; demo mode needs neither,
+# so they are resolved lazily there (see the `require_live_addresses` call in LIVE MODE below).
+# shellcheck source=scripts/lib/ledger.sh
+source "$ROOT/scripts/lib/ledger.sh"
+
+# The provider authority. This script still spells it `ISSUER_REGISTRY_ADDR`, as the backends do;
+# what it NAMES on the launch set is `ProviderRegistry`, which is also what
+# `DogTagIssuerFactory.registry()` answers.
+IR="${ISSUER_REGISTRY_ADDR:-${ISSUER_REGISTRY:-$(ledger_addr ProviderRegistry)}}"
+# A per-provider `DogTagIssuer` CLONE, deployed by a provider rather than by Deploy.s.sol, so the
+# ledger holds no key for it and there is nothing to resolve. It stays operator-supplied.
+VACC_CLONE="${VACCINATION_ISSUER_ADDR:-}"
 
 green(){ printf '\033[32mPASS\033[0m %s\n' "$1"; }
 info(){ printf '\033[36m •\033[0m %s\n' "$1"; }
@@ -113,6 +133,10 @@ fi
 # ==================================================================================================
 for c in curl jq python3 cast; do command -v "$c" >/dev/null || fail "$c required for --live"; done
 [ -f "$ROOT/contracts/.env" ] || fail "--live needs contracts/.env (funded DEPLOYER key). Run the demo per docs/DEMO.md."
+# Required HERE rather than at the top, because DEMO mode drives a simulated chain and needs neither.
+# A top-level `:?` would make the zero-dependency default path refuse to run without a deployment.
+[ -n "$IR" ] || fail "no ProviderRegistry in the ledger; set ISSUER_REGISTRY_ADDR"
+[ -n "$VACC_CLONE" ] || fail "set VACCINATION_ISSUER_ADDR to a factory clone this provider deployed"
 curl -fsS "$GOV/health" >/dev/null 2>&1 || fail "government stack not up on $GOV (run scripts/demo-up.sh)"
 curl -fsS "$VET/health" >/dev/null 2>&1 || fail "vet stack not up on $VET (run scripts/demo-up.sh)"
 

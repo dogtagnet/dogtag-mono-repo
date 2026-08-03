@@ -49,9 +49,6 @@
     "docs/PREREQUISITES.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
     "docs/PRODUCTION_DEPLOYMENT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
     "docs/REMOTE_DEPLOYMENT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "scripts/demo-bootstrap.sh": "tooling; resolve from the ledger with ledger_addr rather than a literal",
-    "scripts/e2e-roles.sh": "tooling; resolve from the ledger with ledger_addr rather than a literal",
-    "scripts/e2e-smoke.sh": "tooling; resolve from the ledger with ledger_addr rather than a literal",
     "stacks/owner/web/src/lib/sampleDoc.ts": "consumer; must read from configuration"
   }
 }
