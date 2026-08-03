@@ -48,6 +48,15 @@ const ACC0: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 const ANVIL_PHRASE: &str = "test test test test test test test test test test test junk";
 /// The tag is minted to a neutral custodian, never the owner.
 const CUSTODIAN: &str = "0x00000000000000000000000000000000c0ffee00";
+/// Anvil account 1 — the PROVIDER's key, deliberately distinct from the registrar's `ACC0`.
+const PK1: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+const ACC1: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+/// A registrar-issued `bytes20` provider id. Arbitrary and permanent by design — it means nothing.
+const PROVIDER_ID: &str = "0x00000000000000000000000000000000000000a1";
+const IDENTITY_DIGEST: &str =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
+/// `ProviderRegistry.Standing.ACTIVE`.
+const STANDING_ACTIVE: &str = "2";
 
 // ------------------------------------------------------------------------------------------------
 // anvil / forge harness (mirrors submit_consent_onchain.rs)
@@ -157,11 +166,177 @@ fn forge_create(rpc: &str, contract: &str, args: &[&str]) -> String {
 }
 
 fn cast_send(rpc: &str, to: &str, sig: &str, args: &[&str]) {
+    cast_send_as(rpc, PK0, to, sig, args);
+}
+
+/// `cast send` from an explicit key.
+///
+/// The two-key split in the provider journey is REAL and is preserved rather than collapsed:
+/// `createIssuer` and `repointService` are the provider's own transactions while every registrar
+/// call is `onlyOwner`. Running both halves from one key would let this suite assert a journey no
+/// provider can actually walk.
+fn cast_send_as(rpc: &str, pk: &str, to: &str, sig: &str, args: &[&str]) {
     let mut cmd = Command::new("cast");
-    cmd.args(["send", "--rpc-url", rpc, "--private-key", PK0, to, sig])
+    cmd.args(["send", "--rpc-url", rpc, "--private-key", pk, to, sig])
         .args(args);
     run(&mut cmd);
 }
+
+/// The launch-set addresses, as the real deploy script reports them.
+struct Deployed {
+    provider_registry: String,
+    factory: String,
+    sbt: String,
+    verification_registry: String,
+}
+
+/// Stand up the launch set, mirroring `script/Deploy.s.sol::deploy` — including
+/// `addFactoryGeneration`, WITHOUT which `attachService` reverts on an unregistered generation.
+///
+/// Deliberately NOT driven by running that script. `Deploy.s.sol::run` ends in `_writeLedger`, which
+/// writes `contracts/deployments/roax.json` unconditionally — the repo's single source of truth for
+/// every address — so a test that ran it would overwrite the real ROAX ledger with anvil's
+/// deterministic addresses on every run. Measured, not theorised: a probe run did exactly that.
+/// The script itself is separately covered where it can be driven safely, by
+/// `contracts/test/LaunchStack.sol`, which calls the ledger-free `deploy()` entry point directly and
+/// backs `Deploy.t.sol`, `ConsentRegistry.t.sol` and `CustodialIssuance.t.sol` under `forge test`.
+fn deploy_launch_contracts(rpc: &str) -> Deployed {
+    let core = forge_create(rpc, "src/ProviderRegistry.sol:ProviderRegistry", &[ACC0]);
+    let issuer_impl = forge_create(rpc, "src/DogTagIssuer.sol:DogTagIssuer", &[]);
+    let factory = forge_create(
+        rpc,
+        "src/DogTagIssuerFactory.sol:DogTagIssuerFactory",
+        &[&issuer_impl, &core],
+    );
+    // `mintCustodial` has no recipient — the tag goes to the immutable custodian.
+    let sbt = forge_create(
+        rpc,
+        "src/DogTagSBTConsent.sol:DogTagSBTConsent",
+        &[ACC0, CUSTODIAN],
+    );
+    let verifier = forge_create(
+        rpc,
+        "src/Groth16VerifierConsent.sol:Groth16VerifierConsent",
+        &[],
+    );
+    // VerificationRegistryConsent(core, sbt, zk, rootIndex(=factory), admin).
+    let verification_registry = forge_create(
+        rpc,
+        "src/VerificationRegistryConsent.sol:VerificationRegistryConsent",
+        &[&core, &sbt, &verifier, &factory, ACC0],
+    );
+
+    // The wiring that makes the above a system, and the one step no previous version of this harness
+    // had: a factory in no generation cannot have a service attached under it.
+    cast_send(
+        rpc,
+        &core,
+        "addFactoryGeneration(bytes32,address)",
+        &[&factory_generation(), &factory],
+    );
+    assert_eq!(
+        cast_call(
+            rpc,
+            &core,
+            "generationOfFactory(address)(bytes32)",
+            &[&factory]
+        ),
+        factory_generation(),
+        "the core must carry this factory's generation"
+    );
+
+    Deployed {
+        provider_registry: core,
+        factory,
+        sbt,
+        verification_registry,
+    }
+}
+
+/// Walk the provider journey end to end and return a clone that can actually anchor.
+///
+/// `canIssue` folds SIX registrar facts — a registered provider in ACTIVE standing, a service
+/// attached under a registered factory generation, a confirmed live owner, an effective service
+/// standing, that service being the provider's CURRENT pointer for its record type, and an issuance
+/// grant for the signer. Missing any one of them reverts the anchor rather than failing a check the
+/// test can see, so all of them are performed here. `repointService` is the one most easily missed:
+/// a live ROAX walk recorded `canRevoke` and `isRecognizedIssuer` already true while `canIssue`
+/// stayed false until the provider designated its clone.
+fn onboard_issuing_clone(rpc: &str, d: &Deployed, record_type: &str, signer: &str) -> String {
+    let core = &d.provider_registry;
+    cast_send(
+        rpc,
+        core,
+        "registerProvider(bytes20,address,bytes32,uint32,uint16,uint8,bytes)",
+        &[PROVIDER_ID, ACC1, IDENTITY_DIGEST, "1", "0xe3", "0x12", "0x"],
+    );
+    cast_send(
+        rpc,
+        core,
+        "setProviderStanding(bytes20,uint8)",
+        &[PROVIDER_ID, STANDING_ACTIVE],
+    );
+    cast_send(
+        rpc,
+        core,
+        "setServiceCreationApproval(bytes20,bytes32,bool)",
+        &[PROVIDER_ID, record_type, "true"],
+    );
+
+    // The provider deploys its own clone, from its own key.
+    cast_send_as(
+        rpc,
+        PK1,
+        &d.factory,
+        "createIssuer(bytes20,bytes32,uint96)",
+        &[PROVIDER_ID, record_type, "0"],
+    );
+    let clone = cast_call(
+        rpc,
+        &d.factory,
+        "predictIssuer(bytes32,address,uint96)(address)",
+        &[record_type, ACC1, "0"],
+    )
+    .to_lowercase();
+
+    cast_send(
+        rpc,
+        core,
+        "attachService(bytes20,address,bytes32,address)",
+        &[PROVIDER_ID, &clone, &factory_generation(), ACC1],
+    );
+    cast_send(
+        rpc,
+        core,
+        "setServiceStanding(address,uint8)",
+        &[&clone, STANDING_ACTIVE],
+    );
+    cast_send(
+        rpc,
+        core,
+        "setIssuanceCapability(address,address,bool)",
+        &[&clone, signer, "true"],
+    );
+    // The provider's CURRENT pointer for this record type — the provider's own decision, so its own
+    // transaction. Without it the clone is attached and granted and still anchors nothing.
+    cast_send_as(rpc, PK1, core, "repointService(address)", &[&clone]);
+
+    assert_eq!(
+        cast_call(rpc, core, "canIssue(address,address)(bool)", &[&clone, signer]),
+        "true",
+        "the journey must leave the signer able to anchor on this clone"
+    );
+    clone
+}
+
+/// `keccak256("dogtag-issuer-factory/1")` — the generation `Deploy.s.sol` registers its factory under.
+fn factory_generation() -> String {
+    format!(
+        "0x{}",
+        hex::encode(alloy::primitives::keccak256(b"dogtag-issuer-factory/1").0)
+    )
+}
+
 
 fn cast_call(rpc: &str, to: &str, sig: &str, args: &[&str]) -> String {
     let mut cmd = Command::new("cast");
@@ -209,24 +384,6 @@ fn load_fixture() -> Fixture {
     }
 }
 
-/// `keccak256(abi.encode("VERIFY:", purpose))` — the IssuerRegistry whitelist key.
-fn verify_key_word(purpose_word: &str) -> String {
-    use alloy::primitives::keccak256;
-    let purpose = hex::decode(purpose_word.trim_start_matches("0x")).expect("purpose hex");
-    let mut buf = Vec::with_capacity(128);
-    let mut off = [0u8; 32];
-    off[31] = 0x40;
-    buf.extend_from_slice(&off);
-    buf.extend_from_slice(&purpose);
-    let mut len = [0u8; 32];
-    len[31] = 7;
-    buf.extend_from_slice(&len);
-    let mut lit = [0u8; 32];
-    lit[..7].copy_from_slice(b"VERIFY:");
-    buf.extend_from_slice(&lit);
-    format!("0x{}", hex::encode(keccak256(&buf).0))
-}
-
 struct Stack {
     registry: String,
     sbt: String,
@@ -237,56 +394,27 @@ struct Stack {
 /// Deploy the Level-B contract set and establish the on-chain state the fixture's `pub[]` demands,
 /// then perform M-2's issuance (`issue(R)` FIRST, then `mintCustodial`).
 fn deploy_and_issue(rpc: &str, f: &Fixture) -> Stack {
-    let registry = forge_create(rpc, "src/IssuerRegistry.sol:IssuerRegistry", &[ACC0]);
-    let impl_addr = forge_create(rpc, "src/DogTagIssuer.sol:DogTagIssuer", &[]);
-    let factory = forge_create(
+    let d = deploy_launch_contracts(rpc);
+
+    // Issuance is SERVICE-scoped: `DogTagIssuer.issue` is gated by
+    // `ProviderRegistry.canIssue(address(this), msg.sender)`, keyed on the clone rather than on a
+    // record type, so a clone anchors nothing until the registrar has walked the whole journey and
+    // its provider has designated it.
+    let clone = onboard_issuing_clone(rpc, &d, &f.record_type, ACC0);
+
+    // The relayer must hold the orthogonal VERIFY-axis capability for this purpose — the SAME read
+    // the handler's preflight performs before it will spend gas. `setVerifierCapability` takes the
+    // RAW purpose and derives `verificationKey` itself; handing it an already-derived key would
+    // derive twice and grant a capability `canVerify` never reads.
+    cast_send(
         rpc,
-        "src/DogTagIssuerFactory.sol:DogTagIssuerFactory",
-        &[&impl_addr, &registry, ACC0],
-    );
-    let sbt = forge_create(
-        rpc,
-        "src/DogTagSBTConsent.sol:DogTagSBTConsent",
-        &[ACC0, CUSTODIAN],
-    );
-    let verifier = forge_create(
-        rpc,
-        "src/Groth16VerifierConsent.sol:Groth16VerifierConsent",
-        &[],
-    );
-    let verification_consent = forge_create(
-        rpc,
-        "src/VerificationRegistryConsent.sol:VerificationRegistryConsent",
-        &[&registry, &sbt, &verifier, &factory, ACC0],
+        &d.provider_registry,
+        "setVerifierCapability(bytes32,address,bool)",
+        &[&f.purpose, ACC0, "true"],
     );
 
-    cast_send(
-        rpc,
-        &factory,
-        "createIssuer(string,bytes32,address)",
-        &["Profile", &f.record_type, ACC0],
-    );
-    let clone = cast_call(
-        rpc,
-        &factory,
-        "predictIssuer(bytes32,address)(address)",
-        &[&f.record_type, ACC0],
-    )
-    .to_lowercase();
-    cast_send(
-        rpc,
-        &registry,
-        "whitelistFor(bytes32,address)",
-        &[&f.record_type, ACC0],
-    );
-    // The relayer must be whitelisted for keccak256(abi.encode("VERIFY:", purpose)) — the SAME read
-    // the handler's preflight performs before it will spend gas.
-    cast_send(
-        rpc,
-        &registry,
-        "whitelistFor(bytes32,address)",
-        &[&verify_key_word(&f.purpose), ACC0],
-    );
+    let (registry, sbt, verification_consent) =
+        (d.provider_registry, d.sbt, d.verification_registry);
     let issuer_role = cast_call(rpc, &sbt, "ISSUER_ROLE()(bytes32)", &[]);
     cast_send(
         rpc,
