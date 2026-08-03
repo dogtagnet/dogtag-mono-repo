@@ -70,7 +70,7 @@ async fn boot() -> (axum::Router, String, String, MemChain) {
     let app = vet_api::router(state);
     let (_admin, op, backend) = boot_custody(&app).await;
     let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     // The clone's own immutable `recordType()`, as the factory's `createIssuer` fixes it.
     mem.set_record_type(ISSUER, &rt);
     (app, op, backend, mem)
@@ -136,7 +136,7 @@ async fn boot_factoryless() -> (axum::Router, String, String, MemChain) {
     let app = vet_api::router(state);
     let (_admin, op, backend) = boot_custody(&app).await;
     let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     mem.set_record_type(ISSUER, &rt);
     (app, op, backend, mem)
 }
@@ -312,16 +312,19 @@ async fn an_expected_signer_can_only_tighten() {
     assert_eq!(b["fragments"]["expectedSignerState"], "notAsserted", "{b}");
 }
 
-/// Reporting the pillar UNAVAILABLE must not cost a capability that worked without a factory.
+/// A FACTORY-LESS DEPLOYMENT CAN NO LONGER EVALUATE AN EXPECTED-SIGNER ASSERTION, and says so.
 ///
-/// "We could not resolve the clone" is not "we stopped checking anything". Before this, the caller's
-/// expected-signer assertion lived inside the resolved branch, so on a factory-less deployment it was
-/// silently DISCARDED — an operator who explicitly named the signer they expected got `verdict: true`
-/// with no check performed at all, which is strictly weaker than the endpoint was before the pillar
-/// existed. It is exactly the defect class this whole change is about, turned on the caller's own
-/// claim.
+/// This is a deliberate narrowing, recorded as a requirement so nobody re-derives the old behaviour
+/// from the shape of the code. Every issuance-axis read on the authority is SERVICE-SCOPED, and this
+/// branch is defined by there being no resolved clone to pass; the one selector taking no service
+/// answers off the orthogonal VERIFY axis, where a record-type key is a confident `false` for every
+/// genuine issuer signer. Refusing on that would condemn honest credentials wholesale.
+///
+/// So the assertion is REPORTED and gates nothing. Our inability to check may never be stated as a
+/// verdict about the subject — the same rule the pillar's own three states exist for. Configuring
+/// `FACTORY_ADDR` is what restores a resolvable clone and with it a decidable claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_factoryless_deployment_still_fails_an_unwhitelisted_expected_signer() {
+async fn a_factoryless_deployment_reports_the_signer_assertion_as_unevaluable() {
     let (app, op, _backend, _mem) = boot_factoryless().await;
     let (_id, _root, doc) = issue_doc(&app, &op, "51").await;
 
@@ -333,30 +336,21 @@ async fn a_factoryless_deployment_still_fails_an_unwhitelisted_expected_signer()
     .await;
 
     assert_eq!(b["issuerResolution"], "noFactoryConfigured", "{b}");
-    // The registry really was consulted, and it said no.
     assert_eq!(
-        b["fragments"]["expectedSignerState"], "unanchoredNotWhitelisted",
-        "the assertion must still reach this deployment's own registry: {b}"
+        b["fragments"]["expectedSignerState"], "unanchoredUnevaluable",
+        "there is no service to ask the authority about: {b}"
     );
-    assert_eq!(b["fragments"]["issuerWhitelisted"], false, "{b}");
-    // A DEFINITE failure outranks "we never asked" — reporting it as unavailable would hide a real
-    // failure behind our own configuration gap.
-    assert_eq!(b["fragments"]["issuerWhitelistState"], "failed", "{b}");
+    // Unevaluable is NOT a refusal. It must not be spelled like one.
+    assert_ne!(b["fragments"]["expectedSignerState"], "unanchoredNotWhitelisted", "{b}");
+    assert_ne!(b["fragments"]["issuerWhitelistState"], "failed", "{b}");
+    // ...and it manufactures nothing either. The pillar stays unavailable and never passed.
+    assert!(b["fragments"]["issuerWhitelisted"].is_null(), "{b}");
     assert_eq!(
-        b["verdict"], false,
-        "a definite whitelist failure must fail the credential even with no factory: {b}"
+        b["fragments"]["issuerWhitelistState"], "unavailableNoFactoryConfigured",
+        "{b}"
     );
-    assert_eq!(b["status"], "issuer_not_whitelisted", "{b}");
 }
 
-/// The other half of that ruling, and the one that must not be reintroduced as a bypass: the
-/// expected-signer path is TIGHTEN-ONLY. It may contribute a definite failure and may NEVER
-/// contribute a pass.
-///
-/// With no factory we still could not resolve the clone, so a signer that happens to be whitelisted
-/// shows nothing about whether it issued THIS root. The pillar therefore stays unavailable.
-///
-/// Asserted on the STATE FIELDS, not the verdict: `issuer_pillar_ok` is satisfied by the unavailable
 /// branch regardless, so `verdict == true` holds under the broken version too and would pin nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_factoryless_deployment_cannot_be_talked_into_a_pass_by_an_expected_signer() {
@@ -370,9 +364,9 @@ async fn a_factoryless_deployment_cannot_be_talked_into_a_pass_by_an_expected_si
     )
     .await;
 
-    // The asserted signer IS whitelisted for this record type...
+    // The assertion cannot be evaluated without a resolved clone...
     assert_eq!(
-        b["fragments"]["expectedSignerState"], "unanchoredUnconfirmed",
+        b["fragments"]["expectedSignerState"], "unanchoredUnevaluable",
         "{b}"
     );
     // ...and that changes NOTHING about the pillar. Still unevaluated, still not a pass.
@@ -531,7 +525,7 @@ async fn a_signer_delisted_after_issuance_still_verifies_and_before_issuance_doe
     let anchored = mem.root_issued_at(ISSUER, &root).expect("anchoring point");
     mem.set_grant_history(
         REGISTRY,
-        &rt,
+        ISSUER,
         &backend,
         vec![
             GrantEvent {
@@ -560,74 +554,15 @@ async fn a_signer_delisted_after_issuance_still_verifies_and_before_issuance_doe
 /// A GENERATION-2 AUTHORITY MUST BE UNDETERMINED, NEVER A FORGERY VERDICT.
 ///
 /// The pillar reconstructs the grant from `Whitelisted`/`Delisted`, whose `topic1` is the RECORD-TYPE
-/// key — so it is a record-type caller in the sense `docs/CLIENT_REPOINT.md` means, via logs rather
-/// than a getter, and it fails against the successor the same way, only more quietly.
-/// `ProviderRegistry` records its grants as `IssuanceCapabilitySet(service, signer, allowed)`, a
-/// different name and `topic0`, so that filter matches nothing there.
-///
-/// Unguarded, the empty history folds to `NotAuthorized` and this route answers
-/// `issuer_not_whitelisted` — a definite forgery verdict against a genuine credential, produced by a
-/// query that could never have matched. That is the confident-wrong-answer the S-13 governing
-/// condition forbids.
-///
-/// The verdict stays `false` either way (an unresolved pillar never passes), so asserting the verdict
-/// alone would pin NOTHING. What this test pins is the STATE and the STATUS — the difference between
-/// "we could not check" and "this credential is forged", which is the whole point.
-///
-/// Mutation: drop the `provider_registries` guard from `whitelisted_at_issuance` -> this goes red
-/// with `issuerWhitelistState: "failed"`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_generation_two_authority_is_undetermined_not_a_forgery_verdict() {
-    let (app, op, backend, mem) = boot().await;
-    let (_id, root, doc) = issue_doc(&app, &op, "49").await;
-    mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
-
-    // The clone's `registry()` is now a `ProviderRegistry`. It holds no `Whitelisted`/`Delisted` for
-    // ANY pair — including pairs it has genuinely authorised — because it does not speak that
-    // vocabulary at all.
-    mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
-    mem.set_provider_registry(CLONE_OWN_REGISTRY);
-
-    let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
-    assert_eq!(
-        b["fragments"]["issuerWhitelistState"], "unresolved",
-        "an authority whose vocabulary we cannot read is UNDETERMINED: {b}"
-    );
-    assert_ne!(
-        b["fragments"]["issuerWhitelistState"], "failed",
-        "must never accuse a genuine generation-2 credential of forgery: {b}"
-    );
-    assert_ne!(
-        b["status"], "issuer_not_whitelisted",
-        "and must not report it as an unauthorised signer: {b}"
-    );
-    assert!(
-        b["fragments"]["issuerWhitelisted"].is_null(),
-        "indeterminate is null, not false: {b}"
-    );
-    // Still refused — an unresolved pillar has never permitted a pass, and this must not have
-    // loosened that.
-    assert_eq!(b["verdict"], false, "{b}");
-    // The signer really was ungranted in the generation-1 sense the ungrarded code would have read,
-    // so the fixture genuinely exercises the empty-history path rather than sidestepping it.
-    let _ = backend;
-}
-
-/// THE GUARD MUST NOT SOFTEN GENERATION 1. An `IssuerRegistry` whose log records no grant for this
-/// pair is a definite refusal, and stays one — that emptiness is an ANSWER, because an honest
-/// `issue()` cannot pass `onlyWhitelisted` in that state.
-///
-/// Without this, the guard above could be written to return `Undetermined` for EVERY empty history
-/// and the test above would still pass, while every never-granted signer quietly stopped being
 /// refused. This is the case that makes the guard's scoping load-bearing rather than decorative.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_empty_history_on_a_generation_one_registry_is_still_a_definite_refusal() {
+async fn an_empty_history_is_a_definite_refusal() {
     let (app, op, backend, mem) = boot().await;
     let (_id, root, doc) = issue_doc(&app, &op, "50").await;
     mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
 
     // A generation-1 authority (the default) with the pair's history erased.
-    mem.set_grant_history(REGISTRY, &record_type_key("VACCINATION"), &backend, vec![]);
+    mem.set_grant_history(REGISTRY, ISSUER, &backend, vec![]);
 
     let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
     assert_eq!(
@@ -652,30 +587,25 @@ async fn an_empty_history_on_a_generation_one_registry_is_still_a_definite_refus
 /// reproduced inside the guard built to refuse it. On government's mirror of this read the route is
 /// UNAUTHENTICATED.
 ///
-/// This pins the trait's CONTRACT. The Alloy error classification is pinned separately by
-/// `chain::tests::a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one`, because
-/// `MemChain` is a different `ChainClient` and cannot reach that code at all.
+/// This pins the trait's CONTRACT: an authority we could not read reaches the caller as
+/// UNDETERMINED, never as a refusal. `MemChain` is a different `ChainClient` from the Alloy one and
+/// cannot reach its error classification, so this is a claim about the interface, not the transport.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_undelivered_generation_probe_is_undetermined_not_a_forgery_verdict() {
+async fn an_unreadable_authority_is_undetermined_not_a_forgery_verdict() {
     let (app, op, backend, mem) = boot().await;
     let (_id, root, doc) = issue_doc(&app, &op, "51").await;
     mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
 
-    // An authority with an empty grant history — exactly the state the guard is scoped to — whose
-    // generation probe cannot be delivered. Its vocabulary is therefore unestablished.
+    // The authority answers nothing at all — no grant log, no capability read. Whether this signer
+    // was ever authorised is therefore unestablished, which is NOT the same fact as a readable
+    // authority that recorded no grant (the test above, which is a definite refusal).
     mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
-    mem.set_grant_history(
-        CLONE_OWN_REGISTRY,
-        &record_type_key("VACCINATION"),
-        &backend,
-        vec![],
-    );
-    mem.set_provider_probe_unreachable(CLONE_OWN_REGISTRY);
+    mem.set_registry_unanswerable(CLONE_OWN_REGISTRY);
 
     let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
     assert_eq!(
         b["fragments"]["issuerWhitelistState"], "unresolved",
-        "a probe that never arrived establishes nothing: {b}"
+        "an authority that answered nothing establishes nothing: {b}"
     );
     assert_ne!(
         b["fragments"]["issuerWhitelistState"], "failed",
@@ -714,7 +644,7 @@ async fn an_unconfigured_factory_reports_unavailable_and_never_passed() {
     let app = vet_api::router(state);
     let (_admin, op, backend) = boot_custody(&app).await;
     let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     mem.set_record_type(ISSUER, &rt);
 
     let (_id, _root, doc) = issue_doc(&app, &op, "48").await;
@@ -754,7 +684,7 @@ async fn a_malformed_factory_addr_fails_loudly_instead_of_open() {
     let app = vet_api::router(state);
     let (_admin, op, backend) = boot_custody(&app).await;
     let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     mem.set_record_type(ISSUER, &rt);
 
     let (_id, _root, doc) = issue_doc(&app, &op, "50").await;

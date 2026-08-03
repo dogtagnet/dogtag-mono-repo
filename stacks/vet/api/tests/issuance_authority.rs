@@ -102,84 +102,46 @@ async fn the_preflight_asks_the_clones_own_authority_not_the_configured_registry
     let (app, op, backend, mem) = boot().await;
     let rt = record_type_key("VACCINATION");
 
-    mem.whitelist(CLONE_OWN_REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(CLONE_OWN_REGISTRY, ISSUER, &backend, true);
     mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
 
-    // Precondition, asserted rather than assumed: the CONFIGURED registry really does answer `false`.
-    // Without this the test would pass for a deployment where both registries happen to agree, which
-    // is exactly the state that cannot distinguish the two reads.
+    // Precondition, asserted rather than assumed: the CONFIGURED registry really does answer
+    // `false` for this pair. Without it the test would pass for a deployment where both authorities
+    // happen to agree, which is exactly the state that cannot distinguish the two reads. Point the
+    // clone at the configured address just long enough to read it, then restore.
+    mem.set_governing_registry(ISSUER, REGISTRY);
     assert!(
-        !mem.is_whitelisted_for(REGISTRY, &rt, &backend).await.unwrap(),
+        !matches!(
+            mem.issuance_capability(ISSUER, &backend).await.unwrap(),
+            IssuanceCapability::Authorized
+        ),
         "fixture is inert: the configured registry must NOT hold this grant",
     );
+    mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
 
     let (s, b) = prepare(&app, &op, "1").await;
     assert_eq!(s, StatusCode::OK, "prepare must succeed: {b}");
 }
 
-/// A clone whose `registry()` is a `ProviderRegistry`. The legacy record-type key means nothing
-/// there, so only a service-scoped read can authorise this issuance.
+/// The confirm stage asks the SAME historical question the pillar does, so an issuance that mined
+/// under a live capability confirms — and does so without any second vocabulary to disambiguate.
 ///
-/// Asserted at the chain client rather than through `prepare`, because the preflight is not the only
-/// authority read on the backend-mode issuance path — see the test below, which pins what the rest of
-/// that path does. Routing this through `prepare` would conflate the two.
+/// This is the closed half of what used to be a cutover blocker: the authority records its grants as
+/// `IssuanceCapabilitySet(service, signer, allowed)`, the pillar reads that log, and a genuine
+/// issuance is no longer stranded in `Prepared` with no way to advance it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_generation_two_clone_passes_the_issuance_preflight() {
-    let (_app, _op, backend, mem) = boot().await;
-
-    mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
-    mem.set_provider_capability(CLONE_OWN_REGISTRY, ISSUER, &backend, true, true);
-
-    assert_eq!(
-        mem.issuance_capability(ISSUER, &record_type_key("VACCINATION"), &backend)
-            .await
-            .unwrap(),
-        IssuanceCapability::Authorized,
-        "a service-scoped grant must authorise a generation-2 issuance",
-    );
-}
-
-/// FINDING, pinned rather than described: backend-mode issuance against a generation-2 clone gets
-/// through the preflight, anchors, and then CANNOT BE CONFIRMED — because confirm asks the historical
-/// question and this build cannot yet answer it for generation 2.
-///
-/// `whitelisted_at_issuance` reconstructs the grant from `Whitelisted`/`Delisted`, whose `topic1` is
-/// the RECORD-TYPE key. `ProviderRegistry` records its grants as `IssuanceCapabilitySet(service,
-/// signer, allowed)` — different name, different `topic0`, different argument shape — so that filter
-/// matches nothing and the honest answer is "could not determine".
-///
-/// The failure is LOUD and the record stays `Prepared`, which is the correct degradation: the
-/// alternative before this change was a definite 403 blaming the signer (the configured generation-1
-/// registry answers the record-type key off `_verifierCapabilities`, a confident `false`). Both are
-/// broken; only one of them is honest about which.
-///
-/// Closing it is the event-vocabulary migration recorded in `docs/ISSUER_V2_OWNERSHIP.md` §8, not a
-/// getter swap: `isRecognizedIssuer` reads current storage and cannot answer an at-anchoring
-/// question. This test is what makes that blocker fail visibly at the cutover instead of being
-/// rediscovered from a stranded record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_generation_two_issuance_cannot_yet_be_confirmed_and_says_so() {
+async fn an_issuance_under_a_live_capability_confirms() {
     let (app, op, backend, mem) = boot().await;
 
     mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
-    mem.set_provider_capability(CLONE_OWN_REGISTRY, ISSUER, &backend, true, true);
+    mem.set_issuance_capability(CLONE_OWN_REGISTRY, ISSUER, &backend, true);
 
     let (s, b) = prepare(&app, &op, "2").await;
-    assert_eq!(
-        s,
-        StatusCode::BAD_GATEWAY,
-        "must fail loudly at the confirm-stage authority read: {b}"
-    );
+    assert_eq!(s, StatusCode::OK, "the preflight must pass: {b}");
     assert_ne!(
         s,
-        StatusCode::FORBIDDEN,
-        "and must never blame the signer for a vocabulary this build cannot read"
-    );
-    assert!(
-        b["error"]
-            .as_str()
-            .is_some_and(|e| e.contains("could not determine")),
-        "the reason must name the inability: {b}"
+        StatusCode::BAD_GATEWAY,
+        "the authority is readable, so nothing here is indeterminate: {b}"
     );
 }
 
@@ -197,12 +159,12 @@ async fn the_preflight_uses_the_narrow_rung_so_it_refuses_what_the_write_would_r
     let (app, op, backend, mem) = boot().await;
 
     mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
-    mem.set_provider_capability(CLONE_OWN_REGISTRY, ISSUER, &backend, true, false);
+    mem.set_issuance_capability(CLONE_OWN_REGISTRY, ISSUER, &backend, false);
 
     // The wide rung really is satisfied — otherwise this test would pass under either rung and pin
     // nothing about which one the preflight consults.
     assert_eq!(
-        mem.issuance_capability(ISSUER, &record_type_key("VACCINATION"), &backend)
+        mem.issuance_capability(ISSUER, &backend)
             .await
             .unwrap(),
         IssuanceCapability::NotAuthorized,
@@ -231,7 +193,7 @@ async fn an_undeterminable_authority_is_not_reported_as_the_signers_fault() {
 
     // Grant it on the configured registry too, so an implementation that fell back to the config
     // value would produce a PASS here and be visibly distinguishable from the honest refusal.
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
     mem.set_registry_unanswerable(CLONE_OWN_REGISTRY);
 
@@ -261,50 +223,14 @@ async fn an_undeterminable_authority_is_not_reported_as_the_signers_fault() {
 /// and HAS granted this signer, whose successor probe cannot be delivered while its legacy selector
 /// is still there to answer. Falling through yields 403 "address not approved for this recordType
 /// yet" — an accusation drawn from a read that never happened, which is this repo's standing defect
-/// class reproduced inside the migration built to remove it.
-///
-/// What this pins is the trait's CONTRACT. The Alloy error classification itself is pinned by
-/// `chain::tests::a_probe_that_could_not_be_delivered_is_undetermined_never_generation_one`;
-/// `MemChain` is a different `ChainClient` and cannot reach that code.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_undelivered_generation_probe_never_falls_through_to_the_legacy_getter() {
-    let (app, op, backend, mem) = boot().await;
-
-    mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
-    // Genuinely authorised on the successor's own axis...
-    mem.set_provider_capability(CLONE_OWN_REGISTRY, ISSUER, &backend, true, true);
-    // ...and the probe that would have established that cannot be delivered.
-    mem.set_provider_probe_unreachable(CLONE_OWN_REGISTRY);
-
-    assert_eq!(
-        mem.issuance_capability(ISSUER, &record_type_key("VACCINATION"), &backend)
-            .await
-            .unwrap(),
-        IssuanceCapability::Undetermined,
-        "a transport failure establishes nothing about the authority's vocabulary",
-    );
-
-    let (s, b) = prepare(&app, &op, "5").await;
-    assert_eq!(
-        s,
-        StatusCode::BAD_GATEWAY,
-        "our inability to reach the authority is ours, not the signer's: {b}"
-    );
-    assert_ne!(
-        s,
-        StatusCode::FORBIDDEN,
-        "falling through to the legacy getter would accuse a genuinely authorised signer: {b}"
-    );
-}
-
-/// The operator console's issuance matrix. `whitelisted` was a bare bool defaulting to `false` on any
+/// class reproduced inside the migration built to remove it./// The operator console's issuance matrix. `whitelisted` was a bare bool defaulting to `false` on any
 /// read failure — an RPC blip rendered as "this signer is not approved".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_signer_matrix_says_null_rather_than_false_when_it_could_not_check() {
     let (app, op, backend, mem) = boot().await;
     let rt = record_type_key("VACCINATION");
 
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
     mem.set_registry_unanswerable(CLONE_OWN_REGISTRY);
 
@@ -335,7 +261,7 @@ async fn the_signer_matrix_still_reports_both_definite_answers() {
         "ungranted signer must be a definite false, not null: {b}"
     );
 
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     let (s, b) = call(&app, "GET", "/issuer/signers", Some(&op), None).await;
     assert_eq!(s, StatusCode::OK, "{b}");
     assert_eq!(
@@ -392,15 +318,18 @@ async fn wallet_prepare_and_anchor(
 async fn a_signer_delisted_after_it_anchored_can_still_confirm_its_own_issuance() {
     let (app, op, backend, mem) = boot().await;
     let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
 
     let (record_id, _root, tx_hash) = wallet_prepare_and_anchor(&app, &op, &mem, "5").await;
 
     // Rotate the key AFTER the root was anchored. Call order is log order in this fake, so this
     // really does record a `Delisted` positioned after the anchoring.
-    mem.delist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, false);
     assert!(
-        !mem.is_whitelisted_for(REGISTRY, &rt, &backend).await.unwrap(),
+        !matches!(
+            mem.issuance_capability(ISSUER, &backend).await.unwrap(),
+            IssuanceCapability::Authorized
+        ),
         "fixture is inert: the signer must be delisted NOW",
     );
 
@@ -426,7 +355,7 @@ async fn a_signer_delisted_after_it_anchored_can_still_confirm_its_own_issuance(
 async fn a_signer_not_whitelisted_when_it_anchored_cannot_confirm() {
     let (app, op, backend, mem) = boot().await;
     let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
 
     let (record_id, root, tx_hash) = wallet_prepare_and_anchor(&app, &op, &mem, "6").await;
 
@@ -438,7 +367,7 @@ async fn a_signer_not_whitelisted_when_it_anchored_cannot_confirm() {
         .expect("the root was anchored");
     mem.set_grant_history(
         REGISTRY,
-        &rt,
+        ISSUER,
         &backend,
         vec![
             GrantEvent {

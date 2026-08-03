@@ -243,14 +243,12 @@ impl RpcAdapter for ChainRpcAdapter<'_> {
     fn whitelisted_at_issuance(
         &self,
         issuer_addr: &str,
-        record_type_key: &str,
         signer: &str,
         merkle_root: &str,
     ) -> Result<GrantAtIssuance, AdapterError> {
         let st = self.st.clone();
-        let (issuer_addr, record_type_key, signer, merkle_root) = (
+        let (issuer_addr, signer, merkle_root) = (
             issuer_addr.to_string(),
-            record_type_key.to_string(),
             signer.to_string(),
             merkle_root.to_string(),
         );

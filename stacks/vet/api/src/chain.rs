@@ -655,37 +655,37 @@ impl MemChain {
             .signers
             .insert(index, address.to_lowercase());
     }
-    /// Whitelist a signer for a (registry, recordType, signer) tuple — `IssuerRegistry.whitelistFor`,
-    /// flipping the current-state mapping AND emitting a `Whitelisted` into the grant history.
-    pub fn whitelist(&self, registry: &str, record_type: &str, signer: &str) {
-        self.grant(registry, record_type, signer, true);
-    }
-    /// Withdraw a signer's authorization, mirroring `IssuerRegistry.delistFor`/`Delisted`
-    /// (`IssuerRegistry.sol:23`).
+    /// Grant a relayer a VERIFY purpose — `ProviderRegistry.setVerifierCapability`.
     ///
-    /// Delisting is FORWARD-ONLY on the real contract, which is why this fake records a positioned
-    /// EVENT rather than only flipping a boolean: whether a delist landed before or after an anchoring
-    /// is the entire question the issuer-whitelist pillar now asks, and a fake holding only the
-    /// current state cannot express the difference. `adminRevoke` remains the retroactive lever.
-    pub fn delist(&self, registry: &str, record_type: &str, signer: &str) {
-        self.grant(registry, record_type, signer, false);
+    /// The verify axis is a plain current-state mapping: nothing asks a historical question about
+    /// it, so unlike the issuance axis it records no positioned event.
+    pub fn whitelist(&self, registry: &str, verify_key: &str, signer: &str) {
+        self.set_verifier_capability(registry, verify_key, signer, true);
     }
-    /// Shared body of [`MemChain::whitelist`]/[`MemChain::delist`]: the real contract emits
-    /// unconditionally (neither call checks the prior value), so the log is complete rather than
-    /// edge-triggered, and a re-grant of an already-held capability really does appear twice.
-    fn grant(&self, registry: &str, record_type: &str, signer: &str, granted: bool) {
+    /// Withdraw a relayer's VERIFY purpose — `ProviderRegistry.setVerifierCapability(.., false)`.
+    pub fn delist(&self, registry: &str, verify_key: &str, signer: &str) {
+        self.set_verifier_capability(registry, verify_key, signer, false);
+    }
+    /// Shared body of [`MemChain::whitelist`]/[`MemChain::delist`].
+    pub fn set_verifier_capability(
+        &self,
+        registry: &str,
+        verify_key: &str,
+        signer: &str,
+        allowed: bool,
+    ) {
         let mut g = self.inner.lock().unwrap();
-        let key = (
-            registry.to_lowercase(),
-            record_type.to_lowercase(),
-            signer.to_lowercase(),
-        );
-        g.whitelist.insert(key.clone(), granted);
         if g.default_registry.is_empty() {
             g.default_registry = registry.to_lowercase();
         }
-        let at = g.next_log_point();
-        g.grants.entry(key).or_default().push(GrantEvent { at, granted });
+        g.whitelist.insert(
+            (
+                registry.to_lowercase(),
+                verify_key.to_lowercase(),
+                signer.to_lowercase(),
+            ),
+            allowed,
+        );
     }
     /// Where a clone's anchoring `RootIssued` for `root` sits, so a test can position a grant
     /// RELATIVE to it rather than guessing at this fake's internal clock.
@@ -697,33 +697,33 @@ impl MemChain {
             .get(&(clone_addr.to_lowercase(), root.to_lowercase()))
             .copied()
     }
-    /// Overwrite a `(registry, recordType, signer)` grant history outright.
+    /// Overwrite a `(registry, service, signer)` issuance grant history outright.
     ///
     /// Needed for the same reason [`MemChain::with_hostile_clone`] is: the honest path CANNOT express
-    /// "delisted before this root was anchored", because issuance is gated on the whitelist, so a
-    /// test driving `delist` then `issue` through the backend is refused at the preflight and never
-    /// reaches the pillar. Without a way to seed it, the delisted-BEFORE half of the forward-only
+    /// "withdrawn before this root was anchored", because issuance is gated on the capability, so a
+    /// test driving a withdrawal then `issue` through the backend is refused at the preflight and
+    /// never reaches the pillar. Without a way to seed it, the delisted-BEFORE half of the forward-only
     /// rule would be untestable at the route level and the delisted-AFTER half would be a check that
     /// only ever passes — which is exactly the shape of a test that cannot fail.
     pub fn set_grant_history(
         &self,
         registry: &str,
-        record_type: &str,
+        service: &str,
         signer: &str,
         history: Vec<GrantEvent>,
     ) {
         let mut g = self.inner.lock().unwrap();
         let key = (
             registry.to_lowercase(),
-            record_type.to_lowercase(),
+            service.to_lowercase(),
             signer.to_lowercase(),
         );
         if g.default_registry.is_empty() {
             g.default_registry = registry.to_lowercase();
         }
-        // Keep the current-state mapping consistent with the history's last event, so a fake seeded
-        // this way cannot answer the two questions incoherently.
-        g.whitelist.insert(
+        // Keep `canIssue` consistent with the history's last event, so a fake seeded this way cannot
+        // answer the two questions incoherently.
+        g.issuance_capabilities.insert(
             key.clone(),
             history.last().map(|e| e.granted).unwrap_or(false),
         );
@@ -769,14 +769,20 @@ impl MemChain {
         if g.default_registry.is_empty() {
             g.default_registry = registry.to_lowercase();
         }
-        g.issuance_capabilities.insert(
-            (
-                registry.to_lowercase(),
-                service.to_lowercase(),
-                signer.to_lowercase(),
-            ),
-            can_issue,
+        let key = (
+            registry.to_lowercase(),
+            service.to_lowercase(),
+            signer.to_lowercase(),
         );
+        g.issuance_capabilities.insert(key.clone(), can_issue);
+        // The real `setIssuanceCapability` flips the mapping AND emits `IssuanceCapabilitySet` in
+        // one call, so this fake does both: a test that grants and then issues produces the honest
+        // ordering, and the pillar can answer historically without any extra seeding.
+        let at = g.next_log_point();
+        g.grants.entry(key).or_default().push(GrantEvent {
+            at,
+            granted: can_issue,
+        });
     }
     /// Declare `registry` unable to ANSWER at all — an address whose selectors revert, or one
     /// carrying no contract.
