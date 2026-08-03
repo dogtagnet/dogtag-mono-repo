@@ -15,18 +15,23 @@ use serde_json::{json, Value};
 
 use crate::app::{AppState, DOG_PROFILE};
 use crate::auth::{self, keccak256_hex, ShareClaims};
+// NOTE `whitelist_for_calldata` / `delist_for_calldata` / `grant_issuer_role_calldata` are no longer
+// imported here, because the deleted whitelist console was their only caller in this file. All three
+// still exist and are still used inside `chain.rs`, backing the generation-1 `IssuerRegistry`
+// issuer-application approval flow - a DIFFERENT contract, still live, deliberately untouched.
 use crate::chain::{
-    create_issuer_calldata, default_admin_role, delist_for_calldata, grant_issuer_role_calldata,
-    record_type_key, register_provider_calldata, set_provider_standing_calldata,
-    set_service_creation_approval_calldata, verify_key, whitelist_admin_role,
-    whitelist_for_calldata,
+    attach_service_calldata, create_issuer_calldata, default_admin_role, purpose_key,
+    record_type_key, register_provider_calldata, set_issuance_capability_calldata,
+    set_provider_standing_calldata, set_resolver_approved_calldata,
+    set_service_creation_approval_calldata, set_service_standing_calldata,
+    set_verifier_capability_calldata, verify_key, whitelist_admin_role,
 };
 use crate::crypto;
 use crate::governance::{self, Authority, GovernanceAction};
 use crate::provider_registry::{
-    fold_approvals, is_valid_provider_id, record_type_label, ApprovalsRead, Standing,
-    HASH_ALGORITHM_KECCAK256, IDENTITY_CODEC_NONE, PROVIDER_IDENTITY_SCHEMA,
-    PROVIDER_IDENTITY_SCHEMA_ID,
+    fold_approvals, fold_capabilities, is_valid_provider_id, record_type_label, ApprovalsRead,
+    CapabilitiesRead, ResolverKind, Standing, HASH_ALGORITHM_KECCAK256, IDENTITY_CODEC_NONE,
+    KNOWN_VERIFY_PURPOSES, PROVIDER_IDENTITY_SCHEMA, PROVIDER_IDENTITY_SCHEMA_ID,
 };
 use crate::store::*;
 
@@ -2218,78 +2223,845 @@ async fn provider_set_service_approval(
 }
 
 // ============================================================================================
-// PR-E — direct whitelist management (grant / revoke) as a standalone control-plane action.
-// Promotes the read-only whitelist viewer to a management console: an operator whitelists or delists
-// an arbitrary (signer, capability) pair on demand — decoupled from the issuer-application lifecycle
-// (key rotation, ad-hoc grants, incident response). Every write routes through the `GovernanceAction`
-// abstraction (Authority = the registry WHITELIST_ADMIN role, and the SBT DEFAULT_ADMIN for the
-// DOG_PROFILE ISSUER grant), so each action executes directly while the hosted key holds the
-// authority and flips to a proposal the moment that role moves to the governance signer (Phase-2) —
-// never assuming the old EOA holds it.
+// The rest of the journey: attach → stand up → grant issuance, plus the two orthogonal levers.
+//
+// Approving a record type lets a provider DEPLOY a contract and nothing more. Everything past that
+// point is registrar work with no caller until now, which is why `serviceCount()` was 0 on a live
+// registry while providers were already deploying: `repointService` refuses an address that was
+// never attached, so a provider could deploy and then go nowhere.
+//
+// Five `onlyOwner` calls complete it, and two of them are easy to leave out:
+//
+//  - `attachService` binds a provider-deployed contract to its provider record. This is the one that
+//    unblocks everything downstream.
+//  - `setServiceStanding` is REQUIRED, not optional. Attachment lands the service at PENDING exactly
+//    as registration lands a provider there, and `canIssue` folds the service standing - so a
+//    journey that attaches and stops is still a broken journey.
+//  - `setIssuanceCapability` / `setVerifierCapability` are the two capability axes.
+//  - `setResolverApproved` is the fleet-wide lever a typed resolver needs before any provider can
+//    select it, which is what unblocks the provider's domain and directory-listing flows.
 // ============================================================================================
 
-#[derive(Deserialize)]
-struct WhitelistActionReq {
-    /// The signer address the capability is granted to / revoked from.
-    signer: String,
-    /// The issuance record type (a label like "VACCINATION" or an explicit `0x`+64-hex key). Optional:
-    /// a grant/revoke may target only verify purposes.
-    #[serde(rename = "recordType", default)]
-    record_type: Option<String>,
-    /// Optional VERIFY:<purpose> capabilities (each keyed via `verify_key`), mirroring approval.
-    #[serde(rename = "verifyPurposes", default)]
-    verify_purposes: Vec<String>,
+/// A malformed address is a 400 the caller can fix; this is the one shape check every service route
+/// shares so they cannot disagree about what an address is.
+fn valid_service_addr(addr: &str) -> Result<String, Resp> {
+    let a = addr.trim().to_lowercase();
+    if !is_valid_addr(&a) || is_zero_addr(&a) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "serviceAddress must be a valid non-zero 0x-prefixed 20-byte address",
+        ));
+    }
+    Ok(a)
 }
 
-/// Build the WHITELIST_ADMIN `GovernanceAction`s for a grant/revoke over `(record_type?, verify_purposes)`.
-/// `grant=true` encodes `whitelistFor`, else `delistFor`. Returns an empty vec when no capability is
-/// named (the caller rejects that as a 400). `signer` is assumed already validated + lowercased.
-fn whitelist_actions(
-    registry: &str,
-    signer: &str,
-    record_type: &Option<String>,
-    verify_purposes: &[String],
-    grant: bool,
-) -> Vec<GovernanceAction> {
-    let verb = if grant { "whitelistFor" } else { "delistFor" };
-    let calldata = |key: &str| -> String {
-        if grant {
-            whitelist_for_calldata(key, signer)
-        } else {
-            delist_for_calldata(key, signer)
-        }
-    };
-    let role_authority = || Authority::Role {
-        role_target: registry.to_string(),
-        role: whitelist_admin_role(),
-        default_admin: false,
-    };
-    let mut actions = Vec::new();
-    if let Some(rt) = record_type {
-        let rt = rt.trim();
-        if !rt.is_empty() {
-            actions.push(GovernanceAction {
-                target: registry.to_string(),
-                calldata: calldata(&to_record_type_key(rt)),
-                authority: role_authority(),
-                summary: format!("{verb}(recordType={rt}, signer={signer})"),
-            });
-        }
+/// Read one capability log into the tri-state the screen renders.
+///
+/// The `Unavailable` arm's ONE spelling, so a failed issuance read and a failed verifier read cannot
+/// describe the same class of failure two different ways.
+fn capabilities_from(result: Result<Vec<(String, bool)>, crate::chain::ChainError>, what: &str) -> CapabilitiesRead {
+    match result {
+        Ok(events) => CapabilitiesRead::Resolved {
+            entries: fold_capabilities(&events),
+        },
+        Err(e) => CapabilitiesRead::Unavailable {
+            reason: format!("the {what} log could not be read: {e}"),
+        },
     }
-    for purpose in verify_purposes {
-        let p = purpose.trim();
-        if p.is_empty() {
-            continue;
-        }
-        actions.push(GovernanceAction {
-            target: registry.to_string(),
-            calldata: calldata(&verify_key(p)),
-            authority: role_authority(),
-            summary: format!("{verb}(VERIFY:{p}, signer={signer})"),
-        });
-    }
-    actions
 }
+
+/// `GET /v1/admin/providers/:providerId/services` - every service attached to one provider, with the
+/// five lifecycle terms and the current issuance holders.
+///
+/// A SEPARATE route from the provider list rather than a field on it: this is one `eth_call` plus one
+/// `eth_getLogs` PER SERVICE, so folding it into the list would make an unbounded per-provider walk
+/// out of a page that is already walking every provider.
+async fn provider_services(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let provider_id = provider_id.trim().to_lowercase();
+    if !is_valid_provider_id(&provider_id) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "providerId must be a non-zero 0x-prefixed 20-byte value",
+        );
+    }
+
+    // Page to exhaustion: a screen showing the first page as "the services that exist" would let an
+    // admin attach a duplicate, or miss the one that is actually current.
+    let mut addrs: Vec<String> = Vec::new();
+    let mut cursor = 0u64;
+    loop {
+        let (page, next) = match st
+            .chain
+            .provider_service_page(&registry, &provider_id, cursor, 100)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("providerServicePage(cursor={cursor}): {e}"),
+                )
+            }
+        };
+        let empty = page.is_empty();
+        addrs.extend(page);
+        if empty || next <= cursor {
+            break;
+        }
+        cursor = next;
+    }
+
+    let mut services = Vec::with_capacity(addrs.len());
+    for addr in &addrs {
+        let record = match st.chain.service_record(&registry, addr).await {
+            Ok(r) => r,
+            Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("service({addr}): {e}")),
+        };
+        // The five terms, reported APART. Pre-ANDing them would leave an admin able to see that
+        // something is wrong and unable to see which of five different remedies applies.
+        let effective = match st.chain.service_effective(&registry, addr).await {
+            Ok(e) => json!(e),
+            Err(e) => json!({ "unavailable": e.to_string() }),
+        };
+        // Whether the PROVIDER has published this service as its current pointer for that record
+        // type. That is the provider's own `repointService` decision and no registrar route writes
+        // it - the screen shows it so an admin can see the journey is finished, not act on it.
+        let current = match st
+            .chain
+            .current_service(&registry, &provider_id, &record.record_type_key)
+            .await
+        {
+            Ok(c) => json!({
+                "state": "resolved",
+                "service": c,
+                "isCurrent": c.eq_ignore_ascii_case(addr),
+            }),
+            Err(e) => json!({ "state": "unavailable", "reason": e.to_string() }),
+        };
+        let issuance = capabilities_from(
+            st.chain.issuance_capability_log(&registry, addr).await,
+            "IssuanceCapabilitySet",
+        );
+        services.push(json!({
+            "service": record,
+            "effective": effective,
+            "currentPointer": current,
+            "issuance": issuance,
+        }));
+    }
+
+    ok(json!({ "registry": registry, "providerId": provider_id, "services": services }))
+}
+
+#[derive(Deserialize)]
+struct AttachPreflightReq {
+    #[serde(rename = "serviceAddress")]
+    service_address: String,
+}
+
+/// `POST /v1/admin/providers/:providerId/services/preflight` - what the chain says about a candidate
+/// contract, BEFORE anything is signed.
+///
+/// It mirrors the three reads `attachService` itself makes and re-derives none of them:
+/// `factory.isClone(service)` against each ACTIVE generation, then `owner()` and `recordType()` off
+/// the service. Two rules keep it honest:
+///
+///  - It is never STRICTER than the chain. A probe that FAILED is could-not-run and does not refuse
+///    the send; the on-chain guard is the real gate, and a preflight that refuses what the contract
+///    would accept is a worse defect than no preflight at all.
+///  - `expectedOwner` is prefilled from the LIVE `owner()`. It is a transaction guard against a
+///    second handover between review and send, never a selector - the resolved owner is what the
+///    contract stores whatever this says.
+///
+/// The single most likely thing an admin will try first is a generation-1 `DogTagIssuer`, which is
+/// `Initializable` only and has NO `owner()` at all. That is a permanent property of the contract
+/// rather than a fixable form error, so it is said in words here rather than surfacing as a raw
+/// `InvalidServiceMetadata()` revert.
+async fn provider_service_preflight(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Json(body): Json<AttachPreflightReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let provider_id = provider_id.trim().to_lowercase();
+    if !is_valid_provider_id(&provider_id) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "providerId must be a non-zero 0x-prefixed 20-byte value",
+        );
+    }
+    let service = match valid_service_addr(&body.service_address) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+
+    // Already attached? A definite yes refuses (`AlreadyRegistered()`); a read that failed does not.
+    let already = match st.chain.service_record(&registry, &service).await {
+        Ok(r) if r.attached => Some(r),
+        Ok(_) => None,
+        Err(_) => None,
+    };
+
+    // Which generation's pinned factory recognizes this clone. The admin is never asked to type a
+    // bytes32 for it: `attachService` resolves the factory from the generation and proves
+    // `isClone`, so probing that same predicate is composing the chain's answer rather than guessing.
+    let generations = st.chain.factory_generations(&registry).await;
+    let generation = match &generations {
+        Ok(gens) => {
+            let mut resolved: Option<(String, String)> = None;
+            let mut probe_failed: Option<String> = None;
+            for (gid, factory, active) in gens {
+                if !active {
+                    continue;
+                }
+                match st.chain.is_clone(factory, &service).await {
+                    Ok(true) => {
+                        resolved = Some((gid.clone(), factory.clone()));
+                        break;
+                    }
+                    Ok(false) => {}
+                    // A probe that could not be MADE is not evidence that the factory disowns the
+                    // clone. Remembered so a "no generation recognizes this" verdict is never
+                    // reported on the strength of a read that never happened.
+                    Err(e) => probe_failed = Some(e.to_string()),
+                }
+            }
+            match (resolved, probe_failed) {
+                (Some((gid, factory)), _) => {
+                    json!({ "state": "resolved", "generationId": gid, "factory": factory })
+                }
+                (None, Some(reason)) => json!({
+                    "state": "unavailable",
+                    "reason": format!("a factory isClone probe could not be made: {reason}"),
+                }),
+                (None, None) => json!({
+                    "state": "none",
+                    "reason": "no active factory generation recognizes this address as one of its \
+                               clones - it was not deployed by this registry's factory",
+                }),
+            }
+        }
+        Err(e) => json!({
+            "state": "unavailable",
+            "reason": format!("the factory generation list could not be read: {e}"),
+        }),
+    };
+
+    let metadata = match st.chain.service_metadata(&service).await {
+        Ok((owner, rt_key)) => {
+            let zero_rt = rt_key.trim_start_matches("0x").chars().all(|c| c == '0');
+            if is_zero_addr(&owner) || zero_rt {
+                json!({
+                    "state": "refused",
+                    "reason": "the contract answered a zero owner or record type, which \
+                               attachService refuses with InvalidServiceMetadata()",
+                })
+            } else {
+                json!({
+                    "state": "resolved",
+                    "owner": owner,
+                    "recordTypeKey": rt_key,
+                    "recordType": record_type_label(&rt_key),
+                })
+            }
+        }
+        Err(e) => json!({
+            "state": "unavailable",
+            "reason": format!(
+                "the contract did not answer owner() and recordType(): {e}. A generation-1 \
+                 DogTagIssuer has no owner at all, so it can never be attached - that is a property \
+                 of the contract, not something a different expected owner would fix"
+            ),
+        }),
+    };
+
+    // The verdict is the FOLD, and it has three values because two of the inputs do. `refused` says
+    // the chain would reject this; `unavailable` says we could not establish it and the send is
+    // still offered, because could-not-check may not refuse an action the contract might accept.
+    let (verdict, reason) = if let Some(r) = &already {
+        (
+            "refused",
+            format!(
+                "this address is already attached to provider {} - a service binds to one provider \
+                 and attachService refuses a second with AlreadyRegistered()",
+                r.provider_id
+            ),
+        )
+    } else if generation["state"] == "none" {
+        ("refused", generation["reason"].as_str().unwrap_or("").to_string())
+    } else if metadata["state"] == "refused" {
+        ("refused", metadata["reason"].as_str().unwrap_or("").to_string())
+    } else if generation["state"] == "resolved" && metadata["state"] == "resolved" {
+        ("ready", String::new())
+    } else {
+        (
+            "couldNotRun",
+            "one of the reads attachService itself makes could not be completed, so whether it \
+             would succeed is not established - the send is still offered and the contract's own \
+             guards remain the real gate"
+                .into(),
+        )
+    };
+
+    ok(json!({
+        "registry": registry,
+        "providerId": provider_id,
+        "serviceAddress": service,
+        "alreadyAttached": already,
+        "generation": generation,
+        "metadata": metadata,
+        "verdict": verdict,
+        "reason": reason,
+    }))
+}
+
+#[derive(Deserialize)]
+struct AttachServiceReq {
+    #[serde(rename = "serviceAddress")]
+    service_address: String,
+    /// The generation whose pinned factory deployed this clone, as the preflight resolved it.
+    #[serde(rename = "generationId")]
+    generation_id: String,
+    /// The owner as REVIEWED. A transaction guard against a second handover between review and send;
+    /// the contract compares it against the owner it reads and stores the resolved one either way.
+    #[serde(rename = "expectedOwner")]
+    expected_owner: String,
+}
+
+/// `POST /v1/admin/providers/:providerId/services` - attach a provider-deployed contract (`onlyOwner`).
+async fn provider_attach_service(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Json(body): Json<AttachServiceReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let provider_id = provider_id.trim().to_lowercase();
+    if !is_valid_provider_id(&provider_id) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "providerId must be a non-zero 0x-prefixed 20-byte value",
+        );
+    }
+    let service = match valid_service_addr(&body.service_address) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let expected_owner = body.expected_owner.trim().to_lowercase();
+    if !is_valid_addr(&expected_owner) || is_zero_addr(&expected_owner) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "expectedOwner must be a valid non-zero address (the contract refuses zero with \
+             ZeroAddress) - it is the owner you reviewed, and a mismatch refuses the transaction",
+        );
+    }
+    let generation_id = body.generation_id.trim().to_lowercase();
+    let gen_hex = generation_id.strip_prefix("0x").unwrap_or("");
+    if gen_hex.len() != 64 || !gen_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "generationId must be a 0x-prefixed 32-byte value - take it from the preflight rather \
+             than typing it",
+        );
+    }
+
+    // Refuse a doomed second attach on a DEFINITE read only. An unreadable registry still gets its
+    // attempt: could-not-check may not stand in for a definite answer.
+    if let Ok(r) = st.chain.service_record(&registry, &service).await {
+        if r.attached {
+            return err_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": "this address is already attached - attachService refuses a second \
+                              binding with AlreadyRegistered(). Use reassignServiceProvider to \
+                              correct a mistaken provider binding.",
+                    "serviceAddress": service,
+                    "providerId": r.provider_id,
+                    "standing": r.standing,
+                }),
+            );
+        }
+    }
+
+    let action = GovernanceAction {
+        target: registry.clone(),
+        calldata: attach_service_calldata(&provider_id, &service, &generation_id, &expected_owner),
+        authority: provider_registry_authority(&registry),
+        summary: format!("attachService(providerId={provider_id}, service={service})"),
+    };
+    let results = match dispatch_all(&st, &[action]).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
+    ok(json!({
+        "providerId": provider_id,
+        "serviceAddress": service,
+        "generationId": generation_id,
+        "expectedOwner": expected_owner,
+        // Attachment lands the service at PENDING, and `canIssue` folds the service standing - so
+        // this alone does NOT let the provider issue, exactly as registration alone does not let a
+        // provider act.
+        "standingAfterAttach": Standing::Pending,
+        "nextStep": "setServiceStanding(ACTIVE), then setIssuanceCapability for the signer that \
+                     will issue - attachment alone grants nothing",
+        "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
+    }))
+}
+
+#[derive(Deserialize)]
+struct ServiceStandingReq {
+    /// `active` | `suspended` | `retired`, same three the contract admits.
+    standing: String,
+}
+
+/// `POST /v1/admin/services/:serviceAddress/standing` - move a service's standing (`onlyOwner`).
+async fn service_set_standing(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(service_address): Path<String>,
+    Json(body): Json<ServiceStandingReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let service = match valid_service_addr(&service_address) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let Some(next) = Standing::parse(&body.standing) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "standing must be one of active, suspended, retired - the contract refuses none and \
+             pending with InvalidStanding()",
+        );
+    };
+
+    if let Ok(rec) = st.chain.service_record(&registry, &service).await {
+        if !rec.attached {
+            return err(
+                StatusCode::NOT_FOUND,
+                "this address is not an attached service - attach it to a provider first",
+            );
+        }
+        if rec.standing == next {
+            return err_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": format!("this service is already {:?} - the contract refuses a no-op \
+                                      standing change with NoChange()", next),
+                    "standing": rec.standing,
+                }),
+            );
+        }
+        if rec.standing == Standing::Retired {
+            return err_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": "RETIRED is terminal - the contract refuses every further transition \
+                              with RetiredStanding()",
+                    "standing": rec.standing,
+                }),
+            );
+        }
+    }
+
+    let action = GovernanceAction {
+        target: registry.clone(),
+        calldata: set_service_standing_calldata(&service, next),
+        authority: provider_registry_authority(&registry),
+        summary: format!("setServiceStanding(service={service}, standing={next:?})"),
+    };
+    let results = match dispatch_all(&st, &[action]).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
+    ok(json!({
+        "serviceAddress": service,
+        "standing": next,
+        "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
+    }))
+}
+
+#[derive(Deserialize)]
+struct IssuanceCapabilityReq {
+    /// The key that will sign issuances on this service.
+    signer: String,
+    /// Stated explicitly rather than as a toggle, so the request says what it wants rather than what
+    /// it believes is currently true.
+    allowed: bool,
+}
+
+/// `POST /v1/admin/services/:serviceAddress/issuance-capability` - grant or withdraw the right to
+/// issue on one service (`onlyOwner`).
+///
+/// This is one half of what replaced the deleted record-type whitelist. Note what it does NOT do:
+/// `setServiceDelegate` grants CONTENT-WRITE permissions and does not satisfy `canIssue`, so a
+/// server-held key is granted here and by the registrar alone - "the provider grants its own server
+/// key" is not reachable on the deployed contract.
+async fn service_set_issuance_capability(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(service_address): Path<String>,
+    Json(body): Json<IssuanceCapabilityReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let service = match valid_service_addr(&service_address) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let signer = body.signer.trim().to_lowercase();
+    if !is_valid_addr(&signer) || is_zero_addr(&signer) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "signer must be a valid non-zero 0x-prefixed 20-byte address",
+        );
+    }
+
+    if let Ok(rec) = st.chain.service_record(&registry, &service).await {
+        if !rec.attached {
+            return err(
+                StatusCode::NOT_FOUND,
+                "this address is not an attached service - attachService binds it to a provider \
+                 first, and setIssuanceCapability refuses an unknown service with UnknownService()",
+            );
+        }
+    }
+    // A definite current bit refuses a `NoChange()` revert; an UNAVAILABLE log deliberately does not,
+    // because could-not-check must not block a legitimate grant. The contract stays the real gate.
+    let read = capabilities_from(
+        st.chain.issuance_capability_log(&registry, &service).await,
+        "IssuanceCapabilitySet",
+    );
+    if read.allowed(&signer) == Some(body.allowed) {
+        return err_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": format!(
+                    "this signer's issuance capability on {service} is already {} - the contract \
+                     refuses a no-op with NoChange()",
+                    body.allowed
+                ),
+                "signer": signer,
+                "allowed": body.allowed,
+            }),
+        );
+    }
+
+    let verb = if body.allowed { "grant" } else { "withdraw" };
+    let action = GovernanceAction {
+        target: registry.clone(),
+        calldata: set_issuance_capability_calldata(&service, &signer, body.allowed),
+        authority: provider_registry_authority(&registry),
+        summary: format!("setIssuanceCapability({verb} service={service}, signer={signer})"),
+    };
+    let results = match dispatch_all(&st, &[action]).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
+    ok(json!({
+        "serviceAddress": service,
+        "signer": signer,
+        "allowed": body.allowed,
+        "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
+    }))
+}
+
+/// `GET /v1/admin/verifier-capabilities` - who may verify, per purpose.
+///
+/// Keyed by PURPOSE and not by service, because the verify axis is ORTHOGONAL to issuance: rendering
+/// it inside a service row would present it as a property of that service, which it is not. An issuer
+/// is not implicitly a verifier and vice versa.
+async fn verifier_capabilities(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let mut purposes = Vec::with_capacity(KNOWN_VERIFY_PURPOSES.len());
+    for label in KNOWN_VERIFY_PURPOSES {
+        let key = purpose_key(label);
+        let relayers = capabilities_from(
+            st.chain.verifier_capability_log(&registry, &key).await,
+            "VerifierCapabilitySet",
+        );
+        purposes.push(json!({
+            "purpose": label,
+            // The bytes32 the contract takes. It derives `verificationKey(purpose)` itself, so this
+            // is the RAW purpose and never an already-derived key.
+            "purposeKey": key,
+            "relayers": relayers,
+        }));
+    }
+    ok(json!({ "registry": registry, "purposes": purposes }))
+}
+
+#[derive(Deserialize)]
+struct VerifierCapabilityReq {
+    /// A purpose label ("travel_check") or an explicit `0x`+64-hex purpose word.
+    purpose: String,
+    /// The relayer address that submits verifications for that purpose.
+    relayer: String,
+    allowed: bool,
+}
+
+/// `POST /v1/admin/verifier-capabilities` - grant or withdraw a relayer's right to verify for one
+/// purpose (`onlyOwner`). The other half of what replaced the deleted record-type whitelist.
+async fn verifier_capability_set(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VerifierCapabilityReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let relayer = body.relayer.trim().to_lowercase();
+    if !is_valid_addr(&relayer) || is_zero_addr(&relayer) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "relayer must be a valid non-zero 0x-prefixed 20-byte address",
+        );
+    }
+    let label = body.purpose.trim();
+    if label.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "purpose is required (a label like travel_check, or an explicit 0x + 64 hex word)",
+        );
+    }
+    // The RAW purpose word. `setVerifierCapability` derives `verificationKey(purpose)` itself, so
+    // passing an already-derived key would derive twice and write the capability under a key
+    // `canVerify` never reads - a transaction that succeeds and grants nothing.
+    let key = if label.starts_with("0x") && label.len() == 66 {
+        label.to_lowercase()
+    } else {
+        purpose_key(label)
+    };
+
+    let read = capabilities_from(
+        st.chain.verifier_capability_log(&registry, &key).await,
+        "VerifierCapabilitySet",
+    );
+    if read.allowed(&relayer) == Some(body.allowed) {
+        return err_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": format!(
+                    "this relayer's {label} verify capability is already {} - the contract refuses \
+                     a no-op with NoChange()",
+                    body.allowed
+                ),
+                "purpose": label,
+                "purposeKey": key,
+                "allowed": body.allowed,
+            }),
+        );
+    }
+
+    let verb = if body.allowed { "grant" } else { "withdraw" };
+    let action = GovernanceAction {
+        target: registry.clone(),
+        calldata: set_verifier_capability_calldata(&key, &relayer, body.allowed),
+        authority: provider_registry_authority(&registry),
+        summary: format!("setVerifierCapability({verb} purpose={label}, relayer={relayer})"),
+    };
+    let results = match dispatch_all(&st, &[action]).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
+    ok(json!({
+        "purpose": label,
+        "purposeKey": key,
+        "relayer": relayer,
+        "allowed": body.allowed,
+        "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
+    }))
+}
+
+/// `GET /v1/admin/resolvers` - the typed resolver allowlist, both kinds.
+///
+/// A typed resolver answers NOTHING until BOTH halves hold: the registrar approves it here, AND each
+/// provider or service selects it. The core never clears a stored selection when a resolver is
+/// deapproved - that is exactly why the approval is a fleet-wide lever - so the two are reported
+/// separately and are never pre-ANDed into one "working" bool.
+async fn resolvers_list(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let mut kinds = Vec::new();
+    for kind in [ResolverKind::Directory, ResolverKind::Domain] {
+        let entry = match st.chain.approved_resolvers(&registry, kind).await {
+            Ok(list) => json!({
+                "state": "resolved",
+                "resolvers": list
+                    .into_iter()
+                    .map(|(addr, approved)| json!({ "resolver": addr, "approved": approved }))
+                    .collect::<Vec<_>>(),
+            }),
+            // Could-not-read is its own state: an empty allowlist is a fact about the registry,
+            // and reporting a failed read as one would say nothing is approved on the strength of a
+            // read that never happened.
+            Err(e) => json!({ "state": "unavailable", "reason": e.to_string() }),
+        };
+        kinds.push(json!({ "kind": kind, "listing": entry }));
+    }
+    ok(json!({ "registry": registry, "kinds": kinds }))
+}
+
+#[derive(Deserialize)]
+struct ResolverApprovalReq {
+    /// `directory` | `domain`.
+    kind: String,
+    resolver: String,
+    approved: bool,
+}
+
+/// `POST /v1/admin/resolvers` - approve or pull a typed resolver (`onlyOwner`).
+///
+/// This is what unblocks the provider's domain claim and directory listing: both refuse with
+/// `ResolverNotApproved()` until the registrar has approved the resolver, and the provider's own
+/// selection cannot precede it.
+async fn resolver_set_approved(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ResolverApprovalReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let Some(kind) = ResolverKind::parse(&body.kind) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "kind must be one of directory, domain",
+        );
+    };
+    let resolver = body.resolver.trim().to_lowercase();
+    if !is_valid_addr(&resolver) || is_zero_addr(&resolver) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "resolver must be a valid non-zero 0x-prefixed 20-byte address",
+        );
+    }
+
+    if let Ok(list) = st.chain.approved_resolvers(&registry, kind).await {
+        let current = list
+            .iter()
+            .find(|(a, _)| a.eq_ignore_ascii_case(&resolver))
+            .map(|(_, approved)| *approved)
+            .unwrap_or(false);
+        if current == body.approved {
+            return err_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": format!(
+                        "this resolver's {:?} approval is already {} - the contract refuses a no-op \
+                         with NoChange()",
+                        kind, body.approved
+                    ),
+                    "resolver": resolver,
+                    "approved": body.approved,
+                }),
+            );
+        }
+    }
+
+    let verb = if body.approved { "approve" } else { "pull" };
+    let action = GovernanceAction {
+        target: registry.clone(),
+        calldata: set_resolver_approved_calldata(kind, &resolver, body.approved),
+        authority: provider_registry_authority(&registry),
+        summary: format!("setResolverApproved({verb} kind={kind:?}, resolver={resolver})"),
+    };
+    let results = match dispatch_all(&st, &[action]).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
+    ok(json!({
+        "kind": kind,
+        "resolver": resolver,
+        "approved": body.approved,
+        // Approval is only HALF: the provider or service must still select this resolver, and the
+        // registrar cannot do that for them.
+        "nextStep": "the provider must now select this resolver - approval alone resolves nothing",
+        "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
+    }))
+}
+
+// ============================================================================================
+// Shared governance dispatch helpers.
+//
+// These were introduced with the whitelist console (PR-E) and OUTLIVED it: the registrar routes
+// above are now their only callers, and the tri-state `outcome` they produce is what keeps a
+// designed out-of-band proposal apart from a stack booted on a key that lost its authority.
+// ============================================================================================
+
 
 /// Annotate a grant/revoke response with what the request actually did: the tri-state `outcome`, the
 /// back-compat `executed` boolean, and the matching operator note.
@@ -2324,152 +3096,6 @@ async fn dispatch_all(
         }
     }
     Ok(out)
-}
-
-/// `POST /v1/admin/whitelist/grant` — grant an issuer/verifier capability directly. Whitelists the
-/// signer for the record type + each verify purpose, and (for DOG_PROFILE) grants DogTagSBT
-/// ISSUER_ROLE so it can call `mintCustodial` — the same machinery `approve_application` runs, but for one signer and
-/// decoupled from the application queue. Each write is a `GovernanceAction` (executed if the hosted
-/// key holds the authority, else proposed).
-async fn whitelist_grant(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<WhitelistActionReq>,
-) -> Resp {
-    if let Err(e) = require_admin(&st, &headers).await {
-        return e;
-    }
-    if !is_valid_addr(body.signer.trim()) {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "signer must be a valid 0x-prefixed 20-byte address",
-        );
-    }
-    let signer = body.signer.trim().to_lowercase();
-    let actions = whitelist_actions(
-        &st.cfg.issuer_registry_addr,
-        &signer,
-        &body.record_type,
-        &body.verify_purposes,
-        true,
-    );
-    if actions.is_empty() {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "at least one of recordType or verifyPurposes is required",
-        );
-    }
-    let results = match dispatch_all(&st, &actions).await {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-
-    // DOG_PROFILE onboarding: also grant DogTagSBTConsent.ISSUER_ROLE. Gated by the SBT's
-    // DEFAULT_ADMIN authority (a distinct key post-Phase-2), so it too routes through GovernanceAction.
-    // Idempotent: skipped when the signer already holds the role.
-    let is_dog_tag_issuer = body
-        .record_type
-        .as_deref()
-        .map(|rt| rt.trim().eq_ignore_ascii_case(DOG_PROFILE))
-        .unwrap_or(false);
-    let mut issuer_role_dispatched: Option<governance::Disposition> = None;
-    let issuer_role = if is_dog_tag_issuer {
-        match st.chain.has_issuer_role(&st.cfg.sbt_addr, &signer).await {
-            Ok(true) => json!({ "status": "alreadyHeld" }),
-            Ok(false) => {
-                let action = GovernanceAction {
-                    target: st.cfg.sbt_addr.clone(),
-                    calldata: grant_issuer_role_calldata(&signer),
-                    authority: Authority::Role {
-                        role_target: st.cfg.sbt_addr.clone(),
-                        role: default_admin_role(),
-                        default_admin: true,
-                    },
-                    summary: format!("grantRole(ISSUER, signer={signer})"),
-                };
-                match governance::dispatch(st.chain.as_ref(), st.cfg.admin_signer_index, &action)
-                    .await
-                {
-                    Ok(d) => {
-                        let rendered = json!(d);
-                        issuer_role_dispatched = Some(d);
-                        rendered
-                    }
-                    Err(e) => {
-                        return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}"))
-                    }
-                }
-            }
-            Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("hasRole(ISSUER): {e}")),
-        }
-    } else {
-        Value::Null
-    };
-
-    // `executed`/`warning` describe the WHOLE request, so the separately dispatched ISSUER_ROLE action
-    // is folded in: it is a real broadcast when executed, and the "nothing reached the chain" warning
-    // may only be stated when NOT ONE action was. `alreadyHeld` / a non-DOG_PROFILE grant contribute
-    // nothing here - neither is a broadcast, and neither makes the warning claim true on its own.
-    let mut dispatched = results.clone();
-    dispatched.extend(issuer_role_dispatched);
-    let (outcome, executed, warning) = dispatch_summary(&st, &dispatched);
-    ok(json!({
-        "signer": signer,
-        "recordType": body.record_type,
-        "actions": results,
-        "issuerRole": issuer_role,
-        "outcome": outcome,
-        "executed": executed,
-        "warning": warning,
-    }))
-}
-
-/// `POST /v1/admin/whitelist/revoke` — delist an issuer/verifier capability directly (the inverse of
-/// grant): delists the record type + each verify purpose via `GovernanceAction` (WHITELIST_ADMIN).
-/// Does NOT revoke DogTagSBT.ISSUER_ROLE or on-chain roots — those are DEFAULT_ADMIN governance
-/// actions (`adminRevoke`) surfaced on the Governance page (plan PR-F), not here. Mirrors the existing
-/// `delist_application` semantics (delistFor only).
-async fn whitelist_revoke(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<WhitelistActionReq>,
-) -> Resp {
-    if let Err(e) = require_admin(&st, &headers).await {
-        return e;
-    }
-    if !is_valid_addr(body.signer.trim()) {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "signer must be a valid 0x-prefixed 20-byte address",
-        );
-    }
-    let signer = body.signer.trim().to_lowercase();
-    let actions = whitelist_actions(
-        &st.cfg.issuer_registry_addr,
-        &signer,
-        &body.record_type,
-        &body.verify_purposes,
-        false,
-    );
-    if actions.is_empty() {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "at least one of recordType or verifyPurposes is required",
-        );
-    }
-    let results = match dispatch_all(&st, &actions).await {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-    let (outcome, executed, warning) = dispatch_summary(&st, &results);
-    ok(json!({
-        "signer": signer,
-        "recordType": body.record_type,
-        "actions": results,
-        "outcome": outcome,
-        "executed": executed,
-        "warning": warning,
-    }))
 }
 
 // ============================================================================================
@@ -2682,7 +3308,11 @@ pub fn admin_router(state: AppState) -> Router {
         .route("/v1/admin/factory/predict", post(factory_predict))
         .route("/v1/admin/factory/issuers", post(factory_create_issuer))
         .route("/v1/admin/governance/authority", get(governance_authority))
-        // PR-E: direct whitelist management (grant / revoke) via GovernanceAction
+        // The `ProviderRegistry` REGISTRAR surface - the whole provider journey, register through
+        // capability grant. `setIssuanceCapability` and `setVerifierCapability` below are what
+        // replaced the deleted `whitelistFor` console: that console called `isWhitelistedFor` and
+        // `whitelistFor` on the single authority, which answers the first off an orthogonal axis
+        // (a definite `false` for every genuine issuer signer) and does not implement the second.
         .route("/v1/admin/providers", get(providers_list).post(provider_register))
         .route("/v1/admin/providers/:providerId", get(provider_detail))
         .route(
@@ -2693,8 +3323,30 @@ pub fn admin_router(state: AppState) -> Router {
             "/v1/admin/providers/:providerId/service-approval",
             post(provider_set_service_approval),
         )
-        .route("/v1/admin/whitelist/grant", post(whitelist_grant))
-        .route("/v1/admin/whitelist/revoke", post(whitelist_revoke))
+        .route(
+            "/v1/admin/providers/:providerId/services",
+            get(provider_services).post(provider_attach_service),
+        )
+        .route(
+            "/v1/admin/providers/:providerId/services/preflight",
+            post(provider_service_preflight),
+        )
+        .route(
+            "/v1/admin/services/:serviceAddress/standing",
+            post(service_set_standing),
+        )
+        .route(
+            "/v1/admin/services/:serviceAddress/issuance-capability",
+            post(service_set_issuance_capability),
+        )
+        .route(
+            "/v1/admin/verifier-capabilities",
+            get(verifier_capabilities).post(verifier_capability_set),
+        )
+        .route(
+            "/v1/admin/resolvers",
+            get(resolvers_list).post(resolver_set_approved),
+        )
         // PR-B: unscoped oversight-indexer consumption + signer→business directory
         .route("/v1/admin/activity", get(admin_activity))
         .route("/v1/admin/activity/stats", get(admin_activity_stats))

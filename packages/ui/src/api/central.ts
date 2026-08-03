@@ -26,15 +26,27 @@ import type {
   RegisterBusinessReq,
   RegisterBusinessResp,
   RejectApplicationResp,
-  WhitelistActionReq,
-  WhitelistGrantResp,
-  WhitelistRevokeResp,
   ProvidersResp,
   ProviderRegistrarView,
   RegisterProviderReq,
   RegisterProviderResp,
   ProviderStandingReq,
   ProviderStandingResp,
+  ProviderServicesResp,
+  AttachPreflightReq,
+  AttachPreflightResp,
+  AttachServiceReq,
+  AttachServiceResp,
+  ServiceStandingReq,
+  ServiceStandingResp,
+  IssuanceCapabilityReq,
+  IssuanceCapabilityResp,
+  VerifierCapabilitiesResp,
+  VerifierCapabilityReq,
+  VerifierCapabilityResp,
+  ResolversResp,
+  ResolverApprovalReq,
+  ResolverApprovalResp,
   ServiceApprovalReq,
   ServiceApprovalResp,
 } from "./types";
@@ -234,14 +246,6 @@ export function createCentralClient(opts: CentralClientOptions) {
     getGovernanceAuthority: () =>
       request<GovernanceAuthority>("GET", "/v1/admin/governance/authority"),
 
-    // ---- direct whitelist management (PR-E) ----
-    /** POST /v1/admin/whitelist/grant — whitelist a (signer, capability) pair via GovernanceAction. */
-    whitelistGrant: (body: WhitelistActionReq) =>
-      request<WhitelistGrantResp>("POST", "/v1/admin/whitelist/grant", body),
-    /** POST /v1/admin/whitelist/revoke — delist a (signer, capability) pair via GovernanceAction. */
-    whitelistRevoke: (body: WhitelistActionReq) =>
-      request<WhitelistRevokeResp>("POST", "/v1/admin/whitelist/revoke", body),
-
     // ---- the generation-2 ProviderRegistry registrar surface (registry plan C-2) ----
     /** GET /v1/admin/providers - every registered provider, its standing, anchor and approvals. */
     listProviders: () => request<ProvidersResp>("GET", "/v1/admin/providers"),
@@ -264,6 +268,58 @@ export function createCentralClient(opts: CentralClientOptions) {
         `/v1/admin/providers/${providerId}/service-approval`,
         body,
       ),
+
+    // ---- the rest of the journey: attach -> stand up -> grant issuance ----
+    /** GET /v1/admin/providers/:providerId/services - what this provider has attached, and its state. */
+    listProviderServices: (providerId: string) =>
+      request<ProviderServicesResp>("GET", `/v1/admin/providers/${providerId}/services`),
+    /**
+     * POST /v1/admin/providers/:providerId/services/preflight - what the chain says about a
+     * candidate contract before anything is signed. It mirrors the three reads `attachService`
+     * itself makes and is never STRICTER than the chain: a `couldNotRun` verdict still offers the
+     * send, because could-not-check may not refuse an action the contract would accept.
+     */
+    preflightAttachService: (providerId: string, body: AttachPreflightReq) =>
+      request<AttachPreflightResp>(
+        "POST",
+        `/v1/admin/providers/${providerId}/services/preflight`,
+        body,
+      ),
+    /** POST /v1/admin/providers/:providerId/services - attach a provider-deployed contract. */
+    attachService: (providerId: string, body: AttachServiceReq) =>
+      request<AttachServiceResp>("POST", `/v1/admin/providers/${providerId}/services`, body),
+    /**
+     * POST /v1/admin/services/:serviceAddress/standing - move a service's standing.
+     * Required after attaching: `attachService` lands the service at PENDING and `canIssue` folds
+     * the service standing, so attaching and stopping is still a broken journey.
+     */
+    setServiceStanding: (serviceAddress: string, body: ServiceStandingReq) =>
+      request<ServiceStandingResp>(
+        "POST",
+        `/v1/admin/services/${serviceAddress}/standing`,
+        body,
+      ),
+    /** POST /v1/admin/services/:serviceAddress/issuance-capability - who may issue on this service. */
+    setIssuanceCapability: (serviceAddress: string, body: IssuanceCapabilityReq) =>
+      request<IssuanceCapabilityResp>(
+        "POST",
+        `/v1/admin/services/${serviceAddress}/issuance-capability`,
+        body,
+      ),
+    /** GET /v1/admin/verifier-capabilities - who may verify, per purpose (the orthogonal axis). */
+    listVerifierCapabilities: () =>
+      request<VerifierCapabilitiesResp>("GET", "/v1/admin/verifier-capabilities"),
+    /** POST /v1/admin/verifier-capabilities - grant/withdraw a relayer's right to verify. */
+    setVerifierCapability: (body: VerifierCapabilityReq) =>
+      request<VerifierCapabilityResp>("POST", "/v1/admin/verifier-capabilities", body),
+    /** GET /v1/admin/resolvers - the typed resolver allowlist, both kinds. */
+    listResolvers: () => request<ResolversResp>("GET", "/v1/admin/resolvers"),
+    /**
+     * POST /v1/admin/resolvers - approve or pull a typed resolver. This is what unblocks the
+     * provider's domain claim and directory listing; the provider's own SELECTION still follows.
+     */
+    setResolverApproved: (body: ResolverApprovalReq) =>
+      request<ResolverApprovalResp>("POST", "/v1/admin/resolvers", body),
   };
 }
 

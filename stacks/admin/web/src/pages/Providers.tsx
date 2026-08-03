@@ -50,20 +50,30 @@ import {
   TxRef,
   txExplorerHref,
   useToast,
+  type AttachPreflightResp,
+  type CapabilitiesRead,
+  type DispatchOutcome,
   type GovernanceDisposition,
   type ProviderApprovalsRead,
   type ProviderRegistrarView,
+  type ProviderServicesResp,
+  type ProviderServiceView,
   type ProviderStanding,
   type ProvidersResp,
-  type WhitelistOutcome,
+  type ResolverKind,
+  type ResolversResp,
+  type VerifierCapabilitiesResp,
   DEMO_PROVIDER_REGISTRATION,
 } from "@dogtag/ui";
 import {
   AlertTriangle,
   BadgeCheck,
+  ChevronDown,
+  ChevronRight,
   ClipboardList,
   Dices,
   HelpCircle,
+  Link2,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -85,20 +95,19 @@ import {
   type CheckedRegistration,
   type IdentityStatement,
 } from "../lib/providerIdentity";
+import {
+  attachKey,
+  attachSendable,
+  effectiveTerms,
+  issuanceBlocker,
+  resolvedGenerationId,
+  resolvedOwner,
+  STANDING_TONE,
+  termTone,
+} from "../lib/providerServices";
 
 /** The record types a provider can be pre-authorized to create a service for. */
 const RECORD_TYPES = ["DOG_PROFILE", "VACCINATION", "GROOMING", "BOARDING"] as const;
-
-const STANDING_TONE: Record<ProviderStanding, "neutral" | "warning" | "success" | "danger" | "outline"> =
-  {
-    none: "outline",
-    // PENDING is deliberately WARNING rather than neutral: it is what registration produces, and a
-    // provider left there can do nothing at all. Painting it neutral is what makes it easy to miss.
-    pending: "warning",
-    active: "success",
-    suspended: "danger",
-    retired: "danger",
-  };
 
 /**
  * What a standing MEANS for the provider's ability to act, in the registrar's terms.
@@ -133,7 +142,7 @@ interface DispatchRecord {
   key: string;
   providerId: string;
   summary: string;
-  outcome: WhitelistOutcome;
+  outcome: DispatchOutcome;
   warning?: string | null;
   actions: GovernanceDisposition[];
   /**
@@ -328,6 +337,306 @@ function Approvals({ approvals }: { approvals: ProviderApprovalsRead }) {
   );
 }
 
+/**
+ * The holders of one capability - three states, same discipline as {@link Approvals}.
+ *
+ * "Nobody holds this" is a fact about the service; "the log could not be read" is a fact about us,
+ * and rendering the second as the first would say a service has no issuer on the strength of a read
+ * that never happened.
+ */
+function CapabilityHolders({ read, empty }: { read: CapabilitiesRead; empty: string }) {
+  if (read.state === "unavailable") {
+    return (
+      <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500">
+        <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>
+          <span className="font-medium">Could not be read.</span>{" "}
+          <span className="text-muted-foreground">{read.reason}</span>
+        </span>
+      </div>
+    );
+  }
+  const granted = read.entries.filter((e) => e.allowed);
+  const withdrawn = read.entries.filter((e) => !e.allowed);
+  if (granted.length === 0 && withdrawn.length === 0) {
+    return <span className="text-xs text-muted-foreground">{empty}</span>;
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {granted.map((e) => (
+        <span key={e.holder} className="flex items-center gap-1">
+          <Badge variant="success" className="font-mono text-[11px]">
+            {shortAddr(e.holder)}
+          </Badge>
+          <CopyButton value={e.holder} label="holder" />
+        </span>
+      ))}
+      {/* A withdrawn grant is shown rather than dropped: "granted then withdrawn" is a different
+          fact from "never granted", and only the log can tell them apart. */}
+      {withdrawn.map((e) => (
+        <Badge
+          key={e.holder}
+          variant="outline"
+          className="font-mono text-[11px] line-through opacity-70"
+        >
+          {shortAddr(e.holder)}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * One attached service, with the five lifecycle terms reported APART.
+ *
+ * Never folded into one "can issue" badge: each term has its own remedy, so a single bool would tell
+ * an admin something is wrong while withholding the only thing that says what to do about it.
+ */
+function ServiceRow({
+  view,
+  busy,
+  onStanding,
+  onGrant,
+}: {
+  view: ProviderServiceView;
+  busy: boolean;
+  onStanding: (service: string, standing: "active" | "suspended") => void;
+  onGrant: (service: string) => void;
+}) {
+  const s = view.service;
+  const terms = effectiveTerms(view.effective);
+  const blocker = issuanceBlocker(terms);
+  return (
+    <div className="rounded-md border p-3" data-testid="service-row">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <AddressRef address={s.serviceAddress} />
+          <Badge variant="outline">{s.recordType ?? shortAddr(s.recordTypeKey)}</Badge>
+          <Badge variant={STANDING_TONE[s.standing]}>{s.standing}</Badge>
+        </div>
+        <div className="flex gap-1">
+          {s.standing !== "active" && s.standing !== "retired" ? (
+            <Button size="sm" disabled={busy} onClick={() => onStanding(s.serviceAddress, "active")}>
+              <BadgeCheck className="mr-1 h-3.5 w-3.5" />
+              Activate
+            </Button>
+          ) : null}
+          {s.standing === "active" ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => onStanding(s.serviceAddress, "suspended")}
+            >
+              Suspend
+            </Button>
+          ) : null}
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => onGrant(s.serviceAddress)}>
+            <ShieldCheck className="mr-1 h-3.5 w-3.5" />
+            Issuance capability
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1" data-testid="service-terms">
+        {terms.map((t) => (
+          <Badge key={t.key} variant={termTone(t.held)} title={t.held === true ? undefined : t.remedy}>
+            {t.label}
+            {t.held === null ? " ?" : t.held ? " ✓" : " ✗"}
+          </Badge>
+        ))}
+      </div>
+      {blocker ? (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="service-blocker">
+          {blocker}
+        </p>
+      ) : null}
+
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-muted-foreground">may issue:</span>
+        <CapabilityHolders read={view.issuance} empty="Nobody yet - grant issuance capability." />
+      </div>
+
+      <div className="mt-1 text-xs text-muted-foreground" data-testid="service-pointer">
+        {view.currentPointer.state === "unavailable" ? (
+          <>The provider&apos;s current pointer could not be read. {view.currentPointer.reason}</>
+        ) : view.currentPointer.isCurrent ? (
+          <>The provider has published this as its current {s.recordType ?? "record type"} service.</>
+        ) : (
+          // The provider's own `repointService` decision; no registrar route writes it, so this is
+          // reported and never offered as an action here.
+          <>
+            Not published as current — the provider selects this itself on their portal; the registrar
+            cannot do it for them.
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The verify axis, keyed by PURPOSE.
+ *
+ * Deliberately its own card rather than a column in a service row: `setVerifierCapability` takes a
+ * purpose and a relayer and no service at all, so rendering it inside a service would present it as
+ * a property of that service. An issuer is not implicitly a verifier.
+ */
+function VerifierCapabilities({
+  data,
+  loadError,
+  busy,
+  onSet,
+  onRefresh,
+}: {
+  data: VerifierCapabilitiesResp | null;
+  loadError: string | null;
+  busy: boolean;
+  onSet: (purpose: string) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <Card data-testid="verifier-capabilities">
+      <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
+        <div>
+          <CardTitle className="text-base">Verify capability</CardTitle>
+          <CardDescription>
+            Who may submit verifications, per purpose. This axis is{" "}
+            <span className="font-medium">separate from issuance</span>: an issuer is not implicitly a
+            verifier, and a relayer granted here can verify without being able to issue anything.
+          </CardDescription>
+        </div>
+        <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy}>
+          <RefreshCw className="mr-2 h-4 w-4" />
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {loadError ? (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              <span className="font-medium">Verify capability could not be read.</span>{" "}
+              <span className="text-muted-foreground">{loadError}</span>
+            </span>
+          </div>
+        ) : !data ? (
+          <Spinner />
+        ) : (
+          data.purposes.map((p) => (
+            <div
+              key={p.purpose}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline">{p.purpose}</Badge>
+                <CapabilityHolders read={p.relayers} empty="No relayer may verify for this purpose." />
+              </div>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => onSet(p.purpose)}>
+                Grant / withdraw
+              </Button>
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The typed resolver allowlist - the fleet-wide lever a provider's domain claim and directory
+ * listing both need before either can work.
+ *
+ * Approval and SELECTION are two different halves and are never merged into one "working" badge: the
+ * core keeps a stored selection when a resolver is deapproved, which is precisely why approval is a
+ * separate lever, and only the provider can select.
+ */
+function Resolvers({
+  data,
+  loadError,
+  busy,
+  onSet,
+  onRefresh,
+}: {
+  data: ResolversResp | null;
+  loadError: string | null;
+  busy: boolean;
+  onSet: (kind: ResolverKind) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <Card data-testid="resolvers">
+      <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
+        <div>
+          <CardTitle className="text-base">Typed resolvers</CardTitle>
+          <CardDescription>
+            A resolver answers nothing until you approve it here{" "}
+            <span className="font-medium">and</span> the provider selects it. Approving is the whole
+            of the registrar&apos;s part - without it a provider&apos;s domain claim and directory
+            listing both refuse with <code>ResolverNotApproved</code>.
+          </CardDescription>
+        </div>
+        <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy}>
+          <RefreshCw className="mr-2 h-4 w-4" />
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {loadError ? (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              <span className="font-medium">The resolver allowlist could not be read.</span>{" "}
+              <span className="text-muted-foreground">{loadError}</span>
+            </span>
+          </div>
+        ) : !data ? (
+          <Spinner />
+        ) : (
+          data.kinds.map((k) => (
+            <div
+              key={k.kind}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline">{k.kind}</Badge>
+                {k.listing.state === "unavailable" ? (
+                  <span className="flex items-start gap-1 text-xs text-amber-600 dark:text-amber-500">
+                    <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      <span className="font-medium">Could not be read.</span>{" "}
+                      <span className="text-muted-foreground">{k.listing.reason}</span>
+                    </span>
+                  </span>
+                ) : k.listing.resolvers.length === 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    None approved - every {k.kind} claim refuses until one is.
+                  </span>
+                ) : (
+                  k.listing.resolvers.map((r) => (
+                    <span key={r.resolver} className="flex items-center gap-1">
+                      <Badge
+                        variant={r.approved ? "success" : "outline"}
+                        className={`font-mono text-[11px] ${r.approved ? "" : "line-through opacity-70"}`}
+                      >
+                        {shortAddr(r.resolver)}
+                      </Badge>
+                      <CopyButton value={r.resolver} label="resolver" />
+                    </span>
+                  ))
+                )}
+              </div>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => onSet(k.kind)}>
+                Approve / pull
+              </Button>
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function Providers() {
   const { central } = useApp();
   const { toast } = useToast();
@@ -373,6 +682,38 @@ export function Providers() {
         ? "An input changed after this was reviewed - review again before sending."
         : null;
 
+  // ---- the rest of the journey ---------------------------------------------------------------
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [services, setServices] = useState<Record<string, ProviderServicesResp>>({});
+  const [serviceError, setServiceError] = useState<Record<string, string>>({});
+  const [verifiers, setVerifiers] = useState<VerifierCapabilitiesResp | null>(null);
+  const [verifierError, setVerifierError] = useState<string | null>(null);
+  const [resolvers, setResolvers] = useState<ResolversResp | null>(null);
+  const [resolverError, setResolverError] = useState<string | null>(null);
+
+  // ---- attach dialog: same check-then-send discipline as registration --------------------------
+  const [attachFor, setAttachFor] = useState<string | null>(null);
+  const [candidate, setCandidate] = useState("");
+  const [preflight, setPreflight] = useState<AttachPreflightResp | null>(null);
+  const [preflightKey, setPreflightKey] = useState("");
+  const [attachSpent, setAttachSpent] = useState(false);
+
+  const attachCurrentKey = useMemo(
+    () => attachKey(attachFor ?? "", candidate),
+    [attachFor, candidate],
+  );
+  // Same split as the registration dialog, and for the same reason: a retired plan stays VISIBLE
+  // (it is the record of what was checked) while losing its authority to send.
+  const attachShown = preflight !== null;
+  const attachFresh = attachShown && !attachSpent && preflightKey === attachCurrentKey;
+  const attachStaleReason = !attachShown
+    ? null
+    : attachSpent
+      ? "This attach was submitted. Check again to send another."
+      : preflightKey !== attachCurrentKey
+        ? "The address changed after this was checked - check again before sending."
+        : null;
+
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -388,9 +729,56 @@ export function Providers() {
     }
   }, [central]);
 
+  const loadServices = useCallback(
+    async (pid: string) => {
+      setServiceError((m) => {
+        const next = { ...m };
+        delete next[pid];
+        return next;
+      });
+      try {
+        const resp = await central.listProviderServices(pid);
+        setServices((m) => ({ ...m, [pid]: resp }));
+      } catch (e) {
+        // Could-not-read renders as itself. Falling through to an empty list would tell the admin
+        // this provider has attached nothing - which is exactly what would make them attach a
+        // duplicate.
+        setServices((m) => {
+          const next = { ...m };
+          delete next[pid];
+          return next;
+        });
+        setServiceError((m) => ({ ...m, [pid]: e instanceof Error ? e.message : String(e) }));
+      }
+    },
+    [central],
+  );
+
+  const loadVerifiers = useCallback(async () => {
+    setVerifierError(null);
+    try {
+      setVerifiers(await central.listVerifierCapabilities());
+    } catch (e) {
+      setVerifiers(null);
+      setVerifierError(e instanceof Error ? e.message : String(e));
+    }
+  }, [central]);
+
+  const loadResolvers = useCallback(async () => {
+    setResolverError(null);
+    try {
+      setResolvers(await central.listResolvers());
+    } catch (e) {
+      setResolvers(null);
+      setResolverError(e instanceof Error ? e.message : String(e));
+    }
+  }, [central]);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadVerifiers();
+    void loadResolvers();
+  }, [load, loadVerifiers, loadResolvers]);
 
   function resetDialog() {
     setProviderId("");
@@ -507,6 +895,190 @@ export function Providers() {
     }
   }
 
+  function resetAttach() {
+    setCandidate("");
+    setPreflight(null);
+    setPreflightKey("");
+    setAttachSpent(false);
+  }
+
+  async function checkCandidate() {
+    if (!attachFor) return;
+    setBusy(`${attachFor}:preflight`);
+    try {
+      const resp = await central.preflightAttachService(attachFor, { serviceAddress: candidate });
+      setPreflight(resp);
+      setPreflightKey(attachCurrentKey);
+      setAttachSpent(false);
+    } catch (e) {
+      setPreflight(null);
+      toast({
+        title: "Check failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "danger",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitAttach() {
+    if (!attachFor || !preflight || !attachFresh) return;
+    const generationId = resolvedGenerationId(preflight);
+    const expectedOwner = resolvedOwner(preflight);
+    // Both are REQUIRED: the calldata cannot be built without them, and inventing either would send
+    // a transaction addressing something nobody checked.
+    if (!generationId || !expectedOwner) return;
+    setBusy(`${attachFor}:attach`);
+    // Retire at SUBMISSION, before the outcome is known, so every terminal path inherits it.
+    setAttachSpent(true);
+    try {
+      // Addresses the CHECKED values, never the live form.
+      const resp = await central.attachService(attachFor, {
+        serviceAddress: preflight.serviceAddress,
+        generationId,
+        expectedOwner,
+      });
+      recordDispatch({
+        providerId: attachFor,
+        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+        warning: resp.warning,
+        actions: resp.actions,
+        summary: `attached ${shortAddr(preflight.serviceAddress)}`,
+      });
+      if (resp.outcome === "executed") {
+        toast({
+          title: "Service attached",
+          description:
+            "It is PENDING and can issue nothing yet - set its standing to Active, then grant issuance capability.",
+        });
+      } else {
+        toast({ title: "Nothing was broadcast", description: resp.warning ?? "", variant: "danger" });
+      }
+      setAttachFor(null);
+      resetAttach();
+      await loadServices(attachFor);
+    } catch (e) {
+      toast({
+        title: "Attach failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "danger",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function setServiceStanding(pid: string, service: string, standing: "active" | "suspended") {
+    setBusy(`${service}:standing`);
+    try {
+      const resp = await central.setServiceStanding(service, { standing });
+      recordDispatch({
+        providerId: pid,
+        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+        warning: resp.warning,
+        actions: resp.actions,
+        summary: `service ${shortAddr(service)} standing → ${standing}`,
+      });
+      await loadServices(pid);
+    } catch (e) {
+      toast({
+        title: "Service standing change failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "danger",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function grantIssuance(pid: string, service: string) {
+    const signer = window.prompt(
+      `Signer address to grant issuance capability on ${shortAddr(service)}.\n\n` +
+        "This is the key that will SIGN issuances. It is the registrar's grant to make: a service " +
+        "delegate carries content-write permissions and does not satisfy canIssue.",
+      "",
+    );
+    if (!signer) return;
+    setBusy(`${service}:issuance`);
+    try {
+      const resp = await central.setIssuanceCapability(service, { signer, allowed: true });
+      recordDispatch({
+        providerId: pid,
+        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+        warning: resp.warning,
+        actions: resp.actions,
+        summary: `issuance capability → ${shortAddr(signer)} on ${shortAddr(service)}`,
+      });
+      await loadServices(pid);
+    } catch (e) {
+      toast({
+        title: "Issuance grant failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "danger",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function setVerifier(purpose: string) {
+    const relayer = window.prompt(
+      `Relayer address that may submit verifications for "${purpose}".`,
+      "",
+    );
+    if (!relayer) return;
+    setBusy(`verify:${purpose}`);
+    try {
+      const resp = await central.setVerifierCapability({ purpose, relayer, allowed: true });
+      recordDispatch({
+        providerId: purpose,
+        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+        warning: resp.warning,
+        actions: resp.actions,
+        summary: `verify:${purpose} → ${shortAddr(relayer)}`,
+      });
+      await loadVerifiers();
+    } catch (e) {
+      toast({
+        title: "Verify grant failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "danger",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function setResolver(kind: ResolverKind) {
+    const resolver = window.prompt(
+      `${kind === "directory" ? "ProviderDirectory" : "ServiceDomainResolver"} address to approve.\n\n` +
+        "Approval is only half: the provider must then SELECT this resolver on their own portal.",
+      "",
+    );
+    if (!resolver) return;
+    setBusy(`resolver:${kind}`);
+    try {
+      const resp = await central.setResolverApproved({ kind, resolver, approved: true });
+      recordDispatch({
+        providerId: `${kind} resolver`,
+        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+        warning: resp.warning,
+        actions: resp.actions,
+        summary: `${kind} resolver → ${shortAddr(resolver)}`,
+      });
+      await loadResolvers();
+    } catch (e) {
+      toast({
+        title: "Resolver approval failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "danger",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const authority = data?.authority;
 
   return (
@@ -602,10 +1174,29 @@ export function Providers() {
                   const approved = (rt: string) =>
                     p.approvals.state === "resolved" &&
                     p.approvals.entries.some((e) => e.recordType === rt && e.allowed);
+                  const open = expanded === pid;
                   return (
+                    <>
                     <TableRow key={pid}>
                       <TableCell className="align-top">
                         <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground"
+                            aria-label={open ? "Hide services" : "Show services"}
+                            data-testid="toggle-services"
+                            onClick={() => {
+                              const next = open ? null : pid;
+                              setExpanded(next);
+                              if (next) void loadServices(next);
+                            }}
+                          >
+                            {open ? (
+                              <ChevronDown className="h-4 w-4" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4" />
+                            )}
+                          </button>
                           <span className="font-mono text-xs">{shortAddr(pid)}</span>
                           {/* Permanent, opaque, and truncated on screen - so it must stay
                               recoverable without hovering. */}
@@ -684,6 +1275,68 @@ export function Providers() {
                         </div>
                       </TableCell>
                     </TableRow>
+                    {open ? (
+                      <TableRow key={`${pid}-services`}>
+                        <TableCell colSpan={5} className="bg-muted/30">
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-sm font-medium">Attached services</span>
+                              <Button
+                                size="sm"
+                                disabled={busy !== null}
+                                onClick={() => {
+                                  resetAttach();
+                                  setAttachFor(pid);
+                                }}
+                              >
+                                <Link2 className="mr-1 h-3.5 w-3.5" />
+                                Attach a contract
+                              </Button>
+                            </div>
+                            {serviceError[pid] ? (
+                              // Could-not-read renders as itself. An empty list here would read as
+                              // "this provider has attached nothing", which is what would make an
+                              // admin attach a duplicate.
+                              <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+                                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                                <span>
+                                  <span className="font-medium">
+                                    This provider&apos;s services could not be read.
+                                  </span>{" "}
+                                  <span className="text-muted-foreground">{serviceError[pid]}</span>
+                                </span>
+                              </div>
+                            ) : !services[pid] ? (
+                              <Spinner />
+                            ) : services[pid].services.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">
+                                Nothing attached yet. A provider deploys their own contract from their
+                                portal, then sends you the address to attach here - until you do,{" "}
+                                <span className="font-medium">
+                                  they cannot select it or do anything else with it
+                                </span>
+                                .
+                              </p>
+                            ) : (
+                              <div className="space-y-2">
+                                {services[pid].services.map((v) => (
+                                  <ServiceRow
+                                    key={v.service.serviceAddress}
+                                    view={v}
+                                    busy={busy !== null}
+                                    onStanding={(svc, standing) =>
+                                      void setServiceStanding(pid, svc, standing)
+                                    }
+                                    onGrant={(svc) => void grantIssuance(pid, svc)}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                    </>
                   );
                 })}
               </TableBody>
@@ -691,6 +1344,162 @@ export function Providers() {
           )}
         </CardContent>
       </Card>
+
+      {/* The two ORTHOGONAL levers, deliberately outside the provider table: neither is keyed by a
+          provider. `setVerifierCapability` takes a purpose and a relayer; `setResolverApproved` is
+          fleet-wide. Rendering either inside a provider row would misstate what it applies to. */}
+      <VerifierCapabilities
+        data={verifiers}
+        loadError={verifierError}
+        busy={busy !== null}
+        onSet={(p) => void setVerifier(p)}
+        onRefresh={() => void loadVerifiers()}
+      />
+      <Resolvers
+        data={resolvers}
+        loadError={resolverError}
+        busy={busy !== null}
+        onSet={(k) => void setResolver(k)}
+        onRefresh={() => void loadResolvers()}
+      />
+
+      <Dialog
+        open={attachFor !== null}
+        onOpenChange={(v) => (v ? null : (setAttachFor(null), resetAttach()))}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Attach a contract</DialogTitle>
+            <DialogDescription>
+              Binding a provider-deployed contract to their record. Until this happens the provider
+              cannot select it, claim a domain for it, or issue from it -{" "}
+              <code>repointService</code> refuses an address that was never attached.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="svc">Contract address</Label>
+              <Input
+                id="svc"
+                className="mt-1 font-mono text-xs"
+                placeholder="0x…"
+                value={candidate}
+                onChange={(e) => setCandidate(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                The address the provider deployed and sent you. Nothing else is typed: the record type,
+                the factory generation and the owner are all read off the contract itself.
+              </p>
+            </div>
+
+            {/* A retired plan stays VISIBLE with its verdict struck through - it is the record of
+                what was checked - while losing its authority to send. */}
+            {attachShown && preflight ? (
+              <div
+                className={`rounded-md border p-3 text-sm ${
+                  preflight.verdict === "ready" && attachFresh
+                    ? "border-emerald-500/40 bg-emerald-500/10"
+                    : preflight.verdict === "refused"
+                      ? "border-destructive/40 bg-destructive/10"
+                      : "border-amber-500/40 bg-amber-500/10"
+                }`}
+                data-testid="attach-preflight"
+              >
+                <div className="flex flex-wrap items-center gap-2 font-medium">
+                  <span className={attachFresh ? "" : "line-through opacity-70"}>
+                    {preflight.verdict === "ready"
+                      ? "Checked - ready to attach"
+                      : preflight.verdict === "refused"
+                        ? "The chain would refuse this"
+                        : "Could not be established"}
+                  </span>
+                  {!attachFresh ? (
+                    <span className="text-amber-700 dark:text-amber-500">
+                      Superseded - {attachStaleReason}
+                    </span>
+                  ) : null}
+                </div>
+                {preflight.reason ? (
+                  <p className="mt-1 text-muted-foreground">{preflight.reason}</p>
+                ) : null}
+
+                <dl className="mt-2 space-y-1 text-xs">
+                  <div className="flex gap-2">
+                    <dt className="w-32 shrink-0 text-muted-foreground">factory generation</dt>
+                    <dd>
+                      {preflight.generation.state === "resolved" ? (
+                        <span className="font-mono">
+                          {shortAddr(preflight.generation.generationId)}
+                        </span>
+                      ) : (
+                        <span className="text-amber-700 dark:text-amber-500">
+                          {preflight.generation.reason}
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="w-32 shrink-0 text-muted-foreground">record type</dt>
+                    <dd>
+                      {preflight.metadata.state === "resolved" ? (
+                        <>
+                          {preflight.metadata.recordType ??
+                            shortAddr(preflight.metadata.recordTypeKey)}
+                        </>
+                      ) : (
+                        <span className="text-amber-700 dark:text-amber-500">
+                          {preflight.metadata.reason}
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="w-32 shrink-0 text-muted-foreground">owner</dt>
+                    <dd className="flex items-center gap-1">
+                      {preflight.metadata.state === "resolved" ? (
+                        <>
+                          <span className="font-mono">{shortAddr(preflight.metadata.owner)}</span>
+                          <CopyButton value={preflight.metadata.owner} label="owner" />
+                          <span className="text-muted-foreground">
+                            — sent as the expected owner; a mismatch at send time refuses the
+                            transaction rather than attaching to the wrong key.
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-amber-700 dark:text-amber-500">not established</span>
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => void checkCandidate()} disabled={busy !== null}>
+              <Plus className="mr-2 h-4 w-4" />
+              Check
+            </Button>
+            <Button
+              onClick={() => void submitAttach()}
+              disabled={!attachFresh || !attachSendable(preflight) || busy !== null}
+              title={
+                !attachShown
+                  ? "Check the address first."
+                  : !attachFresh
+                    ? (attachStaleReason ?? undefined)
+                    : !attachSendable(preflight)
+                      ? "The factory generation and owner could not both be established, so there is nothing to address a transaction to. Check again."
+                      : undefined
+              }
+            >
+              {busy?.endsWith(":attach") ? <Spinner className="mr-2 h-4 w-4" /> : null}
+              Attach
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={open} onOpenChange={(v) => (v ? setOpen(true) : (setOpen(false), resetDialog()))}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">

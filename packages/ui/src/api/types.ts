@@ -738,59 +738,22 @@ export interface DelistApplicationResp {
 // `GovernanceDisposition` (the shared GovernanceAction outcome type) is defined once in the
 // control-plane block below; the whitelist responses reuse it.
 /**
- * POST /v1/admin/whitelist/{grant,revoke} body — whitelist/delist a (signer, capability) pair
- * directly, decoupled from the issuer-application queue. At least one of `recordType` /
- * `verifyPurposes` must be present. `recordType` is a label ("VACCINATION") or an explicit
- * `0x`+64-hex key; `verifyPurposes` are VERIFY:<purpose> capabilities.
- */
-export interface WhitelistActionReq {
-  signer: string;
-  recordType?: string;
-  verifyPurposes?: string[];
-}
-/**
- * What a grant/revoke request actually did. `disposition:"proposed"` is BOTH the legitimate
- * out-of-band-signing flow and what a stack booted on a key that lost its authority produces, so the
- * backend separates them rather than reporting one signal for two very different situations:
+ * What a dispatched registrar action actually did.
+ *
+ * `disposition:"proposed"` is BOTH the legitimate out-of-band-signing flow and what a stack booted on
+ * a key that lost its authority produces, so the backend separates them rather than reporting one
+ * signal for two very different situations:
  *   - `executed`               at least one action was broadcast; on-chain state changed.
  *   - `proposed_by_design`     nothing broadcast, and the deployment DECLARES propose-only
- *                              (`ADMIN_PROPOSE_ONLY` / `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`) — a correct
+ *                              (`ADMIN_PROPOSE_ONLY` / `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`) - a correct
  *                              outcome; hand the calldata to the holder.
- *   - `proposed_unauthorized`  nothing broadcast and propose-only was NOT declared — the hosted signer
+ *   - `proposed_unauthorized`  nothing broadcast and propose-only was NOT declared - the hosted signer
  *                              was expected to hold the authority and does not.
+ *
  * Only the backend decides which it is; never infer it client-side. Optional so an older backend that
  * sends only `executed` still parses.
  */
-export type WhitelistOutcome = "executed" | "proposed_by_design" | "proposed_unauthorized";
-/** POST /v1/admin/whitelist/grant response: one disposition per whitelisted capability. */
-export interface WhitelistGrantResp {
-  signer: string;
-  recordType?: string | null;
-  actions: GovernanceDisposition[];
-  /**
-   * DOG_PROFILE grants ALSO grant DogTagSBT.ISSUER_ROLE (mint rights): the disposition of that grant,
-   * `{ status: "alreadyHeld" }` when the signer already had it, or null for non-DOG_PROFILE grants.
-   */
-  issuerRole?: GovernanceDisposition | { status: "alreadyHeld" } | null;
-  /** Which of the three outcomes this was — drive the UI off this, not off `actions`. */
-  outcome?: WhitelistOutcome;
-  /** False when NOTHING reached the chain: on-chain state is unchanged. */
-  executed?: boolean;
-  /** Set only when `executed` is false; its wording differs per `outcome`. */
-  warning?: string | null;
-}
-/** POST /v1/admin/whitelist/revoke response: one disposition per delisted capability. */
-export interface WhitelistRevokeResp {
-  signer: string;
-  recordType?: string | null;
-  actions: GovernanceDisposition[];
-  /** Which of the three outcomes this was — drive the UI off this, not off `actions`. */
-  outcome?: WhitelistOutcome;
-  /** False when NOTHING reached the chain: on-chain state is unchanged. */
-  executed?: boolean;
-  /** Set only when `executed` is false; its wording differs per `outcome`. */
-  warning?: string | null;
-}
+export type DispatchOutcome = "executed" | "proposed_by_design" | "proposed_unauthorized";
 
 // ---- the generation-2 ProviderRegistry registrar surface (registry plan C-2) ----
 
@@ -890,7 +853,7 @@ export interface RegisterProviderResp {
   standingAfterRegistration: ProviderStanding;
   nextStep: string;
   actions: GovernanceDisposition[];
-  outcome?: WhitelistOutcome;
+  outcome?: DispatchOutcome;
   executed?: boolean;
   warning?: string | null;
 }
@@ -903,7 +866,7 @@ export interface ProviderStandingResp {
   providerId: string;
   standing: ProviderStanding;
   actions: GovernanceDisposition[];
-  outcome?: WhitelistOutcome;
+  outcome?: DispatchOutcome;
   executed?: boolean;
   warning?: string | null;
 }
@@ -921,7 +884,229 @@ export interface ServiceApprovalResp {
   recordTypeKey: string;
   allowed: boolean;
   actions: GovernanceDisposition[];
-  outcome?: WhitelistOutcome;
+  outcome?: DispatchOutcome;
+  executed?: boolean;
+  warning?: string | null;
+}
+
+// ---- services, capabilities and typed resolvers: the rest of the provider journey ----
+
+/**
+ * An attached service - a provider-deployed contract bound to its provider record.
+ *
+ * `attachService` resolves `recordTypeKey`, `factoryGeneration` and `confirmedOwner` off the clone
+ * and the pinned factory rather than accepting them from the caller, so every field except the
+ * standing is a fact about the contract rather than a claim about it.
+ */
+export interface ServiceRecord {
+  serviceAddress: string;
+  providerId: string;
+  factoryGeneration: string;
+  recordTypeKey: string;
+  /** `null` when the key is not one this deployment can name - keccak is one-way, never guess. */
+  recordType: string | null;
+  confirmedOwner: string;
+  domainResolver: string;
+  ownerEpoch: number;
+  standing: ProviderStanding;
+  /** `providerId != 0`. `service()` answers a zero-filled struct for an unknown address. */
+  attached: boolean;
+}
+
+/**
+ * The five lifecycle terms `canIssue` folds, reported APART.
+ *
+ * Never render them as one "working" bool. Each has a different remedy - a suspended provider is the
+ * registrar's to lift, an unconfirmed owner needs `confirmServiceOwner`, an inactive generation is
+ * terminal, and no active issuer is one capability grant away - so a single bool would tell an admin
+ * that something is wrong while withholding the only thing that says what to do about it.
+ */
+export interface ServiceEffective {
+  providerStanding: ProviderStanding;
+  serviceStanding: ProviderStanding;
+  factoryActive: boolean;
+  ownerConfirmed: boolean;
+  hasActiveIssuer: boolean;
+}
+
+/** One `(holder, allowed)` capability pair as last written by the registrar. */
+export interface CapabilityEntry {
+  holder: string;
+  allowed: boolean;
+}
+/**
+ * Three states, and the third is not a neighbour of the other two: an empty `resolved` says nobody
+ * holds this capability, `unavailable` says we could not ask. Rendering the second as the first
+ * states a fact about a service on the strength of a read that never happened.
+ */
+export type CapabilitiesRead =
+  | { state: "resolved"; entries: CapabilityEntry[] }
+  | { state: "unavailable"; reason: string };
+
+/** Whether the provider has published this service as its current pointer for its record type. */
+export type CurrentPointerRead =
+  | { state: "resolved"; service: string; isCurrent: boolean }
+  | { state: "unavailable"; reason: string };
+
+export interface ProviderServiceView {
+  service: ServiceRecord;
+  effective: ServiceEffective | { unavailable: string };
+  currentPointer: CurrentPointerRead;
+  issuance: CapabilitiesRead;
+}
+/** GET /v1/admin/providers/:providerId/services */
+export interface ProviderServicesResp {
+  registry: string;
+  providerId: string;
+  services: ProviderServiceView[];
+}
+
+/** POST /v1/admin/providers/:providerId/services/preflight */
+export interface AttachPreflightReq {
+  serviceAddress: string;
+}
+/**
+ * What the chain says about a candidate contract, before anything is signed.
+ *
+ * `verdict` is THREE-valued on purpose. `refused` means the chain would reject this; `couldNotRun`
+ * means a read that `attachService` itself makes could not be completed, and the send is still
+ * offered - a preflight that refused what the contract would accept is a worse defect than none.
+ */
+export interface AttachPreflightResp {
+  registry: string;
+  providerId: string;
+  serviceAddress: string;
+  /** Non-null only when this address is ALREADY bound to a provider. */
+  alreadyAttached: ServiceRecord | null;
+  generation:
+    | { state: "resolved"; generationId: string; factory: string }
+    | { state: "none"; reason: string }
+    | { state: "unavailable"; reason: string };
+  metadata:
+    | { state: "resolved"; owner: string; recordTypeKey: string; recordType: string | null }
+    | { state: "refused"; reason: string }
+    | { state: "unavailable"; reason: string };
+  verdict: "ready" | "refused" | "couldNotRun";
+  reason: string;
+}
+
+/** POST /v1/admin/providers/:providerId/services */
+export interface AttachServiceReq {
+  serviceAddress: string;
+  /** From the preflight - never typed by hand. */
+  generationId: string;
+  /** The owner as REVIEWED: a transaction guard, never a selector. */
+  expectedOwner: string;
+}
+export interface AttachServiceResp {
+  providerId: string;
+  serviceAddress: string;
+  generationId: string;
+  expectedOwner: string;
+  /** Always `pending` - attaching alone lets the service issue nothing. */
+  standingAfterAttach: ProviderStanding;
+  nextStep: string;
+  actions: GovernanceDisposition[];
+  outcome?: DispatchOutcome;
+  executed?: boolean;
+  warning?: string | null;
+}
+
+/** POST /v1/admin/services/:serviceAddress/standing */
+export interface ServiceStandingReq {
+  standing: Exclude<ProviderStanding, "none" | "pending">;
+}
+export interface ServiceStandingResp {
+  serviceAddress: string;
+  standing: ProviderStanding;
+  actions: GovernanceDisposition[];
+  outcome?: DispatchOutcome;
+  executed?: boolean;
+  warning?: string | null;
+}
+
+/** POST /v1/admin/services/:serviceAddress/issuance-capability */
+export interface IssuanceCapabilityReq {
+  signer: string;
+  allowed: boolean;
+}
+export interface IssuanceCapabilityResp {
+  serviceAddress: string;
+  signer: string;
+  allowed: boolean;
+  actions: GovernanceDisposition[];
+  outcome?: DispatchOutcome;
+  executed?: boolean;
+  warning?: string | null;
+}
+
+/**
+ * GET /v1/admin/verifier-capabilities - who may verify, per purpose.
+ *
+ * Keyed by PURPOSE and never by service: the verify axis is ORTHOGONAL to issuance, so rendering it
+ * inside a service row would present it as a property of that service. An issuer is not implicitly a
+ * verifier.
+ */
+export interface VerifierPurposeView {
+  purpose: string;
+  /** The RAW bytes32 the contract takes; it derives `verificationKey(purpose)` itself. */
+  purposeKey: string;
+  relayers: CapabilitiesRead;
+}
+export interface VerifierCapabilitiesResp {
+  registry: string;
+  purposes: VerifierPurposeView[];
+}
+/** POST /v1/admin/verifier-capabilities */
+export interface VerifierCapabilityReq {
+  purpose: string;
+  relayer: string;
+  allowed: boolean;
+}
+export interface VerifierCapabilityResp {
+  purpose: string;
+  purposeKey: string;
+  relayer: string;
+  allowed: boolean;
+  actions: GovernanceDisposition[];
+  outcome?: DispatchOutcome;
+  executed?: boolean;
+  warning?: string | null;
+}
+
+export type ResolverKind = "directory" | "domain";
+/**
+ * GET /v1/admin/resolvers - the typed resolver allowlist.
+ *
+ * A typed resolver answers nothing until BOTH the registrar approves it here AND each provider or
+ * service selects it. The core never clears a stored selection when a resolver is deapproved -
+ * which is exactly why approval is a separate fleet-wide lever - so the two halves are reported
+ * apart and must never be pre-ANDed into one "working" bool.
+ */
+export interface ResolverKindView {
+  kind: ResolverKind;
+  listing:
+    | { state: "resolved"; resolvers: { resolver: string; approved: boolean }[] }
+    | { state: "unavailable"; reason: string };
+}
+export interface ResolversResp {
+  registry: string;
+  kinds: ResolverKindView[];
+}
+/** POST /v1/admin/resolvers */
+export interface ResolverApprovalReq {
+  kind: ResolverKind;
+  resolver: string;
+  approved: boolean;
+}
+export interface ResolverApprovalResp {
+  kind: ResolverKind;
+  resolver: string;
+  approved: boolean;
+  /** Approval is only HALF - the provider must still select it, and the registrar cannot for them. */
+  nextStep: string;
+  actions: GovernanceDisposition[];
+  outcome?: DispatchOutcome;
   executed?: boolean;
   warning?: string | null;
 }

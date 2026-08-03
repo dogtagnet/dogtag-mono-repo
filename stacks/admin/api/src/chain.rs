@@ -13,7 +13,9 @@ use alloy::primitives::{Address, Bytes, FixedBytes, B256, U256};
 use alloy::sol;
 use async_trait::async_trait;
 
-use crate::provider_registry::{IdentityAnchor, ProviderRecord, Standing};
+use crate::provider_registry::{
+    IdentityAnchor, ProviderRecord, ResolverKind, ServiceEffective, ServiceRecord, Standing,
+};
 
 pub const ROAX_CHAIN_ID: u64 = 135;
 
@@ -79,6 +81,28 @@ sol! {
         function setProviderStanding(bytes20 providerId, uint8 newStanding) external;
         function setServiceCreationApproval(bytes20 providerId, bytes32 recordType, bool allowed) external;
 
+        // The four writes that complete the journey past "the provider deployed a contract".
+        //
+        // `attachService` takes NO claimed factory or record type: it resolves the pinned factory
+        // from `generationId`, proves `factory.isClone(service)`, then reads immutable `recordType()`
+        // and live `owner()` off the service itself. `expectedOwner` is a transaction guard against a
+        // second ownership handover between review and send - the RESOLVED owner stays authoritative,
+        // so this argument can only refuse a send, never choose what is attached.
+        function attachService(
+            bytes20 providerId,
+            address serviceAddress,
+            bytes32 generationId,
+            address expectedOwner
+        ) external;
+        function setServiceStanding(address serviceAddress, uint8 newStanding) external;
+        function setIssuanceCapability(address serviceAddress, address signer, bool allowed) external;
+        // NOTE the first argument is the RAW `purpose`, not its verification key: the contract
+        // derives `verificationKey(purpose) = keccak256(abi.encode("VERIFY:", purpose))` itself
+        // (ProviderRegistry.sol:786-793). Passing an already-derived key here double-derives and
+        // writes the capability under a key nothing reads - silently, since the write succeeds.
+        function setVerifierCapability(bytes32 purpose, address relayer, bool allowed) external;
+        function setResolverApproved(uint8 kind, address resolver, bool approved) external;
+
         function provider(bytes20 providerId) external view returns (Provider memory);
         function publicIdentityAnchor(bytes20 providerId) external view returns (PublicIdentityAnchor memory);
         function providerCount() external view returns (uint256);
@@ -88,9 +112,62 @@ sol! {
             returns (bytes20[] memory values, uint256 nextCursor);
         function owner() external view returns (address);
 
+        function service(address serviceAddress) external view returns (Service memory);
+        function providerServicePage(bytes20 providerId, uint256 cursor, uint256 limit)
+            external
+            view
+            returns (address[] memory values, uint256 nextCursor);
+        // The five lifecycle terms `canIssue` folds, reported SEPARATELY. Pre-ANDing them into one
+        // bool would leave an admin unable to tell a provider suspension from an unconfirmed owner
+        // handover, which have entirely different remedies.
+        function effectiveService(address serviceAddress)
+            external
+            view
+            returns (
+                uint8 providerStanding,
+                uint8 serviceStanding,
+                bool factoryActive,
+                bool ownerConfirmed,
+                bool hasActiveIssuer
+            );
+        function currentService(bytes20 providerId, bytes32 recordType) external view returns (address);
+        function issuanceCapability(address serviceAddress, address signer) external view returns (bool);
+        function activeIssuerCount(address serviceAddress) external view returns (uint256);
+        function canVerify(bytes32 purpose, address relayer) external view returns (bool);
+        function factoryGeneration(bytes32 generationId) external view returns (FactoryGeneration memory);
+        function factoryGenerationPage(uint256 cursor, uint256 limit)
+            external
+            view
+            returns (bytes32[] memory values, uint256 nextCursor);
+        function isResolverApproved(uint8 kind, address resolver) external view returns (bool);
+        function resolverPage(uint8 kind, uint256 cursor, uint256 limit)
+            external
+            view
+            returns (address[] memory values, uint256 nextCursor);
+
         // The ONLY direct evidence of what a provider is approved for - `_serviceCreationApprovals`
         // is private with no getter. Both leading args are indexed.
         event ServiceCreationApprovalSet(bytes20 indexed providerId, bytes32 indexed recordType, bool allowed);
+        // Likewise: `issuanceCapability(service, signer)` is a POINT read and `_issuanceCapabilities`
+        // has no enumeration, so WHO holds a capability is only knowable from these logs.
+        event IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed);
+        // THREE indexed args: the group is topic1 (`purpose`) and the subject is topic3 (`relayer`);
+        // topic2 is the derived compatibility key. Reading the subject off topic2 yields a bytes32
+        // rendered as an address, which is a plausible-looking value and never a real relayer.
+        event VerifierCapabilitySet(
+            bytes32 indexed purpose, bytes32 indexed compatibilityKey, address indexed relayer, bool allowed
+        );
+        event ResolverApprovalSet(uint8 indexed kind, address indexed resolver, bool approved);
+    }
+
+    // The two immutable-ish facts `attachService` resolves off the service itself. Probing them
+    // BEFORE sending is what turns `InvalidServiceMetadata()` into a sentence an admin can act on -
+    // most importantly for a generation-1 `DogTagIssuer`, which is `Initializable` only and has no
+    // `owner()` at all, so it can never be attached however correct the rest of the form is.
+    #[sol(rpc)]
+    contract IServiceProbe {
+        function owner() external view returns (address);
+        function recordType() external view returns (bytes32);
     }
 
     // `ProviderRegistry.Provider` (ProviderRegistry.sol:71-80) and `PublicIdentityAnchor` (:84-92).
@@ -115,6 +192,26 @@ sol! {
         bytes contenthash;
         uint64 revision;
         uint64 updatedAtBlock;
+    }
+
+    // `ProviderRegistry.Service` (ProviderRegistry.sol:105-113) and `FactoryGeneration` (:94-99).
+    // Member ORDER is the ABI: a member out of place decodes silently into the wrong field, so a
+    // `recordType` read as a `confirmedOwner` would render as a plausible address rather than error.
+    struct Service {
+        bytes20 providerId;
+        bytes32 factoryGeneration;
+        bytes32 recordType;
+        address confirmedOwner;
+        address domainResolver;
+        uint64 ownerEpoch;
+        uint8 standing;
+    }
+
+    struct FactoryGeneration {
+        address factory;
+        bool active;
+        uint64 addedAtBlock;
+        uint64 deprecatedAtBlock;
     }
 }
 
@@ -311,6 +408,82 @@ pub trait ChainClient: Send + Sync {
         &self,
         registry_addr: &str,
     ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError>;
+
+    /// `ProviderRegistry.service(serviceAddress)`. Like `provider()`, answers a zero-filled struct
+    /// for an address it has never seen, so `ServiceRecord::attached` (`providerId != 0`) is the
+    /// existence test rather than the standing.
+    async fn service_record(
+        &self,
+        registry_addr: &str,
+        service_addr: &str,
+    ) -> Result<ServiceRecord, ChainError>;
+
+    /// `ProviderRegistry.providerServicePage(providerId, cursor, limit)` → `(services, nextCursor)`.
+    async fn provider_service_page(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<(Vec<String>, u64), ChainError>;
+
+    /// `ProviderRegistry.effectiveService(serviceAddress)` - the five lifecycle terms, kept apart.
+    async fn service_effective(
+        &self,
+        registry_addr: &str,
+        service_addr: &str,
+    ) -> Result<ServiceEffective, ChainError>;
+
+    /// `ProviderRegistry.currentService(providerId, recordType)` - the provider's published pointer
+    /// for that record type, or the zero address when it has selected none.
+    async fn current_service(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+        record_type_key: &str,
+    ) -> Result<String, ChainError>;
+
+    /// `ProviderRegistry.factoryGenerationPage(cursor, limit)` paired with `factoryGeneration(id)`,
+    /// as `(generationId, factory, active)`. Attachment needs the generation whose pinned factory
+    /// recognizes the clone, and an admin must never be asked to type a bytes32 for it.
+    async fn factory_generations(
+        &self,
+        registry_addr: &str,
+    ) -> Result<Vec<(String, String, bool)>, ChainError>;
+
+    /// `DogTagIssuer.owner()` and `.recordType()` off the service itself - the two facts
+    /// `attachService` resolves. A generation-1 clone has no `owner()`, so this read FAILS for one,
+    /// which is the honest way to say it can never be attached.
+    async fn service_metadata(&self, service_addr: &str)
+        -> Result<(String, String), ChainError>;
+
+    /// The `IssuanceCapabilitySet` log for one service, ascending `(block, logIndex)`, as
+    /// `(signer, allowed)` pairs. `issuanceCapability` is a POINT read with no enumeration, so this
+    /// log is the only way to learn WHO holds the capability; a failed read is never an empty set.
+    async fn issuance_capability_log(
+        &self,
+        registry_addr: &str,
+        service_addr: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError>;
+
+    /// The `VerifierCapabilitySet` log for one purpose, ascending, as `(relayer, allowed)` pairs.
+    /// Keyed by PURPOSE and not by service: the verify axis is orthogonal to issuance.
+    async fn verifier_capability_log(
+        &self,
+        registry_addr: &str,
+        purpose: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError>;
+
+    /// `ProviderRegistry.resolverPage(kind, ...)` folded against `isResolverApproved(kind, r)`.
+    ///
+    /// The list is append-only and RETAINS a deapproved resolver, so the approval flag is read
+    /// per address rather than inferred from listing: a resolver that was approved and then pulled
+    /// is a different fact from one that was never approved, and only the flag separates them.
+    async fn approved_resolvers(
+        &self,
+        registry_addr: &str,
+        kind: ResolverKind,
+    ) -> Result<Vec<(String, bool)>, ChainError>;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -348,11 +521,38 @@ struct MemChainInner {
     /// (provider_registry_addr, provider_id) -> the ordered `ServiceCreationApprovalSet` log. A log
     /// rather than a map, because the fold that turns it into current state is what production reads.
     approval_log: HashMap<(String, String), Vec<(String, bool)>>,
+    /// (provider_registry_addr, service_addr) -> the attached service record.
+    services: HashMap<(String, String), ServiceRecord>,
+    /// Attachment order per (registry, provider), mirroring `_providerServices`.
+    provider_services: HashMap<(String, String), Vec<String>>,
+    /// (registry, provider_id, record_type_key) -> the provider's published current pointer.
+    current_services: HashMap<(String, String, String), String>,
+    /// (registry, service_addr) -> the ordered `IssuanceCapabilitySet` log.
+    issuance_log: HashMap<(String, String), Vec<(String, bool)>>,
+    /// (registry, purpose) -> the ordered `VerifierCapabilitySet` log.
+    verifier_log: HashMap<(String, String), Vec<(String, bool)>>,
+    /// (registry, kind) -> resolver approval state, in first-listed order like `_resolverAddresses`.
+    resolvers: HashMap<(String, u8), Vec<(String, bool)>>,
+    /// (registry, generation_id) -> (factory, active).
+    factory_generations: HashMap<(String, String), (String, bool)>,
+    /// Listing order per registry, mirroring `_factoryGenerationIds`.
+    factory_generation_ids: HashMap<String, Vec<String>>,
+    /// service_addr -> (owner, recordTypeKey) as the clone itself answers. An address ABSENT here
+    /// models a contract with no `owner()` - which is every generation-1 `DogTagIssuer`, and the one
+    /// state `attachService` must refuse.
+    service_metadata: HashMap<String, (String, String)>,
     /// Registries whose reads are forced to fail, so a route's could-not-run arm is reachable. A fake
     /// that cannot fail cannot exercise the state that exists for failure.
     failing_reads: std::collections::HashSet<String>,
     /// Registries whose APPROVAL LOG read alone is forced to fail, leaving `provider()` answering.
     failing_approval_log_reads: std::collections::HashSet<String>,
+    /// Registries whose CAPABILITY LOG reads alone are forced to fail.
+    ///
+    /// Its own switch, not a share of `failing_reads`: the realistic failure is the service `eth_call`
+    /// answering while a range-capping peer refuses the capability `eth_getLogs`, and a shared switch
+    /// short-circuits into a read error before the `unavailable` arm is ever built - leaving the
+    /// three-state claim unpinned at the layer that produces it.
+    failing_capability_log_reads: std::collections::HashSet<String>,
     nonce: u64,
 }
 
@@ -453,9 +653,97 @@ impl MemChain {
         }
     }
 
+    /// Fail ONLY the capability log reads (issuance / verifier / resolver), leaving `service()` and
+    /// `provider()` answering - so a route's `CapabilitiesRead::Unavailable` arm is reachable while
+    /// the rest of the view resolves. See `set_failing_approval_log_reads` for why this is its own
+    /// switch rather than a mode of `set_failing_provider_reads`.
+    pub fn set_failing_capability_log_reads(&self, registry_addr: &str, failing: bool) {
+        let mut g = self.inner.lock().unwrap();
+        if failing {
+            g.failing_capability_log_reads
+                .insert(registry_addr.to_lowercase());
+        } else {
+            g.failing_capability_log_reads
+                .remove(&registry_addr.to_lowercase());
+        }
+    }
+
+    /// Seed a factory's clone set, as `createIssuer` would.
+    ///
+    /// Needed because the registrar attaches contracts the PROVIDER deployed on their own portal,
+    /// which is a different actor from the admin factory route - so `create_issuer` is not the path
+    /// that puts them there. It doubles as the fake's "this address has code" set, which is what
+    /// `setResolverApproved` refuses a non-contract on.
+    pub fn set_clone(&self, factory_addr: &str, clone_addr: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .clones
+            .insert((factory_addr.to_lowercase(), clone_addr.to_lowercase()));
+    }
+
+    /// Seed what a service contract itself answers for `owner()` and `recordType()`.
+    ///
+    /// An address left UNSEEDED models a contract that answers neither - which is every
+    /// generation-1 `DogTagIssuer`, since it is `Initializable` only and has no owner at all. That
+    /// is the single most likely thing an admin will try to attach, so it must be reachable here.
+    pub fn set_service_metadata(&self, service_addr: &str, owner: &str, record_type_key: &str) {
+        self.inner.lock().unwrap().service_metadata.insert(
+            service_addr.to_lowercase(),
+            (owner.to_lowercase(), record_type_key.to_lowercase()),
+        );
+    }
+
+    /// Seed a factory generation and the factory it pins, as `addFactoryGeneration` would.
+    pub fn set_factory_generation(
+        &self,
+        registry_addr: &str,
+        generation_id: &str,
+        factory_addr: &str,
+        active: bool,
+    ) {
+        let mut g = self.inner.lock().unwrap();
+        let registry = registry_addr.to_lowercase();
+        let gid = generation_id.to_lowercase();
+        if g.factory_generations
+            .insert((registry.clone(), gid.clone()), (factory_addr.to_lowercase(), active))
+            .is_none()
+        {
+            g.factory_generation_ids.entry(registry).or_default().push(gid);
+        }
+    }
+
+    /// Seed a provider's published current pointer, as the provider's own `repointService` would.
+    /// It is the PROVIDER's decision, never the registrar's, so no registrar route writes it.
+    pub fn set_current_service(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+        record_type_key: &str,
+        service_addr: &str,
+    ) {
+        self.inner.lock().unwrap().current_services.insert(
+            (
+                registry_addr.to_lowercase(),
+                provider_id.to_lowercase(),
+                record_type_key.to_lowercase(),
+            ),
+            service_addr.to_lowercase(),
+        );
+    }
+
     fn provider_reads_fail(g: &MemChainInner, registry_addr: &str) -> Result<(), ChainError> {
         if g.failing_reads.contains(&registry_addr.to_lowercase()) {
             return Err(ChainError::Rpc("provider read failed (seeded)".into()));
+        }
+        Ok(())
+    }
+
+    fn capability_log_reads_fail(g: &MemChainInner, registry_addr: &str) -> Result<(), ChainError> {
+        if g.failing_capability_log_reads
+            .contains(&registry_addr.to_lowercase())
+        {
+            return Err(ChainError::Rpc("capability log read failed (seeded)".into()));
         }
         Ok(())
     }
@@ -582,7 +870,163 @@ fn apply_provider_registry_calldata(
         return Ok(());
     }
 
+    if let Ok(c) = IProviderRegistry::attachServiceCall::abi_decode(&data, true) {
+        let id = format!("0x{}", hex::encode(c.providerId.as_slice()));
+        let service = format!("{:#x}", c.serviceAddress).to_lowercase();
+        let gid = format!("0x{}", hex::encode(c.generationId.as_slice()));
+        if !g.providers.contains_key(&(registry.clone(), id.clone())) {
+            return Err(ChainError::Other("tx reverted: UnknownProvider".into()));
+        }
+        if c.serviceAddress.is_zero() || c.expectedOwner.is_zero() {
+            return Err(ChainError::Other("tx reverted: ZeroAddress".into()));
+        }
+        if g.services.contains_key(&(registry.clone(), service.clone())) {
+            return Err(ChainError::Other("tx reverted: AlreadyRegistered".into()));
+        }
+        let Some((factory, active)) = g.factory_generations.get(&(registry.clone(), gid.clone())).cloned()
+        else {
+            return Err(ChainError::Other("tx reverted: UnknownFactoryGeneration".into()));
+        };
+        if !active {
+            return Err(ChainError::Other("tx reverted: FactoryGenerationInactive".into()));
+        }
+        if !g.clones.contains(&(factory, service.clone())) {
+            return Err(ChainError::Other("tx reverted: NotFactoryClone".into()));
+        }
+        // An unseeded service answers neither `owner()` nor `recordType()`, which is exactly a
+        // generation-1 clone. The contract folds that into `InvalidServiceMetadata()`.
+        let Some((live_owner, record_type_key)) = g.service_metadata.get(&service).cloned() else {
+            return Err(ChainError::Other("tx reverted: InvalidServiceMetadata".into()));
+        };
+        if live_owner == zero_addr()
+            || record_type_key.trim_start_matches("0x").chars().all(|ch| ch == '0')
+        {
+            return Err(ChainError::Other("tx reverted: InvalidServiceMetadata".into()));
+        }
+        if !live_owner.eq_ignore_ascii_case(&format!("{:#x}", c.expectedOwner)) {
+            return Err(ChainError::Other("tx reverted: UnexpectedServiceOwner".into()));
+        }
+        g.services.insert(
+            (registry.clone(), service.clone()),
+            ServiceRecord {
+                service_address: service.clone(),
+                provider_id: id.clone(),
+                factory_generation: gid,
+                record_type: crate::provider_registry::record_type_label(&record_type_key),
+                record_type_key,
+                // The RESOLVED owner is stored, never the caller's expected value - the guard can
+                // refuse a send and can never choose what is written.
+                confirmed_owner: live_owner,
+                domain_resolver: zero_addr(),
+                owner_epoch: 1,
+                // Attachment lands the service at PENDING, exactly as registration does a provider.
+                // Modelling it is what makes the missing standing step visible in a test rather
+                // than only on a live chain.
+                standing: Standing::Pending,
+                attached: true,
+            },
+        );
+        g.provider_services
+            .entry((registry, id))
+            .or_default()
+            .push(service);
+        return Ok(());
+    }
+
+    if let Ok(c) = IProviderRegistry::setServiceStandingCall::abi_decode(&data, true) {
+        let service = format!("{:#x}", c.serviceAddress).to_lowercase();
+        let rec = g
+            .services
+            .get_mut(&(registry, service))
+            .ok_or_else(|| ChainError::Other("tx reverted: UnknownService".into()))?;
+        let next = Standing::from_u8(c.newStanding);
+        if !next.is_settable() {
+            return Err(ChainError::Other("tx reverted: InvalidStanding".into()));
+        }
+        if rec.standing == Standing::Retired {
+            return Err(ChainError::Other("tx reverted: RetiredStanding".into()));
+        }
+        if rec.standing == next {
+            return Err(ChainError::Other("tx reverted: NoChange".into()));
+        }
+        rec.standing = next;
+        return Ok(());
+    }
+
+    if let Ok(c) = IProviderRegistry::setIssuanceCapabilityCall::abi_decode(&data, true) {
+        let service = format!("{:#x}", c.serviceAddress).to_lowercase();
+        if !g.services.contains_key(&(registry.clone(), service.clone())) {
+            return Err(ChainError::Other("tx reverted: UnknownService".into()));
+        }
+        if c.signer.is_zero() {
+            return Err(ChainError::Other("tx reverted: ZeroAddress".into()));
+        }
+        let signer = format!("{:#x}", c.signer).to_lowercase();
+        let log = g.issuance_log.entry((registry, service)).or_default();
+        let current = last_bool_for(log, &signer);
+        if current == c.allowed {
+            return Err(ChainError::Other("tx reverted: NoChange".into()));
+        }
+        log.push((signer, c.allowed));
+        return Ok(());
+    }
+
+    if let Ok(c) = IProviderRegistry::setVerifierCapabilityCall::abi_decode(&data, true) {
+        if c.relayer.is_zero() {
+            return Err(ChainError::Other("tx reverted: ZeroAddress".into()));
+        }
+        let purpose = format!("0x{}", hex::encode(c.purpose.as_slice()));
+        let relayer = format!("{:#x}", c.relayer).to_lowercase();
+        let log = g.verifier_log.entry((registry, purpose)).or_default();
+        let current = last_bool_for(log, &relayer);
+        if current == c.allowed {
+            return Err(ChainError::Other("tx reverted: NoChange".into()));
+        }
+        log.push((relayer, c.allowed));
+        return Ok(());
+    }
+
+    if let Ok(c) = IProviderRegistry::setResolverApprovedCall::abi_decode(&data, true) {
+        if c.resolver.is_zero() {
+            return Err(ChainError::Other("tx reverted: ZeroAddress".into()));
+        }
+        let resolver = format!("{:#x}", c.resolver).to_lowercase();
+        // `approved && resolver.code.length == 0` reverts `ResolverNotApproved()`: only a CONTRACT
+        // may be approved. `clones` is the fake's stand-in for "this address has code".
+        if c.approved && !g.clones.iter().any(|(_, addr)| addr == &resolver) {
+            return Err(ChainError::Other("tx reverted: ResolverNotApproved".into()));
+        }
+        let list = g.resolvers.entry((registry, c.kind)).or_default();
+        match list.iter_mut().find(|(addr, _)| addr == &resolver) {
+            Some(slot) => {
+                if slot.1 == c.approved {
+                    return Err(ChainError::Other("tx reverted: NoChange".into()));
+                }
+                slot.1 = c.approved;
+            }
+            None => {
+                if !c.approved {
+                    return Err(ChainError::Other("tx reverted: NoChange".into()));
+                }
+                // Append-only listing: a deapproved resolver KEEPS its slot, so "approved then
+                // pulled" stays distinguishable from "never approved".
+                list.push((resolver, true));
+            }
+        }
+        return Ok(());
+    }
+
     Ok(())
+}
+
+/// The current state of one holder in a `(holder, allowed)` log: the LAST write wins, and an
+/// address the log never mentions has never been granted.
+fn last_bool_for(log: &[(String, bool)], holder: &str) -> bool {
+    log.iter()
+        .rev()
+        .find(|(h, _)| h.eq_ignore_ascii_case(holder))
+        .map(|(_, allowed)| *allowed)
+        .unwrap_or(false)
 }
 
 fn mem_predict_clone(factory_addr: &str, record_type: &str, business: &str) -> String {
@@ -825,6 +1269,190 @@ impl ChainClient for MemChain {
             .collect())
     }
 
+    async fn service_record(
+        &self,
+        registry_addr: &str,
+        service_addr: &str,
+    ) -> Result<ServiceRecord, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        let key = (registry_addr.to_lowercase(), service_addr.to_lowercase());
+        Ok(g.services.get(&key).cloned().unwrap_or_else(|| {
+            // `service()` answers a zero-filled struct rather than reverting, so an unknown address
+            // reads as "attached: false" and never as a read failure.
+            ServiceRecord {
+                service_address: service_addr.to_lowercase(),
+                provider_id: format!("0x{}", "0".repeat(40)),
+                factory_generation: format!("0x{}", "0".repeat(64)),
+                record_type_key: format!("0x{}", "0".repeat(64)),
+                record_type: None,
+                confirmed_owner: zero_addr(),
+                domain_resolver: zero_addr(),
+                owner_epoch: 0,
+                standing: Standing::None,
+                attached: false,
+            }
+        }))
+    }
+
+    async fn provider_service_page(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<(Vec<String>, u64), ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        let empty = Vec::new();
+        let all = g
+            .provider_services
+            .get(&(registry_addr.to_lowercase(), provider_id.to_lowercase()))
+            .unwrap_or(&empty);
+        // Mirrors `_checkPage`: `cursor == length` is legal and returns an empty page.
+        if limit == 0 || cursor > all.len() as u64 {
+            return Err(ChainError::Other("tx reverted: BadPage".into()));
+        }
+        let start = cursor as usize;
+        let end = ((cursor + limit) as usize).min(all.len());
+        Ok((all[start..end].to_vec(), end as u64))
+    }
+
+    async fn service_effective(
+        &self,
+        registry_addr: &str,
+        service_addr: &str,
+    ) -> Result<ServiceEffective, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        let registry = registry_addr.to_lowercase();
+        let service = service_addr.to_lowercase();
+        let rec = g.services.get(&(registry.clone(), service.clone()));
+        let provider_standing = rec
+            .and_then(|s| g.providers.get(&(registry.clone(), s.provider_id.clone())))
+            .map(|p| p.standing)
+            .unwrap_or(Standing::None);
+        let factory_active = rec
+            .and_then(|s| g.factory_generations.get(&(registry.clone(), s.factory_generation.clone())))
+            .map(|(factory, active)| *active && g.clones.contains(&(factory.clone(), service.clone())))
+            .unwrap_or(false);
+        // The fake stores the RESOLVED owner at attachment and models no post-attach handover, so a
+        // service that exists is owner-confirmed. `confirmServiceOwner` is a separate lever.
+        let owner_confirmed = rec.map(|s| s.confirmed_owner != zero_addr()).unwrap_or(false);
+        let has_active_issuer = g
+            .issuance_log
+            .get(&(registry, service))
+            .map(|log| {
+                let folded = crate::provider_registry::fold_capabilities(log);
+                folded.iter().any(|e| e.allowed)
+            })
+            .unwrap_or(false);
+        Ok(ServiceEffective {
+            provider_standing,
+            service_standing: rec.map(|s| s.standing).unwrap_or(Standing::None),
+            factory_active,
+            owner_confirmed,
+            has_active_issuer,
+        })
+    }
+
+    async fn current_service(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+        record_type_key: &str,
+    ) -> Result<String, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        Ok(g.current_services
+            .get(&(
+                registry_addr.to_lowercase(),
+                provider_id.to_lowercase(),
+                record_type_key.to_lowercase(),
+            ))
+            .cloned()
+            .unwrap_or_else(zero_addr))
+    }
+
+    async fn factory_generations(
+        &self,
+        registry_addr: &str,
+    ) -> Result<Vec<(String, String, bool)>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        let registry = registry_addr.to_lowercase();
+        Ok(g.factory_generation_ids
+            .get(&registry)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|gid| {
+                        g.factory_generations
+                            .get(&(registry.clone(), gid.clone()))
+                            .map(|(factory, active)| (gid.clone(), factory.clone(), *active))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    async fn service_metadata(
+        &self,
+        service_addr: &str,
+    ) -> Result<(String, String), ChainError> {
+        let g = self.inner.lock().unwrap();
+        g.service_metadata
+            .get(&service_addr.to_lowercase())
+            .cloned()
+            // An unseeded address answers neither getter - a generation-1 clone, or an EOA. That is
+            // a read FAILURE rather than a zero answer, because a staticcall to a contract without
+            // the selector reverts.
+            .ok_or_else(|| {
+                ChainError::Rpc("the service answered neither owner() nor recordType()".into())
+            })
+    }
+
+    async fn issuance_capability_log(
+        &self,
+        registry_addr: &str,
+        service_addr: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        Self::capability_log_reads_fail(&g, registry_addr)?;
+        Ok(g.issuance_log
+            .get(&(registry_addr.to_lowercase(), service_addr.to_lowercase()))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn verifier_capability_log(
+        &self,
+        registry_addr: &str,
+        purpose: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        Self::capability_log_reads_fail(&g, registry_addr)?;
+        Ok(g.verifier_log
+            .get(&(registry_addr.to_lowercase(), purpose.to_lowercase()))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn approved_resolvers(
+        &self,
+        registry_addr: &str,
+        kind: ResolverKind,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Self::provider_reads_fail(&g, registry_addr)?;
+        Self::capability_log_reads_fail(&g, registry_addr)?;
+        Ok(g.resolvers
+            .get(&(registry_addr.to_lowercase(), kind.as_u8()))
+            .cloned()
+            .unwrap_or_default())
+    }
+
     async fn is_clone(&self, factory_addr: &str, addr: &str) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
         Ok(g.clones
@@ -976,6 +1604,82 @@ pub fn set_service_creation_approval_calldata(
         providerId: parse_b160(provider_id),
         recordType: parse_b256(record_type_key),
         allowed,
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// `ProviderRegistry.attachService(providerId, serviceAddress, generationId, expectedOwner)`.
+///
+/// `expectedOwner` is a transaction GUARD, never a selector: the contract compares it against the
+/// `owner()` it read off the service and reverts `UnexpectedServiceOwner()` on a mismatch, then
+/// stores the RESOLVED owner. So a wrong value can only refuse the send.
+pub fn attach_service_calldata(
+    provider_id: &str,
+    service_address: &str,
+    generation_id: &str,
+    expected_owner: &str,
+) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IProviderRegistry::attachServiceCall {
+        providerId: parse_b160(provider_id),
+        serviceAddress: parse_addr(service_address),
+        generationId: parse_b256(generation_id),
+        expectedOwner: parse_addr(expected_owner),
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// `ProviderRegistry.setServiceStanding(serviceAddress, newStanding)` calldata.
+pub fn set_service_standing_calldata(service_address: &str, standing: Standing) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IProviderRegistry::setServiceStandingCall {
+        serviceAddress: parse_addr(service_address),
+        newStanding: standing.as_u8(),
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// `ProviderRegistry.setIssuanceCapability(serviceAddress, signer, allowed)` calldata.
+pub fn set_issuance_capability_calldata(
+    service_address: &str,
+    signer: &str,
+    allowed: bool,
+) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IProviderRegistry::setIssuanceCapabilityCall {
+        serviceAddress: parse_addr(service_address),
+        signer: parse_addr(signer),
+        allowed,
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// `ProviderRegistry.setVerifierCapability(purpose, relayer, allowed)` calldata.
+///
+/// `purpose` is the RAW bytes32 from [`purpose_key`], NOT [`verify_key`]. The contract derives
+/// `verificationKey(purpose)` itself, so handing it an already-derived key derives twice and writes
+/// the capability under a key `canVerify` never reads - a write that succeeds and grants nothing.
+pub fn set_verifier_capability_calldata(purpose: &str, relayer: &str, allowed: bool) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IProviderRegistry::setVerifierCapabilityCall {
+        purpose: parse_b256(purpose),
+        relayer: parse_addr(relayer),
+        allowed,
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// `ProviderRegistry.setResolverApproved(kind, resolver, approved)` calldata.
+pub fn set_resolver_approved_calldata(
+    kind: ResolverKind,
+    resolver: &str,
+    approved: bool,
+) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IProviderRegistry::setResolverApprovedCall {
+        kind: kind.as_u8(),
+        resolver: parse_addr(resolver),
+        approved,
     };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
@@ -1436,6 +2140,239 @@ impl ChainClient for AlloyChain {
     ) -> Result<HashMap<String, Vec<(String, bool)>>, ChainError> {
         self.approval_log_ordered(registry_addr, None).await
     }
+
+    async fn service_record(
+        &self,
+        registry_addr: &str,
+        service_addr: &str,
+    ) -> Result<ServiceRecord, ChainError> {
+        use alloy::sol_types::SolCall;
+        let call = IProviderRegistry::serviceCall {
+            serviceAddress: parse_addr(service_addr),
+        };
+        let out = self.raw_call(registry_addr, &call.abi_encode()).await?;
+        let s = IProviderRegistry::serviceCall::abi_decode_returns(&out, true)
+            .map_err(|e| ChainError::Other(format!("service decode: {e}")))?
+            ._0;
+        let record_type_key = format!("0x{}", hex::encode(s.recordType.as_slice()));
+        Ok(ServiceRecord {
+            service_address: service_addr.to_lowercase(),
+            provider_id: format!("0x{}", hex::encode(s.providerId.as_slice())),
+            factory_generation: format!("0x{}", hex::encode(s.factoryGeneration.as_slice())),
+            record_type: crate::provider_registry::record_type_label(&record_type_key),
+            record_type_key,
+            confirmed_owner: format!("{:#x}", s.confirmedOwner),
+            domain_resolver: format!("{:#x}", s.domainResolver),
+            owner_epoch: s.ownerEpoch,
+            standing: Standing::from_u8(s.standing),
+            // `service()` answers a zero-filled struct for an unknown address rather than reverting,
+            // so `providerId != 0` - the contract's own `_requireService` sentinel - is existence.
+            attached: !s.providerId.is_zero(),
+        })
+    }
+
+    async fn provider_service_page(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<(Vec<String>, u64), ChainError> {
+        use alloy::sol_types::SolCall;
+        let call = IProviderRegistry::providerServicePageCall {
+            providerId: parse_b160(provider_id),
+            cursor: U256::from(cursor),
+            limit: U256::from(limit),
+        };
+        let out = self.raw_call(registry_addr, &call.abi_encode()).await?;
+        let r = IProviderRegistry::providerServicePageCall::abi_decode_returns(&out, true)
+            .map_err(|e| ChainError::Other(format!("providerServicePage decode: {e}")))?;
+        Ok((
+            r.values.iter().map(|a| format!("{a:#x}")).collect(),
+            r.nextCursor.to::<u64>(),
+        ))
+    }
+
+    async fn service_effective(
+        &self,
+        registry_addr: &str,
+        service_addr: &str,
+    ) -> Result<ServiceEffective, ChainError> {
+        use alloy::sol_types::SolCall;
+        let call = IProviderRegistry::effectiveServiceCall {
+            serviceAddress: parse_addr(service_addr),
+        };
+        let out = self.raw_call(registry_addr, &call.abi_encode()).await?;
+        let r = IProviderRegistry::effectiveServiceCall::abi_decode_returns(&out, true)
+            .map_err(|e| ChainError::Other(format!("effectiveService decode: {e}")))?;
+        Ok(ServiceEffective {
+            provider_standing: Standing::from_u8(r.providerStanding),
+            service_standing: Standing::from_u8(r.serviceStanding),
+            factory_active: r.factoryActive,
+            owner_confirmed: r.ownerConfirmed,
+            has_active_issuer: r.hasActiveIssuer,
+        })
+    }
+
+    async fn current_service(
+        &self,
+        registry_addr: &str,
+        provider_id: &str,
+        record_type_key: &str,
+    ) -> Result<String, ChainError> {
+        use alloy::sol_types::SolCall;
+        let call = IProviderRegistry::currentServiceCall {
+            providerId: parse_b160(provider_id),
+            recordType: parse_b256(record_type_key),
+        };
+        let out = self.raw_call(registry_addr, &call.abi_encode()).await?;
+        let r = IProviderRegistry::currentServiceCall::abi_decode_returns(&out, true)
+            .map_err(|e| ChainError::Other(format!("currentService decode: {e}")))?
+            ._0;
+        Ok(format!("{r:#x}"))
+    }
+
+    async fn factory_generations(
+        &self,
+        registry_addr: &str,
+    ) -> Result<Vec<(String, String, bool)>, ChainError> {
+        use alloy::sol_types::SolCall;
+        let mut out = Vec::new();
+        let mut cursor = 0u64;
+        loop {
+            let call = IProviderRegistry::factoryGenerationPageCall {
+                cursor: U256::from(cursor),
+                limit: U256::from(50u64),
+            };
+            let raw = self.raw_call(registry_addr, &call.abi_encode()).await?;
+            let page = IProviderRegistry::factoryGenerationPageCall::abi_decode_returns(&raw, true)
+                .map_err(|e| ChainError::Other(format!("factoryGenerationPage decode: {e}")))?;
+            let next = page.nextCursor.to::<u64>();
+            let empty = page.values.is_empty();
+            for gid in page.values {
+                let gid_hex = format!("0x{}", hex::encode(gid.as_slice()));
+                let g_call = IProviderRegistry::factoryGenerationCall { generationId: gid };
+                let g_raw = self.raw_call(registry_addr, &g_call.abi_encode()).await?;
+                let g = IProviderRegistry::factoryGenerationCall::abi_decode_returns(&g_raw, true)
+                    .map_err(|e| ChainError::Other(format!("factoryGeneration decode: {e}")))?
+                    ._0;
+                out.push((gid_hex, format!("{:#x}", g.factory), g.active));
+            }
+            if empty || next <= cursor {
+                break;
+            }
+            cursor = next;
+        }
+        Ok(out)
+    }
+
+    async fn service_metadata(
+        &self,
+        service_addr: &str,
+    ) -> Result<(String, String), ChainError> {
+        use alloy::sol_types::SolCall;
+        // Both reads must SUCCEED. A generation-1 `DogTagIssuer` implements `recordType()` but has
+        // no `owner()` at all, so the owner read reverts - and reporting that as a zero address
+        // would turn "this contract can never be attached" into a mismatch the admin might try to
+        // correct by typing a different expected owner.
+        let owner_out = self
+            .raw_call(service_addr, &IServiceProbe::ownerCall {}.abi_encode())
+            .await
+            .map_err(|e| ChainError::Rpc(format!("service owner(): {e}")))?;
+        let owner = IServiceProbe::ownerCall::abi_decode_returns(&owner_out, true)
+            .map_err(|e| ChainError::Other(format!("owner decode: {e}")))?
+            ._0;
+        let rt_out = self
+            .raw_call(service_addr, &IServiceProbe::recordTypeCall {}.abi_encode())
+            .await
+            .map_err(|e| ChainError::Rpc(format!("service recordType(): {e}")))?;
+        let rt = IServiceProbe::recordTypeCall::abi_decode_returns(&rt_out, true)
+            .map_err(|e| ChainError::Other(format!("recordType decode: {e}")))?
+            ._0;
+        Ok((
+            format!("{owner:#x}"),
+            format!("0x{}", hex::encode(rt.as_slice())),
+        ))
+    }
+
+    async fn issuance_capability_log(
+        &self,
+        registry_addr: &str,
+        service_addr: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        use alloy::sol_types::SolEvent;
+        // topic1 is the indexed `address service` and topic2 the indexed `address signer`.
+        // An address topic is RIGHT-aligned (unlike the `bytes20 providerId` above, which Solidity
+        // left-aligns) - getting that backwards matches no log, which reads as "nobody holds it".
+        self.bool_log_ordered(
+            registry_addr,
+            IProviderRegistry::IssuanceCapabilitySet::SIGNATURE_HASH,
+            Some(B256::left_padding_from(parse_addr(service_addr).as_slice())),
+            2,
+            "IssuanceCapabilitySet",
+        )
+        .await
+    }
+
+    async fn verifier_capability_log(
+        &self,
+        registry_addr: &str,
+        purpose: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        use alloy::sol_types::SolEvent;
+        // THREE indexed args: topic1 = purpose (the group), topic2 = the derived compatibility key,
+        // topic3 = relayer (the subject). Reading the subject off topic2 yields a bytes32 rendered
+        // as an address - a plausible-looking value that is never a real relayer.
+        self.bool_log_ordered(
+            registry_addr,
+            IProviderRegistry::VerifierCapabilitySet::SIGNATURE_HASH,
+            Some(parse_b256(purpose)),
+            3,
+            "VerifierCapabilitySet",
+        )
+        .await
+    }
+
+    async fn approved_resolvers(
+        &self,
+        registry_addr: &str,
+        kind: ResolverKind,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        use alloy::sol_types::SolCall;
+        let mut out = Vec::new();
+        let mut cursor = 0u64;
+        loop {
+            let call = IProviderRegistry::resolverPageCall {
+                kind: kind.as_u8(),
+                cursor: U256::from(cursor),
+                limit: U256::from(50u64),
+            };
+            let raw = self.raw_call(registry_addr, &call.abi_encode()).await?;
+            let page = IProviderRegistry::resolverPageCall::abi_decode_returns(&raw, true)
+                .map_err(|e| ChainError::Other(format!("resolverPage decode: {e}")))?;
+            let next = page.nextCursor.to::<u64>();
+            let empty = page.values.is_empty();
+            for r in page.values {
+                // The listing is append-only and RETAINS a deapproved resolver, so approval is read
+                // per address rather than inferred from being listed: "approved then pulled" is a
+                // different fact from "never approved", and only this flag separates them.
+                let a_call = IProviderRegistry::isResolverApprovedCall {
+                    kind: kind.as_u8(),
+                    resolver: r,
+                };
+                let a_raw = self.raw_call(registry_addr, &a_call.abi_encode()).await?;
+                let approved = IProviderRegistry::isResolverApprovedCall::abi_decode_returns(&a_raw, true)
+                    .map_err(|e| ChainError::Other(format!("isResolverApproved decode: {e}")))?
+                    ._0;
+                out.push((format!("{r:#x}"), approved));
+            }
+            if empty || next <= cursor {
+                break;
+            }
+            cursor = next;
+        }
+        Ok(out)
+    }
 }
 
 impl AlloyChain {
@@ -1505,6 +2442,76 @@ impl AlloyChain {
             });
         }
         order_approval_log(entries)
+    }
+
+    /// The ONE reader every other bool-valued registrar log goes through - issuance capability,
+    /// verifier capability, and any future `(group, subject, bool)` event.
+    ///
+    /// Generalized rather than copied three times, because the part worth not duplicating is the
+    /// ORDERING RULE: each of these is folded last-write-wins, so ordering decides whether a
+    /// withdrawal or the grant before it is reported as current, and `eth_getLogs` ordering is not
+    /// part of that contract. Three near-copies is three places for that rule to drift.
+    ///
+    /// `group_topic` filters on topic1; `subject_topic_index` says which topic carries the ADDRESS
+    /// being granted (topic2 for a two-indexed event, topic3 where a derived key sits between).
+    async fn bool_log_ordered(
+        &self,
+        registry_addr: &str,
+        signature_hash: B256,
+        group_topic: Option<B256>,
+        subject_topic_index: usize,
+        event_name: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::rpc::types::Filter;
+        use alloy::sol_types::SolValue;
+
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let mut filter = Filter::new()
+            .address(parse_addr(registry_addr))
+            .event_signature(signature_hash)
+            .from_block(0u64);
+        if let Some(t) = group_topic {
+            filter = filter.topic1(t);
+        }
+        let logs = provider
+            .get_logs(&filter)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+
+        let mut entries: Vec<(Option<u64>, Option<u64>, String, bool)> =
+            Vec::with_capacity(logs.len());
+        for log in logs {
+            let Some(subject) = log.topics().get(subject_topic_index) else {
+                continue;
+            };
+            let allowed = bool::abi_decode(log.data().data.as_ref(), true)
+                .map_err(|e| ChainError::Other(format!("{event_name} decode: {e}")))?;
+            // An address topic is right-aligned: the low 20 bytes are the address.
+            let addr = format!("0x{}", hex::encode(&subject.as_slice()[12..32]));
+            entries.push((log.block_number, log.log_index, addr, allowed));
+        }
+
+        // Same rule as `order_approval_log`, and for the same reason: a log carrying NEITHER
+        // position may be neither placed nor dropped. Placing it at `(0, 0)` sorts it ahead of every
+        // real event, which can present a superseded grant as current; dropping it discards the
+        // event that may itself have been the withdrawal. Both invent an answer, so the whole read
+        // fails and the caller renders `Unavailable`.
+        if entries.iter().any(|(b, i, _, _)| b.is_none() || i.is_none()) {
+            return Err(ChainError::Other(format!(
+                "a {event_name} log carried no (blockNumber, logIndex), so the capability could not \
+                 be ordered - the last write per holder is what makes this the current state, and an \
+                 unpositioned log can be neither placed nor dropped without inventing an answer"
+            )));
+        }
+        entries.sort_by_key(|(b, i, _, _)| (*b, *i));
+        Ok(entries
+            .into_iter()
+            .map(|(_, _, addr, allowed)| (addr, allowed))
+            .collect())
     }
 }
 

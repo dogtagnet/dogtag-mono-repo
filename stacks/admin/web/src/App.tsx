@@ -8,7 +8,6 @@ import { Issuers } from "./pages/Issuers";
 import { Providers } from "./pages/Providers";
 import { Businesses } from "./pages/Businesses";
 import { IssuerApplications } from "./pages/IssuerApplications";
-import { Whitelist } from "./pages/Whitelist";
 import { Wizard } from "./pages/Wizard";
 import { Governance } from "./pages/Governance";
 import { VerificationBench } from "./pages/VerificationBench";
@@ -33,7 +32,6 @@ export function App() {
         path="/applications"
         element={<Layout title="Issuer applications"><IssuerApplications /></Layout>}
       />
-      <Route path="/whitelist" element={<Layout title="Whitelist viewer"><Whitelist /></Layout>} />
       <Route path="/governance" element={<Layout title="Governance"><Governance /></Layout>} />
       <Route
         path="/bench"
