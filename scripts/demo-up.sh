@@ -20,23 +20,34 @@ if [ -f "$ROOT/contracts/.env" ]; then
   set +a
 fi
 RPC="${ROAX_RPC:-https://devrpc.roax.net}"
-IR="${ISSUER_REGISTRY_ADDR:-${ISSUER_REGISTRY:-}}"
-VR="${VERIFICATION_REGISTRY_CONSENT_ADDR:-}"
-SBT="${SBT_CONSENT_ADDR:-}"
+
+# THE LEDGER IS THE SOURCE. Every protocol address below is resolved by ledger KEY NAME, with an env
+# override for a one-off deployment - never a literal pinned in this script, which is the shape that
+# keeps working after a redeploy while naming contracts that decide nothing.
+# shellcheck source=scripts/lib/ledger.sh
+source "$ROOT/scripts/lib/ledger.sh"
+
+# The provider authority. The backends still spell this variable `ISSUER_REGISTRY_ADDR`; what it
+# NAMES on the launch set is `ProviderRegistry`, which is also what `DogTagIssuerFactory.registry()`
+# answers - so the preflight below compares like with like.
+IR="${ISSUER_REGISTRY_ADDR:-${ISSUER_REGISTRY:-$(ledger_addr ProviderRegistry)}}"
+VR="${VERIFICATION_REGISTRY_CONSENT_ADDR:-$(ledger_addr VerificationRegistryConsent)}"
+SBT="${SBT_CONSENT_ADDR:-$(ledger_addr DogTagSBTConsent)}"
+PROTOCOL_REGISTRY="${PROTOCOL_REGISTRY_ADDR:-$(ledger_addr ProtocolRegistry)}"
+ISSUER_IMPL="${DOGTAG_ISSUER_IMPL_ADDR:-$(ledger_addr DogTagIssuerImpl)}"
+VERIFIER="${GROTH16_VERIFIER_CONSENT_ADDR:-$(ledger_addr Groth16VerifierConsent)}"
+DIRECTORY="${PROVIDER_DIRECTORY_ADDR:-$(ledger_addr ProviderDirectory)}"
+DOMAIN_RESOLVER="${SERVICE_DOMAIN_RESOLVER_ADDR:-$(ledger_addr ServiceDomainResolver)}"
+ADMIN_SIGNER="${ADMIN_ADDRESS:-$(ledger_addr admin)}"
+# These two are per-provider DogTagIssuer CLONES, deployed by a provider rather than by Deploy.s.sol,
+# so the ledger holds no key for them and there is nothing to resolve. They stay operator-supplied.
 PROFILE_ISSUER="${PROFILE_ISSUER_ADDR:-}"
 VACC_CLONE="${VACCINATION_ISSUER_ADDR:-}"
-: "${IR:?set ISSUER_REGISTRY_ADDR to the fresh shared deployment}"
-: "${VR:?set VERIFICATION_REGISTRY_CONSENT_ADDR to the fresh owner-hidden registry}"
-: "${SBT:?set SBT_CONSENT_ADDR to the fresh owner-hidden SBT}"
-: "${PROFILE_ISSUER:?set PROFILE_ISSUER_ADDR to a fresh factory clone}"
-: "${VACC_CLONE:?set VACCINATION_ISSUER_ADDR to a fresh factory clone}"
-
-# Read a deployed address out of the canonical ledger. Dependency-free, and the 40-hex-address value
-# pattern means it only ever matches a real top-level address entry, never surrounding prose.
-ledger_addr(){
-  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\(0x[0-9a-fA-F]\{40\}\)\".*/\1/p" \
-    "$ROOT/contracts/deployments/roax.json" 2>/dev/null | head -1
-}
+: "${IR:?no ProviderRegistry in the ledger; set ISSUER_REGISTRY_ADDR}"
+: "${VR:?no VerificationRegistryConsent in the ledger; set VERIFICATION_REGISTRY_CONSENT_ADDR}"
+: "${SBT:?no DogTagSBTConsent in the ledger; set SBT_CONSENT_ADDR}"
+: "${PROFILE_ISSUER:?set PROFILE_ISSUER_ADDR to a factory clone this provider deployed}"
+: "${VACC_CLONE:?set VACCINATION_ISSUER_ADDR to a factory clone this provider deployed}"
 # FACTORY — the admin portal's Issuers/Factory UI (predict + deploy a clone) needs this. It was never
 # passed, so admin-api fell back to the zero address and every factory call answered
 # "FACTORY_ADDR not configured" while governance/authority reported factoryOwner.target = 0x0.
@@ -315,7 +326,16 @@ echo "Starting portals (vite dev):"
 # C-9 repoint, and it would restore two permanently unanswered rows.
 # The government backend below DOES still read ISSUER_DOMAIN_REGISTRY_ADDR (no VITE_ prefix); that
 # one is passed above and is a different variable.
+# THE PORTALS NOW GET THEIR ADDRESSES. They never did: `packages/ui` held a constant table, so a
+# demo portal read whatever that file said rather than what this deploy actually is. That table is
+# gone, and unset now means "report yourself unconfigured" - so the addresses have to arrive here.
 run admin-web ":39741" env VITE_DEMO_MODE=1 \
+  VITE_PROVIDER_REGISTRY_ADDR="$PROVIDER_REGISTRY" VITE_DOGTAG_ISSUER_FACTORY_ADDR="$FACTORY" \
+  VITE_DOGTAG_ISSUER_IMPL_ADDR="$ISSUER_IMPL" VITE_DOGTAG_SBT_CONSENT_ADDR="$SBT" \
+  VITE_VERIFICATION_REGISTRY_CONSENT_ADDR="$VR" VITE_GROTH16_VERIFIER_CONSENT_ADDR="$VERIFIER" \
+  VITE_PROTOCOL_REGISTRY_ADDR="$PROTOCOL_REGISTRY" VITE_PROVIDER_DIRECTORY_ADDR="$DIRECTORY" \
+  VITE_SERVICE_DOMAIN_RESOLVER_ADDR="$DOMAIN_RESOLVER" VITE_ADMIN_SIGNER_ADDR="$ADMIN_SIGNER" \
+
   pnpm --filter @dogtag/admin-web dev
 # The S-17 content mirror, so the provider self-service page can publish into the demo indexer
 # instead of reporting "no content mirror is configured". Both are needed: the base names the
@@ -333,9 +353,21 @@ run admin-web ":39741" env VITE_DEMO_MODE=1 \
 DEMO_MIRROR_BASE="${DEMO_MIRROR_BASE:-http://$LAN_IP:46001}"
 DEMO_MIRROR_INGEST_TOKEN=dogtag-indexer-mirror-ingest-demo-token
 run vet-web    ":41873" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" \
+  VITE_PROVIDER_REGISTRY_ADDR="$PROVIDER_REGISTRY" VITE_DOGTAG_ISSUER_FACTORY_ADDR="$FACTORY" \
+  VITE_DOGTAG_ISSUER_IMPL_ADDR="$ISSUER_IMPL" VITE_DOGTAG_SBT_CONSENT_ADDR="$SBT" \
+  VITE_VERIFICATION_REGISTRY_CONSENT_ADDR="$VR" VITE_GROTH16_VERIFIER_CONSENT_ADDR="$VERIFIER" \
+  VITE_PROTOCOL_REGISTRY_ADDR="$PROTOCOL_REGISTRY" VITE_PROVIDER_DIRECTORY_ADDR="$DIRECTORY" \
+  VITE_SERVICE_DOMAIN_RESOLVER_ADDR="$DOMAIN_RESOLVER" VITE_ADMIN_SIGNER_ADDR="$ADMIN_SIGNER" \
+
   VITE_CONTENT_MIRROR_BASE="$DEMO_MIRROR_BASE" VITE_CONTENT_MIRROR_TOKEN="$DEMO_MIRROR_INGEST_TOKEN" \
   pnpm --filter @dogtag/vet-web dev
 run groomer-web ":43617" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" \
+  VITE_PROVIDER_REGISTRY_ADDR="$PROVIDER_REGISTRY" VITE_DOGTAG_ISSUER_FACTORY_ADDR="$FACTORY" \
+  VITE_DOGTAG_ISSUER_IMPL_ADDR="$ISSUER_IMPL" VITE_DOGTAG_SBT_CONSENT_ADDR="$SBT" \
+  VITE_VERIFICATION_REGISTRY_CONSENT_ADDR="$VR" VITE_GROTH16_VERIFIER_CONSENT_ADDR="$VERIFIER" \
+  VITE_PROTOCOL_REGISTRY_ADDR="$PROTOCOL_REGISTRY" VITE_PROVIDER_DIRECTORY_ADDR="$DIRECTORY" \
+  VITE_SERVICE_DOMAIN_RESOLVER_ADDR="$DOMAIN_RESOLVER" VITE_ADMIN_SIGNER_ADDR="$ADMIN_SIGNER" \
+
   VITE_CONTENT_MIRROR_BASE="$DEMO_MIRROR_BASE" VITE_CONTENT_MIRROR_TOKEN="$DEMO_MIRROR_INGEST_TOKEN" \
   pnpm --filter @dogtag/groomer-web dev
 run government-web ":44831" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/government-web dev
