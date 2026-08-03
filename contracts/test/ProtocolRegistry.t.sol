@@ -99,56 +99,38 @@ contract ProtocolRegistryTest is Test {
     // --- The timelock floor ---
     // =============================================================================================
 
-    /// @notice The headline. The live generation-1 registry carries `PUBLISH_TIMELOCK == 0` and the value
-    /// is `immutable`, so nothing short of a redeploy can fix it. Here a zero is refused by the
-    /// CONSTRUCTOR, which is what makes the fix independent of whether anyone remembers to use the deploy
-    /// script.
-    function test_a_zero_publish_timelock_cannot_be_deployed_at_all() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ProtocolRegistry.PublishTimelockBelowFloor.selector, 0, MIN_PUBLISH_TIMELOCK_SECONDS
-            )
-        );
-        new ProtocolRegistry(ADMIN, PUBLISHER, 0);
+    /// @notice The headline, INVERTED by the captain's development-iteration ruling: a zero publish
+    /// timelock is now deployable, so a development chain can deploy, publish, test and redeploy in one
+    /// sitting with no wait.
+    ///
+    /// The contract enforces no floor at all. Production safety is the DEPLOY SCRIPT's job
+    /// (`Deploy.validatePublishTimelock`), which defaults to 2 days and demands a stated-aloud opt-in
+    /// for anything lower — see `test_the_script_is_now_the_only_production_guard` in `Deploy.t.sol`.
+    function test_a_zero_publish_timelock_is_deployable_for_iteration() public {
+        ProtocolRegistry zero = new ProtocolRegistry(ADMIN, PUBLISHER, 0);
+        assertEq(zero.PUBLISH_TIMELOCK(), 0, "a zero delay must be representable");
+        assertEq(zero.MIN_PUBLISH_TIMELOCK(), 0, "the contract-level floor is gone");
 
-        // Everything below the floor is refused, not only zero — a one-second delay is a timelock that
-        // exists in the getter and nowhere else.
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ProtocolRegistry.PublishTimelockBelowFloor.selector, 1, MIN_PUBLISH_TIMELOCK_SECONDS
-            )
-        );
-        new ProtocolRegistry(ADMIN, PUBLISHER, 1);
+        // A one-second delay too: the constructor expresses no opinion on the value.
+        ProtocolRegistry one = new ProtocolRegistry(ADMIN, PUBLISHER, 1);
+        assertEq(one.PUBLISH_TIMELOCK(), 1);
 
-        // ...and the floor itself is accepted, so the guard is a floor rather than a ban.
-        ProtocolRegistry atFloor = new ProtocolRegistry(ADMIN, PUBLISHER, MIN_PUBLISH_TIMELOCK_SECONDS);
-        assertEq(atFloor.PUBLISH_TIMELOCK(), MIN_PUBLISH_TIMELOCK_SECONDS);
+        // The production DEFAULT is untouched — only where it is enforced moved.
+        assertEq(zero.DEFAULT_PUBLISH_TIMELOCK(), 2 days, "the production default is unchanged");
     }
 
-    /// @notice The floor is a real boundary, not a `!= 0` check wearing a floor's name: one second below
-    /// it reverts and the floor itself is accepted. A `> 0` guard would pass a one-second delay, which is
-    /// a timelock that exists only in the getter.
-    function test_the_floor_is_a_boundary_not_a_nonzero_check() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ProtocolRegistry.PublishTimelockBelowFloor.selector, 1, MIN_PUBLISH_TIMELOCK_SECONDS
-            )
-        );
-        new ProtocolRegistry(ADMIN, PUBLISHER, 1);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ProtocolRegistry.PublishTimelockBelowFloor.selector,
-                MIN_PUBLISH_TIMELOCK_SECONDS - 1,
-                MIN_PUBLISH_TIMELOCK_SECONDS
-            )
-        );
-        new ProtocolRegistry(ADMIN, PUBLISHER, MIN_PUBLISH_TIMELOCK_SECONDS - 1);
-
-        ProtocolRegistry atFloor = new ProtocolRegistry(ADMIN, PUBLISHER, MIN_PUBLISH_TIMELOCK_SECONDS);
-        assertEq(atFloor.PUBLISH_TIMELOCK(), 1 hours, "the floor itself must be deployable");
-        assertEq(atFloor.MIN_PUBLISH_TIMELOCK(), 1 hours);
-        assertEq(atFloor.DEFAULT_PUBLISH_TIMELOCK(), 2 days, "the production default is unchanged");
+    /// @notice States the COST of the ruling plainly, so it is a recorded property rather than a gap
+    /// someone discovers later: with the floor moved to the deploy script, a direct deployment that
+    /// bypasses the script can pick any delay including zero, on any chain.
+    ///
+    /// That is the accepted trade. It was not acceptable while a wrong immutable value could only be
+    /// repaired by replacing the registry and repointing every client including two compile-time mobile
+    /// bundles; a mobile rebuild-and-reinstall now accompanies every full redeploy as standing process,
+    /// so that replacement is routine. If the premise changes back, restore the floor by moving
+    /// `MIN_PUBLISH_TIMELOCK_SECONDS` — the error and the comparison are still in place for exactly that.
+    function test_the_contract_no_longer_guards_a_direct_deployment() public {
+        ProtocolRegistry bypassed = new ProtocolRegistry(ADMIN, PUBLISHER, 0);
+        assertEq(bypassed.PUBLISH_TIMELOCK(), 0);
     }
 
     /// @notice The delay actually delays: an execute before the ETA reverts on all three writes, and the

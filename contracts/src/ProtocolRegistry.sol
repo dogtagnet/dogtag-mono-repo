@@ -10,9 +10,13 @@ import {
 /// `ProtocolRegistry.DEFAULT_PUBLISH_TIMELOCK`.
 uint256 constant DEFAULT_PUBLISH_TIMELOCK_SECONDS = 2 days;
 
-/// @dev The FLOOR every deployment must clear, enforced in the constructor. See the "The timelock is a
-/// constructor invariant" note on [`ProtocolRegistry`] for the derivation — this is not a taste value.
-uint256 constant MIN_PUBLISH_TIMELOCK_SECONDS = 1 hours;
+/// @dev The floor the constructor enforces. ZERO — the contract permits any delay, including none.
+///
+/// This was 1 hour, and the reason it MOVED is recorded on [`ProtocolRegistry`] under "The timelock is
+/// a deploy-time choice". Read it before restoring a floor here: the safeguard was not dropped, it was
+/// relocated to the deploy script, which is where the production/testnet distinction is actually
+/// expressed.
+uint256 constant MIN_PUBLISH_TIMELOCK_SECONDS = 0;
 
 /// @title ProtocolRegistry — the discovery TRUST ANCHOR.
 /// @notice The dogtag-governed record of which contracts and which proving artifacts are current, read
@@ -68,27 +72,37 @@ uint256 constant MIN_PUBLISH_TIMELOCK_SECONDS = 1 hours;
 /// decoding garbage. [`ArtifactSet`] is a separate record on a separately-rotatable axis and keeps its
 /// own name and selectors for the same reason: its shape is not changing.
 ///
-/// # The timelock is a constructor invariant, because it is immutable
+/// # The timelock is a deploy-time choice, and the production guard is in the deploy script
 ///
-/// `PUBLISH_TIMELOCK` is `immutable`, so a deployment that gets it wrong cannot be repaired — only
-/// replaced, and replacing this registry means repointing every client including two compile-time
-/// mobile bundles. A zero would let the publisher key repoint the entire declared protocol set in one
-/// transaction with no window for anyone to notice, which is the one property a timelock exists to
-/// provide.
+/// `PUBLISH_TIMELOCK` is `immutable`, so a deployment picks its delay once. The contract enforces no
+/// floor: `MIN_PUBLISH_TIMELOCK` is 0 and a zero-delay registry is representable, which is what lets a
+/// development chain deploy, publish, test and redeploy in one sitting with no wait at all.
 ///
-/// A zero is therefore not merely discouraged here, it is UNREPRESENTABLE: the constructor requires
-/// `publishTimelock >= MIN_PUBLISH_TIMELOCK`. The guard is on the contract and not only in the deploy
-/// script because a script guard is bypassable by a direct deployment, and the mistake it would let
-/// through is unfixable.
+/// Production safety is expressed by the DEPLOY SCRIPT, which defaults to [`DEFAULT_PUBLISH_TIMELOCK`]
+/// (2 days) and refuses anything lower unless a testnet opt-in is stated aloud. What a timelock buys is
+/// unchanged and still the reason production keeps 2 days: a zero lets the publisher key repoint the
+/// entire declared protocol set in one transaction with no window for anyone to notice.
 ///
-/// The floor is 1 hour, derived rather than chosen. A delay is only a review window if a watcher can see
-/// the proposal inside it, and the oversight indexer that surfaces governance events is finality-aware:
-/// on ROAX the `finalized` tag sits ~80 blocks behind `latest`, so a proposal is not authoritatively
-/// visible for minutes, before any human looks. A floor below that would be a timelock that exists only
-/// in the getter — a guard satisfiable vacuously, which is worse than none because it reads as
-/// protection. One hour clears finality plus a reaction with room to spare, and is still short enough
-/// to rehearse a whole publication in one sitting. Production uses [`DEFAULT_PUBLISH_TIMELOCK`]
-/// (2 days); the deploy script requires exactly that unless a testnet opt-in is stated aloud.
+/// ## Why the floor moved off the contract, which is NOT the safeguard being quietly dropped
+///
+/// The floor was here because of a specific claim: `PUBLISH_TIMELOCK` is immutable, so a deployment
+/// that got it wrong "cannot be repaired — only replaced, and replacing this registry means repointing
+/// every client including two compile-time mobile bundles". A contract-level guard was proportionate
+/// because the mistake it prevented was effectively unfixable, and a script guard is bypassable by a
+/// direct `forge create`.
+///
+/// That premise has expired. A mobile rebuild-and-reinstall now accompanies every full redeploy as
+/// standing process, so replacing this registry is ROUTINE rather than unfixable — the cost that made
+/// an on-chain floor worth its rigidity is the cost that no longer applies. A script-level guard is
+/// proportionate to a repairable mistake in a way it was not to a permanent one.
+///
+/// ## Do not reintroduce a chain-id check
+///
+/// Production is NOT detectable from `block.chainid`, and an earlier `require(block.chainid == 135)`
+/// guard is the worked example: ROAX 135 is itself a live chain here, so that condition passed on
+/// exactly the deployment it claimed to refuse. A guard that cannot fail on the case it names is worse
+/// than none, because it reads as protection. Production is expressed by the deploy script's default
+/// plus an explicit opt-in, never by sniffing the chain.
 ///
 /// # The write shape, once, for both axes
 ///
@@ -224,9 +238,10 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
         AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, admin)
     {
         require(admin != address(0) && publisher != address(0), "zero");
-        // The one invariant that cannot be fixed after deployment, so it is checked before there is
-        // anything to fix. A named error rather than a string: an operator who trips this is holding a
-        // value they believed was fine, and the two numbers are the whole diagnosis.
+        // Retained at a ZERO floor rather than deleted, so the error and the comparison stay in the ABI
+        // and a deployment that wants a floor can restore one by moving a single constant. With
+        // MIN_PUBLISH_TIMELOCK == 0 this cannot fire; the production guard lives in the deploy script,
+        // for the reason recorded in this contract's "The timelock is a deploy-time choice" note.
         if (publishTimelock < MIN_PUBLISH_TIMELOCK) {
             revert PublishTimelockBelowFloor(publishTimelock, MIN_PUBLISH_TIMELOCK);
         }

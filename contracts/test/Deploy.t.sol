@@ -64,33 +64,33 @@ contract DeployTest is LaunchStack {
         guardHarness.validatePublishTimelock(2 days + 1, false);
     }
 
-    /// @notice The deliberate divergence from generation 1's deploy script, which has a passing test named
-    /// `test_explicit_testnet_opt_in_accepts_zero_timelock`. Here the testnet opt-in buys a SHORTER delay
-    /// and never a zero one: the live registry's zero is the defect this generation exists to correct, so
-    /// an opt-in that could still reach it would reproduce it on the one deployment that can fix it.
-    function test_the_testnet_opt_in_cannot_reach_zero() public {
-        vm.expectRevert(bytes("testnet publish timelock below the 1-hour floor"));
+    /// @notice The testnet opt-in now reaches ZERO, which is the whole point of the captain's
+    /// development-iteration ruling: no wait at all on a development chain.
+    function test_the_testnet_opt_in_reaches_zero() public view {
         guardHarness.validatePublishTimelock(0, true);
-        vm.expectRevert(bytes("testnet publish timelock below the 1-hour floor"));
         guardHarness.validatePublishTimelock(1, true);
-        vm.expectRevert(bytes("testnet publish timelock below the 1-hour floor"));
-        guardHarness.validatePublishTimelock(MIN_PUBLISH_TIMELOCK_SECONDS - 1, true);
-
-        // At and above the floor a testnet may go short.
-        guardHarness.validatePublishTimelock(MIN_PUBLISH_TIMELOCK_SECONDS, true);
         guardHarness.validatePublishTimelock(6 hours, true);
+        guardHarness.validatePublishTimelock(2 days, true);
     }
 
-    /// @notice The script's guard and the contract's floor are not one guard written twice: the contract
-    /// refuses a zero even when the script is bypassed entirely, which is the case that matters because
-    /// the value is immutable.
-    function test_the_contract_floor_holds_without_the_script() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ProtocolRegistry.PublishTimelockBelowFloor.selector, 0, MIN_PUBLISH_TIMELOCK_SECONDS
-            )
-        );
-        new ProtocolRegistry(GOV, GOV, 0);
+    /// @notice The script is now the ONLY production guard, so this is the test that has to hold: with
+    /// no opt-in, nothing but exactly 2 days passes — zero included.
+    ///
+    /// The contract used to refuse a zero independently, which made this a defence in depth. It no
+    /// longer does (`ProtocolRegistry.t.sol::test_the_contract_no_longer_guards_a_direct_deployment`
+    /// pins that), so a regression here is not softened by anything downstream.
+    function test_the_script_is_now_the_only_production_guard() public {
+        vm.expectRevert(bytes("mainnet publish timelock must be 2 days"));
+        guardHarness.validatePublishTimelock(0, false);
+        vm.expectRevert(bytes("mainnet publish timelock must be 2 days"));
+        guardHarness.validatePublishTimelock(1 hours, false);
+
+        // And production is decided by the opt-in flag alone — never by the chain id. ROAX 135 is
+        // itself a live chain, so a `block.chainid` test passed on the deployment it claimed to refuse.
+        vm.chainId(135);
+        vm.expectRevert(bytes("mainnet publish timelock must be 2 days"));
+        guardHarness.validatePublishTimelock(0, false);
+        guardHarness.validatePublishTimelock(0, true);
     }
 
     // --- the deployment sequence -----------------------------------------------------------------
@@ -149,11 +149,15 @@ contract DeployTest is LaunchStack {
     /// configured delay, execute, and read every published member back.
     function test_env_driven_scripts_publish_generation_two_on_both_axes() public {
         ProtocolRegistry registry = protocolRegistry;
+        // The fixture deliberately deploys with a NON-ZERO delay (`TEST_PUBLISH_TIMELOCK`), even though
+        // the contract now permits zero: a zero-delay registry would let propose and execute land in the
+        // same block, so this test would pass without ever exercising the wait it exists to cover.
         assertEq(
             registry.PUBLISH_TIMELOCK(),
-            MIN_PUBLISH_TIMELOCK_SECONDS,
-            "even the shortest testnet deployment carries a real delay"
+            TEST_PUBLISH_TIMELOCK,
+            "the two-phase path must be tested against a real delay"
         );
+        assertGt(TEST_PUBLISH_TIMELOCK, 0, "a zero here would make the timelock assertions vacuous");
         _setPublishEnv();
 
         new PublishProtocolVersionsPropose().run();

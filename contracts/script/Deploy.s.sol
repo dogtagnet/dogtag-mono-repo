@@ -196,19 +196,30 @@ contract Deploy is Script {
         require(address(ProviderDirectory(providerDirectory).core()) == providerRegistry, "directory core");
     }
 
-    /// @notice LOUD production guard: without an explicit testnet opt-in the delay must be exactly the
-    /// governance-approved 2-day default; with one it may be shorter but never below the contract's floor.
+    /// @notice LOUD production guard, and THE ONLY place the production/testnet distinction is drawn.
     ///
-    /// The floor is re-checked here even though the constructor enforces it, so an operator learns from
-    /// the script — which knows whether they claimed a testnet — rather than from a constructor revert
-    /// mid-broadcast, with eight contracts already deployed. Public and pure so the invariant is
-    /// testable without deploying anything.
+    /// Without an explicit testnet opt-in the delay must be exactly the governance-approved 2-day
+    /// default. With one it may be anything, INCLUDING ZERO — a development chain deploys, publishes,
+    /// tests and redeploys in one sitting, and a floor there buys nothing while costing every iteration.
+    ///
+    /// `ProtocolRegistry` enforces no floor of its own any more. That guard used to sit on the contract
+    /// because `PUBLISH_TIMELOCK` is immutable and a wrong value could only be fixed by replacing the
+    /// registry — which meant repointing every client, including two compile-time mobile bundles. A
+    /// mobile rebuild-and-reinstall now accompanies every full redeploy as standing process, so that
+    /// replacement is routine and a script guard is proportionate to it. See the contract's "The
+    /// timelock is a deploy-time choice" note; this is a relocation, not a removal.
+    ///
+    /// Production is expressed HERE, by the default plus a stated-aloud opt-in — never by inspecting
+    /// `block.chainid`. ROAX 135 is itself a live chain, so a `require(block.chainid == 135)` guard
+    /// passed on exactly the deployment it claimed to refuse; a condition that cannot fail on the case
+    /// it names reads as protection while providing none.
+    ///
+    /// Public and pure so the invariant is testable without deploying anything.
     function validatePublishTimelock(uint256 publishTimelock, bool testnetDeploy) public pure {
         if (!testnetDeploy) {
             require(publishTimelock == MAINNET_PUBLISH_TIMELOCK, "mainnet publish timelock must be 2 days");
             return;
         }
-        require(publishTimelock >= MIN_PUBLISH_TIMELOCK, "testnet publish timelock below the 1-hour floor");
     }
 
     function _report(
