@@ -4,23 +4,29 @@ Deploying the `ProtocolRegistry` and publishing the single owner-hidden protocol
 That version is keyed by the internal version string `dogtag-levelb/1` (artifact axis: `dogtag-levelb-artifacts/1`) - an internal identifier, not a product label.
 Its keccak keys the on-chain registry, so the string is never renamed.
 
-**Status: NOT PUBLISHED on the launch set.**
-`ProtocolRegistry` is deployed - its address is in `contracts/deployments/roax.json` - but it carries no published discovery set, and this runbook has not been run against it.
-Verified on chain 2026-08-03: `getDiscoverySet(keccak256("dogtag-levelb/1"))` reverts with the contract's own named reason **`"unknown discovery set"`**, which is a deliberate fail-closed answer rather than an error.
-(Note the getter is `getDiscoverySet`. Calling a name the contract does not have - `getContractSet`, say - also reverts, but with empty returndata, and reading THAT as "nothing is published" would be a dispatcher refusal mistaken for an answer.)
-The ledger's `_publication` note records the same thing.
+**Status: PUBLISHED on the launch set.**
+`dogtag-levelb/1` is live and active on both axes with its binding, executed 2026-08-03.
+`getDiscoverySet(keccak256("dogtag-levelb/1"))` returns a nine-word record; `getActiveArtifactSet` resolves; `minAppVersion` is `1.4.0`.
+The registry's address, the publish transaction hashes and the reasoning are in `contracts/deployments/roax.json` (`_publication`, `_protocol_registry_redeploy`); they are deliberately not copied into this file.
 
-An earlier registry did carry a published, active `dogtag-levelb/1` on both axes; that instance is superseded and is not a write target.
-Read any "EXECUTED" statement about publication as describing that earlier instance, not this one.
+Note the getter is `getDiscoverySet`.
+Calling a name the contract does not have - `getContractSet`, say - reverts too, but at the DISPATCHER with empty returndata, and reading that as "nothing is published" would be a dispatcher refusal mistaken for an answer.
+The named reason **`"unknown discovery set"`** is what an UNKNOWN key returns from this contract: a deliberate fail-closed answer rather than an error, and the thing to compare against when you check a key that should not be there.
 
-Consequence, and it is the intended state rather than a gap to paper over: an app validating a platform's version claim against this anchor resolves nothing and **fails closed**.
-That is correct for an unpublished deployment - a discovery anchor that answered before anyone published would be asserting a version nobody staged.
+The registry itself was REDEPLOYED before publishing, and the earlier instance is not a write target.
+`PUBLISH_TIMELOCK` is immutable, and the original carried the then-mandatory 1-hour floor, which put an hour between propose and execute on every testnet iteration.
 
 This document is the reproducible procedure for publishing.
 Executing it requires the governance/publisher key and is the captain's to authorize and run.
 
-**The deployed `PUBLISH_TIMELOCK` is 3600 seconds (1 hour)**, read from the chain on 2026-08-03, and it is IMMUTABLE.
-So propose and execute are separated by a real hour on this deployment - plan for the wait rather than expecting an immediate execute.
+**The steps below have already been run against this deployment**, which is what the status above records.
+They are kept in the imperative because they are both the reproducible record of that run and the runbook for the next registry - but do not walk them here expecting a first publication.
+`executeDiscoverySet` assigns unconditionally, so a re-run is an IN-PLACE re-publish: it restamps `publishedAt` and re-emits the event without adding a list entry.
+That is a deliberate operation (publishing an omitted identity, say), never something to reach by following a runbook.
+
+**The deployed `PUBLISH_TIMELOCK` is 0**, per the captain's 2026-08-03 ruling that testnet waits not at all and production keeps 2 days.
+So propose and execute land back to back on this deployment - no wait to plan for.
+The floor that used to make zero unrepresentable moved off the contract to `Deploy.validatePublishTimelock`; see "The timelock is immutable and selected at deploy time" below.
 
 ## Why this is the long pole
 
@@ -43,9 +49,14 @@ provides the safe environment policy around that value:
 - Without `TESTNET_DEPLOY=true`, the script **requires exactly 2 days** and refuses zero, short, or
   otherwise non-default values. This is the loud mainnet guard; never set `TESTNET_DEPLOY` for a
   mainnet deployment.
-- With `TESTNET_DEPLOY=true`, a testnet may choose a shorter value **but never zero**: the CONSTRUCTOR
-  enforces a 1-hour floor (`MIN_PUBLISH_TIMELOCK_SECONDS`), so a zero-delay registry is now
-  unrepresentable rather than merely discouraged. This ROAX deployment sits at that floor, 3600s.
+- With `TESTNET_DEPLOY=true`, a testnet may choose ANY value **including zero**. `MIN_PUBLISH_TIMELOCK`
+  is 0, so a zero-delay registry is representable and this ROAX deployment uses it: a development chain
+  deploys, publishes, tests and redeploys in one sitting, and a floor there buys nothing while costing
+  every iteration. The guard is a RELOCATION, not a removal - it used to sit on the contract because a
+  wrong immutable value could only be repaired by replacing the registry, and replacing it is routine
+  now that a mobile rebuild-and-reinstall accompanies every full redeploy as standing process. The cost
+  is stated rather than hidden: a direct `forge create` bypassing the script can pick any delay on any
+  chain, and the script is the only production guard where it used to be defence in depth.
 
 The selected value cannot be changed after deployment. The admin-transfer timelock remains a separate
 fixed 2-day governance control and is not affected by these variables.
@@ -84,9 +95,9 @@ forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersi
 This stages **three** records in one batch - the `dogtag-levelb/1` contract set, its
 `dogtag-levelb-artifacts/1` artifact set, and their binding. Their timelocks run **concurrently**, so
 this is still a two-phase rollout, not three sequential waits.
-On this deployment every ETA is the proposal block timestamp plus 3600 seconds.
+On this deployment `PUBLISH_TIMELOCK` is 0, so every ETA is the proposal block timestamp itself and Phase 2 follows immediately.
 
-The script prints each ETA. Record them; Phase 2 is invalid before the latest one elapses.
+The script prints each ETA. On a deployment with a real delay, record them; Phase 2 is invalid before the latest one elapses.
 
 ## Step 3 — execute (once the printed ETAs are reached)
 
@@ -125,7 +136,7 @@ being gated.
 like it, are never renamed.)
 M-4 PR4 locks all four values to **`1.4.0`**. Step 2 must publish that exact floor;
 re-publishing a corrected `minAppVersion` costs a fresh propose plus the registry's immutable
-timelock (2 days on mainnet; 1 hour on this ROAX deployment).
+timelock (2 days on mainnet; zero on this ROAX deployment, so a correction is one sitting).
 
 ## Rotating artifacts later
 

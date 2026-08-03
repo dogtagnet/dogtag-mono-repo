@@ -1,6 +1,7 @@
 package io.liberalize.dogtag.net
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -18,63 +19,7 @@ class AnchorResolverTest {
 
     private fun repeatByte(bb: String): String = bb.repeat(32)
 
-    /**
-     * `getContractSet` is a STATIC 8-word tuple. Decode extracts `contractSetId`(0),
-     * `verificationRegistry`(2), `circuitId`(5), `active`(7) — and nothing from the skipped slots.
-     */
-    @Test
-    fun decodeContractSet() {
-        val reg = "b9b313c17fd8725bb50a7f41121ac4cf5f4fec87"
-        val hex =
-            word(repeatByte("11")) +   // 0 contractSetId
-            word("00") +               // 1 factory (skipped)
-            word(reg) +                // 2 verificationRegistry
-            word("00") +               // 3 sbt (skipped)
-            word("00") +               // 4 verifier (skipped)
-            word(repeatByte("22")) +   // 5 circuitId
-            word("00") +               // 6 publishedAt (skipped)
-            word("01")                 // 7 active = true
-        val cs = AnchorResolver.decodeContractSet(hex)
-        assertEquals("0x" + repeatByte("11"), cs?.contractSetId)
-        assertEquals("0x$reg", cs?.verificationRegistry)
-        assertEquals("0x" + repeatByte("22"), cs?.circuitId)
-        assertEquals(true, cs?.active)
-    }
-
     /** A short/misaligned return fails closed (null), never a partial decode. */
-    @Test
-    fun decodeContractSetFailsClosedOnShortReturn() {
-        assertNull(AnchorResolver.decodeContractSet(word("01") + word("02"))) // only 2 words
-        assertNull(AnchorResolver.decodeContractSet("abc")) // not a whole word
-    }
-
-    /**
-     * The generation-2 record (10 words) must not decode through the generation-1 decoder, and vice
-     * versa. Both directions matter and both used to be reachable: the generation-1 decoder accepted
-     * `>= 8` words, so a `ProtocolRegistryV2.getDiscoverySet` return would have decoded at generation-1
-     * indices — reading `providerRegistry` as `circuitId` and `publishedAt` as `active`, i.e. an
-     * `active` that is a block timestamp (truthy) and a circuit id that is an address.
-     *
-     * That is a plausible-looking live record for a record shape this build cannot read, which is the
-     * identical-shape/different-semantics failure this repo has paid for before. The exact-arity check is
-     * what makes it impossible; this test is what keeps the check.
-     */
-    @Test
-    fun theTwoGenerationsRecordsCannotDecodeAsEachOther() {
-        assertNull(
-            "a 10-word generation-2 return must not decode as a generation-1 contract set",
-            AnchorResolver.decodeContractSet(GEN_TWO_GOLDEN),
-        )
-        assertNull(
-            "an 8-word generation-1 return must not decode as a generation-2 discovery set",
-            AnchorResolver.decodeDiscoverySet(GEN_ONE_GOLDEN),
-        )
-        // ...and each decodes its own, so neither refusal is vacuous.
-        assertEquals(true, AnchorResolver.decodeContractSet(GEN_ONE_GOLDEN)?.active)
-        assertEquals(true, AnchorResolver.decodeDiscoverySet(GEN_TWO_GOLDEN)?.active)
-    }
-
-    /** A short/misaligned generation-2 return fails closed too. */
     @Test
     fun decodeDiscoverySetFailsClosedOnShortReturn() {
         assertNull(AnchorResolver.decodeDiscoverySet(word("01") + word("02")))
@@ -82,16 +27,38 @@ class AnchorResolverTest {
     }
 
     /**
-     * The generation-2 discovery key and the artifact key move INDEPENDENTLY, which is the point of the
-     * two axes: generation 2 rotates addresses and rotates no proving artifact, so its artifact identity
-     * and circuit id are generation 1's unchanged.
+     * The arity guard is EXACT, and these are the two widths that make it load-bearing rather than
+     * pedantic. Both are real record shapes this project has shipped a decoder for:
+     *
+     *  - EIGHT words is the superseded `getContractSet` tuple.
+     *  - TEN words is the superseded discovery record, which carried `rootIndex` as its own member.
+     *
+     * Under a `>= 9` check either would decode at the wrong indices into a plausible-looking live
+     * record - an `active` that is really a block timestamp (truthy), a `circuitId` that is really an
+     * address. That is the identical-shape/different-semantics failure this repo has paid for before,
+     * and the exact check is what makes it unreachable. This test is what keeps the check exact.
      */
     @Test
-    fun theGenerationTwoKeyBumpsWhileTheArtifactKeyDoesNot() {
-        assertEquals("dogtag-levelb/2", AnchorResolver.PROTOCOL_VERSION_V2)
+    fun aRecordOfAnyOtherWidthFailsClosedRatherThanDecodingAtTheWrongIndices() {
+        val eightWords = DISCOVERY_SET_GOLDEN.substring(0, 64 * 8)
+        val tenWords = DISCOVERY_SET_GOLDEN + word("01")
+        assertNull("an 8-word return must not decode as the 9-word discovery set", AnchorResolver.decodeDiscoverySet(eightWords))
+        assertNull("a 10-word return must not decode as the 9-word discovery set", AnchorResolver.decodeDiscoverySet(tenWords))
+        // ...and the 9-word record itself does decode, so neither refusal is vacuous.
+        assertNotNull(AnchorResolver.decodeDiscoverySet(DISCOVERY_SET_GOLDEN))
+    }
+
+    /**
+     * The discovery axis and the artifact axis are keyed SEPARATELY and rotate independently, which is
+     * the whole point of the two-axis registry: rotating a zkey moves the artifact key and touches no
+     * contract address, and rotating the contracts moves the discovery key and touches no artifact.
+     * The circuit id belongs to the frozen ceremony and moves with neither.
+     */
+    @Test
+    fun theTwoAxesAreKeyedSeparately() {
+        assertEquals("dogtag-levelb/1", AnchorResolver.PROTOCOL_VERSION)
         assertEquals("dogtag-levelb-artifacts/1", AnchorResolver.ARTIFACT_SET)
         assertEquals("consent.circom/DogTagConsent(6)", AnchorResolver.CIRCUIT_ID)
-        assertEquals("dogtag-levelb/1", AnchorResolver.PROTOCOL_VERSION)
     }
 
     /**
@@ -145,72 +112,63 @@ class AnchorResolverTest {
         assertNull(AnchorResolver.decodeArtifactSet(hex))
     }
 
-    // ---- GOLDEN vectors from Solidity's real ABI encoder (independent of this decoder's author) ----
+    // ---- GOLDEN vectors from the real ABI encoder (independent of this decoder's author) ----
 
     /**
-     * The EXACT bytes `ProtocolRegistry.getContractSet(keccak("dogtag-levelb/1"))` returns, captured
-     * from `abi.encode(reg.getContractSet(bId))` in a Foundry run against the real `ProtocolVersions`
-     * levelb set. Catches an ABI-model error the hand vectors above cannot: they were written from the
-     * same understanding as the decoder, so a shared mistake would pass both.
-     */
-    private val GEN_ONE_GOLDEN =
-        "36a8d69d16a9f540fa11be5f0311ebd5efd8e971b66cd704a6e197ee15b01b3d" +
-        "000000000000000000000000d3179abbfb0274d0a5f7017d76015a93c159511d" +
-        "000000000000000000000000b9b313c17fd8725bb50a7f41121ac4cf5f4fec87" +
-        "00000000000000000000000096cba4580d79bc9b8e51fc1b3a044a29592afffc" +
-        "000000000000000000000000272be146c0aed6401000e9aa8241201f6f0fdf1a" +
-        "a708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f" +
-        "000000000000000000000000000000000000000000000000000000000002a301" +
-        "0000000000000000000000000000000000000000000000000000000000000001"
-
-    /**
-     * The EXACT bytes `ProtocolRegistryV2.getDiscoverySet(keccak("dogtag-levelb/2"))` returns, captured
-     * from `abi.encode(...)` in `contracts/test/ProtocolRegistryV2.t.sol`, which pins the SAME literal
-     * from the Solidity end. So a change to the record's shape or member order fails there first, naming
-     * this file to regenerate — never hand-edit this hex, which would test an idea of the ABI rather than
-     * the ABI. The iOS mirror carries the identical bytes.
-     */
-    private val GEN_TWO_GOLDEN =
-        "44a8d618d62ba7874b6df187bc27a0c147d0523c8cda11f7764d343d032ae0b5" + // 0 discoverySetId
-        "0000000000000000000000001c9ac2eb3f1a2d4b5c6d7e8f90a1b2c3d4e5f607" + // 1 factory (skipped)
-        "000000000000000000000000b9b313c17fd8725bb50a7f41121ac4cf5f4fec87" + // 2 verificationRegistry
-        "00000000000000000000000096cba4580d79bc9b8e51fc1b3a044a29592afffc" + // 3 sbt (skipped)
-        "000000000000000000000000272be146c0aed6401000e9aa8241201f6f0fdf1a" + // 4 verifier (skipped)
-        "0000000000000000000000009309ab1c2d3e4f5061728394a5b6c7d8e9f00112" + // 5 providerRegistry
-        "000000000000000000000000120127e4a5b6c7d8e9f001122334455667788990" + // 6 rootIndex (router)
-        "a708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f" + // 7 circuitId
-        "000000000000000000000000000000000000000000000000000000006b4c7500" + // 8 publishedAt (skipped)
-        "0000000000000000000000000000000000000000000000000000000000000001"   // 9 active = true
-
-    @Test
-    fun decodeContractSetGolden() {
-        val cs = AnchorResolver.decodeContractSet(GEN_ONE_GOLDEN)
-        assertEquals("0xb9b313c17fd8725bb50a7f41121ac4cf5f4fec87", cs?.verificationRegistry)
-        assertEquals(true, cs?.active)
-    }
-
-    /**
-     * The generation-2 golden vector, decoded. The two members that only exist here are the point:
-     * `rootIndex` is what `rootIssuer`/`isClone` must be read from, and it is a DIFFERENT address from
-     * `factory` (word 1) — reading the factory instead resolves only generation-2 roots and silently
-     * misses every earlier one, which is exactly what the provenance router exists to prevent.
+     * The EXACT bytes `getDiscoverySet(keccak256("dogtag-levelb/1"))` returns from the published record
+     * on ROAX, captured with `cast call`. Nine words, one per member of the static tuple:
+     * `[discoverySetId, factory, verificationRegistry, sbt, verifier, providerRegistry, circuitId,
+     * publishedAt, active]`.
      *
-     * `circuitId` is byte-identical to the generation-1 golden's, because generation 2 rotates no proving
-     * artifact.
+     * Never hand-edit this hex. A hand-built vector is written from the same understanding as the
+     * decoder, so a shared mistake passes both; only bytes the chain actually returned can catch an
+     * ABI-model error. Recapture it if the record's shape or member order ever moves. The iOS mirror
+     * carries the identical bytes.
+     */
+    private val DISCOVERY_SET_GOLDEN =
+        "36a8d69d16a9f540fa11be5f0311ebd5efd8e971b66cd704a6e197ee15b01b3d" + // 0 discoverySetId
+        "0000000000000000000000005abdb6d61495f8b753069d582088d1f46283cc69" + // 1 factory
+        "0000000000000000000000005cc19ab043be52becd4043aa66d40fb98ff66dff" + // 2 verificationRegistry
+        "00000000000000000000000049aa0ed542bb3811452af93be45b2559aee8b0c8" + // 3 sbt (skipped)
+        "000000000000000000000000868b0b5768d07e635686a0637614ef2716a5680f" + // 4 verifier (skipped)
+        "000000000000000000000000429c2ac735b1268fb0c65f7cf7746a1c0e8452aa" + // 5 providerRegistry
+        "a708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f" + // 6 circuitId
+        "000000000000000000000000000000000000000000000000000000006a70504c" + // 7 publishedAt (skipped)
+        "0000000000000000000000000000000000000000000000000000000000000001"   // 8 active = true
+
+    /**
+     * The live record, decoded. `discoverySetId` is `keccak256("dogtag-levelb/1")` and `circuitId` is
+     * `keccak256("consent.circom/DogTagConsent(6)")`, so both are checkable against the constants above
+     * rather than only against themselves.
      */
     @Test
     fun decodeDiscoverySetGolden() {
-        val d = AnchorResolver.decodeDiscoverySet(GEN_TWO_GOLDEN)
-        assertEquals("0x44a8d618d62ba7874b6df187bc27a0c147d0523c8cda11f7764d343d032ae0b5", d?.discoverySetId)
-        assertEquals("0xb9b313c17fd8725bb50a7f41121ac4cf5f4fec87", d?.verificationRegistry)
-        assertEquals("0x9309ab1c2d3e4f5061728394a5b6c7d8e9f00112", d?.providerRegistry)
-        assertEquals("0x120127e4a5b6c7d8e9f001122334455667788990", d?.rootIndex)
+        val d = AnchorResolver.decodeDiscoverySet(DISCOVERY_SET_GOLDEN)
+        assertNotNull(d)
+        assertEquals("0x36a8d69d16a9f540fa11be5f0311ebd5efd8e971b66cd704a6e197ee15b01b3d", d?.discoverySetId)
+        assertEquals("0x5abdb6d61495f8b753069d582088d1f46283cc69", d?.factory)
+        assertEquals("0x5cc19ab043be52becd4043aa66d40fb98ff66dff", d?.verificationRegistry)
+        assertEquals("0x429c2ac735b1268fb0c65f7cf7746a1c0e8452aa", d?.providerRegistry)
         assertEquals("0xa708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f", d?.circuitId)
         assertEquals(true, d?.active)
-        // The root index is NOT the factory, and the decoder must not have read word 1 for it.
-        assertEquals(false, d?.rootIndex == "0x1c9ac2eb3f1a2d4b5c6d7e8f90a1b2c3d4e5f607")
-        // The frozen circuit is unchanged across the generation boundary.
-        assertEquals(AnchorResolver.decodeContractSet(GEN_ONE_GOLDEN)?.circuitId, d?.circuitId)
+    }
+
+    /**
+     * `rootIndex` IS `factory`, and it is a derived accessor rather than a tenth word.
+     *
+     * There is one launch set and no earlier generation to bridge, so there is nothing for a separate
+     * provenance index to resolve through: `VerificationRegistryConsent` pins the factory in its
+     * immutable `rootIndex` slot, and the publish preflight refuses to stage a record whose `factory`
+     * is not that address - so the equality is asserted on chain rather than assumed on the device.
+     * A superseded design carried `rootIndex` as its own member at word 6, which is why the record was
+     * ten words wide and why a decoder built for it reads `circuitId` out of an address slot.
+     */
+    @Test
+    fun theRootIndexIsTheFactory() {
+        val d = AnchorResolver.decodeDiscoverySet(DISCOVERY_SET_GOLDEN)
+        assertNotNull(d)
+        assertEquals(d?.factory, d?.rootIndex)
+        assertEquals("0x5abdb6d61495f8b753069d582088d1f46283cc69", d?.rootIndex)
     }
 
     /**

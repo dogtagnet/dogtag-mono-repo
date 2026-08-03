@@ -2,12 +2,14 @@
 
 The discovery anchor: the dogtag-governed record of which contracts and which proving artifacts are current.
 
-**Status: deployed as one of the ten launch contracts, carrying NO published discovery set, and read by no client.**
-`contracts/deployments/roax.json` carries its address, transaction hash and block; they are deliberately not copied into this file.
-Verified on chain 2026-08-03: `getDiscoverySet(keccak256("dogtag-levelb/1"))` reverts with the contract's own named reason **`"unknown discovery set"`** - a deliberate fail-closed answer, so an app validating a version claim against it resolves nothing and fails closed, the correct state for an unpublished deployment.
-Use that getter name when you check: a call to a selector the contract does not have reverts too, with empty returndata, and mistaking that for the same answer is the could-not-check-as-an-answer trap this repo names elsewhere.
-Publishing is a separate, two-phase, timelocked, captain-authorized operation: `docs/PROTOCOL_REGISTRY_RUNBOOK.md`.
-`PUBLISH_TIMELOCK` is IMMUTABLE, and **mainnet must use exactly 2 days**.
+**Status: deployed, and carrying a PUBLISHED, active `dogtag-levelb/1` on both axes with its binding.**
+This registry REPLACES the one deployed with the rest of the launch set, so that it could carry `PUBLISH_TIMELOCK` 0 and publish without a wait.
+`contracts/deployments/roax.json` carries its address, the publish transaction hashes and the reasoning (`_publication`, `_protocol_registry_redeploy`); they are deliberately not copied into this file.
+`getDiscoverySet(keccak256("dogtag-levelb/1"))` returns a nine-word record, `getActiveArtifactSet` resolves, and `minAppVersion` is `1.4.0`.
+Use that getter name when you check: a call to a selector the contract does not have reverts with EMPTY returndata, and mistaking that for an answer is the could-not-check-as-an-answer trap this repo names elsewhere.
+An UNKNOWN key reverts with the contract's own named reason **`"unknown discovery set"`** - a deliberate fail-closed answer, and what to compare against when you check a key that should not be there.
+Publishing is a separate, two-phase, captain-authorized operation: `docs/PROTOCOL_REGISTRY_RUNBOOK.md`.
+`PUBLISH_TIMELOCK` is IMMUTABLE; **mainnet must use exactly 2 days**, and a testnet may use any value including zero, which this deployment does.
 
 > **Reading note.** This file was written while two registries coexisted, so it argues throughout in
 > terms of "generation 1" and "generation 2". Only one exists now - the launch contract this file

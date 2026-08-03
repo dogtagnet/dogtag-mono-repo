@@ -91,11 +91,12 @@ PY
 
 cd "$ROOT_DIR"
 
-# A ledger that parses to zero addresses cannot produce a pattern, and every way of carrying on from
-# here is worse than stopping: an omitted element leaves an EMPTY ERE alternative, which grep rejects
-# outright (`empty (sub)expression`), and the `|| true` on the search below would swallow that into an
-# empty result set - so the run would end up blaming 65 innocent declared files instead of the parse.
-# The realistic causes are a moved or renamed ledger and a change to its shape, so name both.
+# A ledger that parses to zero addresses cannot produce a pattern, and carrying on from here is worse
+# than stopping. Measured, rather than reasoned about: `git grep -lIE` ACCEPTS an empty ERE alternative
+# (`|0xbeef`, `0xdead||0xbeef`) and it matches every tracked text file. So an omitted element does not
+# fail the search - it makes OFFENDERS the whole tree, and the run blames every undeclared file in the
+# repo instead of naming the parse. The realistic causes are a moved or renamed ledger and a change to
+# its shape, so name both.
 if [[ ${#LIVE[@]} -eq 0 ]]; then
   echo "::error:: no contract addresses parsed out of the ledger: $LEDGER"
   echo "          Expected top-level keys whose value is a 42-character 0x address."
