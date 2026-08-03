@@ -79,12 +79,12 @@ echo
 mutate "M1 unconfigured live indexer gets a baked-in triple" \
   stacks/indexer/api/src/app.rs \
   'let demo_generation = demo_generation.ok_or_else(|| {' \
-  'let demo_generation = demo_generation.or_else(|| Some(watch_generation(
-        "0xED20269E3eBF0119739aaB5258741F3aEb49F140".to_string(),
-        "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21".to_string(),
-        "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B".to_string(),
+  'let demo_generation = demo_generation.or_else(|| watch_generation(
+        "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
+        "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",
+        "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
         vec![],
-    ))).ok_or_else(|| {' \
+    ).ok()).ok_or_else(|| {' \
   run_cargo_indexer \
   app::tests::an_unconfigured_live_instance_refuses_to_start_rather_than_watching_a_baked_in_triple
 
