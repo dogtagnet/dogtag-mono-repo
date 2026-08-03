@@ -299,13 +299,15 @@ export function createCentralClient(opts: CentralClientOptions) {
         `/v1/admin/services/${serviceAddress}/standing`,
         body,
       ),
-    /** POST /v1/admin/services/:serviceAddress/issuance-capability - who may issue on this service. */
-    setIssuanceCapability: (serviceAddress: string, body: IssuanceCapabilityReq) =>
-      request<IssuanceCapabilityResp>(
-        "POST",
-        `/v1/admin/services/${serviceAddress}/issuance-capability`,
-        body,
-      ),
+    /**
+     * POST /v1/admin/rights/:account/issue - grant or withdraw `RIGHT_ISSUE` on ONE ADDRESS.
+     *
+     * The path carries an ACCOUNT and no service, because `setRights` does not. That is what lets a
+     * registrar approve an applicant before it has a clone - and it means the grant reaches every
+     * service in effective standing, including another provider's.
+     */
+    setIssueRight: (account: string, body: IssuanceCapabilityReq) =>
+      request<IssuanceCapabilityResp>("POST", `/v1/admin/rights/${account}/issue`, body),
     /** GET /v1/admin/verifier-capabilities - who may verify, per purpose (the orthogonal axis). */
     listVerifierCapabilities: () =>
       request<VerifierCapabilitiesResp>("GET", "/v1/admin/verifier-capabilities"),

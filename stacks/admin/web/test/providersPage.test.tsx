@@ -887,9 +887,13 @@ describe("Providers - the capability dialog", () => {
     capabilitySubmit()!.click();
     await settle();
 
+    // The ADDRESS is in the PATH and no service appears anywhere, because `setRights` takes neither
+    // a service nor a signer field. Asserted on the URL as well as the body: a page that kept posting
+    // to a per-service path would still send a body this shape.
     const { url, body } = lastPost(fetchMock);
-    expect(url).toContain("/issuance-capability");
-    expect(body).toEqual({ signer, allowed: true });
+    expect(url).toContain(`/v1/admin/rights/${signer}/issue`);
+    expect(url).not.toContain("/services/");
+    expect(body).toEqual({ allowed: true });
   });
 
   /**

@@ -1030,13 +1030,13 @@ export interface ServiceStandingResp {
   warning?: string | null;
 }
 
-/** POST /v1/admin/services/:serviceAddress/issuance-capability */
+/** POST /v1/admin/rights/:account/issue - the grant is on the ADDRESS and names no service. */
 export interface IssuanceCapabilityReq {
-  signer: string;
   allowed: boolean;
 }
 export interface IssuanceCapabilityResp {
-  serviceAddress: string;
+  account: string;
+  /** Retained alongside `account` and carrying the same value, so existing readers keep working. */
   signer: string;
   allowed: boolean;
   actions: GovernanceDisposition[];

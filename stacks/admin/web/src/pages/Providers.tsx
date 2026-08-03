@@ -1163,16 +1163,15 @@ export function Providers() {
     setBusy("capability");
     try {
       if (target.kind === "issuance") {
-        const resp = await central.setIssuanceCapability(target.service, {
-          signer: address,
-          allowed,
-        });
+        const resp = await central.setIssueRight(address, { allowed });
         recordDispatch({
           providerId: target.providerId,
           outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
           warning: resp.warning,
           actions: resp.actions,
-          summary: `issuance ${allowed ? "granted to" : "withdrawn from"} ${shortAddr(address)} on ${shortAddr(target.service)}`,
+          // Deliberately does NOT name a service. The grant carries none, so a summary reading
+          // "granted on <clone>" would describe a narrower write than the one just sent.
+          summary: `issue right ${allowed ? "granted to" : "withdrawn from"} ${shortAddr(address)} (every service in standing)`,
         });
         await loadServices(target.providerId);
       } else if (target.kind === "verify") {
