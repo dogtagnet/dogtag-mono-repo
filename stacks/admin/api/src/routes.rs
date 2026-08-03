@@ -2883,10 +2883,24 @@ async fn verifier_capability_set(
     // The RAW purpose word. `setVerifierCapability` derives `verificationKey(purpose)` itself, so
     // passing an already-derived key would derive twice and write the capability under a key
     // `canVerify` never reads - a transaction that succeeds and grants nothing.
-    let key = if label.starts_with("0x") && label.len() == 66 {
-        label.to_lowercase()
-    } else {
-        purpose_key(label)
+    //
+    // An explicit word is validated rather than passed through: `parse_b256` coerces a malformed
+    // value to the ZERO word, which the contract accepts (it refuses only a zero relayer), so the
+    // grant would land under a purpose no verifier ever asks about while the response echoed the
+    // malformed string back as `purposeKey`. Same guard `attachService`'s `generationId` applies.
+    let key = match label.strip_prefix("0x") {
+        Some(h) if h.len() == 64 => {
+            if !h.chars().all(|c| c.is_ascii_hexdigit()) || h.chars().all(|c| c == '0') {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "an explicit purpose must be a non-zero 0x-prefixed 32-byte hex word - a \
+                     malformed one coerces to the zero word and would grant under a purpose no \
+                     verifier reads. Send a label like travel_check to have it keccak'd instead",
+                );
+            }
+            format!("0x{}", h.to_lowercase())
+        }
+        _ => purpose_key(label),
     };
 
     let read = capabilities_from(

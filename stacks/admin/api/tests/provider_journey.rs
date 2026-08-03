@@ -333,6 +333,41 @@ async fn verify_capability_is_keyed_by_purpose_and_carries_the_raw_purpose_word(
     assert!(sv["services"].as_array().unwrap().is_empty(), "{sv}");
 }
 
+/// An EXPLICIT purpose word is validated, never handed straight to `parse_b256`, which coerces a
+/// malformed value to the ZERO word. The contract refuses only a zero relayer, so such a grant would
+/// succeed and land under a purpose no verifier ever reads, while the response echoed the malformed
+/// string back as `purposeKey`.
+#[tokio::test]
+async fn a_malformed_explicit_purpose_is_refused_rather_than_coerced_to_the_zero_word() {
+    let (app, tok, _chain) = seeded().await;
+    for bad in [format!("0x{}", "z".repeat(64)), format!("0x{}", "0".repeat(64))] {
+        let (s, b) = call(
+            &app,
+            "POST",
+            "/v1/admin/verifier-capabilities",
+            Some(&tok),
+            Some(serde_json::json!({ "purpose": bad, "relayer": SIGNER, "allowed": true })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad} must be refused: {b}");
+        assert!(b.get("actions").is_none(), "nothing may be dispatched for {bad}: {b}");
+    }
+
+    // ...and the guard is not over-broad: a well-formed explicit word still passes through as the
+    // RAW purpose, unchanged.
+    let explicit = admin_api::chain::purpose_key("travel_check");
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/v1/admin/verifier-capabilities",
+        Some(&tok),
+        Some(serde_json::json!({ "purpose": explicit, "relayer": SIGNER, "allowed": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["purposeKey"], explicit, "an explicit word passes through unchanged: {b}");
+}
+
 /// Resolver approval is the fleet-wide half; the provider's SELECTION is the other, and the response
 /// says so rather than reading as done.
 #[tokio::test]
