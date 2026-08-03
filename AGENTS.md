@@ -35,6 +35,130 @@ So:
 
 The default shell here is zsh, which applies **parameter modifiers** inside expansions: `"$SHA:refs/heads/foo"` silently becomes `<sha>efs/heads/foo`, because `:r` is "remove extension". A preservation push written that way fails with a confusing `src refspec … does not match any`. Always brace it: `"${SHA}:refs/heads/foo"`. Related: backticks inside a double-quoted `--instructions`/`--intent` argument are executed as command substitution and silently strip identifiers - write long arguments to a file with a quoted heredoc and pass `"$(cat file)"`.
 
+## ONE implementation, no generations (captain, 2026-08-03) - supersedes every A/B and cutover note
+
+**"do not have 2 different implementations."** There is one authority, one factory, one issuer, one
+registry, one verification path. Any surviving RUNTIME BRANCH that picks between an old and a new
+behaviour is a defect to remove, not a feature to preserve - that branching IS the confusion this
+work deleted. Name what remains PLAINLY: no `V2` suffix, no "generation-1/2" framing in code,
+comments, UI copy or error messages.
+
+Read every older section in this file with that in mind. The cutover, client-repoint, C-9/C-10 and
+"deployed but unwired" material below is HISTORY of how the tree got here, not a description of it.
+
+### What was kept and what died
+
+KEPT: `ProviderRegistry` as the authority, its self-service factory, provider-owned clones,
+`canCreateService`/`canIssue`, wallet-signed provider actions.
+DIED: `IssuerRegistry` whitelisting, the older factory and the admin deploy-on-your-behalf button,
+the older `VerificationRegistryConsent` path, the older `ProtocolRegistry` discovery reads, and every
+generation probe.
+
+### THE PILLAR NOW FOLDS `IssuanceCapabilitySet`, AND THAT IS THE WHOLE UNBLOCK
+
+The mandatory issuer-whitelist pillar used to filter `Whitelisted`/`Delisted`, keyed on a RECORD-TYPE
+key in `topic1`. `ProviderRegistry` records grants as
+`IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed)` - different
+name, different `topic0`, different argument shape - so that filter matched NOTHING there, and
+`grant_in_force_at(&[], _)`'s empty-history rule rendered "we asked the wrong contract in the wrong
+language" as **"this credential is forged"**, on government's unauthenticated `POST /v1/verify`.
+
+It is now read from `IssuanceCapabilitySet` on all five mirrored surfaces
+(`crates/dogtag-standard-rs/src/verify.rs`, vet `chain.rs`, government `chain.rs`,
+`packages/ui/src/wallet/contracts.ts`, Kotlin + Swift `RoaxRpc`). Five things are load-bearing:
+
+- **Keyed on the SERVICE, not a record type.** A clone carries exactly one record type, so filtering
+  by service inherently scopes the history to it. The check that the DOCUMENT's claimed record type
+  matches `recordType()` stays AT THE CALLER, where a relabelled credential is refused - do not move
+  it into the read. `record_type` was consequently dropped from `whitelisted_at_issuance` and
+  `issuance_capability` on every surface; a dead parameter that used to carry the old key is exactly
+  the confusion this removed.
+- **ONE topic, and `allowed` is the DATA word.** Grant and withdrawal share `topic0`; they are told
+  apart by the log body, not by which topic matched. Every surface refuses a word that is neither 0
+  nor 1 (`allowedFromLogData`) rather than guessing - guessing states a grant or a withdrawal that
+  was never recorded.
+- **The empty-history refusal is UNCONDITIONAL again**, and the generation probe is gone with it.
+  `issue()` is `onlyIssuanceCapable`, so an honest clone cannot have anchored without a grant; a read
+  that FAILED returns undetermined earlier and never arrives as an empty one. There is no second
+  vocabulary left to disambiguate, so `AuthorityGeneration`, `generationFromProbe`,
+  `answered_with_execution_revert` / `isExecutionRevert`-as-discriminator and
+  `generationFromProbeData` were deleted from all five.
+- **The pillar folds the RAW capability grant, never `canIssue`.** `canIssue` additionally folds live
+  lifecycle terms (provider standing, service standing, the current pointer) that can change after
+  issuance - folding those would turn an ordinary repoint or suspension into a forgery verdict
+  against genuinely issued credentials. That is the current-state-getter mistake the pillar exists to
+  avoid, and it is easy to reintroduce because `canIssue` is right next door.
+- **The PREFLIGHT takes `canIssue` and nothing wider.** `DogTagIssuer.issue` is gated by
+  `onlyIssuanceCapable == registry.canIssue(address(this), msg.sender)`; a preflight on
+  `isRecognizedIssuer` passes where the write reverts, which is the one thing a preflight prevents.
+
+**The new topic is `0x831abb96b1c02fe346a944062a9367343ef9d09be41d65818b796cd1a8676941`** (`cast keccak
+"IssuanceCapabilitySet(address,address,bool)"`), pinned on BOTH phones. A topic derived at the wrong
+width matches no log at all, which reads exactly like "never granted" and refuses every credential -
+that silence is why it is pinned rather than reviewed.
+
+### The factory-less expected-signer branch CAN NO LONGER REFUSE, deliberately
+
+vet-api's `expectedSignerState` was the one place the current-state getter survived, asking this
+deployment's own registry `isWhitelistedFor(recordTypeKey, signer)`. Under one authority that read is
+unanswerable: every issuance-axis read is SERVICE-scoped and this branch is DEFINED by having no
+resolved clone to pass, while the one selector taking no service answers off the orthogonal VERIFY
+axis - handed a record-type key it returns a confident `false` for every genuine issuer signer.
+Supplying `documentStore` to satisfy the signature is strictly worse: it hands the attacker the
+choice of which contract answers.
+
+So it reports `unanchoredUnevaluable` and **gates nothing**. That is a real narrowing, pinned as a
+requirement by `a_factoryless_deployment_reports_the_signer_assertion_as_unevaluable` so nobody
+re-derives the old behaviour from the shape of the code. `FACTORY_ADDR` is what restores the anchor.
+
+### MemChain models TWO axes now, on both backends
+
+Issuance is keyed `(authority, service, signer)` and carries its own positioned log; verify is keyed
+`(authority, verifyKey, signer)` and is a plain current-state map. `set_issuance_capability` EMITS its
+event exactly as the real `setIssuanceCapability` does, so a test that grants and then issues
+produces the honest ordering and the pillar answers historically with no extra seeding.
+`set_grant_history` stays for the states the honest path cannot reach (withdrawn BEFORE the
+anchoring), and `whitelist`/`delist` now seed the VERIFY axis only - seeding issuance through them is
+the mistake that makes a fixture inert.
+
+### Backend-delegated signing is DEFERRED BY DECISION, and here is where it attaches
+
+Wallet signing is the only signer this change builds. A server-held clinic key remains a legitimate
+deployment mode (receptionists are not going to hold browser wallets) and is deferred, not cancelled.
+The seam is already the right shape: the signer is an explicit INPUT to
+`issuance_capability(issuer_addr, signer)` and to the pillar, never an assumption baked through the
+layers, so a second signer source plugs into the existing shape. **Do not build a plugin framework
+for it, and do not hardwire "a connected wallet is the only conceivable signer" either.**
+
+**FINDING that corrects the obvious attach point:** `_isRecognizedIssuer` reads
+`_issuanceCapabilities[service][signer]` ONLY. `setServiceDelegate` grants CONTENT-WRITE permissions
+(`canWriteService`) and does **not** satisfy `canIssue`. So a delegated server key is granted by
+`setIssuanceCapability`, which is `onlyOwner` - the REGISTRAR, not the provider. "The provider grants
+its own server key" is NOT reachable on the deployed contract without a Solidity change.
+
+### The router is MANDATORY on chain and invisible on the client
+
+`CloneProvenanceRouter` exists to resolve roots across factories, but it cannot be removed:
+`DogTagIssuerFactory.priorIndex` is `immutable`, mandatory and behaviour-probed in the constructor,
+and `VerificationRegistryConsent.rootIndex` is `immutable` and points at it. The factory's own header
+says a wrong `priorIndex` is remedied only by a new factory AND a new verification registry. Removing
+it is a two-contract redeploy.
+
+On the client nothing needs to know it bridges anything: `rootIssuer(R)` is a plain read whatever
+answers it. So it is described as **the root index**, and the split that matters is
+READER-vs-WRITER - a reader resolving a credential's issuing clone reads the ROUTER, a writer calling
+`predictIssuer`/`createIssuer` calls the FACTORY. Pointing a reader at the factory resolves only
+clones that factory deployed and answers zero for the rest, which surfaces as an indeterminate issuer
+pillar rather than an error.
+
+### The indexer's multi-contract watching is NOT generation vocabulary - keep it
+
+`stacks/indexer/api` watching SEVERAL contract sets at once, retaining every event ever observed, and
+anti-spoof gating by ROLE (a `Verified` from a known factory is still a spoof) is a REQUIRED
+capability: switching contracts APPENDS to the watched set and never replaces it, and events from
+superseded contracts stay queryable forever. Rename the word if it reads as version vocabulary; never
+delete the capability.
+
 ## Product model (non-negotiable)
 
 **dogtag is ONE owner-hidden model. There is no Level-A/Level-B split, mode, or vocabulary in the product.**
