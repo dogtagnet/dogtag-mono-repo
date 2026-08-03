@@ -185,6 +185,32 @@ describe("a log with no position is reported as such, never placed", () => {
     expect(h).toBe(UNPOSITIONED_LOG);
   });
 
+  /**
+   * The reader reads a BIT, not the whole word.
+   *
+   * Bit 0 is the only settable right today, so "the mask equals 1n" and "bit 0 is set" agree on every
+   * value the contract can currently emit - which is exactly what would let a whole-word comparison
+   * survive review until a second right is allocated. These masks carry higher bits, which no honest
+   * authority emits YET, precisely so the reader is pinned against the day one does.
+   *
+   * Mirrors `test_theIssueRightIsReadAsABitNotAsTheWholeWord` (iOS) and
+   * `theIssueRightIsReadAsABitNotAsTheWholeWord` (Android).
+   */
+  it("whitelistGrantHistory: the issue right is read as a BIT of the rights mask", async () => {
+    const mask = async (rights: bigint) => {
+      getLogs.mockResolvedValueOnce([{ ...positioned, args: { rights } }]);
+      return whitelistGrantHistory({ registryAddr: ADDR, signer: SIGNER, rpcUrl: url() });
+    };
+    // A future second right held ALONGSIDE the issue right: still granted.
+    expect(await mask(0b11n)).toEqual([{ kind: "whitelisted", ...positioned }]);
+    // A future second right held WITHOUT it: withdrawn, and emphatically not malformed.
+    expect(await mask(0b10n)).toEqual([{ kind: "delisted", ...positioned }]);
+    expect(await mask(0xffn)).toEqual([{ kind: "whitelisted", ...positioned }]);
+    // A bit far above the low word, where a truncating reader would lose the mask entirely.
+    expect(await mask(1n << 200n)).toEqual([{ kind: "delisted", ...positioned }]);
+    expect(await mask((1n << 200n) | 1n)).toEqual([{ kind: "whitelisted", ...positioned }]);
+  });
+
   it("whitelistGrantHistory: positioned logs still fold, and an empty log is still an empty history", async () => {
     // The control. Without it a reader that returned the sentinel unconditionally would pass above.
     getLogs.mockResolvedValueOnce([grant(true, positioned)]);
