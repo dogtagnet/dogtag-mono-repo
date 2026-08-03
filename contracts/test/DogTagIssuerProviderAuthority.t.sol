@@ -2,14 +2,14 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {IProviderAuthority} from "../src/DogTagIssuerV2.sol";
+import {IProviderAuthority} from "../src/DogTagIssuer.sol";
 import {ProviderRegistry} from "../src/ProviderRegistry.sol";
 
 /// @dev Pins the one claim the S-6/S-7 merge made checkable: that the four functions the generation-2
 /// pair asks of the authority core are the core's OWN four, not a hand-copied approximation of them.
 ///
 /// It is worth pinning because the pair reaches the core through an interface it declares LOCALLY
-/// (`IProviderAuthority`, in `DogTagIssuerV2.sol`), and Solidity checks nothing across that seam. A
+/// (`IProviderAuthority`, in `DogTagIssuer.sol`), and Solidity checks nothing across that seam. A
 /// diverged argument list is a selector the core reverts on - which, on `canIssue`, means every anchor
 /// through every generation-2 clone reverts - and a diverged return type or mutability is silently
 /// misdecoded ABI, which is worse than a revert because it answers. Before this file the agreement
@@ -30,7 +30,7 @@ import {ProviderRegistry} from "../src/ProviderRegistry.sol";
 /// ladder's behaviour in this tree remains the stand-in's, and a divergence in either contract's
 /// BEHAVIOUR would leave this suite green. Wiring the two together is a cutover step
 /// (`docs/ISSUER_V2_OWNERSHIP.md` §8), not a gap this file closes.
-contract IssuerV2ProviderAuthorityInterfaceTest is Test {
+contract DogTagIssuerProviderAuthorityInterfaceTest is Test {
     /// @dev Any non-zero address. The core's constructor is `Ownable(authority)`, which rejects zero.
     address internal constant REGISTRAR = address(0xA11CE);
 

@@ -63,7 +63,8 @@ contract PinConsentWitnessGraph is Script {
                 vm.envBytes32("CONSENT_WITNESS_MOBILE_SHA256"),
                 vm.envBytes32("CONSENT_R1CS_SHA256"),
                 vm.envBytes32("CONSENT_WASM_SHA256"),
-                vm.envString("DOGTAG_ARTIFACTS_URL")
+                vm.envString("DOGTAG_ARTIFACTS_URL"),
+                vm.envString("CONSENT_MIN_APP_VERSION")
             )
         );
     }

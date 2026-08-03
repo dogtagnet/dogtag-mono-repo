@@ -3,33 +3,42 @@ pragma solidity 0.8.28;
 
 import {ProtocolRegistry} from "../src/ProtocolRegistry.sol";
 
-/// @title ProtocolVersions — the CURRENT protocol records, as published to `ProtocolRegistry`.
-/// @notice Authors the single owner-hidden `dogtag-levelb/1` record. The identifier is retained
-/// byte-for-byte as an internal compatibility key. Both the publish script and registry tests import
-/// these builders so the published shape and tested shape cannot drift.
+/// @title ProtocolVersions — the records published to `ProtocolRegistry`.
+/// @notice Authors the `dogtag-levelb/1` discovery set, the artifact set it binds, and the binding.
+/// Both the publish script and the registry tests import these builders so the published shape and the
+/// tested shape cannot drift.
 ///
-/// # Two axes
+/// # Two keys, two namespaces, two rotation rates
 ///
-/// The protocol version is represented as:
-///   * a [`ProtocolRegistry.ContractSet`] keyed by `keccak256("dogtag-levelb/1")` — the trio +
-///     verifier + on-chain circuitId; and
-///   * a [`ProtocolRegistry.ArtifactSet`] keyed by `keccak256("dogtag-levelb-artifacts/1")` — the four
-///     fetch-pins + base URL + `minAppVersion`; plus
-///   * the BINDING that points the first at the second.
-/// Rotating a zkey means authoring a NEW artifact set (`…-artifacts/2`) and re-pointing the binding.
-/// The contract set is not touched, so no trio address moves and no contract is redeployed. This is the
-/// FIRST publication, so it uses the two-axis scheme from the start — there is nothing to migrate.
+/// The discovery key and the artifact key are DELIBERATELY different namespaces so the two axes can
+/// never collide, and they rotate independently: a zkey rotation mints a new artifact id and moves no
+/// address, while an address rotation mints a new discovery id and leaves the artifacts alone.
 ///
-/// Addresses, artifact pins, and the artifact base URL are arguments rather than network-specific
-/// constants. `PublishProtocolVersions.s.sol` obtains every one from mandatory environment variables,
-/// preventing a fresh deployment from silently publishing a stale ROAX address or artifact location.
+/// A new id is reserved for a REAL change. Minting one for identical bytes publishes a second identity
+/// for one set, which is how a consumer comes to believe two things differ when they do not. That rule
+/// binds both keys equally.
+///
+/// `minAppVersion` is a mandatory argument with no default. It is a statement about which app BUILD may
+/// act on this discovery set — not part of the artifacts' identity — and it is not knowable from this
+/// file. Guessing one would publish a floor nobody verified.
+///
+/// Every address is likewise an argument, not a constant, so a fresh deployment cannot silently publish
+/// a stale address.
 library ProtocolVersions {
+    /// @notice The discovery key. It is the SAME string the SDK stamps into every credential's
+    /// `protocol.version` (`dogtag_standard::LEVEL_B_VERSION`) and the same key the prover's artifact
+    /// registry and both mobile bundles resolve, so a credential's own claim and the on-chain discovery
+    /// record name one protocol version. A client validating a claim compares the two directly; if they
+    /// were allowed to differ, every discovery validation would fail closed.
     string internal constant LEVEL_B_VERSION = "dogtag-levelb/1";
 
-    /// @notice The artifact-axis ids. Deliberately a DIFFERENT namespace from the contract-set ids so
-    /// the two axes can never collide, and so an artifact rotation reads as what it is
-    /// (`…-artifacts/2`) rather than as a protocol-level bump.
+    /// @notice The artifact key. A DIFFERENT namespace from the discovery key, so the two axes can never
+    /// collide even at the same version number.
     string internal constant LEVEL_B_ARTIFACTS = "dogtag-levelb-artifacts/1";
+
+    /// @notice The frozen circuit identity, from the consent ceremony. Moving this would be a false
+    /// claim about which circuit the published set proves against.
+    string internal constant CONSENT_CIRCUIT_ID = "consent.circom/DogTagConsent(6)";
 
     function levelBId() internal pure returns (bytes32) {
         return keccak256(bytes(LEVEL_B_VERSION));
@@ -39,31 +48,51 @@ library ProtocolVersions {
         return keccak256(bytes(LEVEL_B_ARTIFACTS));
     }
 
-    /// @notice Builds the owner-hidden on-chain set from the freshly deployed component addresses.
-    function levelBContracts(address factory, address verificationRegistry, address sbt, address verifier)
-        internal
-        pure
-        returns (ProtocolRegistry.ContractSet memory)
-    {
-        return ProtocolRegistry.ContractSet({
-            contractSetId: keccak256(bytes(LEVEL_B_VERSION)),
+    function consentCircuitId() internal pure returns (bytes32) {
+        return keccak256(bytes(CONSENT_CIRCUIT_ID));
+    }
+
+    /// @notice Builds the discovery set from the deployed component addresses.
+    ///
+    /// @param factory The `DogTagIssuerFactory` — where a provider's clone comes from, and the address
+    /// the verification registry's immutable `rootIndex` resolves every anchored root through. The
+    /// publish preflight asserts that equality against the chain.
+    /// @param verificationRegistry The `VerificationRegistryConsent` a proof is submitted to.
+    /// @param sbt The `DogTagSBTConsent`. `profileRoot` is write-once, so an SBT that did not mint a
+    /// tag can never answer for it — this must be the SBT the verification registry names.
+    /// @param verifier The `Groth16VerifierConsent` — the frozen ceremony VK's on-chain identity.
+    /// @param providerRegistry The `ProviderRegistry` authority core; also the root of the resolver layer.
+    function levelBDiscovery(
+        address factory,
+        address verificationRegistry,
+        address sbt,
+        address verifier,
+        address providerRegistry
+    ) internal pure returns (ProtocolRegistry.DiscoverySet memory) {
+        return ProtocolRegistry.DiscoverySet({
+            discoverySetId: keccak256(bytes(LEVEL_B_VERSION)),
             factory: factory,
             verificationRegistry: verificationRegistry,
             sbt: sbt,
             verifier: verifier,
-            circuitId: keccak256("consent.circom/DogTagConsent(6)"),
-            publishedAt: 0, // stamped by executeContractSet
-            active: false // set true by executeContractSet
+            providerRegistry: providerRegistry,
+            circuitId: keccak256(bytes(CONSENT_CIRCUIT_ID)),
+            publishedAt: 0, // stamped by executeDiscoverySet
+            active: false // set true by executeDiscoverySet
         });
     }
 
-    /// @notice Builds the independently rotatable owner-hidden proving artifact set.
+    /// @notice Builds the artifact set the discovery set binds. The four pins are the frozen consent
+    /// artifacts'.
+    ///
+    /// @param minAppVersion The app floor — mandatory, with no default. See the library note.
     function levelBArtifacts(
         bytes32 zkeySha256,
         bytes32 witnessMobileSha256,
         bytes32 witnessServerR1csSha256,
         bytes32 witnessServerWasmSha256,
-        string memory artifactBaseUrl
+        string memory artifactBaseUrl,
+        string memory minAppVersion
     ) internal pure returns (ProtocolRegistry.ArtifactSet memory) {
         return ProtocolRegistry.ArtifactSet({
             artifactSetId: keccak256(bytes(LEVEL_B_ARTIFACTS)),
@@ -72,7 +101,7 @@ library ProtocolVersions {
             witnessServerR1csSha256: witnessServerR1csSha256,
             witnessServerWasmSha256: witnessServerWasmSha256,
             artifactBaseUrl: artifactBaseUrl,
-            minAppVersion: "1.4.0", // M-4 PR4 app release floor (iOS + Android)
+            minAppVersion: minAppVersion,
             publishedAt: 0, // stamped by executeArtifactSet
             active: false // set true by executeArtifactSet
         });

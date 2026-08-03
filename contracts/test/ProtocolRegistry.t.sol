@@ -4,15 +4,19 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {ProtocolRegistry} from "../src/ProtocolRegistry.sol";
+import {ProtocolRegistry, MIN_PUBLISH_TIMELOCK_SECONDS} from "../src/ProtocolRegistry.sol";
+import {ProtocolVersions} from "../script/ProtocolVersions.sol";
 import {ProtocolVersions} from "../script/ProtocolVersions.sol";
 
-/// @notice M7 P3 — the discovery TRUST ANCHOR (§5.1). Covers: timelocked publish (propose→2-day→
-/// execute) on BOTH axes and on the binding, role-gating, deprecate-keeps-history, enumeration, exact
-/// read-back (incl. the string members the auto-getter omits), and the frozen artifact pins against the
-/// committed artifacts.
+/// @notice The generation-2 discovery anchor. Three things here are NOT re-tests of generation 1 and are
+/// what this suite exists for:
 ///
-/// The load-bearing section is `--- R-5: the two axes rotate independently ---`: it is what proves the
-/// on-chain contract set and the off-chain proving artifacts are no longer one coupled version.
+///   * `--- The timelock floor ---` — a zero-delay registry is unrepresentable, enforced by the
+///     CONSTRUCTOR rather than by a deploy script, because the value is immutable and the mistake would
+///     be unfixable.
+///   * `--- The record cannot be misdecoded ---` — the getter's selector and the exact 9-word return
+///     arity are pinned, so a client built for a differently-shaped record reverts on dispatch instead
+///     of reading every member one slot out.
 contract ProtocolRegistryTest is Test {
     ProtocolRegistry internal reg;
 
@@ -20,35 +24,53 @@ contract ProtocolRegistryTest is Test {
     address internal constant PUBLISHER = address(0xB0B);
     address internal constant OUTSIDER = address(0xBAD);
 
-    address internal constant FACTORY = address(0xFACADE);
+    address internal constant FACTORY = address(0xFACADE2);
     address internal constant VERIFICATION_REGISTRY = address(0xC0DE);
     address internal constant SBT = address(0x5B7);
     address internal constant VERIFIER = address(0xBEEF);
+    address internal constant PROVIDER_REGISTRY = address(0x9309);
 
     bytes32 internal constant ZKEY_SHA256 =
         0xf83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868;
+    bytes32 internal constant GRAPH_SHA256 =
+        0x2f74d26b2f0d47d0d1b3f2f8f0a1a5c3d5b7e9a1c3e5f70921436587a9cbedf7;
     bytes32 internal constant R1CS_SHA256 =
         0x828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7;
     bytes32 internal constant WASM_SHA256 =
         0x482debcff5a4325c008dd00e4476bba011d0a706da955e3129d114f996a913e6;
 
-    bytes32 internal bId;
-    bytes32 internal bArtId;
+    string internal constant ARTIFACT_URL = "https://artifacts.dogtag.io/consent1";
+    string internal constant MIN_APP = "1.6.0";
+
+    bytes32 internal v2Id;
+    bytes32 internal artId;
 
     function setUp() public {
         reg = new ProtocolRegistry(ADMIN, PUBLISHER, 2 days);
-        bId = ProtocolVersions.levelBId();
-        bArtId = ProtocolVersions.levelBArtifactsId();
+        v2Id = ProtocolVersions.levelBId();
+        artId = ProtocolVersions.levelBArtifactsId();
     }
 
     // --- helpers ---------------------------------------------------------------------------------
 
-    function _publishContracts(ProtocolRegistry.ContractSet memory c) internal {
+    function _discovery() internal pure returns (ProtocolRegistry.DiscoverySet memory) {
+        return ProtocolVersions.levelBDiscovery(
+            FACTORY, VERIFICATION_REGISTRY, SBT, VERIFIER, PROVIDER_REGISTRY
+        );
+    }
+
+    function _artifacts() internal pure returns (ProtocolRegistry.ArtifactSet memory) {
+        return ProtocolVersions.levelBArtifacts(
+            ZKEY_SHA256, GRAPH_SHA256, R1CS_SHA256, WASM_SHA256, ARTIFACT_URL, MIN_APP
+        );
+    }
+
+    function _publishDiscovery(ProtocolRegistry.DiscoverySet memory d) internal {
         vm.prank(PUBLISHER);
-        reg.proposeContractSet(c);
+        reg.proposeDiscoverySet(d);
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
         vm.prank(PUBLISHER);
-        reg.executeContractSet(c.contractSetId);
+        reg.executeDiscoverySet(d.discoverySetId);
     }
 
     function _publishArtifacts(ProtocolRegistry.ArtifactSet memory a) internal {
@@ -59,735 +81,610 @@ contract ProtocolRegistryTest is Test {
         reg.executeArtifactSet(a.artifactSetId);
     }
 
-    function _bind(bytes32 contractSetId, bytes32 artifactSetId) internal {
+    function _bind(bytes32 discoverySetId, bytes32 artifactSetId) internal {
         vm.prank(PUBLISHER);
-        reg.proposeArtifactBinding(contractSetId, artifactSetId);
+        reg.proposeArtifactBinding(discoverySetId, artifactSetId);
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
         vm.prank(PUBLISHER);
-        reg.executeArtifactBinding(contractSetId);
+        reg.executeArtifactBinding(discoverySetId);
     }
 
-    function _contracts() internal pure returns (ProtocolRegistry.ContractSet memory) {
-        return ProtocolVersions.levelBContracts(FACTORY, VERIFICATION_REGISTRY, SBT, VERIFIER);
+    function _publishGenerationTwo() internal {
+        _publishDiscovery(_discovery());
+        _publishArtifacts(_artifacts());
+        _bind(v2Id, artId);
     }
 
-    function _artifacts() internal pure returns (ProtocolRegistry.ArtifactSet memory) {
-        return ProtocolVersions.levelBArtifacts(
-            ZKEY_SHA256, bytes32(0), R1CS_SHA256, WASM_SHA256, "https://artifacts.dogtag.io/consent1"
+    // =============================================================================================
+    // --- The timelock floor ---
+    // =============================================================================================
+
+    /// @notice The headline. The live generation-1 registry carries `PUBLISH_TIMELOCK == 0` and the value
+    /// is `immutable`, so nothing short of a redeploy can fix it. Here a zero is refused by the
+    /// CONSTRUCTOR, which is what makes the fix independent of whether anyone remembers to use the deploy
+    /// script.
+    function test_a_zero_publish_timelock_cannot_be_deployed_at_all() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ProtocolRegistry.PublishTimelockBelowFloor.selector, 0, MIN_PUBLISH_TIMELOCK_SECONDS
+            )
+        );
+        new ProtocolRegistry(ADMIN, PUBLISHER, 0);
+
+        // Everything below the floor is refused, not only zero — a one-second delay is a timelock that
+        // exists in the getter and nowhere else.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ProtocolRegistry.PublishTimelockBelowFloor.selector, 1, MIN_PUBLISH_TIMELOCK_SECONDS
+            )
+        );
+        new ProtocolRegistry(ADMIN, PUBLISHER, 1);
+
+        // ...and the floor itself is accepted, so the guard is a floor rather than a ban.
+        ProtocolRegistry atFloor = new ProtocolRegistry(ADMIN, PUBLISHER, MIN_PUBLISH_TIMELOCK_SECONDS);
+        assertEq(atFloor.PUBLISH_TIMELOCK(), MIN_PUBLISH_TIMELOCK_SECONDS);
+    }
+
+    /// @notice The floor is a real boundary, not a `!= 0` check wearing a floor's name: one second below
+    /// it reverts and the floor itself is accepted. A `> 0` guard would pass a one-second delay, which is
+    /// a timelock that exists only in the getter.
+    function test_the_floor_is_a_boundary_not_a_nonzero_check() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ProtocolRegistry.PublishTimelockBelowFloor.selector, 1, MIN_PUBLISH_TIMELOCK_SECONDS
+            )
+        );
+        new ProtocolRegistry(ADMIN, PUBLISHER, 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ProtocolRegistry.PublishTimelockBelowFloor.selector,
+                MIN_PUBLISH_TIMELOCK_SECONDS - 1,
+                MIN_PUBLISH_TIMELOCK_SECONDS
+            )
+        );
+        new ProtocolRegistry(ADMIN, PUBLISHER, MIN_PUBLISH_TIMELOCK_SECONDS - 1);
+
+        ProtocolRegistry atFloor = new ProtocolRegistry(ADMIN, PUBLISHER, MIN_PUBLISH_TIMELOCK_SECONDS);
+        assertEq(atFloor.PUBLISH_TIMELOCK(), 1 hours, "the floor itself must be deployable");
+        assertEq(atFloor.MIN_PUBLISH_TIMELOCK(), 1 hours);
+        assertEq(atFloor.DEFAULT_PUBLISH_TIMELOCK(), 2 days, "the production default is unchanged");
+    }
+
+    /// @notice The delay actually delays: an execute before the ETA reverts on all three writes, and the
+    /// same call succeeds after it. Without this, the floor would only prove a number was stored.
+    function test_the_configured_delay_gates_every_write() public {
+        ProtocolRegistry.DiscoverySet memory d = _discovery();
+        ProtocolRegistry.ArtifactSet memory a = _artifacts();
+
+        vm.startPrank(PUBLISHER);
+        reg.proposeDiscoverySet(d);
+        reg.proposeArtifactSet(a);
+        reg.proposeArtifactBinding(v2Id, artId);
+
+        vm.expectRevert(bytes("timelock"));
+        reg.executeDiscoverySet(v2Id);
+        vm.expectRevert(bytes("timelock"));
+        reg.executeArtifactSet(artId);
+        vm.expectRevert(bytes("timelock"));
+        reg.executeArtifactBinding(v2Id);
+
+        // One second before the ETA is still too early — the boundary is `>=`, not "roughly".
+        vm.warp(reg.discoverySetEta(v2Id) - 1);
+        vm.expectRevert(bytes("timelock"));
+        reg.executeDiscoverySet(v2Id);
+
+        vm.warp(reg.discoverySetEta(v2Id));
+        reg.executeDiscoverySet(v2Id);
+        reg.executeArtifactSet(artId);
+        reg.executeArtifactBinding(v2Id);
+        vm.stopPrank();
+
+        assertTrue(reg.getDiscoverySet(v2Id).active);
+        assertEq(reg.getActiveArtifactSet(v2Id).artifactSetId, artId);
+    }
+
+    // =============================================================================================
+    // --- The wider record cannot be misdecoded ---
+    // =============================================================================================
+
+    /// @notice A client built for a DIFFERENTLY-SHAPED discovery record must revert, not misdecode.
+    ///
+    /// The getter's NAME is the guard, and it is why the record and its getter must always be renamed
+    /// together. A record read by decoding a fixed-width tuple gives a reader no way to notice it
+    /// decoded the wrong one: every member lands one slot out and each is a plausible value of the
+    /// field it was read into. Here a client calling the older `getContractSet(bytes32)` finds no
+    /// function and this fallback-less contract reverts — the same trap, refused, that the two
+    /// `recordVerificationZK` arities sharing selector `0xdd080593` walked into.
+    ///
+    /// The legacy selectors are written as SIGNATURE STRINGS rather than referenced from a contract,
+    /// because the contract that carried them is deleted. That is deliberate: what must stay true is
+    /// that these bytes find nothing here, and a signature string keeps asserting it with nothing left
+    /// to import.
+    function test_a_client_built_for_another_record_shape_reverts_instead_of_misdecoding() public {
+        _publishGenerationTwo();
+
+        bytes4 legacyGetter = bytes4(keccak256("getContractSet(bytes32)"));
+        bytes4 legacyResolver = bytes4(keccak256("resolve(bytes32)"));
+        assertTrue(legacyGetter != ProtocolRegistry.getDiscoverySet.selector);
+        assertTrue(legacyResolver != ProtocolRegistry.resolveDiscovery.selector);
+
+        (bool ok,) = address(reg).staticcall(abi.encodeWithSelector(legacyGetter, v2Id));
+        assertFalse(ok, "a differently-shaped discovery read must fail closed here");
+        (bool resolveOk,) = address(reg).staticcall(abi.encodeWithSelector(legacyResolver, v2Id));
+        assertFalse(resolveOk, "and so must the differently-shaped resolver");
+
+        // The ARTIFACT axis is a separate record on a separately-rotatable axis whose shape is NOT
+        // changing, so it keeps its own name and selector. Asserting this keeps the naming rule scoped
+        // to the axis whose shape actually moved.
+        (bool artifactOk, bytes memory artifactRet) = address(reg)
+            .staticcall(abi.encodeWithSelector(ProtocolRegistry.getActiveArtifactSet.selector, v2Id));
+        assertTrue(artifactOk, "the unchanged axis must still answer");
+        assertGt(artifactRet.length, 0);
+    }
+    /// @notice The record's ARITY is pinned, which is what pins the field list itself.
+    ///
+    /// Nine words. A tenth member — say a protocol-wide `providerDirectory` or `serviceDomainResolver` —
+    /// would fail here, and it should: the authority core allowlists many resolvers per kind and each
+    /// provider/service selects its own, so a single protocol-wide resolver address would be a published
+    /// falsehood. `providerRegistry` is how a consumer reaches the real resolution root.
+    ///
+    /// This is the assertion that turns "rename the getter when the shape changes" from a convention
+    /// into a rule with a tripwire: a member added or removed reddens here, next to the rename note.
+    function test_the_discovery_record_is_exactly_nine_words() public {
+        _publishGenerationTwo();
+
+        (bool ok, bytes memory ret) =
+            address(reg).staticcall(abi.encodeWithSelector(ProtocolRegistry.getDiscoverySet.selector, v2Id));
+        assertTrue(ok);
+        assertEq(ret.length, 32 * 9, "a static 9-member tuple decodes as 9 inline words");
+    }
+
+    // =============================================================================================
+    // --- the published members are each their own contract ---
+    // =============================================================================================
+
+    /// @notice `factory` is the clone source AND the root index — one address in one member, because the
+    /// verification registry resolves roots through the factory itself. `providerRegistry` is a
+    /// different contract from the verification registry, and publishing either where the other belongs
+    /// sends a consumer to ask the wrong contract whether an issuer was authorized.
+    function test_the_published_members_are_each_their_own_contract() public {
+        _publishGenerationTwo();
+        ProtocolRegistry.DiscoverySet memory got = reg.getDiscoverySet(v2Id);
+
+        assertEq(got.factory, FACTORY);
+        assertEq(got.providerRegistry, PROVIDER_REGISTRY);
+        assertTrue(
+            got.providerRegistry != got.verificationRegistry,
+            "the authority core is not the verification registry"
         );
     }
 
-    /// Publish the one live version on both independent axes, then bind them.
-    function _publishLevelB() internal {
-        _publishContracts(_contracts());
+    /// @notice Every member reads back exactly, including the two the auto-getter would let a reviewer
+    /// overlook, and `publishedAt`/`active` are stamped by the contract rather than taken from calldata.
+    function test_publish_reads_back_exactly() public {
+        ProtocolRegistry.DiscoverySet memory want = _discovery();
+        // Try to pre-activate and back-date: both must be ignored.
+        want.active = true;
+        want.publishedAt = 1;
+
+        vm.warp(1_800_000_000);
+        _publishDiscovery(want);
+
+        ProtocolRegistry.DiscoverySet memory got = reg.getDiscoverySet(v2Id);
+        assertEq(got.discoverySetId, v2Id);
+        assertEq(got.factory, FACTORY);
+        assertEq(got.verificationRegistry, VERIFICATION_REGISTRY);
+        assertEq(got.sbt, SBT);
+        assertEq(got.verifier, VERIFIER);
+        assertEq(got.providerRegistry, PROVIDER_REGISTRY);
+        assertEq(got.circuitId, keccak256("consent.circom/DogTagConsent(6)"));
+        assertEq(got.publishedAt, uint64(block.timestamp), "publishedAt is stamped, not supplied");
+        assertTrue(got.active);
+
         _publishArtifacts(_artifacts());
-        _bind(bId, bArtId);
+        ProtocolRegistry.ArtifactSet memory a = reg.getArtifactSet(artId);
+        assertEq(a.artifactSetId, artId);
+        assertEq(a.zkeySha256, ZKEY_SHA256);
+        assertEq(a.witnessMobileSha256, GRAPH_SHA256);
+        assertEq(a.witnessServerR1csSha256, R1CS_SHA256);
+        assertEq(a.witnessServerWasmSha256, WASM_SHA256);
+        assertEq(a.artifactBaseUrl, ARTIFACT_URL, "the string members the auto-getter omits");
+        assertEq(a.minAppVersion, MIN_APP);
+        assertTrue(a.active);
     }
 
-    function _assertEqContracts(
-        ProtocolRegistry.ContractSet memory got,
-        ProtocolRegistry.ContractSet memory want
-    ) internal pure {
-        assertEq(got.contractSetId, want.contractSetId, "contractSetId");
-        assertEq(got.factory, want.factory, "factory");
-        assertEq(got.verificationRegistry, want.verificationRegistry, "verificationRegistry");
-        assertEq(got.sbt, want.sbt, "sbt");
-        assertEq(got.verifier, want.verifier, "verifier");
-        assertEq(got.circuitId, want.circuitId, "circuitId");
+    /// @notice Each address member is separately required, with its own reason. A single lumped
+    /// "zero address" check would tell an operator nothing about WHICH transcription slipped.
+    function test_every_component_address_is_required() public {
+        vm.startPrank(PUBLISHER);
+
+        ProtocolRegistry.DiscoverySet memory noProvider = _discovery();
+        noProvider.providerRegistry = address(0);
+        vm.expectRevert(bytes("zero providerRegistry"));
+        reg.proposeDiscoverySet(noProvider);
+
+        ProtocolRegistry.DiscoverySet memory noFactory = _discovery();
+        noFactory.factory = address(0);
+        vm.expectRevert(bytes("zero trio/verifier"));
+        reg.proposeDiscoverySet(noFactory);
+
+        ProtocolRegistry.DiscoverySet memory noRegistry = _discovery();
+        noRegistry.verificationRegistry = address(0);
+        vm.expectRevert(bytes("zero trio/verifier"));
+        reg.proposeDiscoverySet(noRegistry);
+
+        ProtocolRegistry.DiscoverySet memory noSbt = _discovery();
+        noSbt.sbt = address(0);
+        vm.expectRevert(bytes("zero trio/verifier"));
+        reg.proposeDiscoverySet(noSbt);
+
+        ProtocolRegistry.DiscoverySet memory noVerifier = _discovery();
+        noVerifier.verifier = address(0);
+        vm.expectRevert(bytes("zero trio/verifier"));
+        reg.proposeDiscoverySet(noVerifier);
+
+        ProtocolRegistry.DiscoverySet memory noId = _discovery();
+        noId.discoverySetId = bytes32(0);
+        vm.expectRevert(bytes("discoverySetId=0"));
+        reg.proposeDiscoverySet(noId);
+
+        ProtocolRegistry.DiscoverySet memory noCircuit = _discovery();
+        noCircuit.circuitId = bytes32(0);
+        vm.expectRevert(bytes("circuitId=0"));
+        reg.proposeDiscoverySet(noCircuit);
+
+        ProtocolRegistry.ArtifactSet memory noZkey = _artifacts();
+        noZkey.zkeySha256 = bytes32(0);
+        vm.expectRevert(bytes("zkeySha256=0"));
+        reg.proposeArtifactSet(noZkey);
+
+        vm.stopPrank();
     }
 
-    function _assertEqArtifacts(
-        ProtocolRegistry.ArtifactSet memory got,
-        ProtocolRegistry.ArtifactSet memory want
-    ) internal pure {
-        assertEq(got.artifactSetId, want.artifactSetId, "artifactSetId");
-        assertEq(got.zkeySha256, want.zkeySha256, "zkeySha256");
-        assertEq(got.witnessMobileSha256, want.witnessMobileSha256, "witnessMobileSha256");
-        assertEq(got.witnessServerR1csSha256, want.witnessServerR1csSha256, "witnessServerR1csSha256");
-        assertEq(got.witnessServerWasmSha256, want.witnessServerWasmSha256, "witnessServerWasmSha256");
-        // The string members are exactly what getArtifactSet (not the auto-getter) must round-trip.
-        assertEq(got.artifactBaseUrl, want.artifactBaseUrl, "artifactBaseUrl");
-        assertEq(got.minAppVersion, want.minAppVersion, "minAppVersion");
+    /// @notice An unpinned witness graph is still publishable: a deployment may publish its set before it
+    /// has a graph identity to attest, and that window must be representable. Only the zkey is mandatory.
+    function test_an_unpinned_graph_is_publishable() public {
+        ProtocolRegistry.ArtifactSet memory a = _artifacts();
+        a.witnessMobileSha256 = bytes32(0);
+        _publishArtifacts(a);
+        assertEq(reg.getArtifactSet(artId).witnessMobileSha256, bytes32(0));
     }
 
     // =============================================================================================
-    // R-5: the two axes rotate independently
+    // --- R-5: the two axes still rotate independently ---
     // =============================================================================================
 
-    /// THE headline invariant, direction 1: rotating the PROVING ARTIFACTS (a new zkey, a new host, a
-    /// raised minAppVersion) leaves the on-chain contract set byte-identical. No trio address moves, no
-    /// verifier changes, nothing is redeployed — the only writes are the new artifact set plus the
-    /// binding re-point.
-    function test_artifact_rotation_leaves_the_contract_set_untouched() public {
-        _publishLevelB();
-        ProtocolRegistry.ContractSet memory before = reg.getContractSet(bId);
+    /// @notice An artifact rotation writes no discovery member — not even `publishedAt`, which is the
+    /// on-chain provenance of the trio and would be silently rewritten by a republish.
+    function test_an_artifact_rotation_leaves_the_discovery_set_untouched() public {
+        _publishGenerationTwo();
+        ProtocolRegistry.DiscoverySet memory before = reg.getDiscoverySet(v2Id);
 
-        // A genuine artifact-only rotation: brand new zkey + pins + host + app floor, same protocol.
-        ProtocolRegistry.ArtifactSet memory v2 = _artifacts();
-        v2.artifactSetId = keccak256("dogtag-levelb-artifacts/2");
-        v2.zkeySha256 = keccak256("a-freshly-ceremonied-zkey");
-        v2.witnessServerR1csSha256 = keccak256("new-r1cs");
-        v2.witnessServerWasmSha256 = keccak256("new-wasm");
-        v2.artifactBaseUrl = "https://artifacts.dogtag.io/levelb2";
-        v2.minAppVersion = "2.0.0";
-        _publishArtifacts(v2);
-        _bind(bId, v2.artifactSetId);
+        bytes32 rotatedId = keccak256("dogtag-levelb-artifacts/2");
+        ProtocolRegistry.ArtifactSet memory rotated = _artifacts();
+        rotated.artifactSetId = rotatedId;
+        rotated.zkeySha256 = bytes32(uint256(0xC0FFEE));
+        rotated.minAppVersion = "1.7.0";
+        _publishArtifacts(rotated);
+        _bind(v2Id, rotatedId);
 
-        // The resolver now sees the NEW artifacts...
-        ProtocolRegistry.ArtifactSet memory nowArt = reg.getActiveArtifactSet(bId);
-        assertEq(nowArt.artifactSetId, v2.artifactSetId, "binding re-pointed");
-        assertEq(nowArt.zkeySha256, v2.zkeySha256, "new zkey pin is live");
-        assertEq(nowArt.minAppVersion, "2.0.0", "new app floor is live");
+        assertEq(reg.getActiveArtifactSet(v2Id).zkeySha256, bytes32(uint256(0xC0FFEE)));
+        assertEq(reg.getActiveArtifactSet(v2Id).minAppVersion, "1.7.0");
 
-        // ...while the on-chain axis is EXACTLY what it was, publishedAt included: it was never written.
-        ProtocolRegistry.ContractSet memory afterRotation = reg.getContractSet(bId);
-        _assertEqContracts(afterRotation, before);
-        assertEq(afterRotation.publishedAt, before.publishedAt, "contract set was not re-published");
-        assertTrue(afterRotation.active, "contract set still active");
-        assertEq(reg.contractSetCount(), 1, "no new contract set was created");
-
-        // And the superseded artifact set is still pinned in history, readable by its own id.
-        _assertEqArtifacts(reg.getArtifactSet(bArtId), _artifacts());
-        assertEq(reg.artifactSetCount(), 2, "both artifact sets enumerated");
+        ProtocolRegistry.DiscoverySet memory after_ = reg.getDiscoverySet(v2Id);
+        assertEq(after_.factory, before.factory);
+        assertEq(after_.verificationRegistry, before.verificationRegistry);
+        assertEq(after_.sbt, before.sbt);
+        assertEq(after_.verifier, before.verifier);
+        assertEq(after_.providerRegistry, before.providerRegistry);
+        assertEq(after_.circuitId, before.circuitId);
+        assertEq(after_.publishedAt, before.publishedAt, "the trio's provenance stamp must not move");
+        assertEq(reg.discoverySetCount(), 1, "no new discovery set was created");
     }
 
-    /// THE headline invariant, direction 2: rotating the ON-CHAIN trio addresses leaves the artifact set
-    /// byte-identical and the binding intact. No app is forced to update, no zkey is re-fetched.
-    ///
-    /// Deliberately rotates the TRIO ADDRESSES (factory/registry/sbt) rather than the `verifier`: a
-    /// verifier swap means a new VK, which in reality implies new proving artifacts too. Rotating the
-    /// trio is the change that is genuinely artifact-neutral, so it is the honest test of "the reverse".
-    function test_contract_rotation_leaves_the_artifact_set_untouched() public {
-        _publishLevelB();
-        ProtocolRegistry.ArtifactSet memory before = reg.getArtifactSet(bArtId);
+    /// @notice ...and the converse: rotating the on-chain set writes no artifact member and leaves the
+    /// binding in place, so no app is forced to re-fetch anything.
+    function test_a_discovery_rotation_leaves_the_artifact_axis_untouched() public {
+        _publishGenerationTwo();
+        ProtocolRegistry.ArtifactSet memory before = reg.getArtifactSet(artId);
 
-        ProtocolRegistry.ContractSet memory c2 = _contracts();
-        c2.factory = address(0xF00D);
-        c2.verificationRegistry = address(0xDEAD);
-        c2.sbt = address(0xBEEF);
-        _publishContracts(c2);
+        ProtocolRegistry.DiscoverySet memory moved = _discovery();
+        moved.verificationRegistry = address(0xDEAD01);
+        _publishDiscovery(moved);
 
-        // The on-chain axis moved...
-        ProtocolRegistry.ContractSet memory nowContracts = reg.getContractSet(bId);
-        assertEq(nowContracts.verificationRegistry, address(0xDEAD), "trio rotated");
-        assertEq(nowContracts.factory, address(0xF00D));
-        assertEq(nowContracts.sbt, address(0xBEEF));
-
-        // ...and the artifact axis did not: same record, same publishedAt, same binding, no new set.
-        ProtocolRegistry.ArtifactSet memory afterRotation = reg.getArtifactSet(bArtId);
-        _assertEqArtifacts(afterRotation, before);
-        assertEq(afterRotation.publishedAt, before.publishedAt, "artifact set was not re-published");
-        assertEq(reg.activeArtifactSetOf(bId), bArtId, "binding survived the contract rotation");
-        assertEq(reg.artifactSetCount(), 1, "no new artifact set was created");
+        assertEq(reg.getDiscoverySet(v2Id).verificationRegistry, address(0xDEAD01));
+        ProtocolRegistry.ArtifactSet memory after_ = reg.getArtifactSet(artId);
+        assertEq(after_.zkeySha256, before.zkeySha256);
+        assertEq(after_.minAppVersion, before.minAppVersion);
+        assertEq(after_.publishedAt, before.publishedAt);
+        assertEq(reg.activeArtifactSetOf(v2Id), artId, "the binding survives an on-chain rotation");
+        assertEq(reg.artifactSetCount(), 1);
     }
 
-    /// The two axes are separately keyed: a contract-set id is NOT an artifact-set id and vice versa.
-    /// This is what makes "independent" structural rather than merely conventional.
+    /// @notice The two axes cannot collide: the discovery key and the artifact key are different strings
+    /// in different namespaces, so no id can serve as both.
     function test_the_two_axes_do_not_share_a_keyspace() public {
-        _publishLevelB();
-
+        _publishGenerationTwo();
+        assertTrue(v2Id != artId);
+        // A discovery id is unknown on the artifact axis and vice versa.
         vm.expectRevert(bytes("unknown artifact set"));
-        reg.getArtifactSet(bId); // the contract-set id is meaningless on the artifact axis
-
-        vm.expectRevert(bytes("unknown contract set"));
-        reg.getContractSet(bArtId); // and vice versa
+        reg.getArtifactSet(v2Id);
+        vm.expectRevert(bytes("unknown discovery set"));
+        reg.getDiscoverySet(artId);
+        // The two ids are what the library authored, and they differ because the NAMESPACES differ —
+        // `dogtag-levelb/1` versus `dogtag-levelb-artifacts/1` — not because the version numbers do.
+        // That is what lets the two axes carry the same version number without ever colliding.
+        assertEq(v2Id, ProtocolVersions.levelBId());
+        assertEq(artId, ProtocolVersions.levelBArtifactsId());
+        assertEq(v2Id, keccak256("dogtag-levelb/1"));
+        assertEq(artId, keccak256("dogtag-levelb-artifacts/1"));
     }
 
-    /// `resolve` is the one-call app path and must return BOTH halves, each from its own axis.
-    function test_resolve_returns_both_axes() public {
-        _publishLevelB();
-        (ProtocolRegistry.ContractSet memory c, ProtocolRegistry.ArtifactSet memory a) = reg.resolve(bId);
-        _assertEqContracts(c, _contracts());
-        _assertEqArtifacts(a, _artifacts());
-    }
+    // =============================================================================================
+    // --- Deprecate: immediate, history-preserving, and cancels a stale proposal ---
+    // =============================================================================================
 
-    // --- binding: fail-closed + timelock ----------------------------------------------------------
+    /// @notice Deprecate flips `active` without deleting the record or its list entry, and it cancels an
+    /// in-flight proposal — which is what makes it an emergency halt rather than a bit a stale proposal
+    /// whose timelock already elapsed can flip straight back.
+    function test_deprecate_keeps_history_and_cancels_an_in_flight_proposal() public {
+        _publishGenerationTwo();
 
-    /// A contract set with no artifacts bound yet is a valid intermediate state during rollout, and
-    /// every artifact-side resolver must FAIL CLOSED on it rather than read a zeroed record.
-    function test_unbound_contract_set_fails_closed_on_artifact_resolution() public {
-        _publishContracts(_contracts());
-
-        vm.expectRevert(bytes("no artifact binding"));
-        reg.getActiveArtifactSet(bId);
-
-        vm.expectRevert(bytes("no artifact binding"));
-        reg.resolve(bId);
-
-        // ...but the on-chain axis resolves fine: the axes really are independent, including in failure.
-        assertEq(reg.getContractSet(bId).contractSetId, bId);
-    }
-
-    /// The binding is the pointer an app follows to decide which bytes to fetch, so a one-transaction
-    /// repoint must be impossible — it carries the same 2-day timelock as a publish.
-    function test_binding_is_timelocked() public {
-        _publishContracts(_contracts());
-        _publishArtifacts(_artifacts());
+        // Stage a swap and let its timelock elapse, then deprecate.
+        ProtocolRegistry.DiscoverySet memory swap = _discovery();
+        swap.verificationRegistry = address(0xBADBAD);
+        vm.prank(PUBLISHER);
+        reg.proposeDiscoverySet(swap);
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
 
         vm.prank(PUBLISHER);
-        reg.proposeArtifactBinding(bId, bArtId);
-        assertEq(reg.getPendingBinding(bId), bArtId, "pending target is inspectable during the window");
+        reg.deprecateDiscoverySet(v2Id);
 
-        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK() - 1);
+        assertFalse(reg.getDiscoverySet(v2Id).active, "deprecated");
+        assertEq(reg.getDiscoverySet(v2Id).verificationRegistry, VERIFICATION_REGISTRY, "record kept");
+        assertEq(reg.discoverySetCount(), 1, "the list entry is untouched");
+        assertEq(reg.discoverySetEta(v2Id), 0, "the stale proposal is cancelled");
+
+        vm.prank(PUBLISHER);
+        vm.expectRevert(bytes("none pending"));
+        reg.executeDiscoverySet(v2Id);
+
+        // Same on the artifact axis, where a re-activation would restore compromised artifacts as live.
+        vm.prank(PUBLISHER);
+        reg.proposeArtifactSet(_artifacts());
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
+        vm.prank(PUBLISHER);
+        reg.deprecateArtifactSet(artId);
+        assertFalse(reg.getArtifactSet(artId).active);
+        assertEq(reg.artifactSetEta(artId), 0);
+        vm.prank(PUBLISHER);
+        vm.expectRevert(bytes("none pending"));
+        reg.executeArtifactSet(artId);
+    }
+
+    /// @notice Re-publishing after a deprecate costs a fresh propose plus the FULL timelock.
+    function test_republish_after_deprecate_requires_a_fresh_timelock() public {
+        _publishGenerationTwo();
+        vm.prank(PUBLISHER);
+        reg.deprecateDiscoverySet(v2Id);
+
+        vm.prank(PUBLISHER);
+        reg.proposeDiscoverySet(_discovery());
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("timelock"));
-        reg.executeArtifactBinding(bId);
+        reg.executeDiscoverySet(v2Id);
 
-        vm.warp(block.timestamp + 1);
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
         vm.prank(PUBLISHER);
-        reg.executeArtifactBinding(bId);
-        assertEq(reg.activeArtifactSetOf(bId), bArtId);
+        reg.executeDiscoverySet(v2Id);
+        assertTrue(reg.getDiscoverySet(v2Id).active);
+        assertEq(reg.discoverySetCount(), 1, "a republish does not duplicate the list entry");
     }
 
-    /// The pointer can never be made to dangle: both sides must be published AT EXECUTE. Checking at
-    /// execute (not propose) is what lets the first rollout run all three timelocks concurrently.
-    function test_binding_execute_requires_both_sides_published() public {
-        _publishContracts(_contracts());
+    /// @notice A binding needs both sides published AND active at the moment of execute, so a set retired
+    /// mid-window cannot be bound.
+    function test_binding_requires_both_sides_published_and_active() public {
+        // Unbound: artifact resolution fails closed rather than answering a zeroed record.
+        _publishDiscovery(_discovery());
+        vm.expectRevert(bytes("no artifact binding"));
+        reg.getActiveArtifactSet(v2Id);
+        vm.expectRevert(bytes("no artifact binding"));
+        reg.resolveDiscovery(v2Id);
 
+        // Unpublished artifact side.
         vm.prank(PUBLISHER);
-        reg.proposeArtifactBinding(bId, bArtId); // artifact set not published yet — allowed to stage
+        reg.proposeArtifactBinding(v2Id, artId);
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("unknown artifact set"));
-        reg.executeArtifactBinding(bId);
+        reg.executeArtifactBinding(v2Id);
 
-        // Publish it, and the SAME pending binding now executes (the proposal was not consumed).
+        // Published but deprecated artifact side.
         _publishArtifacts(_artifacts());
         vm.prank(PUBLISHER);
-        reg.executeArtifactBinding(bId);
-        assertEq(reg.activeArtifactSetOf(bId), bArtId);
-    }
-
-    /// Deprecate is the EMERGENCY lever: a set retired because it is COMPROMISED must not still be
-    /// reachable through a proposal staged before the retirement, or the window that exists to catch a
-    /// malicious repoint would let the repoint through anyway.
-    function test_binding_cannot_point_at_a_deprecated_artifact_set() public {
-        _publishContracts(_contracts());
-        _publishArtifacts(_artifacts());
-
+        reg.deprecateArtifactSet(artId);
         vm.prank(PUBLISHER);
-        reg.proposeArtifactBinding(bId, bArtId); // staged while the set is still active
-        vm.prank(PUBLISHER);
-        reg.deprecateArtifactSet(bArtId);
-
+        reg.proposeArtifactBinding(v2Id, artId);
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("inactive artifact set"));
-        reg.executeArtifactBinding(bId);
+        reg.executeArtifactBinding(v2Id);
 
-        // The pointer was never set — the contract set stays unbound and fails closed on resolution.
-        assertEq(reg.activeArtifactSetOf(bId), bytes32(0), "no binding was written");
-    }
-
-    /// The symmetric case on the on-chain axis: each `active` bit is an independent kill switch, so
-    /// retiring the contract set must refuse a new binding just as retiring the artifact set does.
-    function test_binding_cannot_point_at_a_deprecated_contract_set() public {
-        _publishContracts(_contracts());
-        _publishArtifacts(_artifacts());
-
-        vm.prank(PUBLISHER);
-        reg.proposeArtifactBinding(bId, bArtId);
-        vm.prank(PUBLISHER);
-        reg.deprecateContractSet(bId);
-
+        // Deprecated discovery side.
+        vm.startPrank(PUBLISHER);
+        reg.proposeArtifactSet(_artifacts());
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("inactive contract set"));
-        reg.executeArtifactBinding(bId);
-
-        assertEq(reg.activeArtifactSetOf(bId), bytes32(0), "no binding was written");
-    }
-
-    function test_binding_requires_publisher_role() public {
-        _publishLevelB();
-        _expectUnauthorized(OUTSIDER);
-        vm.prank(OUTSIDER);
-        reg.proposeArtifactBinding(bId, bArtId);
-    }
-
-    function test_binding_rejects_zero_ids() public {
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("contractSetId=0"));
-        reg.proposeArtifactBinding(bytes32(0), bArtId);
-
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("artifactSetId=0"));
-        reg.proposeArtifactBinding(bId, bytes32(0));
-    }
-
-    // --- publish + exact read-back ---------------------------------------------------------------
-
-    /// The getters read back EXACTLY what was published, including the string members, and each flow
-    /// stamps publishedAt/active authoritatively at execute.
-    function test_publish_reads_back_exactly() public {
-        // Publish each axis separately (not via _publishLevelB) so `block.timestamp` at the moment of
-        // each execute is known and `publishedAt` can be asserted exactly.
-        _publishContracts(_contracts());
-        uint64 contractsPublishedAt = uint64(block.timestamp);
-
-        ProtocolRegistry.ContractSet memory gotC = reg.getContractSet(bId);
-        _assertEqContracts(gotC, _contracts());
-        assertTrue(gotC.active, "contract set active at execute");
-        assertEq(gotC.publishedAt, contractsPublishedAt, "contract publishedAt stamped at execute");
-
-        _publishArtifacts(_artifacts());
-
-        ProtocolRegistry.ArtifactSet memory gotA = reg.getArtifactSet(bArtId);
-        _assertEqArtifacts(gotA, _artifacts());
-        assertTrue(gotA.active, "artifact set active at execute");
-        assertEq(gotA.publishedAt, uint64(block.timestamp), "artifact publishedAt stamped at execute");
-        // The two axes were published at DIFFERENT times — further evidence they are separate writes.
-        assertTrue(gotA.publishedAt > gotC.publishedAt, "independent publish timestamps");
-    }
-
-    /// The executes IGNORE calldata publishedAt/active on BOTH axes — a publisher cannot back-date or
-    /// pre-activate, and a re-proposed record cannot smuggle active=false through execute.
-    function test_execute_ignores_calldata_publishedAt_and_active() public {
-        ProtocolRegistry.ContractSet memory c = _contracts();
-        c.publishedAt = 12345; // lie
-        c.active = false; // will be overridden to true
-        _publishContracts(c);
-
-        ProtocolRegistry.ContractSet memory gotC = reg.getContractSet(bId);
-        assertEq(gotC.publishedAt, uint64(block.timestamp), "publishedAt is block time, not calldata");
-        assertTrue(gotC.active, "active forced true");
-
-        ProtocolRegistry.ArtifactSet memory a = _artifacts();
-        a.publishedAt = 12345;
-        a.active = false;
-        _publishArtifacts(a);
-
-        ProtocolRegistry.ArtifactSet memory gotA = reg.getArtifactSet(bArtId);
-        assertEq(gotA.publishedAt, uint64(block.timestamp), "publishedAt is block time, not calldata");
-        assertTrue(gotA.active, "active forced true");
-    }
-
-    // --- timelock enforcement --------------------------------------------------------------------
-
-    function test_default_publish_timelock_enforces_two_days_end_to_end() public {
-        assertEq(reg.PUBLISH_TIMELOCK(), reg.DEFAULT_PUBLISH_TIMELOCK(), "safe default selected");
-        assertEq(reg.PUBLISH_TIMELOCK(), 2 days, "production delay");
-
-        uint256 proposedAt = block.timestamp;
-        vm.startPrank(PUBLISHER);
-        reg.proposeContractSet(_contracts());
-        reg.proposeArtifactSet(_artifacts());
-        reg.proposeArtifactBinding(bId, bArtId);
+        reg.executeArtifactSet(artId);
+        reg.deprecateDiscoverySet(v2Id);
+        reg.proposeArtifactBinding(v2Id, artId);
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
+        vm.expectRevert(bytes("inactive discovery set"));
+        reg.executeArtifactBinding(v2Id);
         vm.stopPrank();
+    }
 
-        vm.warp(proposedAt + 2 days - 1);
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("timelock"));
-        reg.executeContractSet(bId);
+    // =============================================================================================
+    // --- Fail-closed reads and role gating ---
+    // =============================================================================================
 
-        vm.warp(proposedAt + 2 days);
+    /// @notice Every resolver reverts on an unknown id rather than answering a zeroed record that would
+    /// read as an unpinned, inactive-but-present set.
+    function test_unknown_ids_revert() public {
+        bytes32 nope = keccak256("dogtag-nope/1");
+        vm.expectRevert(bytes("unknown discovery set"));
+        reg.getDiscoverySet(nope);
+        vm.expectRevert(bytes("unknown artifact set"));
+        reg.getArtifactSet(nope);
+        vm.expectRevert(bytes("no artifact binding"));
+        reg.getActiveArtifactSet(nope);
+        vm.expectRevert(bytes("unknown discovery set"));
+        reg.resolveDiscovery(nope);
+        vm.expectRevert(bytes("none pending"));
+        reg.getPendingDiscoverySet(nope);
+        vm.expectRevert(bytes("none pending"));
+        reg.getPendingArtifactSet(nope);
+        vm.expectRevert(bytes("none pending"));
+        reg.getPendingBinding(nope);
+
+        // The deprecates are pranked as the publisher deliberately: unpranked they would revert on the
+        // ROLE gate, and this test would then pass while asserting nothing about the unknown-id branch.
         vm.startPrank(PUBLISHER);
-        reg.executeContractSet(bId);
-        reg.executeArtifactSet(bArtId);
-        reg.executeArtifactBinding(bId);
+        vm.expectRevert(bytes("unknown discovery set"));
+        reg.deprecateDiscoverySet(nope);
+        vm.expectRevert(bytes("unknown artifact set"));
+        reg.deprecateArtifactSet(nope);
         vm.stopPrank();
-
-        assertTrue(reg.getContractSet(bId).active, "contract set published");
-        assertTrue(reg.getActiveArtifactSet(bId).active, "artifact set bound and published");
     }
 
-    function test_zero_publish_timelock_executes_immediately_end_to_end() public {
-        ProtocolRegistry fastRegistry = new ProtocolRegistry(ADMIN, PUBLISHER, 0);
-        vm.warp(100);
+    /// @notice `getPending*` exposes exactly what an execute would write, which is what turns the delay
+    /// into a review period rather than a wait.
+    function test_a_pending_proposal_is_fully_inspectable_during_the_window() public {
+        ProtocolRegistry.DiscoverySet memory d = _discovery();
+        d.verifier = address(0xFEED);
+        vm.prank(PUBLISHER);
+        reg.proposeDiscoverySet(d);
 
-        vm.startPrank(PUBLISHER);
-        fastRegistry.proposeContractSet(_contracts());
-        fastRegistry.proposeArtifactSet(_artifacts());
-        fastRegistry.proposeArtifactBinding(bId, bArtId);
-        assertEq(fastRegistry.contractSetEta(bId), block.timestamp, "contract ETA is immediate");
-        assertEq(fastRegistry.artifactSetEta(bArtId), block.timestamp, "artifact ETA is immediate");
-        assertEq(fastRegistry.bindingEta(bId), block.timestamp, "binding ETA is immediate");
+        ProtocolRegistry.DiscoverySet memory pending = reg.getPendingDiscoverySet(v2Id);
+        assertEq(pending.verifier, address(0xFEED), "governance can see the exact staged record");
+        assertEq(pending.providerRegistry, PROVIDER_REGISTRY);
 
-        fastRegistry.executeContractSet(bId);
-        fastRegistry.executeArtifactSet(bArtId);
-        fastRegistry.executeArtifactBinding(bId);
-        vm.stopPrank();
-
-        assertTrue(fastRegistry.getContractSet(bId).active, "contract set published immediately");
-        assertTrue(fastRegistry.getActiveArtifactSet(bId).active, "binding published immediately");
+        vm.prank(PUBLISHER);
+        reg.proposeArtifactBinding(v2Id, artId);
+        assertEq(reg.getPendingBinding(v2Id), artId);
     }
 
-    function test_execute_contract_set_before_timelock_reverts() public {
-        vm.prank(PUBLISHER);
-        reg.proposeContractSet(_contracts());
-
-        // one second short of the ETA
-        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK() - 1);
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("timelock"));
-        reg.executeContractSet(bId);
-
-        // exactly at the ETA it succeeds
-        vm.warp(block.timestamp + 1);
-        vm.prank(PUBLISHER);
-        reg.executeContractSet(bId);
-        assertTrue(reg.getContractSet(bId).active);
-    }
-
-    function test_execute_artifact_set_before_timelock_reverts() public {
-        vm.prank(PUBLISHER);
-        reg.proposeArtifactSet(_artifacts());
-
-        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK() - 1);
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("timelock"));
-        reg.executeArtifactSet(bArtId);
-
-        vm.warp(block.timestamp + 1);
-        vm.prank(PUBLISHER);
-        reg.executeArtifactSet(bArtId);
-        assertTrue(reg.getArtifactSet(bArtId).active);
-    }
-
-    function test_execute_without_proposal_reverts() public {
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("none pending"));
-        reg.executeContractSet(bId);
-
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("none pending"));
-        reg.executeArtifactSet(bArtId);
-
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("none pending"));
-        reg.executeArtifactBinding(bId);
-    }
-
+    /// @notice Re-proposing before execute overwrites the staged record and RESETS its timelock, so a
+    /// second proposal cannot inherit the first one's elapsed window.
     function test_reproposing_resets_the_timelock() public {
         vm.prank(PUBLISHER);
-        reg.proposeContractSet(_contracts());
-        uint256 firstEta = reg.contractSetEta(bId);
+        reg.proposeDiscoverySet(_discovery());
+        uint256 firstEta = reg.discoverySetEta(v2Id);
 
-        // Nearly at the first ETA, re-propose: the ETA must move forward by a fresh full timelock.
-        vm.warp(firstEta - 1);
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK() - 1);
+        ProtocolRegistry.DiscoverySet memory second = _discovery();
+        second.verifier = address(0xFEED);
         vm.prank(PUBLISHER);
-        reg.proposeContractSet(_contracts());
-        assertEq(reg.contractSetEta(bId), block.timestamp + reg.PUBLISH_TIMELOCK(), "eta reset");
+        reg.proposeDiscoverySet(second);
 
-        // The old ETA is no longer sufficient.
-        vm.warp(firstEta);
+        assertGt(reg.discoverySetEta(v2Id), firstEta, "the window restarts");
+        assertEq(reg.getPendingDiscoverySet(v2Id).verifier, address(0xFEED));
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("timelock"));
-        reg.executeContractSet(bId);
+        reg.executeDiscoverySet(v2Id);
     }
 
-    // --- role-gating (propose / execute / deprecate) ---------------------------------------------
-
-    /// Reads the role FIRST (a real call), then arms expectRevert — so the role read is not itself
-    /// caught, and the immediately-following pranked call is the one that must revert.
-    function _expectUnauthorized(address who) internal {
-        bytes32 role = reg.PUBLISHER_ROLE();
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, who, role)
+    /// @notice Every write is `PUBLISHER_ROLE`-gated, including the un-timelocked deprecates, and the
+    /// admin does not get them implicitly.
+    function test_every_write_is_publisher_gated() public {
+        bytes memory denied = abi.encodeWithSelector(
+            IAccessControl.AccessControlUnauthorizedAccount.selector, OUTSIDER, reg.PUBLISHER_ROLE()
         );
-    }
 
-    function test_propose_requires_publisher_role() public {
-        _expectUnauthorized(OUTSIDER);
-        vm.prank(OUTSIDER);
-        reg.proposeContractSet(_contracts());
-    }
-
-    function test_propose_artifact_set_requires_publisher_role() public {
-        _expectUnauthorized(OUTSIDER);
-        vm.prank(OUTSIDER);
+        vm.startPrank(OUTSIDER);
+        vm.expectRevert(denied);
+        reg.proposeDiscoverySet(_discovery());
+        vm.expectRevert(denied);
+        reg.executeDiscoverySet(v2Id);
+        vm.expectRevert(denied);
+        reg.deprecateDiscoverySet(v2Id);
+        vm.expectRevert(denied);
         reg.proposeArtifactSet(_artifacts());
+        vm.expectRevert(denied);
+        reg.executeArtifactSet(artId);
+        vm.expectRevert(denied);
+        reg.deprecateArtifactSet(artId);
+        vm.expectRevert(denied);
+        reg.proposeArtifactBinding(v2Id, artId);
+        vm.expectRevert(denied);
+        reg.executeArtifactBinding(v2Id);
+        vm.stopPrank();
+
+        // The admin holds DEFAULT_ADMIN_ROLE but not PUBLISHER_ROLE — the roles are separable, which is
+        // the point of holding them apart.
+        assertTrue(reg.hasRole(reg.DEFAULT_ADMIN_ROLE(), ADMIN));
+        assertFalse(reg.hasRole(reg.PUBLISHER_ROLE(), ADMIN));
+        assertTrue(reg.hasRole(reg.PUBLISHER_ROLE(), PUBLISHER));
+        assertEq(reg.PUBLISHER_ROLE(), keccak256("PUBLISHER"), "NOT keccak256('PUBLISHER_ROLE')");
     }
 
-    function test_execute_requires_publisher_role() public {
-        vm.prank(PUBLISHER);
-        reg.proposeContractSet(_contracts());
-        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
-
-        _expectUnauthorized(OUTSIDER);
-        vm.prank(OUTSIDER);
-        reg.executeContractSet(bId);
+    /// @notice `resolveDiscovery` answers both halves and agrees with the two single-axis getters.
+    function test_resolve_returns_both_axes() public {
+        _publishGenerationTwo();
+        (ProtocolRegistry.DiscoverySet memory d, ProtocolRegistry.ArtifactSet memory a) =
+            reg.resolveDiscovery(v2Id);
+        assertEq(d.discoverySetId, reg.getDiscoverySet(v2Id).discoverySetId);
+        assertEq(a.artifactSetId, reg.getActiveArtifactSet(v2Id).artifactSetId);
+        assertEq(a.minAppVersion, MIN_APP);
     }
 
-    function test_deprecate_requires_publisher_role() public {
-        _publishLevelB();
+    /// @notice The GOLDEN encoding both mobile decoders are pinned against, asserted from this end too.
+    ///
+    /// `apps/android/.../AnchorResolverTest.kt` and `apps/ios/DogTagTests/AnchorResolverTests.swift` each
+    /// carry these exact bytes and run them through their own `decodeDiscoverySet`. Pinning the same
+    /// literal here is what makes the pair a contract rather than two independent guesses: a change to the
+    /// record's shape or member order fails HERE first, naming the two files to regenerate, instead of
+    /// leaving two mobile decoders quietly reading the wrong words. Regenerate by re-encoding
+    /// `getDiscoverySet` — never by hand-editing hex, which tests your idea of the ABI rather than the ABI.
+    ///
+    /// Neither mobile suite runs in CI, so this assertion is the only automated end of the pair.
+    function test_the_golden_encoding_the_mobile_decoders_are_pinned_against() public {
+        ProtocolRegistry.DiscoverySet memory d = ProtocolVersions.levelBDiscovery(
+            0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607, // factory (generation 2)
+            0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87, // verificationRegistry
+            0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc, // sbt (the SHARED, reused one)
+            0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a, // verifier (frozen ceremony VK)
+            0x9309aB1c2d3E4F5061728394A5B6C7D8E9F00112 // providerRegistry (authority core)
+        );
+        vm.warp(1_800_000_000);
+        _publishDiscovery(d);
 
-        _expectUnauthorized(OUTSIDER);
-        vm.prank(OUTSIDER);
-        reg.deprecateContractSet(bId);
-    }
-
-    function test_deprecate_artifact_set_requires_publisher_role() public {
-        _publishLevelB();
-
-        _expectUnauthorized(OUTSIDER);
-        vm.prank(OUTSIDER);
-        reg.deprecateArtifactSet(bArtId);
-    }
-
-    /// The admin can hand PUBLISHER_ROLE to a fresh key, which can then publish — the governance lever.
-    function test_admin_can_grant_publisher_role() public {
-        address newPub = address(0xC0FFEE);
-        bytes32 role = reg.PUBLISHER_ROLE();
-        vm.prank(ADMIN);
-        reg.grantRole(role, newPub);
-
-        vm.prank(newPub);
-        reg.proposeContractSet(_contracts());
-        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
-        vm.prank(newPub);
-        reg.executeContractSet(bId);
-        assertTrue(reg.getContractSet(bId).active);
-    }
-
-    // --- deprecate keeps history -----------------------------------------------------------------
-
-    function test_deprecate_contract_set_flips_active_without_deleting() public {
-        _publishLevelB();
-        assertTrue(reg.getContractSet(bId).active);
-
-        vm.prank(PUBLISHER);
-        reg.deprecateContractSet(bId);
-
-        // Still readable, still enumerated, still fully pinned — only `active` changed.
-        ProtocolRegistry.ContractSet memory got = reg.getContractSet(bId);
-        assertFalse(got.active, "active flipped false");
-        _assertEqContracts(got, _contracts()); // history pinned
-        assertEq(reg.contractSetCount(), 1, "deprecate does not remove from the list");
-        assertEq(reg.contractSetList(0), bId, "list entry preserved");
-
-        // Deprecating the on-chain axis does not touch the artifact axis or the binding.
-        assertTrue(reg.getArtifactSet(bArtId).active, "artifact set untouched by a contract deprecate");
-        assertEq(reg.activeArtifactSetOf(bId), bArtId, "binding untouched");
-    }
-
-    function test_deprecate_artifact_set_flips_active_without_deleting() public {
-        _publishLevelB();
-
-        vm.prank(PUBLISHER);
-        reg.deprecateArtifactSet(bArtId);
-
-        ProtocolRegistry.ArtifactSet memory got = reg.getArtifactSet(bArtId);
-        assertFalse(got.active, "active flipped false");
-        _assertEqArtifacts(got, _artifacts()); // history pinned
-        assertEq(reg.artifactSetCount(), 1);
-        assertEq(reg.artifactSetList(0), bArtId);
-
-        // And the on-chain axis is unaffected.
-        assertTrue(reg.getContractSet(bId).active, "contract set untouched by an artifact deprecate");
-    }
-
-    // Deprecate is the EMERGENCY lever, so it must also neutralize anything already in flight: a swap
-    // proposed before the compromise was found, whose timelock has since elapsed, must not be executable
-    // afterwards to flip the set straight back to active with no fresh review window.
-    function test_deprecate_contract_set_cancels_an_in_flight_proposal() public {
-        _publishLevelB();
-
-        // A swap for the SAME id is staged and its timelock fully elapses...
-        vm.prank(PUBLISHER);
-        reg.proposeContractSet(_contracts());
-        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
-
-        // ...then the set is found compromised and retired.
-        vm.prank(PUBLISHER);
-        reg.deprecateContractSet(bId);
-
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("none pending"));
-        reg.executeContractSet(bId);
-
-        assertFalse(reg.getContractSet(bId).active, "the retired set stays retired");
-        assertEq(reg.contractSetEta(bId), 0, "the stale proposal's ETA is cleared");
-        // History is untouched — cancelling a PENDING proposal is not deleting the published record.
-        assertEq(reg.contractSetCount(), 1);
-        _assertEqContracts(reg.getContractSet(bId), _contracts());
-    }
-
-    // The same halt on the artifact axis, where re-activation bites harder: deprecate leaves
-    // `activeArtifactSetOf` still pointing at the retired set, so flipping `active` back would instantly
-    // restore compromised artifacts as the live ones for every contract set bound to it.
-    function test_deprecate_artifact_set_cancels_an_in_flight_proposal() public {
-        _publishLevelB();
-
-        vm.prank(PUBLISHER);
-        reg.proposeArtifactSet(_artifacts());
-        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
-
-        vm.prank(PUBLISHER);
-        reg.deprecateArtifactSet(bArtId);
-
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("none pending"));
-        reg.executeArtifactSet(bArtId);
-
-        assertFalse(reg.getArtifactSet(bArtId).active, "the retired artifact set stays retired");
-        assertEq(reg.artifactSetEta(bArtId), 0, "the stale proposal's ETA is cleared");
-        assertEq(reg.activeArtifactSetOf(bId), bArtId, "the binding still points at it, hence the halt");
-        assertEq(reg.artifactSetCount(), 1);
-        _assertEqArtifacts(reg.getArtifactSet(bArtId), _artifacts());
-    }
-
-    // Re-publishing after a deprecate is still possible — it just costs a FRESH propose and the full
-    // timelock, which is the review window the cancellation exists to force.
-    function test_republish_after_deprecate_requires_a_fresh_timelock() public {
-        _publishLevelB();
-
-        vm.prank(PUBLISHER);
-        reg.deprecateContractSet(bId);
-
-        vm.prank(PUBLISHER);
-        reg.proposeContractSet(_contracts());
-
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("timelock"));
-        reg.executeContractSet(bId);
-
-        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
-        vm.prank(PUBLISHER);
-        reg.executeContractSet(bId);
-        assertTrue(reg.getContractSet(bId).active, "a fresh, fully-timelocked publish re-activates");
-    }
-
-    function test_deprecate_unknown_reverts() public {
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("unknown contract set"));
-        reg.deprecateContractSet(keccak256("nope"));
-
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("unknown artifact set"));
-        reg.deprecateArtifactSet(keccak256("nope"));
-    }
-
-    // --- enumeration -----------------------------------------------------------------------------
-
-    function test_single_surviving_version_keeps_the_compatibility_key() public view {
-        assertEq(bId, keccak256(bytes("dogtag-levelb/1")));
-        assertEq(bArtId, keccak256(bytes("dogtag-levelb-artifacts/1")));
-    }
-
-    function test_enumeration_has_one_version_on_both_axes() public {
-        _publishLevelB();
-
-        assertEq(reg.contractSetCount(), 1, "one contract set");
-        assertEq(reg.artifactSetCount(), 1, "one artifact set");
-        assertEq(reg.contractSetList(0), bId);
-        assertEq(reg.artifactSetList(0), bArtId);
-        assertEq(reg.getContractSet(bId).contractSetId, bId);
-        assertEq(reg.getArtifactSet(bArtId).artifactSetId, bArtId);
-        assertEq(reg.activeArtifactSetOf(bId), bArtId, "both axes are bound");
-    }
-
-    /// A swap-republish (same id, new addresses) updates in place and MUST NOT duplicate the list
-    /// entry — history is one row per set, updated, never appended twice.
-    function test_swap_republish_does_not_duplicate_list_entry() public {
-        _publishContracts(_contracts());
-        assertEq(reg.contractSetCount(), 1);
-
-        // Contract-only bump (§5.5): same set id, new registry address, same VK.
-        ProtocolRegistry.ContractSet memory c2 = _contracts();
-        c2.verificationRegistry = address(0xDEAD);
-        _publishContracts(c2);
-
-        assertEq(reg.contractSetCount(), 1, "swap-republish does not grow the list");
-        assertEq(reg.getContractSet(bId).verificationRegistry, address(0xDEAD), "updated in place");
-    }
-
-    // --- getters fail-closed ---------------------------------------------------------------------
-
-    function test_unknown_ids_revert() public {
-        vm.expectRevert(bytes("unknown contract set"));
-        reg.getContractSet(keccak256("dogtag-levelc/9"));
-
-        vm.expectRevert(bytes("unknown artifact set"));
-        reg.getArtifactSet(keccak256("dogtag-levelc-artifacts/9"));
-
-        vm.expectRevert(bytes("unknown contract set"));
-        reg.resolve(keccak256("dogtag-levelc/9"));
-    }
-
-    function test_pending_getters_revert_when_nothing_pending() public {
-        vm.expectRevert(bytes("none pending"));
-        reg.getPendingContractSet(bId);
-
-        vm.expectRevert(bytes("none pending"));
-        reg.getPendingArtifactSet(bArtId);
-
-        vm.expectRevert(bytes("none pending"));
-        reg.getPendingBinding(bId);
-    }
-
-    // --- propose input validation ----------------------------------------------------------------
-
-    function test_propose_rejects_zero_contractSetId() public {
-        ProtocolRegistry.ContractSet memory c = _contracts();
-        c.contractSetId = bytes32(0);
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("contractSetId=0"));
-        reg.proposeContractSet(c);
-    }
-
-    function test_propose_rejects_zero_artifactSetId() public {
-        ProtocolRegistry.ArtifactSet memory a = _artifacts();
-        a.artifactSetId = bytes32(0);
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("artifactSetId=0"));
-        reg.proposeArtifactSet(a);
-    }
-
-    function test_propose_rejects_zero_trio_or_verifier() public {
-        ProtocolRegistry.ContractSet memory c = _contracts();
-        c.verifier = address(0);
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("zero trio/verifier"));
-        reg.proposeContractSet(c);
-    }
-
-    function test_propose_rejects_zero_circuitId() public {
-        ProtocolRegistry.ContractSet memory c = _contracts();
-        c.circuitId = bytes32(0);
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("circuitId=0"));
-        reg.proposeContractSet(c);
-    }
-
-    function test_propose_rejects_zero_zkey_pin() public {
-        ProtocolRegistry.ArtifactSet memory a = _artifacts();
-        a.zkeySha256 = bytes32(0);
-        vm.prank(PUBLISHER);
-        vm.expectRevert(bytes("zkeySha256=0"));
-        reg.proposeArtifactSet(a);
-    }
-
-    /// The graph pin is DELIBERATELY allowed to be 0 (unpinned), unlike the mandatory zkey pin —
-    /// publishing before a graph identity is attested must stay representable. Asserted against this
-    /// fixture's OWN local zero, so it pins a property of the CONTRACT and is unaffected by whatever
-    /// ROAX happens to publish (which is pinned, as of 2026-07-28).
-    function test_propose_allows_unpinned_graph() public {
-        ProtocolRegistry.ArtifactSet memory a = _artifacts();
-        assertEq(a.witnessMobileSha256, bytes32(0), "fixture leaves the graph unpinned");
-        _publishArtifacts(a);
-        assertEq(reg.getArtifactSet(bArtId).witnessMobileSha256, bytes32(0));
-    }
-
-    // --- frozen pins verified against the committed artifacts -------------------------------------
-
-    /// The `witnessServerWasmSha256` each artifact set publishes IS the SHA-256 of the committed
-    /// `circuits/build/*.wasm` — hashed here in-EVM (the ~4 MB wasm fits; the 11-64 MB r1cs/zkey do
-    /// not — `vm.readFileBinary` MemoryOOGs — so those pins are file-verified by the Rust
-    /// `dogtag-prover-rs` `*_descriptor_pins_match_the_real_artifacts` tests, which stream-hash them).
-    function test_wasm_pins_match_committed_artifacts() public view {
         assertEq(
-            sha256(vm.readFileBinary("../circuits/build/consent_js/consent.wasm")),
-            _artifacts().witnessServerWasmSha256,
-            "wasm pin != committed consent.wasm"
+            abi.encode(reg.getDiscoverySet(v2Id)),
+            hex"36a8d69d16a9f540fa11be5f0311ebd5efd8e971b66cd704a6e197ee15b01b3d"
+            hex"0000000000000000000000001c9ac2eb3f1a2d4b5c6d7e8f90a1b2c3d4e5f607"
+            hex"000000000000000000000000b9b313c17fd8725bb50a7f41121ac4cf5f4fec87"
+            hex"00000000000000000000000096cba4580d79bc9b8e51fc1b3a044a29592afffc"
+            hex"000000000000000000000000272be146c0aed6401000e9aa8241201f6f0fdf1a"
+            hex"0000000000000000000000009309ab1c2d3e4f5061728394a5b6c7d8e9f00112"
+            hex"a708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f"
+            hex"000000000000000000000000000000000000000000000000000000006b4c7500"
+            hex"0000000000000000000000000000000000000000000000000000000000000001",
+            "regenerate the two mobile golden vectors from this encoding"
         );
+        // The two facts a reader would otherwise have to take on trust from the hex.
+        assertEq(v2Id, keccak256("dogtag-levelb/1"));
+        assertEq(reg.getDiscoverySet(v2Id).circuitId, keccak256("consent.circom/DogTagConsent(6)"));
     }
 
-    /// Guard the frozen zkey/r1cs pins as explicit non-zero constants (the values the Rust tests hash
-    /// the committed files against). A pin silently zeroed or swapped in the fixture fails here.
-    function test_frozen_zkey_and_r1cs_pins_are_the_expected_constants() public pure {
-        ProtocolRegistry.ArtifactSet memory current = _artifacts();
-        assertEq(current.zkeySha256, ZKEY_SHA256);
-        assertEq(current.witnessServerR1csSha256, R1CS_SHA256);
+    /// @notice The published `circuitId` is the frozen consent ceremony's, asserted against the literal
+    /// rather than against the library that produced it — so a changed constant fails here instead of
+    /// agreeing with itself.
+    function test_the_frozen_circuit_identity_is_published() public {
+        _publishGenerationTwo();
+        assertEq(
+            reg.getDiscoverySet(v2Id).circuitId, keccak256("consent.circom/DogTagConsent(6)")
+        );
+        assertEq(ProtocolVersions.consentCircuitId(), keccak256("consent.circom/DogTagConsent(6)"));
     }
 }

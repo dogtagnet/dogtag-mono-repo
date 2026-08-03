@@ -15,8 +15,13 @@ interface IGroth16VerifierConsent {
     ) external view returns (bool);
 }
 
-interface IIssuerRegistry {
-    function isWhitelistedFor(bytes32 key, address signer) external view returns (bool);
+/// @notice The `ProviderRegistry` authority core, asked one question: may this relayer submit a
+/// verification for this purpose? `canVerify` reads the VERIFY axis directly and takes the purpose
+/// label rather than a pre-hashed key, so this registry never re-derives the key itself — a
+/// hand-mirrored `keccak256(abi.encode("VERIFY:", purpose))` here would be a second source of truth
+/// that silently refuses every relayer the moment it drifts from the core's own derivation.
+interface IProviderRegistry {
+    function canVerify(bytes32 purpose, address relayer) external view returns (bool);
 }
 
 interface IDogTagIssuer {
@@ -31,6 +36,11 @@ interface IDogTagSBT {
     function ownerOf(uint256 tokenId) external view returns (address);
 }
 
+/// @notice The `DogTagIssuerFactory` root index — `rootIssuer[R]` is write-once and writable only from
+/// inside one of that factory's own clones, which is what makes it usable as provenance.
+/// @dev This reference is `immutable`, so the factory it names is the one this registry resolves roots
+/// through for its whole life. Replacing the factory means replacing this registry too; that is the
+/// deliberate price of the pointer not being rewritable by anyone, ever.
 interface IRootIndex {
     function rootIssuer(bytes32 root) external view returns (address);
 }
@@ -83,7 +93,7 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
     uint256 internal constant P_RECORDTYPE = 5;
     uint256 internal constant P_DEADLINE = 6;
 
-    IIssuerRegistry public immutable issuerRegistry;
+    IProviderRegistry public immutable providerRegistry;
     IDogTagSBT public immutable sbt;
     IRootIndex public immutable rootIndex;
 
@@ -92,7 +102,7 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
     uint256 public zkVerifierEta;
 
     mapping(bytes32 => bool) public consumed;
-    bool public restrictToWhitelistedRelayers = true;
+    bool public restrictToApprovedRelayers = true;
 
     /// @notice Owner-blind (spec §"Owner-blind events"): `subject` is GONE — emitting it would undo the
     /// circuit's whole purpose. `deadline` replaces it so a consumer can still bound the consent window.
@@ -109,18 +119,16 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
     event ZkVerifierProposed(address indexed verifier, uint256 eta);
     event ZkVerifierUpdated(address indexed verifier);
 
-    constructor(address ir, address sbt_, address zk, address ridx, address admin)
+    constructor(address core, address sbt_, address zk, address ridx, address admin)
         AccessControlDefaultAdminRules(2 days, admin)
     {
-        require(ir != address(0) && sbt_ != address(0) && zk != address(0) && ridx != address(0), "zero");
-        issuerRegistry = IIssuerRegistry(ir);
+        require(
+            core != address(0) && sbt_ != address(0) && zk != address(0) && ridx != address(0), "zero"
+        );
+        providerRegistry = IProviderRegistry(core);
         sbt = IDogTagSBT(sbt_);
         zkVerifier = IGroth16VerifierConsent(zk);
         rootIndex = IRootIndex(ridx);
-    }
-
-    function _verifyKey(bytes32 purpose) internal pure returns (bytes32) {
-        return keccak256(abi.encode("VERIFY:", purpose));
     }
 
     /// @notice Owner-hidden ZK verify:
@@ -148,10 +156,8 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
         require(block.timestamp <= pub[P_DEADLINE], "expired");
         require(pub[P_RECORDTYPE] != SERVICE_ATTESTATION_FIELD, "art9"); // §11.9(h)
         require(address(uint160(pub[P_RELAYER])) == msg.sender, "not relayer");
-        if (restrictToWhitelistedRelayers) {
-            require(
-                issuerRegistry.isWhitelistedFor(_verifyKey(bytes32(pub[P_PURPOSE])), msg.sender), "!verify-wl"
-            );
+        if (restrictToApprovedRelayers) {
+            require(providerRegistry.canVerify(bytes32(pub[P_PURPOSE]), msg.sender), "!verify-wl");
         }
 
         // The owner-hidden binding: the proof's root must be THIS tag's on-chain root. The
@@ -194,7 +200,7 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
 
     // ---- admin ----
     function setRelayerRestriction(bool on) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        restrictToWhitelistedRelayers = on;
+        restrictToApprovedRelayers = on;
     }
 
     /// @notice Real timelock on the verifier swap (§11.10(g)): propose, then execute after ZK_TIMELOCK.

@@ -5,12 +5,10 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
-import {IssuerRegistry} from "../src/IssuerRegistry.sol";
 import {DogTagIssuer} from "../src/DogTagIssuer.sol";
 import {DogTagIssuerFactory} from "../src/DogTagIssuerFactory.sol";
-import {CloneProvenanceRouter} from "../src/CloneProvenanceRouter.sol";
-import {DogTagIssuerV2, IProviderAuthority} from "../src/DogTagIssuerV2.sol";
-import {DogTagIssuerFactoryV2, IPriorRootAnchors} from "../src/DogTagIssuerFactoryV2.sol";
+import {DogTagIssuer, IProviderAuthority} from "../src/DogTagIssuer.sol";
+import {DogTagIssuerFactory} from "../src/DogTagIssuerFactory.sol";
 
 /// @dev A stand-in for the S-6 `ProviderRegistry`, built to be faithful where fidelity is load-bearing.
 ///
@@ -198,56 +196,6 @@ contract HostileIssuer {
         revert HostileGetterExecuted();
     }
 }
-
-/// @dev Answers both prior-index selectors and lets a caller toggle generation membership, but sees no
-/// roots. Indistinguishable from a real router through this interface alone — see
-/// `test_a_conforming_stub_prior_index_is_accepted_and_that_is_a_residual`.
-contract StubAnchors is IPriorRootAnchors {
-    mapping(address => bool) private _isGeneration;
-
-    function isRootAnchored(bytes32) external pure override returns (bool) {
-        return false;
-    }
-
-    function isGeneration(address factory) external view override returns (bool) {
-        return _isGeneration[factory];
-    }
-
-    function appendGeneration(address factory) external {
-        _isGeneration[factory] = true;
-    }
-}
-
-/// @dev Claims every root, which would make every `registerRoot` revert. Refused at construction.
-contract AllAnchored is IPriorRootAnchors {
-    function isRootAnchored(bytes32) external pure override returns (bool) {
-        return true;
-    }
-
-    function isGeneration(address) external pure override returns (bool) {
-        return false;
-    }
-}
-
-/// @dev Answers the root query correctly but falsely claims that every address is already a generation.
-/// This reaches the membership-specific constructor probe instead of failing the earlier root probe.
-contract PrematureGenerationAnchors is IPriorRootAnchors {
-    function isRootAnchored(bytes32) external pure override returns (bool) {
-        return false;
-    }
-
-    function isGeneration(address) external pure override returns (bool) {
-        return true;
-    }
-}
-
-/// @dev Answers the selector with the wrong width — the shape a code-size check alone would miss.
-contract WrongWidthAnchors {
-    function isRootAnchored(bytes32) external pure returns (bool, bool) {
-        return (false, false);
-    }
-}
-
 /// @dev Has code, and answers no selector at all - deliberately empty.
 contract AnswersNothing {}
 
@@ -327,20 +275,10 @@ contract PermissiveAuthority {
 ///      an EOA, a non-answering contract, and one that answers indiscriminately are each rejected.
 ///
 /// Plus the property that must NOT regress: `rootIssuer` write-once, per contract and honest.
-///
-/// The topology in `setUp` is the real cutover ordering: router over generation 1 FIRST, then the
-/// generation-2 factory pointed at that router, then generation 2 appended to it. Nothing about it is
-/// circular, and `test_the_router_topology_is_router_first_then_factory_then_append` states so.
-contract IssuerV2Test is Test {
+contract DogTagIssuerTest is Test {
     MockProviderAuthority authority;
-    DogTagIssuerV2 impl;
-    DogTagIssuerFactoryV2 factory;
-
-    IssuerRegistry gen1Registry;
-    DogTagIssuer gen1Impl;
-    DogTagIssuerFactory gen1;
-    DogTagIssuer gen1Clone;
-    CloneProvenanceRouter router;
+    DogTagIssuer impl;
+    DogTagIssuerFactory factory;
 
     address admin = address(0xA11CE);
     /// @dev An approved provider's controlling key, cleared for both record types.
@@ -369,27 +307,9 @@ contract IssuerV2Test is Test {
 
     function setUp() public {
         authority = new MockProviderAuthority(admin);
-        impl = new DogTagIssuerV2();
+        impl = new DogTagIssuer();
 
-        // A real generation-1 stack, so the cross-generation guard is exercised against real code.
-        gen1Registry = new IssuerRegistry(admin);
-        gen1Impl = new DogTagIssuer();
-        gen1 = new DogTagIssuerFactory(address(gen1Impl), address(gen1Registry), admin);
-        vm.startPrank(admin);
-        gen1Registry.whitelistFor(VACCINATION, providerA);
-        gen1Clone = DogTagIssuer(gen1.createIssuer("Gen1", VACCINATION, providerA));
-        vm.stopPrank();
-
-        // The S-8 router, deployed over generation 1 BEFORE generation 2 exists.
-        address[] memory generations = new address[](1);
-        generations[0] = address(gen1);
-        router = new CloneProvenanceRouter(generations, admin);
-
-        factory = new DogTagIssuerFactoryV2(address(impl), address(authority), address(router));
-
-        // Generation 2 joins the router afterwards. Append-only is what makes this ordering legal.
-        vm.prank(admin);
-        router.appendGeneration(address(factory));
+        factory = new DogTagIssuerFactory(address(impl), address(authority));
 
         vm.startPrank(admin);
         authority.addFactoryGeneration(address(factory));
@@ -405,15 +325,15 @@ contract IssuerV2Test is Test {
 
     function _create(bytes20 providerId, address who, bytes32 rt, uint96 nonce)
         internal
-        returns (DogTagIssuerV2)
+        returns (DogTagIssuer)
     {
         vm.prank(who);
-        return DogTagIssuerV2(factory.createIssuer(providerId, rt, nonce));
+        return DogTagIssuer(factory.createIssuer(providerId, rt, nonce));
     }
 
     /// @dev Creation alone anchors nothing. This is the registrar work that follows it: attach the
     /// clone, grant the signer, and select it as the provider's current service.
-    function _commission(DogTagIssuerV2 clone, bytes20 providerId, address signer) internal {
+    function _commission(DogTagIssuer clone, bytes20 providerId, address signer) internal {
         vm.startPrank(admin);
         authority.attachService(address(clone), providerId);
         authority.setIssuanceCapability(address(clone), signer, true);
@@ -423,7 +343,7 @@ contract IssuerV2Test is Test {
 
     function _live(bytes20 providerId, address who, bytes32 rt, uint96 nonce)
         internal
-        returns (DogTagIssuerV2 clone)
+        returns (DogTagIssuer clone)
     {
         clone = _create(providerId, who, rt, nonce);
         _commission(clone, providerId, who);
@@ -436,7 +356,7 @@ contract IssuerV2Test is Test {
     /// @notice The generation-1 blocker: `createIssuer` was `onlyOwner`, so no provider could deploy
     /// anything. Here an approved provider deploys its own, and owns it.
     function test_an_approved_provider_deploys_its_own_clone_and_owns_it() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
 
         assertTrue(factory.isClone(address(clone)), "not recorded as a clone");
         assertEq(clone.owner(), providerA, "creator is not the owner");
@@ -449,14 +369,14 @@ contract IssuerV2Test is Test {
 
     function test_an_unapproved_caller_cannot_create() public {
         vm.prank(stranger);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotApproved.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotApproved.selector);
         factory.createIssuer(PROVIDER_A, VACCINATION, 0);
     }
 
     /// @notice Approval is per record type, which is what keeps the widened `isClone` set sound.
     function test_approval_is_per_record_type() public {
         vm.prank(providerC); // cleared for TRAVEL only
-        vm.expectRevert(DogTagIssuerFactoryV2.NotApproved.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotApproved.selector);
         factory.createIssuer(PROVIDER_C, VACCINATION, 0);
     }
 
@@ -464,7 +384,7 @@ contract IssuerV2Test is Test {
     /// act for, even one that is itself approved for the record type.
     function test_a_caller_cannot_create_against_another_providers_id() public {
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotApproved.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotApproved.selector);
         factory.createIssuer(PROVIDER_B, VACCINATION, 0);
     }
 
@@ -475,7 +395,7 @@ contract IssuerV2Test is Test {
         vm.prank(admin);
         authority.setProviderDelegate(PROVIDER_A, stranger, true);
 
-        DogTagIssuerV2 clone = _create(PROVIDER_A, stranger, VACCINATION, 9);
+        DogTagIssuer clone = _create(PROVIDER_A, stranger, VACCINATION, 9);
         assertEq(clone.owner(), stranger, "the clone is not owned by its creator");
         assertEq(factory.predictIssuer(VACCINATION, stranger, 9), address(clone));
     }
@@ -487,18 +407,18 @@ contract IssuerV2Test is Test {
         authority.deprecateFactoryGeneration(address(factory));
 
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotApproved.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotApproved.selector);
         factory.createIssuer(PROVIDER_A, VACCINATION, 0);
     }
 
     /// @notice Creation is NOT issuance. The gate is `canCreateService`; anchoring additionally needs the
     /// registrar's attachment, grant, confirmed owner and current pointer.
     function test_a_freshly_created_clone_can_anchor_nothing() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
 
         assertFalse(authority.canIssue(address(clone), providerA));
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerV2.NotIssuanceCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
         clone.issue(ROOT_1);
 
         _commission(clone, PROVIDER_A, providerA);
@@ -511,20 +431,20 @@ contract IssuerV2Test is Test {
     /// could. The mandatory issuer-whitelist pillar keys its question on `clone.recordType()`, so a
     /// provider cleared for one record type cannot produce a contract that reads as another.
     function test_a_widened_clone_set_cannot_forge_a_record_type() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_C, providerC, TRAVEL, 0);
+        DogTagIssuer clone = _create(PROVIDER_C, providerC, TRAVEL, 0);
 
         assertTrue(factory.isClone(address(clone)), "the clone really did join the widened set");
         assertEq(clone.recordType(), TRAVEL, "the record type is resolved from the clone");
         // And there is no VACCINATION contract providerC could have made — the gate refused above.
         vm.prank(providerC);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotApproved.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotApproved.selector);
         factory.createIssuer(PROVIDER_C, VACCINATION, 1);
     }
 
     /// @notice A self-service generation must not let a provider choose the string a consumer might read
     /// as the issuer's authoritative identity. `name()` is empty on every clone, forever.
     function test_the_legacy_name_getter_is_permanently_empty() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
         assertEq(clone.name(), "", "a generation-2 clone carries a name");
 
         // There is no argument by which a caller could supply one: creation takes none, and the clone is
@@ -538,15 +458,15 @@ contract IssuerV2Test is Test {
     /// that the nonce must not cost.
     function test_predict_matches_the_deployment_exactly() public {
         address predicted = factory.predictIssuer(VACCINATION, providerA, 7);
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 7);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 7);
         assertEq(address(clone), predicted, "prediction diverged from deployment");
     }
 
     /// @notice THE reason the salt gained a nonce: without one a provider has exactly one possible clone
     /// address per record type and the repoint in requirement 1 has no target to move to.
     function test_the_nonce_gives_a_provider_a_second_address() public {
-        DogTagIssuerV2 first = _create(PROVIDER_A, providerA, VACCINATION, 0);
-        DogTagIssuerV2 second = _create(PROVIDER_A, providerA, VACCINATION, 1);
+        DogTagIssuer first = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer second = _create(PROVIDER_A, providerA, VACCINATION, 1);
 
         assertTrue(address(first) != address(second), "nonce did not produce a distinct address");
         assertTrue(factory.isClone(address(first)) && factory.isClone(address(second)));
@@ -568,7 +488,7 @@ contract IssuerV2Test is Test {
     /// own signer is structurally unreachable. They can diverge afterwards, and only through the two-step
     /// handover; the salt records who created the clone, not who controls it now.
     function test_owner_and_the_salt_binding_agree_at_creation() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_B, providerB, VACCINATION, 3);
+        DogTagIssuer clone = _create(PROVIDER_B, providerB, VACCINATION, 3);
         assertEq(clone.owner(), providerB);
         assertEq(factory.predictIssuer(VACCINATION, providerB, 3), address(clone));
         // No other address predicts to it.
@@ -594,11 +514,11 @@ contract IssuerV2Test is Test {
     /// **old key can no longer act** while the new one can — tested through `authorizeClone`, the predicate
     /// S-6 and S-9 will call, not only through this factory's own pointer.
     function test_key_rotation_hands_control_from_the_issuance_signer_to_a_controller() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
 
         // Before: the signer holds control; the controller holds none.
         assertEq(factory.authorizeClone(address(clone), providerA), VACCINATION);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotCloneOwner.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotCloneOwner.selector);
         factory.authorizeClone(address(clone), controller);
 
         // Step 1 of 2. This alone changes nothing.
@@ -608,11 +528,11 @@ contract IssuerV2Test is Test {
         assertEq(clone.owner(), providerA, "ownership moved before acceptance");
         assertEq(clone.pendingOwner(), controller);
         assertEq(factory.authorizeClone(address(clone), providerA), VACCINATION, "old key lost control early");
-        vm.expectRevert(DogTagIssuerFactoryV2.NotCloneOwner.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotCloneOwner.selector);
         factory.authorizeClone(address(clone), controller);
         // And the pending owner cannot act through the factory either.
         vm.prank(controller);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotCloneOwner.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotCloneOwner.selector);
         factory.setActiveIssuer(address(clone));
 
         // Step 2 of 2.
@@ -630,10 +550,10 @@ contract IssuerV2Test is Test {
         assertEq(factory.resolveActiveIssuer(controller, VACCINATION), address(clone));
 
         // The old key cannot — not through the predicate, not through the pointer, not over the clone.
-        vm.expectRevert(DogTagIssuerFactoryV2.NotCloneOwner.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotCloneOwner.selector);
         factory.authorizeClone(address(clone), providerA);
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotCloneOwner.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotCloneOwner.selector);
         factory.setActiveIssuer(address(clone));
         vm.prank(providerA);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, providerA));
@@ -644,7 +564,7 @@ contract IssuerV2Test is Test {
     /// and revocation — so a completed handover suspends both until the registrar reconfirms. That is a
     /// real operational consequence of a rotation and the one most likely to surprise an operator.
     function test_a_handover_suspends_issuance_until_the_registrar_reconfirms() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         clone.issue(ROOT_1);
 
@@ -657,11 +577,11 @@ contract IssuerV2Test is Test {
         assertTrue(authority.issuanceGranted(address(clone), providerA));
         assertFalse(authority.canIssue(address(clone), providerA));
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerV2.NotIssuanceCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
         clone.issue(ROOT_2);
         // And revocation is suspended with it — the confirmed-owner term is on both rungs.
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerV2.NotRevocationCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotRevocationCapable.selector);
         clone.revoke(ROOT_1);
 
         vm.prank(admin);
@@ -677,7 +597,7 @@ contract IssuerV2Test is Test {
     /// cancels. This is both the recovery proof and the proof that the cancel path cannot be used to
     /// orphan the clone.
     function test_a_handover_to_a_mistyped_address_is_recoverable() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
 
         vm.prank(providerA);
         clone.transferOwnership(mistyped);
@@ -706,25 +626,25 @@ contract IssuerV2Test is Test {
     /// @notice After `initialize`, `owner()` is non-zero forever. Both paths that could vacate it are
     /// closed in the contract rather than left to the fact that nobody can sign as the zero address.
     function test_owner_can_never_become_the_zero_address() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
 
         // Path 1: renounce is disabled outright.
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerV2.OwnerCannotBeZero.selector);
+        vm.expectRevert(DogTagIssuer.OwnerCannotBeZero.selector);
         clone.renounceOwnership();
 
         // Path 2: with no transfer pending, OZ's `pendingOwner() != msg.sender` comparison passes for the
         // zero address (0 == 0) and would hand ownership to it. The override refuses.
         assertEq(clone.pendingOwner(), address(0));
         vm.prank(address(0));
-        vm.expectRevert(DogTagIssuerV2.OwnerCannotBeZero.selector);
+        vm.expectRevert(DogTagIssuer.OwnerCannotBeZero.selector);
         clone.acceptOwnership();
 
         assertEq(clone.owner(), providerA, "owner was vacated");
     }
 
     function test_only_the_owner_may_start_a_handover() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         clone.transferOwnership(stranger);
@@ -734,7 +654,7 @@ contract IssuerV2Test is Test {
     /// stop the next `issue` and touch nothing already anchored (plan §3.3), and it must not strip
     /// control — a withdrawn provider can still hand its clone over.
     function test_withdrawing_the_grant_stops_issuance_without_stripping_ownership() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
 
         vm.prank(providerA);
         clone.issue(ROOT_1);
@@ -745,7 +665,7 @@ contract IssuerV2Test is Test {
 
         // New issuance stops.
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerV2.NotIssuanceCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
         clone.issue(ROOT_2);
         // What was already anchored is untouched.
         assertTrue(clone.isValid(ROOT_1), "withdrawing a grant invalidated an anchored root");
@@ -762,7 +682,7 @@ contract IssuerV2Test is Test {
     /// @notice The owner is not an issuance signer by virtue of owning. Stated as a test because merging
     /// the two would silently disarm the withdrawal lever above.
     function test_owning_a_clone_confers_no_issuance_right() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         clone.transferOwnership(controller);
         vm.prank(controller);
@@ -771,7 +691,7 @@ contract IssuerV2Test is Test {
         authority.confirmServiceOwner(address(clone));
 
         vm.prank(controller); // owns it, holds no grant
-        vm.expectRevert(DogTagIssuerV2.NotIssuanceCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
         clone.issue(ROOT_1);
     }
 
@@ -782,7 +702,7 @@ contract IssuerV2Test is Test {
     /// @notice `revoke` keeps generation 1's split: the H-1 originator, or the protocol admin. A signer
     /// that holds a current grant but did not anchor the root is neither.
     function test_a_capable_signer_that_did_not_issue_a_root_cannot_revoke_it() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         clone.issue(ROOT_1);
 
@@ -791,14 +711,14 @@ contract IssuerV2Test is Test {
         assertTrue(authority.canRevoke(address(clone), stranger), "the capability really is held");
 
         vm.prank(stranger);
-        vm.expectRevert(DogTagIssuerV2.NotOriginatorOrAdmin.selector);
+        vm.expectRevert(DogTagIssuer.NotOriginatorOrAdmin.selector);
         clone.revoke(ROOT_1);
     }
 
     /// @notice The protocol admin arm, which needs no issuance grant on the clone — and grants nothing
     /// `adminRevoke` did not already give it unconditionally.
     function test_the_protocol_admin_may_revoke_a_root_it_did_not_issue() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         clone.issue(ROOT_1);
 
@@ -811,7 +731,7 @@ contract IssuerV2Test is Test {
     /// @notice An emergency sweep must not abort on one stale entry, so it reports what it passed over
     /// instead of reverting — and it still revokes everything it can.
     function test_admin_revoke_reports_every_skipped_root_and_still_revokes_the_rest() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.startPrank(providerA);
         clone.issue(ROOT_1);
         clone.issue(ROOT_2);
@@ -824,9 +744,9 @@ contract IssuerV2Test is Test {
         rs[2] = ROOT_1; // the one that must still be swept
 
         vm.expectEmit(true, false, false, true, address(clone));
-        emit DogTagIssuerV2.AdminRevokeSkipped(ROOT_3, DogTagIssuerV2.RevokeSkipReason.NotIssued);
+        emit DogTagIssuer.AdminRevokeSkipped(ROOT_3, DogTagIssuer.RevokeSkipReason.NotIssued);
         vm.expectEmit(true, false, false, true, address(clone));
-        emit DogTagIssuerV2.AdminRevokeSkipped(ROOT_2, DogTagIssuerV2.RevokeSkipReason.AlreadyRevoked);
+        emit DogTagIssuer.AdminRevokeSkipped(ROOT_2, DogTagIssuer.RevokeSkipReason.AlreadyRevoked);
         vm.prank(admin);
         clone.adminRevoke(rs);
 
@@ -839,14 +759,14 @@ contract IssuerV2Test is Test {
     /// disjunction (the capability OR the protocol admin) and an outer single-arm modifier would refuse
     /// the admin. Each element is gated by the call it makes, so the authority is identical either way.
     function test_the_bulk_paths_carry_the_same_gates_as_their_singular_forms() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
 
         bytes32[] memory two = new bytes32[](2);
         two[0] = ROOT_1;
         two[1] = ROOT_2;
 
         vm.prank(stranger); // holds no grant
-        vm.expectRevert(DogTagIssuerV2.NotIssuanceCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
         clone.bulkIssue(two);
 
         vm.prank(providerA);
@@ -854,7 +774,7 @@ contract IssuerV2Test is Test {
         assertTrue(clone.isValid(ROOT_1) && clone.isValid(ROOT_2), "a capable signer could not bulk issue");
 
         vm.prank(stranger);
-        vm.expectRevert(DogTagIssuerV2.NotRevocationCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotRevocationCapable.selector);
         clone.bulkRevoke(two);
 
         vm.prank(providerA);
@@ -866,7 +786,7 @@ contract IssuerV2Test is Test {
     /// is the deliberate asymmetry with `adminRevoke`, which skips and reports instead, because an
     /// emergency sweep must not be abortable by one stale entry.
     function test_bulk_revoke_reverts_on_the_first_unrevocable_root() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         clone.issue(ROOT_1);
 
@@ -875,7 +795,7 @@ contract IssuerV2Test is Test {
         rs[1] = ROOT_1; // would otherwise be revoked
 
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerV2.BadRoot.selector);
+        vm.expectRevert(DogTagIssuer.BadRoot.selector);
         clone.bulkRevoke(rs);
 
         assertTrue(clone.isValid(ROOT_1), "a reverting batch still revoked something");
@@ -891,12 +811,12 @@ contract IssuerV2Test is Test {
     /// choice - and the no-op asserts NOTHING about the caller's authority, which is why the same caller
     /// is then refused a real revoke here.
     function test_an_empty_batch_is_where_the_two_bulk_gates_differ() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         clone.issue(ROOT_1);
 
         vm.prank(stranger);
-        vm.expectRevert(DogTagIssuerV2.NotIssuanceCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
         clone.bulkIssue(new bytes32[](0));
 
         vm.prank(stranger);
@@ -904,19 +824,19 @@ contract IssuerV2Test is Test {
 
         assertTrue(clone.isValid(ROOT_1), "an empty batch touched a root");
         vm.prank(stranger);
-        vm.expectRevert(DogTagIssuerV2.NotRevocationCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotRevocationCapable.selector);
         clone.revoke(ROOT_1);
     }
 
     function test_only_the_protocol_admin_may_admin_revoke() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         clone.issue(ROOT_1);
 
         bytes32[] memory rs = new bytes32[](1);
         rs[0] = ROOT_1;
         vm.prank(providerA); // holds the issuance grant, is not the admin
-        vm.expectRevert(DogTagIssuerV2.NotAdmin.selector);
+        vm.expectRevert(DogTagIssuer.NotAdmin.selector);
         clone.adminRevoke(rs);
     }
 
@@ -934,17 +854,17 @@ contract IssuerV2Test is Test {
     /// issuance; downward (`revoke` asking `canIssue`) a root anchored on a superseded clone becomes
     /// permanently unrevocable by the originator that anchored it.
     function test_a_superseded_clone_refuses_new_issuance_but_still_revokes() public {
-        DogTagIssuerV2 oldClone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer oldClone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         oldClone.issue(ROOT_1);
 
         // Repointing the core's own pointer is what supersedes it.
-        DogTagIssuerV2 newClone = _live(PROVIDER_A, providerA, VACCINATION, 1);
+        DogTagIssuer newClone = _live(PROVIDER_A, providerA, VACCINATION, 1);
         assertTrue(authority.canRevoke(address(oldClone), providerA), "the wide rung must still hold");
         assertFalse(authority.canIssue(address(oldClone), providerA), "the narrow rung must have dropped");
 
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerV2.NotIssuanceCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
         oldClone.issue(ROOT_2);
 
         vm.prank(providerA);
@@ -960,7 +880,7 @@ contract IssuerV2Test is Test {
     /// @notice The other live lifecycle term `canIssue` folds and `canRevoke` does not: a suspended
     /// provider anchors nothing new, and invalidation must not be blocked by a review state.
     function test_a_suspended_provider_anchors_nothing_but_can_still_revoke() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         clone.issue(ROOT_1);
 
@@ -968,7 +888,7 @@ contract IssuerV2Test is Test {
         authority.setProviderCleared(PROVIDER_A, false);
 
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerV2.NotIssuanceCapable.selector);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
         clone.issue(ROOT_2);
 
         vm.prank(providerA);
@@ -980,7 +900,7 @@ contract IssuerV2Test is Test {
     /// on the GAPS between the rungs, so a mock whose three answers were independently settable would let
     /// this suite assert states the real core forbids.
     function test_the_authority_ladder_is_nested_not_three_independent_switches() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
         address c = address(clone);
 
         // Unattached: no rung answers.
@@ -1044,11 +964,11 @@ contract IssuerV2Test is Test {
         (bool ok,) = factory.cloneAuthorization(address(fake), providerA);
         assertFalse(ok, "an impostor passed the predicate");
 
-        vm.expectRevert(DogTagIssuerFactoryV2.NotAClone.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotAClone.selector);
         factory.authorizeClone(address(fake), providerA);
 
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotAClone.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotAClone.selector);
         factory.setActiveIssuer(address(fake));
 
         assertEq(factory.resolveActiveIssuer(providerA, VACCINATION), address(0));
@@ -1060,7 +980,7 @@ contract IssuerV2Test is Test {
     function test_a_hostile_impostor_is_never_even_called() public {
         HostileIssuer hostile = new HostileIssuer();
 
-        vm.expectRevert(DogTagIssuerFactoryV2.NotAClone.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotAClone.selector);
         factory.authorizeClone(address(hostile), providerA);
 
         (bool ok, bytes32 rt) = factory.cloneAuthorization(address(hostile), providerA);
@@ -1068,7 +988,7 @@ contract IssuerV2Test is Test {
         assertEq(rt, bytes32(0));
 
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotAClone.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotAClone.selector);
         factory.setActiveIssuer(address(hostile));
     }
 
@@ -1076,14 +996,14 @@ contract IssuerV2Test is Test {
     /// listing at it would be misattribution rather than forgery, and the control check is what catches
     /// it.
     function test_a_repoint_cannot_take_another_providers_genuine_clone() public {
-        DogTagIssuerV2 bClone = _create(PROVIDER_B, providerB, VACCINATION, 0);
+        DogTagIssuer bClone = _create(PROVIDER_B, providerB, VACCINATION, 0);
         assertTrue(factory.isClone(address(bClone)), "the target really is a genuine clone");
 
-        vm.expectRevert(DogTagIssuerFactoryV2.NotCloneOwner.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotCloneOwner.selector);
         factory.authorizeClone(address(bClone), providerA);
 
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotCloneOwner.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotCloneOwner.selector);
         factory.setActiveIssuer(address(bClone));
 
         assertEq(factory.resolveActiveIssuer(providerA, VACCINATION), address(0));
@@ -1093,8 +1013,8 @@ contract IssuerV2Test is Test {
     /// argument — the target address — so there is no argument by which a caller could name a slot: a
     /// VACCINATION clone can only ever occupy the VACCINATION slot.
     function test_the_record_type_key_is_resolved_from_the_clone_not_supplied() public {
-        DogTagIssuerV2 vacc = _create(PROVIDER_A, providerA, VACCINATION, 0);
-        DogTagIssuerV2 travel = _create(PROVIDER_A, providerA, TRAVEL, 0);
+        DogTagIssuer vacc = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer travel = _create(PROVIDER_A, providerA, TRAVEL, 0);
 
         vm.prank(providerA);
         factory.setActiveIssuer(address(vacc));
@@ -1122,14 +1042,14 @@ contract IssuerV2Test is Test {
     /// `canRevoke` omits the current-pointer term that `canIssue` folds, so no repoint can strand a root
     /// as unrevocable by the originator that anchored it.
     function test_a_provider_repoints_to_a_second_clone_of_its_own() public {
-        DogTagIssuerV2 oldClone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer oldClone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.startPrank(providerA);
         factory.setActiveIssuer(address(oldClone));
         oldClone.issue(ROOT_1);
         vm.stopPrank();
         assertEq(factory.resolveActiveIssuer(providerA, VACCINATION), address(oldClone));
 
-        DogTagIssuerV2 newClone = _live(PROVIDER_A, providerA, VACCINATION, 1);
+        DogTagIssuer newClone = _live(PROVIDER_A, providerA, VACCINATION, 1);
         vm.prank(providerA);
         factory.setActiveIssuer(address(newClone));
 
@@ -1151,7 +1071,7 @@ contract IssuerV2Test is Test {
     /// that is no longer true. The raw mapping keeps the CURRENT designation; the resolving read refuses
     /// it. The trail of designations is in the events, not in this mapping.
     function test_a_stale_pointer_degrades_to_absent_rather_than_to_a_false_claim() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         factory.setActiveIssuer(address(clone));
         assertEq(factory.resolveActiveIssuer(providerA, VACCINATION), address(clone));
@@ -1175,7 +1095,7 @@ contract IssuerV2Test is Test {
     /// still anchors normally once the core clears it. Recorded because a reader could otherwise take
     /// `activeIssuer` for a gate.
     function test_the_pointer_is_advisory_and_gates_no_issuance() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         assertEq(factory.activeIssuer(providerA, VACCINATION), address(0), "a pointer was set implicitly");
 
         vm.prank(providerA);
@@ -1184,7 +1104,7 @@ contract IssuerV2Test is Test {
     }
 
     function test_a_provider_can_withdraw_its_own_pointer() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
         vm.startPrank(providerA);
         factory.setActiveIssuer(address(clone));
         factory.clearActiveIssuer(VACCINATION);
@@ -1195,10 +1115,10 @@ contract IssuerV2Test is Test {
     }
 
     function test_the_zero_address_never_authorizes() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
         (bool ok,) = factory.cloneAuthorization(address(clone), address(0));
         assertFalse(ok);
-        vm.expectRevert(DogTagIssuerFactoryV2.NotCloneOwner.selector);
+        vm.expectRevert(DogTagIssuerFactory.NotCloneOwner.selector);
         factory.authorizeClone(address(clone), address(0));
     }
 
@@ -1207,24 +1127,19 @@ contract IssuerV2Test is Test {
     // =============================================================================================
 
     function test_a_zero_dependency_is_refused() public {
-        vm.expectRevert(DogTagIssuerFactoryV2.ZeroAddress.selector);
-        new DogTagIssuerFactoryV2(address(0), address(authority), address(router));
-        vm.expectRevert(DogTagIssuerFactoryV2.ZeroAddress.selector);
-        new DogTagIssuerFactoryV2(address(impl), address(0), address(router));
-        // The cross-generation guard is MANDATORY: a zero here silently disabled it.
-        vm.expectRevert(DogTagIssuerFactoryV2.ZeroAddress.selector);
-        new DogTagIssuerFactoryV2(address(impl), address(authority), address(0));
+        vm.expectRevert(DogTagIssuerFactory.ZeroAddress.selector);
+        new DogTagIssuerFactory(address(0), address(authority));
+        vm.expectRevert(DogTagIssuerFactory.ZeroAddress.selector);
+        new DogTagIssuerFactory(address(impl), address(0));
     }
 
     /// @notice A staticcall to an EOA SUCCEEDS with empty returndata, so an EOA dependency is the shape
-    /// that stays silent. Each of the three is refused for having no code at all.
+    /// that stays silent. Both are refused for having no code at all.
     function test_an_eoa_dependency_is_refused() public {
-        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.NotAContract.selector, stranger));
-        new DogTagIssuerFactoryV2(stranger, address(authority), address(router));
-        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.NotAContract.selector, stranger));
-        new DogTagIssuerFactoryV2(address(impl), stranger, address(router));
-        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.NotAContract.selector, stranger));
-        new DogTagIssuerFactoryV2(address(impl), address(authority), stranger);
+        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactory.NotAContract.selector, stranger));
+        new DogTagIssuerFactory(stranger, address(authority));
+        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactory.NotAContract.selector, stranger));
+        new DogTagIssuerFactory(address(impl), stranger);
     }
 
     /// @notice An implementation whose getters revert is not the exact clone runtime and is refused
@@ -1232,9 +1147,9 @@ contract IssuerV2Test is Test {
     function test_a_wrong_implementation_whose_getters_revert_is_refused() public {
         address bad = address(new RevertingImplementation());
         vm.expectRevert(
-            abi.encodeWithSelector(DogTagIssuerFactoryV2.ImplementationCodeMismatch.selector, bad)
+            abi.encodeWithSelector(DogTagIssuerFactory.ImplementationCodeMismatch.selector, bad)
         );
-        new DogTagIssuerFactoryV2(bad, address(authority), address(router));
+        new DogTagIssuerFactory(bad, address(authority));
     }
 
     /// @notice Code alone is not enough: any runtime other than the frozen issuer implementation is
@@ -1242,14 +1157,14 @@ contract IssuerV2Test is Test {
     function test_an_implementation_that_answers_nothing_is_refused() public {
         address bad = address(new AnswersNothing());
         vm.expectRevert(
-            abi.encodeWithSelector(DogTagIssuerFactoryV2.ImplementationCodeMismatch.selector, bad)
+            abi.encodeWithSelector(DogTagIssuerFactory.ImplementationCodeMismatch.selector, bad)
         );
-        new DogTagIssuerFactoryV2(bad, address(authority), address(router));
+        new DogTagIssuerFactory(bad, address(authority));
     }
 
     /// @notice ABI-shaped replies are not implementation identity. This impostor passes every old
     /// one-word getter probe and answers any extra selector with another word, but its runtime bytecode
-    /// is not `DogTagIssuerV2` and the constructor refuses it precisely.
+    /// is not `DogTagIssuer` and the constructor refuses it precisely.
     function test_an_abi_shaped_impostor_implementation_is_refused() public {
         AbiShapedImplementationImpostor bad = new AbiShapedImplementationImpostor();
         assertEq(bad.owner(), impl.owner(), "the owner reply differs");
@@ -1261,9 +1176,9 @@ contract IssuerV2Test is Test {
         assertEq(ret.length, 32, "the fallback did not return one ABI word");
 
         vm.expectRevert(
-            abi.encodeWithSelector(DogTagIssuerFactoryV2.ImplementationCodeMismatch.selector, address(bad))
+            abi.encodeWithSelector(DogTagIssuerFactory.ImplementationCodeMismatch.selector, address(bad))
         );
-        new DogTagIssuerFactoryV2(address(bad), address(authority), address(router));
+        new DogTagIssuerFactory(address(bad), address(authority));
     }
 
     /// @notice A core that authorizes indiscriminately — including the zero-everything query — would make
@@ -1276,81 +1191,25 @@ contract IssuerV2Test is Test {
         address bad = address(new PermissiveAuthority());
         vm.expectRevert(
             abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.AuthorityAuthorizesUnconditionally.selector,
+                DogTagIssuerFactory.AuthorityAuthorizesUnconditionally.selector,
                 bad,
                 IProviderAuthority.canCreateService.selector
             )
         );
-        new DogTagIssuerFactoryV2(address(impl), bad, address(router));
+        new DogTagIssuerFactory(address(impl), bad);
     }
 
     function test_an_authority_that_answers_nothing_is_refused() public {
         address bad = address(new AnswersNothing());
         vm.expectRevert(
             abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.AuthorityDoesNotAnswer.selector,
+                DogTagIssuerFactory.AuthorityDoesNotAnswer.selector,
                 bad,
                 IProviderAuthority.canCreateService.selector
             )
         );
-        new DogTagIssuerFactoryV2(address(impl), bad, address(router));
+        new DogTagIssuerFactory(address(impl), bad);
     }
-
-    /// @notice Generation 2 must be bound to its OWN authority core, and that is a held property rather
-    /// than only a documented precondition: generation 1's `IssuerRegistry` is a real, live contract that
-    /// answers `isWhitelistedFor` and `hasRole` and none of the three capability questions, so it is
-    /// refused in the slot outright. Sharing one core across generations would also break the router's
-    /// cutover freeze, since one grant would authorize anchoring on both generations' clones.
-    function test_a_generation_one_registry_cannot_be_the_authority_core() public {
-        assertTrue(gen1Registry.isWhitelistedFor(VACCINATION, providerA), "the core really is live");
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.AuthorityDoesNotAnswer.selector,
-                address(gen1Registry),
-                IProviderAuthority.canCreateService.selector
-            )
-        );
-        new DogTagIssuerFactoryV2(address(impl), address(gen1Registry), address(router));
-    }
-
-    /// @notice A prior index that does not answer the cross-generation query, or answers it with the
-    /// wrong width, would revert every `registerRoot` — bricking issuance for the whole generation with no
-    /// way to repoint.
-    function test_a_prior_index_that_does_not_answer_is_refused() public {
-        address bad = address(new AnswersNothing());
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector,
-                bad,
-                IPriorRootAnchors.isRootAnchored.selector
-            )
-        );
-        new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
-
-        // A generation-1 factory is a real contract that answers `rootIssuer` — and NOT the
-        // cross-generation query, which is why it can no longer occupy this slot directly.
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector,
-                address(gen1),
-                IPriorRootAnchors.isRootAnchored.selector
-            )
-        );
-        new DogTagIssuerFactoryV2(address(impl), address(authority), address(gen1));
-    }
-
-    function test_a_prior_index_answering_the_wrong_width_is_refused() public {
-        address bad = address(new WrongWidthAnchors());
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector,
-                bad,
-                IPriorRootAnchors.isRootAnchored.selector
-            )
-        );
-        new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
-    }
-
     /// @notice A single word is not yet a boolean. An occupant answering `2` has stated nothing this
     /// factory can act on, and it must be refused as a NON-ANSWER rather than read as a definite `true` -
     /// otherwise a malformed reply would be reported as a deliberate authorization or claim. Both
@@ -1360,119 +1219,15 @@ contract IssuerV2Test is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.AuthorityDoesNotAnswer.selector,
+                DogTagIssuerFactory.AuthorityDoesNotAnswer.selector,
                 bad,
                 IProviderAuthority.canCreateService.selector
             )
         );
-        new DogTagIssuerFactoryV2(address(impl), bad, address(router));
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector,
-                bad,
-                IPriorRootAnchors.isRootAnchored.selector
-            )
-        );
-        new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
+        new DogTagIssuerFactory(address(impl), bad);
     }
-
-    /// @notice An occupant claiming every root would refuse every anchor — permanently, since the slot is
-    /// immutable. Caught by requiring `false` for a root nothing has anchored, and reported as the
-    /// definite claim it is rather than as a missing selector.
-    function test_a_prior_index_that_claims_every_root_is_refused() public {
-        address bad = address(new AllAnchored());
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.PriorIndexClaimsEveryRoot.selector,
-                bad,
-                IPriorRootAnchors.isRootAnchored.selector
-            )
-        );
-        new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
-    }
-
-    /// @notice The membership probe is load-bearing independently of the root probe: an index that
-    /// correctly sees no zero root but prematurely claims this not-yet-deployed factory is refused, under
-    /// its OWN error naming `isGeneration` - the root probe passed, so nothing here is a missing selector.
-    function test_a_prior_index_that_prematurely_claims_this_generation_is_refused() public {
-        address bad = address(new PrematureGenerationAnchors());
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.PriorIndexPrematurelyClaimsThisFactory.selector,
-                bad,
-                IPriorRootAnchors.isGeneration.selector
-            )
-        );
-        new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
-    }
-
-    /// @notice The residual, pinned as a limitation rather than as a passing property: a stateful stub
-    /// can report the factory absent during construction, later report it present, yet omit every earlier
-    /// root. Required ABI behaviour cannot authenticate the occupant or prove its history complete, so
-    /// wiring the real router over every earlier generation remains a cutover precondition.
-    function test_a_conforming_stub_prior_index_is_accepted_and_that_is_a_residual() public {
-        StubAnchors stub = new StubAnchors();
-        DogTagIssuerFactoryV2 stubbed =
-            new DogTagIssuerFactoryV2(address(impl), address(authority), address(stub));
-        stub.appendGeneration(address(stubbed));
-
-        vm.prank(admin);
-        authority.addFactoryGeneration(address(stubbed));
-        vm.prank(providerA);
-        DogTagIssuerV2 clone = DogTagIssuerV2(stubbed.createIssuer(PROVIDER_A, VACCINATION, 0));
-        _commission(clone, PROVIDER_A, providerA);
-
-        // Generation 1 already holds ROOT_1 and has revoked it, and this factory's guard cannot see it.
-        _anchorAndRevokeOnGeneration1(ROOT_1);
-        assertFalse(gen1Clone.isValid(ROOT_1));
-        vm.prank(providerA);
-        clone.issue(ROOT_1);
-        assertEq(stubbed.rootIssuer(ROOT_1), address(clone), "the stub is what let this through");
-    }
-
-    // =============================================================================================
-    // The property that must not regress: write-once, per contract, honest
-    // =============================================================================================
-
-    /// @notice Deployment order is router -> factory -> append. The middle state is real and must not
-    /// permit a root write that the protocol-wide router cannot resolve. The failed issue rolls all
-    /// clone and factory state back; once the factory is appended, the same issue succeeds and resolves.
-    function test_issuance_reverts_until_this_factory_is_appended_to_the_router() public {
-        DogTagIssuerFactoryV2 pending =
-            new DogTagIssuerFactoryV2(address(impl), address(authority), address(router));
-        assertFalse(router.isGeneration(address(pending)), "the factory was already in the router");
-
-        vm.prank(admin);
-        authority.addFactoryGeneration(address(pending));
-        vm.prank(providerA);
-        DogTagIssuerV2 clone = DogTagIssuerV2(pending.createIssuer(PROVIDER_A, VACCINATION, uint96(77)));
-        _commission(clone, PROVIDER_A, providerA);
-
-        vm.prank(providerA);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.FactoryNotRegisteredInPriorIndex.selector, address(pending)
-            )
-        );
-        clone.issue(ROOT_1);
-
-        assertEq(clone.issuedAt(ROOT_1), 0, "the reverted issue left clone state behind");
-        assertEq(pending.rootIssuer(ROOT_1), address(0), "the unregistered factory recorded the root");
-        assertEq(router.rootIssuer(ROOT_1), address(0), "the router resolved a failed issue");
-
-        vm.prank(admin);
-        router.appendGeneration(address(pending));
-        vm.prank(providerA);
-        clone.issue(ROOT_1);
-
-        assertGt(clone.issuedAt(ROOT_1), 0, "the appended factory still could not issue");
-        assertEq(pending.rootIssuer(ROOT_1), address(clone));
-        assertEq(router.rootIssuer(ROOT_1), address(clone), "the issued root is not protocol-resolvable");
-    }
-
     function test_register_root_stays_clone_only_and_write_once() public {
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
 
         // Only a clone may register.
         vm.prank(stranger);
@@ -1484,81 +1239,16 @@ contract IssuerV2Test is Test {
         assertEq(factory.rootIssuer(ROOT_1), address(clone));
 
         // Write-once in the factory: a second clone cannot claim the same root.
-        DogTagIssuerV2 other = _live(PROVIDER_B, providerB, VACCINATION, 0);
+        DogTagIssuer other = _live(PROVIDER_B, providerB, VACCINATION, 0);
         vm.prank(providerB);
         vm.expectRevert(bytes("root taken"));
         other.issue(ROOT_1);
 
         // Write-once in the clone: even its own issuer cannot re-issue.
         vm.prank(providerA);
-        vm.expectRevert(DogTagIssuerV2.BadRoot.selector);
+        vm.expectRevert(DogTagIssuer.BadRoot.selector);
         clone.issue(ROOT_1);
     }
-
-    /// @notice The write-side half of the provenance router's resolution order (S-8). The guards are per
-    /// contract, so a root anchored and then REVOKED on a generation-1 clone would otherwise be
-    /// re-anchorable on a generation-2 clone — and under newest-first resolution the revoked credential
-    /// would verify again. With the router wired as `priorIndex`, the duplicate never comes into
-    /// existence.
-    function test_a_revoked_prior_generation_root_cannot_be_re_anchored() public {
-        _anchorAndRevokeOnGeneration1(ROOT_1);
-        assertFalse(gen1Clone.isValid(ROOT_1));
-        assertEq(gen1.rootIssuer(ROOT_1), address(gen1Clone));
-
-        DogTagIssuerV2 gen2Clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
-        vm.prank(providerA);
-        vm.expectRevert(bytes("root taken upstream"));
-        gen2Clone.issue(ROOT_1);
-
-        // The resurrection never happened, and the generation-2 clone is otherwise fully functional.
-        assertEq(factory.rootIssuer(ROOT_1), address(0));
-        vm.prank(providerA);
-        gen2Clone.issue(ROOT_2);
-        assertEq(factory.rootIssuer(ROOT_2), address(gen2Clone));
-    }
-
-    /// @notice The guard spans EVERY generation the router carries, not just the one immediately before —
-    /// which is the whole reason it asks the router's cross-generation query rather than a single
-    /// factory's generation-local `rootIssuer`.
-    function test_the_upstream_guard_spans_every_generation_the_router_carries() public {
-        // A second generation-2-shaped factory joins the router as generation 3.
-        DogTagIssuerFactoryV2 gen3 =
-            new DogTagIssuerFactoryV2(address(impl), address(authority), address(router));
-        vm.prank(admin);
-        router.appendGeneration(address(gen3));
-        vm.prank(admin);
-        authority.addFactoryGeneration(address(gen3));
-
-        DogTagIssuerV2 gen2Clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
-        vm.prank(providerA);
-        gen2Clone.issue(ROOT_1);
-
-        vm.prank(providerA);
-        DogTagIssuerV2 gen3Clone = DogTagIssuerV2(gen3.createIssuer(PROVIDER_A, VACCINATION, 0));
-        _commission(gen3Clone, PROVIDER_A, providerA);
-
-        vm.prank(providerA);
-        vm.expectRevert(bytes("root taken upstream"));
-        gen3Clone.issue(ROOT_1);
-
-        // And a root only the OLDEST generation holds is refused there too.
-        _anchorAndRevokeOnGeneration1(ROOT_2);
-        vm.prank(providerA);
-        vm.expectRevert(bytes("root taken upstream"));
-        gen3Clone.issue(ROOT_2);
-    }
-
-    /// @notice The cutover ordering, stated as a test because the reverse reading — that pointing a
-    /// factory at the router would be circular — is wrong and would misdirect whoever wires generation 3.
-    /// The router is append-only precisely so it can be deployed FIRST.
-    function test_the_router_topology_is_router_first_then_factory_then_append() public view {
-        assertEq(router.generationAt(0), address(gen1), "generation 1 must resolve first");
-        assertEq(router.generationAt(1), address(factory), "generation 2 was appended after the fact");
-        assertEq(address(factory.priorIndex()), address(router), "the factory points at the router");
-        // And the router recognises clones of both generations through one read.
-        assertEq(router.generationCount(), 2);
-    }
-
     // =============================================================================================
     // Event compatibility, asserted against generation 1's own signature strings
     // =============================================================================================
@@ -1568,7 +1258,7 @@ contract IssuerV2Test is Test {
     /// self-consistent. A changed topic0 silently drops the log from the oversight indexer's feed.
     function test_the_legacy_creation_and_anchoring_event_topics_are_unchanged() public {
         vm.recordLogs();
-        DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
         clone.issue(ROOT_1);
         vm.prank(providerA);
@@ -1600,7 +1290,7 @@ contract IssuerV2Test is Test {
         address predicted = factory.predictIssuer(VACCINATION, providerA, 5);
 
         vm.expectEmit(true, true, true, true, address(factory));
-        emit DogTagIssuerFactoryV2.IssuerOwnerRegistered(predicted, providerA, PROVIDER_A, 5);
+        emit DogTagIssuerFactory.IssuerOwnerRegistered(predicted, providerA, PROVIDER_A, 5);
         _create(PROVIDER_A, providerA, VACCINATION, 5);
     }
 
@@ -1636,24 +1326,11 @@ contract IssuerV2Test is Test {
     }
 
     function test_a_clone_cannot_be_re_initialized() public {
-        DogTagIssuerV2 clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(stranger);
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         clone.initialize(TRAVEL, address(authority), address(factory), stranger);
     }
-
-    // =============================================================================================
-    // Helpers
-    // =============================================================================================
-
-    /// @dev Anchor `root` on the real generation-1 clone and revoke it, so the credential must stay dead.
-    function _anchorAndRevokeOnGeneration1(bytes32 root) internal {
-        vm.startPrank(providerA);
-        gen1Clone.issue(root);
-        gen1Clone.revoke(root);
-        vm.stopPrank();
-    }
-
     function _sawTopic(Vm.Log[] memory logs, bytes32 topic0, address emitter) internal pure returns (bool) {
         for (uint256 i; i < logs.length; i++) {
             if (logs[i].emitter == emitter && logs[i].topics[0] == topic0) return true;
