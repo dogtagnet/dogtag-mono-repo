@@ -207,6 +207,22 @@ pub fn grant_in_force_at(history: &[GrantEvent], anchored_at: LogPoint) -> Grant
     }
 }
 
+/// `ProviderRegistry.RIGHT_ISSUE` — bit 0 of the address rights bitmask, the one bit that decides the
+/// issuance axis.
+///
+/// The authority keys its grants on the ADDRESS alone and announces the address's whole settable mask
+/// in one `RightsSet(address indexed account, uint256 rights)` event, so every Rust reader that folds
+/// that log masks with this constant rather than spelling `1` at the call site. It is a WIRE FORMAT
+/// position: the contract pins it forever and moves the lookup's NAME if the layout ever changes, so a
+/// reader built for the old layout reverts on dispatch instead of reading one slot out. Mirrored by
+/// hand in `packages/ui`, `RoaxRpc.kt` and `Net.swift`; move all four together.
+///
+/// The on-chain mask is a `uint256`, so a caller MASKS IN THE FULL WIDTH — `rights & U256::from(
+/// RIGHT_ISSUE)` — and never truncates the word to a `u64` first. Truncating happens to be harmless
+/// for every mask this contract can currently emit, which is exactly what would make the habit
+/// survive review until a bit is allocated above position 63.
+pub const RIGHT_ISSUE: u64 = 1 << 0;
+
 /// `0x`-hex keccak256 of a record-type label — the `IssuerRegistry` whitelist key and the value a
 /// clone's immutable `recordType()` returns. MUST equal the backend's `chain::record_type_key`
 /// (pinned by `record_type_key_matches_the_vet_backend` in `stacks/vet/api`).

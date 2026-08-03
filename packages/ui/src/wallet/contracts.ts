@@ -169,22 +169,33 @@ const DOGTAG_ISSUER_ABI = [
  * the full history for one `(service, signer)` is ONE filtered `eth_getLogs`, with no scan and no
  * per-log decode of irrelevant entries.
  *
- * Keyed on the SERVICE ADDRESS, not a record-type key. A clone carries exactly one record type, so
- * filtering by service inherently scopes the history to it; the separate check that the DOCUMENT's
- * claimed record type matches `recordType()` stays at the caller, where a relabelled credential is
- * refused. `allowed` is the one NON-indexed argument, so grant and withdrawal arrive on one topic.
+ * Keyed on the ACCOUNT and on nothing else - there is NO service here, because a grant carries none.
+ * `rights` is the one NON-indexed argument and is the account's COMPLETE settable mask after the
+ * write, so the last event at or before a block IS the mask in force then and the fold needs no prior
+ * state. The separate check that the DOCUMENT's claimed record type matches `recordType()` stays at
+ * the caller, where a relabelled credential is still refused.
  */
-const ISSUANCE_CAPABILITY_EVENT_ABI = [
+const RIGHTS_SET_EVENT_ABI = [
   {
     type: "event",
-    name: "IssuanceCapabilitySet",
+    name: "RightsSet",
     inputs: [
-      { name: "service", type: "address", indexed: true },
-      { name: "signer", type: "address", indexed: true },
-      { name: "allowed", type: "bool", indexed: false },
+      { name: "account", type: "address", indexed: true },
+      { name: "rights", type: "uint256", indexed: false },
     ],
   },
 ] as const satisfies Abi;
+
+/**
+ * `ProviderRegistry.RIGHT_ISSUE` - bit 0 of the address rights bitmask, the one bit that decides the
+ * issuance axis.
+ *
+ * A WIRE FORMAT position: the contract pins it forever and moves the lookup's NAME if the layout ever
+ * changes, so a reader built for the old layout reverts on dispatch rather than reading one slot out.
+ * Mirrored by hand in `dogtag_standard::verify::RIGHT_ISSUE` (Rust), `RoaxRpc.kt` and `Net.swift`;
+ * move all four together.
+ */
+export const RIGHT_ISSUE = 1n;
 
 /** `DogTagIssuer.RootIssued`, indexed on the root - the anchoring event, and so the issuance BLOCK. */
 const ROOT_ISSUED_EVENT_ABI = [
@@ -531,8 +542,13 @@ function logPoint(l: {
  */
 export async function whitelistGrantHistory(args: {
   registryAddr: string;
-  /** The clone the grant is about. `IssuanceCapabilitySet` is indexed on it, not on a record type. */
-  service: string;
+  /**
+   * Kept so callers read unchanged, and DELIBERATELY UNUSED in the filter: `RightsSet` is indexed on
+   * the account alone, so there is no service to narrow by. The caller still resolves the AUTHORITY
+   * from this clone's own `registry()`, which is what stops a mis-paired client answering from the
+   * wrong registry's log - that half is unchanged.
+   */
+  service?: string;
   signer: string;
   rpcUrl?: string;
   defaultRpcUrl?: string;
@@ -545,20 +561,20 @@ export async function whitelistGrantHistory(args: {
     address: args.registryAddr as Address,
     fromBlock: args.fromBlock ?? 0n,
     ...(args.toBlock === undefined ? {} : { toBlock: args.toBlock }),
-    args: {
-      service: args.service as Address,
-      signer: args.signer as Address,
-    },
-    event: ISSUANCE_CAPABILITY_EVENT_ABI[0],
+    args: { account: args.signer as Address },
+    event: RIGHTS_SET_EVENT_ABI[0],
   });
   const events: WhitelistGrantEvent[] = [];
   for (const l of logs) {
     const at = logPoint(l);
     if (!at) return UNPOSITIONED_LOG;
-    // A log whose `allowed` word did not decode is a malformed entry, not a fact about the
+    // A log whose `rights` word did not decode is a malformed entry, not a fact about the
     // credential - it cannot be folded, so the whole answer is withheld.
-    if (typeof l.args.allowed !== "boolean") return UNPOSITIONED_LOG;
-    events.push({ kind: l.args.allowed ? "whitelisted" : "delisted", ...at });
+    if (typeof l.args.rights !== "bigint") return UNPOSITIONED_LOG;
+    events.push({
+      kind: (l.args.rights & RIGHT_ISSUE) !== 0n ? "whitelisted" : "delisted",
+      ...at,
+    });
   }
   return sortLogPoints(events);
 }
@@ -600,12 +616,10 @@ export type GrantAtIssuance = "authorized" | "notAuthorized" | "undetermined";
  * log records no grant, which is evidence about the credential rather than about our ability to check.
  * A log read that FAILED never reaches this function.
  *
- * THAT EMPTY-HISTORY RULE HOLDS ONLY FOR A GENERATION-1 AUTHORITY, and this function cannot tell:
- * `Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in
- * `topic1`, so its reader is a record-type caller in the sense `docs/CLIENT_REPOINT.md` means, via
- * logs rather than a getter. `ProviderRegistry` records grants as `IssuanceCapabilitySet(service,
- * signer, allowed)` — different name, different `topic0`, different shape — so the filter matches
- * NOTHING there and every genuine generation-2 credential would fold to a definite refusal. The
+ * THAT EMPTY-HISTORY RULE HOLDS ONLY FOR AN AUTHORITY THIS READER SPEAKS THE VOCABULARY OF, and this
+ * function cannot tell: a generation-1 `Whitelisted(bytes32 indexed recordType, address indexed
+ * signer)` has a different name, a different `topic0` and a different shape from `RightsSet`, so the
+ * filter matches NOTHING there and every genuine credential would fold to a definite refusal. The
  * caller must therefore establish the authority's generation before treating an empty history as an
  * answer: see {@link authorityGenerationOf}.
  *

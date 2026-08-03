@@ -78,13 +78,13 @@ class RoaxRpcSelectorTest {
             "0xf8cd30a628b432a1200caf81085096c82a5f570da14360572b72d4e0ba57e6d7",
             RoaxRpc.eventTopic("RootIssued(bytes32,address,uint256)"),
         )
-        // The authority's issuance-grant topic. Pinned because the failure mode is SILENT: a value
+        // The authority's rights-grant topic. Pinned because the failure mode is SILENT: a value
         // derived at the wrong width, or from a drifted signature, matches no log at all - which
         // reads exactly like "this signer was never granted" and refuses every genuine credential.
-        // Confirmed with `cast keccak "IssuanceCapabilitySet(address,address,bool)"`.
+        // Confirmed with `cast keccak "RightsSet(address,uint256)"`.
         assertEquals(
-            "0x831abb96b1c02fe346a944062a9367343ef9d09be41d65818b796cd1a8676941",
-            RoaxRpc.ISSUANCE_CAPABILITY_SET_TOPIC,
+            "0xbc9c679fe541a4f3fcf5f2887c4adcd6e7703f7ea9d0933b8862662f8290af7f",
+            RoaxRpc.RIGHTS_SET_TOPIC,
         )
         // The registry the CLONE names - the only authority whose grant log answers for it.
         assertEquals("0x7b103999", RoaxRpc.functionSelector("registry()"))

@@ -32,10 +32,12 @@ const {
   whitelistGrantHistory,
   sortLogPoints,
   UNPOSITIONED_LOG,
+  RIGHT_ISSUE,
 } = await import("../src/wallet/contracts");
 const { roaxIssuerChainReader } = await import("../src/wallet/verifyCredential");
 
 const ADDR = "0x0000000000000000000000000000000000000001";
+const SIGNER = "0x2222222222222222222222222222222222222222" as const;
 const ROOT = `0x${"ab".repeat(32)}`;
 const AT = 900_100n;
 
@@ -121,12 +123,18 @@ describe("the log readers bound their range to the report's block", () => {
     }
   });
 
-  it("whitelistGrantHistory asks about exactly the (service, signer) pair, indexed", async () => {
-    await whitelistGrantHistory({ registryAddr: ADDR, service: ADDR, signer: ADDR, rpcUrl: url() });
+  /**
+   * The filter carries the ACCOUNT and no service, because `RightsSet` is indexed on the account
+   * alone. Asserted on what reaches `getLogs` rather than on the returned history: a reader that
+   * silently kept narrowing by service would still return the right answer for a fixture where both
+   * addresses are the same, which is exactly the shape of this test's inputs.
+   */
+  it("whitelistGrantHistory asks about the ACCOUNT alone, indexed - no service narrows it", async () => {
+    await whitelistGrantHistory({ registryAddr: ADDR, service: ADDR, signer: SIGNER, rpcUrl: url() });
     for (const [call] of getLogs.mock.calls) {
       const c = call as unknown as Record<string, unknown>;
       expect(c.address).toBe(ADDR);
-      expect(c.args).toEqual({ service: ADDR, signer: ADDR });
+      expect(c.args).toEqual({ account: SIGNER });
     }
   });
 });
@@ -146,9 +154,11 @@ describe("a log with no position is reported as such, never placed", () => {
   const pending = { blockNumber: null, logIndex: null };
   beforeEach(() => getLogs.mockClear());
 
+  // `rights` is the account's whole settable mask, so the ISSUE bit is read out of it rather than
+  // arriving as a bool of its own.
   const grant = (allowed: boolean, pos: Record<string, unknown>) => ({
     ...pos,
-    args: { allowed },
+    args: { rights: allowed ? RIGHT_ISSUE : 0n },
   });
 
   it("whitelistGrantHistory: an unpositioned GRANT log makes the whole history unorderable", async () => {
@@ -173,6 +183,32 @@ describe("a log with no position is reported as such, never placed", () => {
       rpcUrl: url(),
     });
     expect(h).toBe(UNPOSITIONED_LOG);
+  });
+
+  /**
+   * The reader reads a BIT, not the whole word.
+   *
+   * Bit 0 is the only settable right today, so "the mask equals 1n" and "bit 0 is set" agree on every
+   * value the contract can currently emit - which is exactly what would let a whole-word comparison
+   * survive review until a second right is allocated. These masks carry higher bits, which no honest
+   * authority emits YET, precisely so the reader is pinned against the day one does.
+   *
+   * Mirrors `test_theIssueRightIsReadAsABitNotAsTheWholeWord` (iOS) and
+   * `theIssueRightIsReadAsABitNotAsTheWholeWord` (Android).
+   */
+  it("whitelistGrantHistory: the issue right is read as a BIT of the rights mask", async () => {
+    const mask = async (rights: bigint) => {
+      getLogs.mockResolvedValueOnce([{ ...positioned, args: { rights } }]);
+      return whitelistGrantHistory({ registryAddr: ADDR, signer: SIGNER, rpcUrl: url() });
+    };
+    // A future second right held ALONGSIDE the issue right: still granted.
+    expect(await mask(0b11n)).toEqual([{ kind: "whitelisted", ...positioned }]);
+    // A future second right held WITHOUT it: withdrawn, and emphatically not malformed.
+    expect(await mask(0b10n)).toEqual([{ kind: "delisted", ...positioned }]);
+    expect(await mask(0xffn)).toEqual([{ kind: "whitelisted", ...positioned }]);
+    // A bit far above the low word, where a truncating reader would lose the mask entirely.
+    expect(await mask(1n << 200n)).toEqual([{ kind: "delisted", ...positioned }]);
+    expect(await mask((1n << 200n) | 1n)).toEqual([{ kind: "whitelisted", ...positioned }]);
   });
 
   it("whitelistGrantHistory: positioned logs still fold, and an empty log is still an empty history", async () => {

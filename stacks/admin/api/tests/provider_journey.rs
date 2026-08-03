@@ -128,9 +128,12 @@ async fn attach_then_stand_up_then_grant_issuance_completes_the_journey() {
     let (s, b) = call(
         &app,
         "POST",
-        &format!("/v1/admin/services/{SERVICE}/issuance-capability"),
+        // The grant is on the SIGNER's ADDRESS, and the path says so: no service appears in it,
+        // because none appears in `setRights`. That is what lets an applicant be approved before it
+        // has a clone.
+        &format!("/v1/admin/rights/{SIGNER}/issue"),
         Some(&tok),
-        Some(serde_json::json!({ "signer": SIGNER, "allowed": true })),
+        Some(serde_json::json!({ "allowed": true })),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{b}");
@@ -316,7 +319,7 @@ async fn an_unreadable_capability_log_is_a_failure_not_an_empty_holder_set() {
         issuance.get("entries").is_none(),
         "an unavailable read must carry NO entries key - it cannot be spread into a list as []: {b}"
     );
-    assert!(issuance["reason"].as_str().unwrap().contains("IssuanceCapabilitySet"), "{b}");
+    assert!(issuance["reason"].as_str().unwrap().contains("RightsSet"), "{b}");
 }
 
 /// The verify axis is keyed by PURPOSE and takes no service at all, so it is never reported as a
@@ -563,8 +566,8 @@ async fn the_journey_routes_require_an_admin_session() {
         ),
         (
             "POST",
-            format!("/v1/admin/services/{SERVICE}/issuance-capability"),
-            serde_json::json!({ "signer": SIGNER, "allowed": true }),
+            format!("/v1/admin/rights/{SIGNER}/issue"),
+            serde_json::json!({ "allowed": true }),
         ),
         ("GET", "/v1/admin/verifier-capabilities".to_string(), serde_json::Value::Null),
         (

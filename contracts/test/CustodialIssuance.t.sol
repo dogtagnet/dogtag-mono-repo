@@ -142,6 +142,148 @@ contract CustodialIssuanceTest is LaunchStack {
         assertEq(uint8(sbt.status(dogTagId)), uint8(DogTagSBTConsent.Status.Active));
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Address-keyed rights, checked where they are actually enforced: at the clone
+    // ---------------------------------------------------------------------------------------------
+
+    /// @dev An address the registrar granted nothing is refused by the REAL clone against the REAL core.
+    /// `ProviderRegistry.t.sol` asserts the predicate; this asserts that the predicate is what stands
+    /// between a stranger and an anchored root, which is the property a user of this system relies on.
+    function test_an_address_without_the_issue_bit_is_refused_at_the_clone() public {
+        address stranger = address(0xDEAD10CC);
+        assertEq(core.rightsOf(stranger), 0, "granted nothing");
+
+        vm.prank(stranger);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
+        vacc.issue(keccak256("a root a stranger must not be able to anchor"));
+
+        // Owning the clone is still not an issuance right, and holding a DIFFERENT provider's clone
+        // address is not one either — only the bit is.
+        vm.prank(VET_PROVIDER_KEY);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
+        vacc.issue(keccak256("a root the clone owner must not be able to anchor"));
+    }
+
+    /// @dev THE CROSS-PROVIDER HOLE, CLOSED — and this test exists to prove the closure rather than
+    /// to assert it.
+    ///
+    /// The authority's grant is scope-free by design: `rightsOf` takes an address and returns bits,
+    /// with no service in the question, because a registrar approves an applicant before that
+    /// applicant has a clone. On its own that lets a signer approved for one provider anchor on any
+    /// other provider's clone — and, worse, the at-issuance pillar would then fold that signer's own
+    /// `RightsSet` history and answer AUTHORIZED, producing a clean verdict on government's
+    /// UNAUTHENTICATED `POST /v1/verify` for a credential attributed to a provider that never issued
+    /// it.
+    ///
+    /// The second layer closes it, and this walks the SAME path that previously produced that clean
+    /// verdict — up to the step where it now stops. The whole chain is asserted, not just the revert:
+    /// nothing is anchored, so the factory's write-once index never names the root, so there is no
+    /// `RootIssued` for the pillar to sequence a grant against, so no AUTHORIZED can be reached for it
+    /// by any reader. A closure asserted only at the revert would leave that unstated.
+    function test_a_signer_approved_for_one_provider_cannot_anchor_on_another_providers_clone()
+        public
+    {
+        bytes20 GOV_PROVIDER = bytes20(uint160(0x60F));
+        address GOV_PROVIDER_KEY = address(0x60FC0);
+        address govSigner = address(0x60F516);
+        DogTagIssuer travel = DogTagIssuer(
+            _onboardIssuingClone(GOV_PROVIDER, GOV_PROVIDER_KEY, keccak256("TRAVEL_CLEARANCE"), govSigner)
+        );
+
+        // LAYER 1 HOLDS for the vet's signer, on the government's clone: the grant names no service,
+        // so the authority itself raises no objection. That is the whole hazard, asserted rather than
+        // assumed - without it the refusal below could be coming from the authority and this test
+        // would prove nothing about the clone's list.
+        assertTrue(core.rightsOf(vetSigner) & core.RIGHT_ISSUE() != 0, "the bit is held");
+        assertTrue(core.canIssue(address(travel), vetSigner), "the AUTHORITY permits it");
+
+        // LAYER 2 REFUSES, and it is the only thing standing there.
+        assertFalse(travel.issuanceAllowed(vetSigner), "not on this clone's list");
+        bytes32 crossTenant = keccak256("the vet's signer, on the government's clone");
+        vm.prank(vetSigner);
+        vm.expectRevert(DogTagIssuer.NotLocallyAllowed.selector);
+        travel.issue(crossTenant);
+
+        // NOTHING WAS ANCHORED, so the pillar's inputs do not exist: `rootIssuer` never names the
+        // root, the clone reports it neither issued nor valid, and no `RootIssued` was emitted for a
+        // grant to be sequenced against. This is the half that makes it a closure of the VERIFY path
+        // and not merely of the write.
+        assertEq(factory.rootIssuer(crossTenant), address(0), "the factory has no record of it");
+        assertFalse(travel.isIssued(crossTenant));
+        assertFalse(travel.isValid(crossTenant));
+        assertEq(travel.issuedBy(crossTenant), address(0));
+
+        // THE CONTROL. The same signer, on the clone it IS admitted to, still anchors — so the
+        // refusal above is the cross-provider list check and not a broken fixture or a signer that
+        // could never issue anywhere.
+        bytes32 own = keccak256("the vet's signer, on the vet's own clone");
+        vm.prank(vetSigner);
+        vacc.issue(own);
+        assertTrue(vacc.isValid(own), "its own clone still anchors");
+        assertEq(factory.rootIssuer(own), address(vacc));
+    }
+
+    /// @dev The list is what closes it, and a provider may still choose to admit an outside signer.
+    ///
+    /// Admitting is the OWNER's decision, so this is the government provider's own transaction. It is
+    /// the in-test counterpart of the mutation that removes the check: with the list written, the very
+    /// same call that reverted above succeeds, which is what shows the refusal came from the list
+    /// rather than from anything else in the chain.
+    function test_the_clones_own_list_is_what_admits_a_signer_and_only_its_owner_writes_it() public {
+        bytes20 GOV_PROVIDER = bytes20(uint160(0x60F2));
+        address GOV_PROVIDER_KEY = address(0x60FC02);
+        address govSigner = address(0x60F5162);
+        DogTagIssuer travel = DogTagIssuer(
+            _onboardIssuingClone(GOV_PROVIDER, GOV_PROVIDER_KEY, keccak256("EU_HEALTH_CERT"), govSigner)
+        );
+
+        // Neither a stranger nor the REGISTRAR may admit. The registrar is excluded deliberately: it
+        // also writes the authority bit, so a registrar that could admit would hold both layers at
+        // once and the cross-provider issuance would be back, reached through the registrar.
+        vm.prank(vetSigner);
+        vm.expectRevert(DogTagIssuer.NotOwnerOrAdmin.selector);
+        travel.setIssuanceAllowed(vetSigner, true);
+        vm.prank(admin);
+        vm.expectRevert(DogTagIssuer.NotOwnerOrAdmin.selector);
+        travel.setIssuanceAllowed(vetSigner, true);
+
+        // The owner may, and then the previously-refused anchor lands.
+        vm.prank(GOV_PROVIDER_KEY);
+        travel.setIssuanceAllowed(vetSigner, true);
+        bytes32 root = keccak256("admitted by the government provider itself");
+        vm.prank(vetSigner);
+        travel.issue(root);
+        assertTrue(travel.isValid(root));
+
+        // REMOVAL is the safety direction, so the protocol admin may do it even though it may not
+        // admit — and it stops the NEXT anchor without stranding what was already issued.
+        vm.prank(admin);
+        travel.setIssuanceAllowed(vetSigner, false);
+        vm.prank(vetSigner);
+        vm.expectRevert(DogTagIssuer.NotLocallyAllowed.selector);
+        travel.issue(keccak256("after removal"));
+        // Forward-only: the originator can still invalidate what it anchored.
+        vm.prank(vetSigner);
+        travel.revoke(root);
+        assertTrue(travel.isRevoked(root), "removal must not strand a root as unrevocable");
+    }
+
+    /// @dev Neither layer is redundant, stated as its own case so a later reader cannot conclude the
+    /// authority bit became decorative once the clone kept a list.
+    function test_the_clone_list_alone_grants_nothing_without_the_authority_bit() public {
+        address unapproved = address(0xB17);
+        // The clone's owner admits it - layer 2 holds.
+        vm.prank(VET_PROVIDER_KEY);
+        vacc.setIssuanceAllowed(unapproved, true);
+        assertTrue(vacc.issuanceAllowed(unapproved));
+
+        // The registrar never granted it, so layer 1 refuses and the anchor does not happen.
+        assertEq(core.rightsOf(unapproved) & core.RIGHT_ISSUE(), 0);
+        vm.prank(unapproved);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
+        vacc.issue(keccak256("admitted locally, approved nowhere"));
+    }
+
     /// @notice M5 app-side: the root the OWNER'S APP builds locally is exactly what the contract seals as
     /// `profileRoot`. Spec §"Issuance" steps 2-3: *the owner's app builds the tree locally, computes `R`;
     /// the issuer sets `profileRoot(dogTagId) = R`*.

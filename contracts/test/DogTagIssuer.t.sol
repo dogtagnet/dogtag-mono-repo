@@ -339,6 +339,10 @@ contract DogTagIssuerTest is Test {
         authority.setIssuanceCapability(address(clone), signer, true);
         authority.repointService(address(clone));
         vm.stopPrank();
+        // LAYER 2. The authority's grant is scope-free, so the clone's own list is what confines the
+        // signer to THIS contract - and only the clone's owner may write it.
+        vm.prank(clone.owner());
+        clone.setIssuanceAllowed(signer, true);
     }
 
     function _live(bytes20 providerId, address who, bytes32 rt, uint96 nonce)

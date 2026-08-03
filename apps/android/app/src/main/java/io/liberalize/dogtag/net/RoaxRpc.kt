@@ -237,16 +237,27 @@ object RoaxRpc {
      */
     internal val ROOT_ISSUED_TOPIC = eventTopic("RootIssued(bytes32,address,uint256)")
     /**
-     * The authority's issuance-grant event. BOTH leading args are indexed, so one filtered
-     * `eth_getLogs` on `(service, signer)` reconstructs the whole history; `allowed` is the one
-     * NON-indexed argument, so grant and withdrawal arrive on this single topic and are told apart
-     * by the log's DATA word rather than by which topic matched.
+     * The authority's rights-grant event. ONE indexed arg - the ACCOUNT - so one filtered
+     * `eth_getLogs` reconstructs that address's whole history. There is NO service here, because a
+     * grant carries none: rights are keyed on the address alone.
+     *
+     * `rights` is the one NON-indexed argument and is the account's COMPLETE settable mask after the
+     * write, so grant and withdrawal arrive on this single topic and are told apart by a BIT of the
+     * DATA word rather than by which topic matched.
      *
      * A topic is the full 32-byte keccak, never a 4-byte selector: the shorter value matches no log
      * at all, which is indistinguishable from "never granted" and would refuse every credential.
      */
-    internal val ISSUANCE_CAPABILITY_SET_TOPIC =
-        eventTopic("IssuanceCapabilitySet(address,address,bool)")
+    internal val RIGHTS_SET_TOPIC = eventTopic("RightsSet(address,uint256)")
+
+    /**
+     * `ProviderRegistry.RIGHT_ISSUE` - bit 0 of the address rights bitmask.
+     *
+     * A WIRE FORMAT position: the contract pins it forever and moves the lookup's NAME if the layout
+     * ever changes. Mirrored by hand in `dogtag_standard::verify::RIGHT_ISSUE` (Rust), `packages/ui`
+     * and `Net.swift`; move all four together.
+     */
+    internal const val RIGHT_ISSUE_BIT = 0
     private val CONSUMED_SELECTOR = functionSelector("consumed(bytes32)")
     private val PROFILE_ROOT_SELECTOR = functionSelector("profileRoot(uint256)")
 
@@ -609,24 +620,23 @@ object RoaxRpc {
         val anchoredAt = anchoring.mapNotNull { logPoint(it) }.minOrNull()
             ?: return GrantAtIssuance.Undetermined
 
-        // (3) That authority's grant history for this exact (service, signer) pair. Keyed on the
-        // SERVICE, not a record-type key: a clone carries exactly one record type, so filtering by
-        // service inherently scopes the history to it.
+        // (3) That authority's grant history for this SIGNER. No service narrows it, because the
+        // grant carries none - `clone` selected the governing AUTHORITY above and nothing else.
         val grants = ethGetLogs(
             rpcUrl,
             expectedChainId,
             governing,
-            listOf(ISSUANCE_CAPABILITY_SET_TOPIC),
-            listOf("0x" + padAddr(clone), "0x" + padAddr(signer)),
+            listOf(RIGHTS_SET_TOPIC),
+            listOf("0x" + padAddr(signer)),
         ) ?: return GrantAtIssuance.Undetermined
         val history = ArrayList<GrantEvent>(grants.size)
         for (log in grants) {
             // A grant whose position is unknown cannot be sequenced, and dropping it could turn a
             // withdrawn-before into an authorised. Refuse to answer instead.
             val at = logPoint(log) ?: return GrantAtIssuance.Undetermined
-            // `allowed` is the one NON-indexed argument, so it is the single DATA word. Anything
-            // that is not a well-formed bool is a malformed log, not a fact about the credential.
-            val granted = allowedFromLogData(log) ?: return GrantAtIssuance.Undetermined
+            // `rights` is the one NON-indexed argument, so it is the single DATA word. Anything that
+            // is not a well-formed 256-bit word is a malformed log, not a fact about the credential.
+            val granted = issueRightFromLogData(log) ?: return GrantAtIssuance.Undetermined
             history.add(GrantEvent(at, granted))
         }
 
@@ -638,19 +648,30 @@ object RoaxRpc {
     }
 
     /**
-     * The `allowed` word of an `IssuanceCapabilitySet` log, or null if the body is not a bool.
+     * Whether the `rights` word of a `RightsSet` log carries `RIGHT_ISSUE`, or null if the body is
+     * not one well-formed 256-bit word.
      *
-     * Strict on purpose: a word that is neither 0 nor 1 is a log this build does not understand, and
-     * guessing either way would state a grant or a withdrawal that was never recorded.
+     * Reads the BIT rather than comparing the whole word against 0 or 1. Those two happen to agree
+     * today, because `RIGHT_ISSUE` is the only settable bit - and that coincidence is exactly what
+     * would let a whole-word comparison survive review until a second right is allocated, at which
+     * point a mask of `0b11` would decode as "malformed" and refuse every credential its holder had
+     * ever issued.
+     *
+     * Strict on the SHAPE on purpose: a body that is not exactly one 32-byte hex word is a log this
+     * build does not understand, and guessing either way would state a grant or a withdrawal that
+     * was never recorded.
      */
-    internal fun allowedFromLogData(log: JSONObject): Boolean? {
-        val data = log.optString("data", "").removePrefix("0x").trimStart('0')
-        return when (data) {
-            "" -> false
-            "1" -> true
-            else -> null
-        }
+    internal fun issueRightFromLogData(log: JSONObject): Boolean? {
+        val data = log.optString("data", "").removePrefix("0x")
+        if (data.length != 64 || !data.all { it.isAsciiHexDigit() }) return null
+        val low = Character.digit(data[63], 16)
+        if (low < 0) return null
+        return (low shr RIGHT_ISSUE_BIT) and 1 == 1
     }
+
+    /** ASCII hex only - `Char.isLetterOrDigit` would admit Unicode digits a node never emits. */
+    private fun Char.isAsciiHexDigit(): Boolean =
+        this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
 
     /** A 32-byte topic value, `0x`-prefixed and left-padded, from a hex word of any width. */
     private fun pad32Topic(hex: String): String = "0x" + pad32(hex).lowercase()

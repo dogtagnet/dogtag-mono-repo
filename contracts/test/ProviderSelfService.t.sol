@@ -313,9 +313,13 @@ contract ProviderSelfServiceTest is Test {
     /// limitation: retroactively re-attributing issued credentials to a contract that did not issue
     /// them is precisely the misattribution the control check exists to prevent.
     function test_a_repoint_leaves_every_already_anchored_root_with_its_original_clone() public {
-        vm.startPrank(REGISTRAR);
-        core.setIssuanceCapability(firstClone, PROVIDER_KEY, true);
-        vm.stopPrank();
+        uint256 issueRight = core.RIGHT_ISSUE();
+        vm.prank(REGISTRAR);
+        core.setRights(PROVIDER_KEY, issueRight);
+        // LAYER 2: the clone's own list. The registrar's grant names no service, so the clone still
+        // refuses until its OWNER admits the signer.
+        vm.prank(PROVIDER_KEY);
+        DogTagIssuer(firstClone).setIssuanceAllowed(PROVIDER_KEY, true);
         vm.prank(PROVIDER_KEY);
         core.repointService(firstClone);
 

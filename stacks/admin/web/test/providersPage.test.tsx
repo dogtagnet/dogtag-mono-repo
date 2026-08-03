@@ -730,6 +730,26 @@ describe("Providers - the services panel", () => {
    * Attaching lands the service at PENDING and `canIssue` folds it, so the panel must say what is
    * still missing rather than reading as done.
    */
+  /**
+   * The issue right is keyed on the ADDRESS, so the holder list rendered inside a SERVICE row is the
+   * same list on every service row in the system. Unlabelled, that heading reads as "who may issue on
+   * this contract" and an operator concludes a holder is confined to one provider - which is exactly
+   * the scope the re-keying removed. Pinned because it is a product CLAIM about scope, not decoration.
+   */
+  it("labels the issuance holders as registry-wide, never as scoped to this service", async () => {
+    vi.stubGlobal("fetch", withService(serviceView()));
+    await mount();
+    await expandServices();
+    const row = container.querySelector('[data-testid="service-row"]')!;
+    expect(row.textContent).toContain("registry-wide");
+    const note = container.querySelector('[data-testid="issuance-scope-note"]');
+    expect(note, "the scope must be stated, not left to the heading").not.toBeNull();
+    expect(note!.textContent).toContain("names no service");
+    expect(note!.textContent).toContain("any service in effective standing");
+    // And it must not claim the narrower thing the old per-service grant did.
+    expect(row.textContent).not.toContain("may issue on this contract");
+  });
+
   it("says what is blocking a freshly attached service rather than reporting it as ready", async () => {
     vi.stubGlobal("fetch", withService(serviceView()));
     await mount();
@@ -887,9 +907,13 @@ describe("Providers - the capability dialog", () => {
     capabilitySubmit()!.click();
     await settle();
 
+    // The ADDRESS is in the PATH and no service appears anywhere, because `setRights` takes neither
+    // a service nor a signer field. Asserted on the URL as well as the body: a page that kept posting
+    // to a per-service path would still send a body this shape.
     const { url, body } = lastPost(fetchMock);
-    expect(url).toContain("/issuance-capability");
-    expect(body).toEqual({ signer, allowed: true });
+    expect(url).toContain(`/v1/admin/rights/${signer}/issue`);
+    expect(url).not.toContain("/services/");
+    expect(body).toEqual({ allowed: true });
   });
 
   /**

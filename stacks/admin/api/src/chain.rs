@@ -20,30 +20,6 @@ use crate::provider_registry::{
 pub const ROAX_CHAIN_ID: u64 = 135;
 
 sol! {
-    /// The retired generation-1 `IssuerRegistry` surface.
-    ///
-    /// NO CONTRACT IN THE LAUNCH SET IMPLEMENTS `whitelistFor` OR `delistFor`. `IssuerRegistry.sol`
-    /// was deleted with generation 1 in #140 and has no key in `contracts/deployments/roax.json`, so
-    /// this interface names a contract that is neither in the repo nor in the deployed set, and
-    /// `ISSUER_REGISTRY_ADDR` ships blank with no fallback.
-    ///
-    /// It is retained rather than removed because `approve_application` / `delist_application` still
-    /// call it and both are reachable from live admin surfaces, so deleting it would change what two
-    /// shipped pages do. The two halves need different answers - the verify capability has an exact
-    /// successor in `ProviderRegistry.setVerifierCapability`, the record-type issuance grant has none
-    /// - and choosing is a product decision. Full reasoning at the callers in `routes.rs`.
-    ///
-    /// `isWhitelistedFor` is a DIFFERENT case and must not be swept up with the two writes:
-    /// `ProviderRegistry` does implement it, answering the orthogonal VERIFY axis for a caller that
-    /// is not itself an attached service. Do not repoint a record-type-keyed read at it - the answer
-    /// would be a confident `false` for every genuine issuer signer.
-    #[sol(rpc)]
-    contract IIssuerRegistry {
-        function whitelistFor(bytes32 recordType, address signer) external;
-        function delistFor(bytes32 recordType, address signer) external;
-        function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
-    }
-
     #[sol(rpc)]
     contract IDogTagSBT {
         // AccessControl surface — the DEFAULT_ADMIN holder grants ISSUER_ROLE to owner-hidden issuers.
@@ -112,7 +88,10 @@ sol! {
             address expectedOwner
         ) external;
         function setServiceStanding(address serviceAddress, uint8 newStanding) external;
-        function setIssuanceCapability(address serviceAddress, address signer, bool allowed) external;
+        // Rights are keyed on the ADDRESS and carry no service: at approval time the applicant has
+        // no clone, so there is nothing to key a grant against. `rights` is the account's COMPLETE
+        // settable mask afterwards, so withdrawing everything is `setRights(account, 0)`.
+        function setRights(address account, uint256 rights) external;
         // NOTE the first argument is the RAW `purpose`, not its verification key: the contract
         // derives `verificationKey(purpose) = keccak256(abi.encode("VERIFY:", purpose))` itself
         // (ProviderRegistry.sol:786-793). Passing an already-derived key here double-derives and
@@ -148,8 +127,15 @@ sol! {
                 bool hasActiveIssuer
             );
         function currentService(bytes20 providerId, bytes32 recordType) external view returns (address);
-        function issuanceCapability(address serviceAddress, address signer) external view returns (bool);
-        function activeIssuerCount(address serviceAddress) external view returns (uint256);
+        // THE rights lookup: one address in, one bitmask out. No service, no record type, no caller
+        // context. Bit 0 is `RIGHT_ISSUE`; see `dogtag_standard::verify::RIGHT_ISSUE`.
+        function rightsOf(address account) external view returns (uint256);
+        // KEPT while `whitelistFor`/`delistFor` were deleted, and the difference is not a nuance:
+        // `ProviderRegistry` DOES implement this one, answering the orthogonal VERIFY axis for a
+        // caller that is not itself an attached service. Never hand it a RECORD-TYPE key - the
+        // answer would be a confident `false` about every genuine issuer signer.
+        function isWhitelistedFor(bytes32 key, address signer) external view returns (bool);
+        function issueRightHolders() external view returns (uint256);
         function canVerify(bytes32 purpose, address relayer) external view returns (bool);
         function factoryGeneration(bytes32 generationId) external view returns (FactoryGeneration memory);
         function factoryGenerationPage(uint256 cursor, uint256 limit)
@@ -165,9 +151,10 @@ sol! {
         // The ONLY direct evidence of what a provider is approved for - `_serviceCreationApprovals`
         // is private with no getter. Both leading args are indexed.
         event ServiceCreationApprovalSet(bytes20 indexed providerId, bytes32 indexed recordType, bool allowed);
-        // Likewise: `issuanceCapability(service, signer)` is a POINT read and `_issuanceCapabilities`
-        // has no enumeration, so WHO holds a capability is only knowable from these logs.
-        event IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed);
+        // Likewise: `rightsOf(account)` is a POINT read and `_grantedRights` has no enumeration, so
+        // WHO holds a right is only knowable from these logs. `rights` is the whole settable mask, so
+        // the last event for an account IS its current mask.
+        event RightsSet(address indexed account, uint256 rights);
         // THREE indexed args: the group is topic1 (`purpose`) and the subject is topic3 (`relayer`);
         // topic2 is the derived compatibility key. Reading the subject off topic2 yields a bytes32
         // rendered as an address, which is a plausible-looking value and never a real relayer.
@@ -287,26 +274,36 @@ pub trait ChainClient: Send + Sync {
     /// derived address. The Alloy impl keeps the key for broadcasting; MemChain keeps only the address.
     async fn register_signer(&self, index: u32, private_key: [u8; 32], address: String);
 
-    /// IssuerRegistry.whitelistFor(recordType, signer) — admin-only write. `record_type` is the
-    /// keccak256 bytes32 key (NOT the human label).
-    async fn whitelist_for(
+    /// `ProviderRegistry.setRights(account, rights)` — `onlyOwner` write, the issuer-application
+    /// approval path. `rights` is the account's COMPLETE settable mask afterwards, so a withdrawal is
+    /// `rights = 0`.
+    ///
+    /// It takes NO record type, because the grant carries none. That is what makes it callable at
+    /// approval time, when the applicant has no clone for a per-service grant to name.
+    async fn set_rights(
         &self,
         account_index: u32,
         registry_addr: &str,
-        record_type: &str,
-        signer: &str,
+        account: &str,
+        rights: u64,
     ) -> Result<SentTx, ChainError>;
 
-    /// IssuerRegistry.delistFor(recordType, signer) — admin-only write.
-    async fn delist_for(
+    /// `ProviderRegistry.setVerifierCapability(purpose, relayer, allowed)` — `onlyOwner` write.
+    ///
+    /// `purpose` is the RAW bytes32 from `purpose_key`, NOT `verify_key`: the contract derives
+    /// `verificationKey` itself, and an already-derived key derives twice and grants nothing.
+    async fn set_verifier_capability(
         &self,
         account_index: u32,
         registry_addr: &str,
-        record_type: &str,
-        signer: &str,
+        purpose: &str,
+        relayer: &str,
+        allowed: bool,
     ) -> Result<SentTx, ChainError>;
 
-    /// IssuerRegistry.isWhitelistedFor(recordType, signer).
+    /// `ProviderRegistry.isWhitelistedFor(key, signer)` — the orthogonal VERIFY axis, and the one
+    /// member of the retired `whitelistFor`/`delistFor`/`isWhitelistedFor` trio the launch set still
+    /// implements. `key` is a VERIFY key, never a record-type key.
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
@@ -474,13 +471,16 @@ pub trait ChainClient: Send + Sync {
     async fn service_metadata(&self, service_addr: &str)
         -> Result<(String, String), ChainError>;
 
-    /// The `IssuanceCapabilitySet` log for one service, ascending `(block, logIndex)`, as
-    /// `(signer, allowed)` pairs. `issuanceCapability` is a POINT read with no enumeration, so this
-    /// log is the only way to learn WHO holds the capability; a failed read is never an empty set.
-    async fn issuance_capability_log(
+    /// The `RightsSet` log for the whole registry, ascending `(block, logIndex)`, as
+    /// `(account, holds_issue)` pairs. `rightsOf` is a POINT read with no enumeration, so this log is
+    /// the only way to learn WHO holds a right; a failed read is never an empty set.
+    ///
+    /// It takes NO service, because a grant carries none. A caller that wants "who may issue on this
+    /// service" is asking a question that no longer has a per-service answer: every holder may, on
+    /// every service in effective standing.
+    async fn issuance_rights_log(
         &self,
         registry_addr: &str,
-        service_addr: &str,
     ) -> Result<Vec<(String, bool)>, ChainError>;
 
     /// The `VerifierCapabilitySet` log for one purpose, ascending, as `(relayer, allowed)` pairs.
@@ -545,7 +545,8 @@ struct MemChainInner {
     /// (registry, provider_id, record_type_key) -> the provider's published current pointer.
     current_services: HashMap<(String, String, String), String>,
     /// (registry, service_addr) -> the ordered `IssuanceCapabilitySet` log.
-    issuance_log: HashMap<(String, String), Vec<(String, bool)>>,
+    /// registry_addr -> the ordered `RightsSet` log, as `(account, holds_issue)`.
+    issuance_log: HashMap<String, Vec<(String, bool)>>,
     /// (registry, purpose) -> the ordered `VerifierCapabilitySet` log.
     verifier_log: HashMap<(String, String), Vec<(String, bool)>>,
     /// (registry, kind) -> resolver approval state, in first-listed order like `_resolverAddresses`.
@@ -970,21 +971,27 @@ fn apply_provider_registry_calldata(
         return Ok(());
     }
 
-    if let Ok(c) = IProviderRegistry::setIssuanceCapabilityCall::abi_decode(&data, true) {
-        let service = format!("{:#x}", c.serviceAddress).to_lowercase();
-        if !g.services.contains_key(&(registry.clone(), service.clone())) {
-            return Err(ChainError::Other("tx reverted: UnknownService".into()));
-        }
-        if c.signer.is_zero() {
+    if let Ok(c) = IProviderRegistry::setRightsCall::abi_decode(&data, true) {
+        if c.account.is_zero() {
             return Err(ChainError::Other("tx reverted: ZeroAddress".into()));
         }
-        let signer = format!("{:#x}", c.signer).to_lowercase();
-        let log = g.issuance_log.entry((registry, service)).or_default();
-        let current = last_bool_for(log, &signer);
-        if current == c.allowed {
+        // The contract refuses any bit outside `SETTABLE_RIGHTS`, and today that is `RIGHT_ISSUE`
+        // alone. A fake that accepted a derived bit would let a test assert a grant the chain
+        // refuses.
+        let settable = U256::from(dogtag_standard::verify::RIGHT_ISSUE);
+        if c.rights & !settable != U256::ZERO {
+            return Err(ChainError::Other("tx reverted: UnsettableRights".into()));
+        }
+        // NOTE: deliberately NO service existence check. The whole point of the re-keying is that a
+        // grant can be made before the applicant has a clone.
+        let account = format!("{:#x}", c.account).to_lowercase();
+        let holds_issue = c.rights & settable != U256::ZERO;
+        let log = g.issuance_log.entry(registry).or_default();
+        let current = last_bool_for(log, &account);
+        if current == holds_issue {
             return Err(ChainError::Other("tx reverted: NoChange".into()));
         }
-        log.push((signer, c.allowed));
+        log.push((account, holds_issue));
         return Ok(());
     }
 
@@ -1066,51 +1073,67 @@ impl ChainClient for MemChain {
             .insert(index, address.to_lowercase());
     }
 
-    async fn whitelist_for(
+    async fn set_rights(
         &self,
         account_index: u32,
         registry_addr: &str,
-        record_type: &str,
-        signer: &str,
+        account: &str,
+        rights: u64,
     ) -> Result<SentTx, ChainError> {
         let mut g = self.inner.lock().unwrap();
-        // emulate onlyRole(WHITELIST_ADMIN): require a registered admin signer at this index.
+        // emulate onlyOwner: require a registered admin signer at this index.
         g.signers
             .get(&account_index)
             .cloned()
             .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
-        g.whitelist.insert(
-            (
-                registry_addr.to_lowercase(),
-                record_type.to_lowercase(),
-                signer.to_lowercase(),
-            ),
-            true,
-        );
+        // The contract refuses any bit outside `SETTABLE_RIGHTS`, so the fake does too. Without this
+        // the fake would accept a mask the chain rejects, and a route that sent one would look fine
+        // here and revert on ROAX.
+        if rights & !dogtag_standard::verify::RIGHT_ISSUE != 0 {
+            return Err(ChainError::Other("tx reverted: UnsettableRights".into()));
+        }
+        let holds_issue = rights & dogtag_standard::verify::RIGHT_ISSUE != 0;
+        let account = account.to_lowercase();
+        let log = g
+            .issuance_log
+            .entry(registry_addr.to_lowercase())
+            .or_default();
+        // The real contract refuses a no-op with `NoChange()`. Modelled, so a route that would send
+        // a reverting transaction fails here too rather than reporting a grant that never landed.
+        if last_bool_for(log, &account) == holds_issue {
+            return Err(ChainError::Other("tx reverted: NoChange".into()));
+        }
+        log.push((account, holds_issue));
         let tx_hash = Self::next_tx(&mut g);
         Ok(SentTx { tx_hash })
     }
 
-    async fn delist_for(
+    async fn set_verifier_capability(
         &self,
         account_index: u32,
         registry_addr: &str,
-        record_type: &str,
-        signer: &str,
+        purpose: &str,
+        relayer: &str,
+        allowed: bool,
     ) -> Result<SentTx, ChainError> {
         let mut g = self.inner.lock().unwrap();
         g.signers
             .get(&account_index)
             .cloned()
             .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
-        g.whitelist.insert(
-            (
-                registry_addr.to_lowercase(),
-                record_type.to_lowercase(),
-                signer.to_lowercase(),
-            ),
-            false,
-        );
+        // Keyed on the RAW purpose word, exactly as this fake's own calldata decoder keys it
+        // (`setVerifierCapabilityCall` above). The two must agree, or a grant made through this
+        // method would be invisible to a read made after one made through a dispatched action.
+        let purpose = purpose.to_lowercase();
+        let relayer = relayer.to_lowercase();
+        let log = g
+            .verifier_log
+            .entry((registry_addr.to_lowercase(), purpose))
+            .or_default();
+        if last_bool_for(log, &relayer) == allowed {
+            return Err(ChainError::Other("tx reverted: NoChange".into()));
+        }
+        log.push((relayer, allowed));
         let tx_hash = Self::next_tx(&mut g);
         Ok(SentTx { tx_hash })
     }
@@ -1357,15 +1380,16 @@ impl ChainClient for MemChain {
         // service that exists is owner-confirmed. `confirmServiceOwner` is a separate lever.
         let owner_confirmed = rec.map(|s| s.confirmed_owner != zero_addr()).unwrap_or(false);
         let service_standing = rec.map(|s| s.standing).unwrap_or(Standing::None);
+        // `_issueRightHolders != 0` — a REGISTRY-WIDE count now, because a grant names no service.
         let any_grant = g
             .issuance_log
-            .get(&(registry.clone(), service.clone()))
+            .get(&registry)
             .map(|log| {
                 let folded = crate::provider_registry::fold_capabilities(log);
                 folded.iter().any(|e| e.allowed)
             })
             .unwrap_or(false);
-        // `hasActiveIssuer` is `_activeIssuerCount != 0 && _serviceIssuanceEligible(..)`, and that
+        // `hasActiveIssuer` is `_issueRightHolders != 0 && _serviceIssuanceEligible(..)`, and that
         // predicate folds the confirmed owner, `_serviceStandingIsEffective` AND the provider's
         // current pointer - which only the provider's own `repointService` writes. A fake that
         // folded the grant alone would report a service as ready to issue in exactly the state the
@@ -1450,16 +1474,15 @@ impl ChainClient for MemChain {
             })
     }
 
-    async fn issuance_capability_log(
+    async fn issuance_rights_log(
         &self,
         registry_addr: &str,
-        service_addr: &str,
     ) -> Result<Vec<(String, bool)>, ChainError> {
         let g = self.inner.lock().unwrap();
         Self::provider_reads_fail(&g, registry_addr)?;
         Self::capability_log_reads_fail(&g, registry_addr)?;
         Ok(g.issuance_log
-            .get(&(registry_addr.to_lowercase(), service_addr.to_lowercase()))
+            .get(&registry_addr.to_lowercase())
             .cloned()
             .unwrap_or_default())
     }
@@ -1556,24 +1579,6 @@ fn zero_addr() -> String {
 // --------------------------------------------------------------------------------------------
 // Calldata encoders (canonical typed ABI).
 // --------------------------------------------------------------------------------------------
-
-pub fn whitelist_for_calldata(record_type: &str, signer: &str) -> String {
-    use alloy::sol_types::SolCall;
-    let call = IIssuerRegistry::whitelistForCall {
-        recordType: parse_b256(record_type),
-        signer: parse_addr(signer),
-    };
-    format!("0x{}", hex::encode(call.abi_encode()))
-}
-
-pub fn delist_for_calldata(record_type: &str, signer: &str) -> String {
-    use alloy::sol_types::SolCall;
-    let call = IIssuerRegistry::delistForCall {
-        recordType: parse_b256(record_type),
-        signer: parse_addr(signer),
-    };
-    format!("0x{}", hex::encode(call.abi_encode()))
-}
 
 pub fn grant_issuer_role_calldata(grantee: &str) -> String {
     use alloy::sol_types::SolCall;
@@ -1678,17 +1683,15 @@ pub fn set_service_standing_calldata(service_address: &str, standing: Standing) 
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
-/// `ProviderRegistry.setIssuanceCapability(serviceAddress, signer, allowed)` calldata.
-pub fn set_issuance_capability_calldata(
-    service_address: &str,
-    signer: &str,
-    allowed: bool,
-) -> String {
+/// `ProviderRegistry.setRights(account, rights)` calldata.
+///
+/// `rights` is the account's COMPLETE settable mask afterwards, not a delta — withdrawing every right
+/// is `set_rights_calldata(account, 0)`.
+pub fn set_rights_calldata(account: &str, rights: u64) -> String {
     use alloy::sol_types::SolCall;
-    let call = IProviderRegistry::setIssuanceCapabilityCall {
-        serviceAddress: parse_addr(service_address),
-        signer: parse_addr(signer),
-        allowed,
+    let call = IProviderRegistry::setRightsCall {
+        account: parse_addr(account),
+        rights: U256::from(rights),
     };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
@@ -1881,26 +1884,27 @@ impl ChainClient for AlloyChain {
         }
     }
 
-    async fn whitelist_for(
+    async fn set_rights(
         &self,
         account_index: u32,
         registry_addr: &str,
-        record_type: &str,
-        signer: &str,
+        account: &str,
+        rights: u64,
     ) -> Result<SentTx, ChainError> {
-        let calldata = whitelist_for_calldata(record_type, signer);
+        let calldata = set_rights_calldata(account, rights);
         self.sign_and_send(account_index, registry_addr, &calldata)
             .await
     }
 
-    async fn delist_for(
+    async fn set_verifier_capability(
         &self,
         account_index: u32,
         registry_addr: &str,
-        record_type: &str,
-        signer: &str,
+        purpose: &str,
+        relayer: &str,
+        allowed: bool,
     ) -> Result<SentTx, ChainError> {
-        let calldata = delist_for_calldata(record_type, signer);
+        let calldata = set_verifier_capability_calldata(purpose, relayer, allowed);
         self.sign_and_send(account_index, registry_addr, &calldata)
             .await
     }
@@ -1911,18 +1915,20 @@ impl ChainClient for AlloyChain {
         record_type: &str,
         signer: &str,
     ) -> Result<bool, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let c = IIssuerRegistry::new(parse_addr(registry_addr), provider);
-        let r = c
-            .isWhitelistedFor(parse_b256(record_type), parse_addr(signer))
-            .call()
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        Ok(r._0)
+        // A raw `eth_call` rather than a generated contract instance: `IProviderRegistry` carries no
+        // `#[sol(rpc)]`, because that would generate a `provider()` accessor colliding with this
+        // contract's own `provider(bytes20)`.
+        use alloy::sol_types::SolCall;
+        let call = IProviderRegistry::isWhitelistedForCall {
+            key: parse_b256(record_type),
+            signer: parse_addr(signer),
+        };
+        let out = self.raw_call(registry_addr, &call.abi_encode()).await?;
+        Ok(
+            IProviderRegistry::isWhitelistedForCall::abi_decode_returns(&out, true)
+                .map_err(|e| ChainError::Other(format!("isWhitelistedFor decode: {e}")))?
+                ._0,
+        )
     }
 
     async fn grant_issuer_role(
@@ -2334,23 +2340,14 @@ impl ChainClient for AlloyChain {
         ))
     }
 
-    async fn issuance_capability_log(
+    async fn issuance_rights_log(
         &self,
         registry_addr: &str,
-        service_addr: &str,
     ) -> Result<Vec<(String, bool)>, ChainError> {
-        use alloy::sol_types::SolEvent;
-        // topic1 is the indexed `address service` and topic2 the indexed `address signer`.
-        // An address topic is RIGHT-aligned (unlike the `bytes20 providerId` above, which Solidity
-        // left-aligns) - getting that backwards matches no log, which reads as "nobody holds it".
-        self.bool_log_ordered(
-            registry_addr,
-            IProviderRegistry::IssuanceCapabilitySet::SIGNATURE_HASH,
-            Some(B256::left_padding_from(parse_addr(service_addr).as_slice())),
-            2,
-            "IssuanceCapabilitySet",
-        )
-        .await
+        // `RightsSet` has ONE indexed arg (`account`, topic1) and one data word (`rights`), so this
+        // cannot use `bool_log_ordered`: that helper reads a bool subject out of an indexed topic,
+        // and here the subject IS topic1 while the value is a 256-bit mask in the body.
+        self.rights_log_ordered(registry_addr).await
     }
 
     async fn verifier_capability_log(
@@ -2552,6 +2549,66 @@ impl AlloyChain {
             .map(|(_, _, addr, allowed)| (addr, allowed))
             .collect())
     }
+
+    /// The `RightsSet` log for a whole registry, folded to `(account, holds_issue)` in log order.
+    ///
+    /// Deliberately not expressed through [`Self::bool_log_ordered`]: that helper reads the SUBJECT
+    /// out of an indexed topic and the VALUE out of a bool body, and `RightsSet` has the subject in
+    /// topic1 and a 256-bit mask in the body. Forcing it through would need the subject index to mean
+    /// something different for this one event, which is how a decoder comes to read the wrong word.
+    async fn rights_log_ordered(
+        &self,
+        registry_addr: &str,
+    ) -> Result<Vec<(String, bool)>, ChainError> {
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::rpc::types::Filter;
+        use alloy::sol_types::{SolEvent, SolValue};
+
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let logs = provider
+            .get_logs(
+                &Filter::new()
+                    .address(parse_addr(registry_addr))
+                    .event_signature(IProviderRegistry::RightsSet::SIGNATURE_HASH)
+                    .from_block(0u64),
+            )
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+
+        let settable = U256::from(dogtag_standard::verify::RIGHT_ISSUE);
+        let mut entries: Vec<(Option<u64>, Option<u64>, String, bool)> =
+            Vec::with_capacity(logs.len());
+        for log in logs {
+            // topic1 is the indexed `account`. An address topic is RIGHT-aligned, so the low 20
+            // bytes are the address.
+            let Some(subject) = log.topics().get(1) else {
+                continue;
+            };
+            let rights = U256::abi_decode(log.data().data.as_ref(), true)
+                .map_err(|e| ChainError::Other(format!("RightsSet decode: {e}")))?;
+            let addr = format!("0x{}", hex::encode(&subject.as_slice()[12..32]));
+            // Masked in the FULL 256-bit width — never truncated to a u64 first.
+            entries.push((log.block_number, log.log_index, addr, rights & settable != U256::ZERO));
+        }
+
+        // Same rule as `bool_log_ordered`: an unpositioned log may be neither placed nor dropped.
+        if entries.iter().any(|(b, i, _, _)| b.is_none() || i.is_none()) {
+            return Err(ChainError::Other(
+                "a RightsSet log carried no (blockNumber, logIndex), so the rights could not be \
+                 ordered - the last write per holder is what makes this the current state, and an \
+                 unpositioned log can be neither placed nor dropped without inventing an answer"
+                    .into(),
+            ));
+        }
+        entries.sort_by_key(|(b, i, _, _)| (*b, *i));
+        Ok(entries
+            .into_iter()
+            .map(|(_, _, addr, allowed)| (addr, allowed))
+            .collect())
+    }
 }
 
 /// One decoded `ServiceCreationApprovalSet` log, before ordering.
@@ -2655,6 +2712,37 @@ pub fn verify_key(label: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The fake refuses exactly what the contract refuses.
+    ///
+    /// `RIGHT_ISSUE` is the ONLY settable bit today, so "the mask equals 1" and "bit 0 is set" agree
+    /// on every value the chain accepts - which makes a whole-word comparison in `set_rights` a
+    /// BEHAVIOUR-PRESERVING change right now rather than an unpinned claim. What is pinnable, and
+    /// what actually keeps the fake honest, is that an unsettable bit is REFUSED here exactly as
+    /// `setRights` refuses it with `UnsettableRights()` - so a route that ever sends a compound mask
+    /// fails in tests instead of reverting on ROAX.
+    #[tokio::test]
+    async fn set_rights_refuses_a_bit_the_contract_would_refuse() {
+        let c = MemChain::new();
+        c.register_signer(0, [0u8; 32], "0xabc".into()).await;
+        let reg = "0x00000000000000000000000000000000000000aa";
+        let who = "0x00000000000000000000000000000000000000bb";
+
+        // The settable grant lands.
+        assert!(c
+            .set_rights(0, reg, who, dogtag_standard::verify::RIGHT_ISSUE)
+            .await
+            .is_ok());
+
+        // A derived bit, and a bit at an unallocated position, are both refused.
+        for bad in [1u64 << 1, 1 << 5, 1 << 6, dogtag_standard::verify::RIGHT_ISSUE | (1 << 1)] {
+            let e = c.set_rights(0, reg, who, bad).await.unwrap_err();
+            assert!(
+                format!("{e}").contains("UnsettableRights"),
+                "mask {bad:#x} must be refused as unsettable, got: {e}"
+            );
+        }
+    }
+
     use super::*;
 
     const RT_A: &str = "0x00000000000000000000000000000000000000000000000000000000000000aa";

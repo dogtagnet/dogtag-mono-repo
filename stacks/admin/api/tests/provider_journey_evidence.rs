@@ -164,15 +164,18 @@ async fn provider_journey_api_transcript() {
     );
 
     w!("--------------------------------------------------------------------------------");
-    w!("  STEP 4 - ISSUANCE CAPABILITY, on the service");
+    w!("  STEP 4 - THE ISSUE RIGHT, on the ADDRESS");
     w!("--------------------------------------------------------------------------------\n");
 
     let (s, _) = step!(
         "POST",
-        &format!("/v1/admin/services/{SERVICE}/issuance-capability"),
-        Some(serde_json::json!({ "signer": SIGNER, "allowed": true })),
-        "setIssuanceCapability. This is the registrar's grant to make and nobody else's: a service \
-         delegate carries content-write permissions and does not satisfy canIssue."
+        &format!("/v1/admin/rights/{SIGNER}/issue"),
+        Some(serde_json::json!({ "allowed": true })),
+        "setRights(account, RIGHT_ISSUE). The path carries an ADDRESS and no service, because the \
+         grant does not - which is what makes an approval possible before the applicant has a \
+         clone at all. It is the registrar's grant to make and nobody else's: a service delegate \
+         carries content-write permissions and does not satisfy canIssue. It also reaches EVERY \
+         service in effective standing, including another provider's."
     );
     assert_eq!(s, StatusCode::OK, "the grant must actually land");
 

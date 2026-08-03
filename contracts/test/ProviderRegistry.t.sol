@@ -112,6 +112,16 @@ contract ProviderRegistryTest is Test {
     address internal constant OTHER_SIGNER = address(0x1551);
     address internal constant DELEGATE = address(0xDE1E);
     address internal constant STRANGER = address(0xBAD);
+
+    // The rights layout, mirrored so a test never calls a getter mid-`vm.prank` (the prank would be
+    // consumed by that call). `test_the_bit_layout_is_pinned_where_a_reorder_reddens` holds these
+    // against the contract's own constants, which is what makes the never-reorder rule enforceable.
+    uint256 internal constant R_ISSUE = 1 << 0;
+    uint256 internal constant R_PROTOCOL_ADMIN = 1 << 1;
+    uint256 internal constant R_SERVICE_ATTACHED = 1 << 2;
+    uint256 internal constant R_SERVICE_OWNER_CONFIRMED = 1 << 3;
+    uint256 internal constant R_SERVICE_STANDING = 1 << 4;
+    uint256 internal constant R_SERVICE_CURRENT = 1 << 5;
     address internal constant RELAYER = address(0xBEEF);
 
     bytes20 internal providerA = hex"9d7c0e341a85b69f2c08d1ee4f6a7398bc52d401";
@@ -182,7 +192,7 @@ contract ProviderRegistryTest is Test {
 
     function test_service_write_requires_active_kyc_and_owner_authority_as_independent_predicates() public {
         vm.prank(AUTHORITY);
-        registry.setIssuanceCapability(address(serviceA), ISSUANCE_SIGNER, true);
+        registry.setRights(ISSUANCE_SIGNER, R_ISSUE);
 
         // Predicate 1 + predicate 2: a cleared provider and the confirmed live owner.
         assertTrue(registry.canWriteService(address(serviceA), SERVICE_OWNER, SERVICE_DOMAIN_PERMISSION));
@@ -530,10 +540,10 @@ contract ProviderRegistryTest is Test {
             _createAndAttach(factoryA, GENERATION_A, providerA, RECORD_TYPE, SERVICE_OWNER);
 
         assertEq(registry.currentService(providerA, RECORD_TYPE), address(serviceA));
-        vm.startPrank(AUTHORITY);
-        registry.setIssuanceCapability(address(serviceA), ISSUANCE_SIGNER, true);
-        registry.setIssuanceCapability(address(replacement), ISSUANCE_SIGNER, true);
-        vm.stopPrank();
+        // ONE grant, on the signer's address, reaching both services. `canIssue` still separates them,
+        // on the provider's current pointer rather than on the grant.
+        vm.prank(AUTHORITY);
+        registry.setRights(ISSUANCE_SIGNER, R_ISSUE);
         assertTrue(registry.canIssue(address(serviceA), ISSUANCE_SIGNER));
         assertFalse(registry.canIssue(address(replacement), ISSUANCE_SIGNER));
 
@@ -568,33 +578,53 @@ contract ProviderRegistryTest is Test {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Service-scoped issue grants and the orthogonal VERIFY axis
+    // Address-keyed issue rights and the orthogonal VERIFY axis
     // ---------------------------------------------------------------------------------------------
 
-    function test_issuance_capability_is_service_scoped_even_for_same_record_type() public {
+    /// @dev THE WIDENING, pinned as intended behaviour rather than left to be rediscovered as a bug.
+    ///
+    /// The grant was `_issuanceCapabilities[service][signer]`; it is now one bit on the signer's
+    /// address. So a signer approved alongside one service reaches EVERY service in effective standing,
+    /// including another provider's. A later reader who finds this surprising must take it to the
+    /// captain rather than "fixing" it by reintroducing a service key into the lookup — that key is
+    /// exactly what cannot exist, because at approval time the applicant's clone does not exist yet.
+    function test_the_issue_right_is_on_the_address_and_reaches_every_service_in_standing() public {
+        // A SECOND provider, so this is cross-tenant and not merely cross-service.
+        vm.startPrank(AUTHORITY);
+        _register(providerB, NEXT_CONTROLLER, keccak256("identity-b"));
+        registry.setProviderStanding(providerB, ProviderRegistry.Standing.ACTIVE);
+        vm.stopPrank();
         ProviderRegistryServiceMock serviceB =
-            _createAndAttach(factoryA, GENERATION_A, providerA, RECORD_TYPE, SERVICE_OWNER);
+            _createAndAttach(factoryA, GENERATION_A, providerB, RECORD_TYPE, SERVICE_OWNER);
+        vm.prank(SERVICE_OWNER);
+        registry.repointService(address(serviceB));
 
         vm.prank(AUTHORITY);
-        registry.setIssuanceCapability(address(serviceA), ISSUANCE_SIGNER, true);
+        registry.setRights(ISSUANCE_SIGNER, R_ISSUE);
 
+        // One grant, both providers' services.
         assertTrue(registry.canIssue(address(serviceA), ISSUANCE_SIGNER));
-        assertFalse(registry.canIssue(address(serviceB), ISSUANCE_SIGNER));
-        assertEq(registry.activeIssuerCount(address(serviceA)), 1);
-        assertEq(registry.activeIssuerCount(address(serviceB)), 0);
+        assertTrue(registry.canIssue(address(serviceB), ISSUANCE_SIGNER));
+        assertEq(registry.issueRightHolders(), 1);
 
-        // The exact legacy selector becomes clone-aware through msg.sender.
+        // A service in standing but NOT its provider's current selection is still refused: no
+        // lifecycle term was dropped, they simply no longer say anything about which provider the
+        // signer belongs to.
+        ProviderRegistryServiceMock unselected =
+            _createAndAttach(factoryA, GENERATION_A, providerB, OTHER_RECORD_TYPE, SERVICE_OWNER);
+        assertFalse(registry.canIssue(address(unselected), ISSUANCE_SIGNER));
+
+        // An address the registrar never granted is refused everywhere, and being an attached service
+        // is not itself an issue right.
+        assertFalse(registry.canIssue(address(serviceA), OTHER_SIGNER));
+        assertFalse(registry.canIssue(address(serviceA), address(serviceB)));
+
+        // The exact legacy selector is still clone-aware through msg.sender, and still answers the
+        // orthogonal VERIFY axis for a caller that is not an attached service.
         vm.prank(address(serviceA));
         assertTrue(registry.isWhitelistedFor(RECORD_TYPE, ISSUANCE_SIGNER));
-        vm.prank(address(serviceB));
-        assertFalse(registry.isWhitelistedFor(RECORD_TYPE, ISSUANCE_SIGNER));
         vm.prank(address(serviceA));
         assertFalse(registry.isWhitelistedFor(OTHER_RECORD_TYPE, ISSUANCE_SIGNER));
-        // Direct readers cannot identify a service through the legacy two-argument selector, so the
-        // S-13 consumer migration splits BY QUESTION: a caller asking "may this signer issue now"
-        // moves to canIssue(service, signer), while a verifier asking "was this genuinely issued"
-        // moves to isRecognizedIssuer(service, signer). Never the reverse — canIssue folds live
-        // lifecycle state the verification pillar would read as an authenticity failure.
         assertFalse(registry.isWhitelistedFor(RECORD_TYPE, ISSUANCE_SIGNER));
         assertTrue(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
 
@@ -602,9 +632,91 @@ contract ProviderRegistryTest is Test {
         assertFalse(registry.canWriteService(address(serviceA), ISSUANCE_SIGNER, SERVICE_RECORD_PERMISSION));
 
         vm.prank(AUTHORITY);
-        registry.setIssuanceCapability(address(serviceA), ISSUANCE_SIGNER, false);
+        registry.setRights(ISSUANCE_SIGNER, 0);
         assertFalse(registry.canIssue(address(serviceA), ISSUANCE_SIGNER));
-        assertEq(registry.activeIssuerCount(address(serviceA)), 0);
+        assertFalse(registry.canIssue(address(serviceB), ISSUANCE_SIGNER));
+        assertEq(registry.issueRightHolders(), 0);
+    }
+
+    /// @dev The layout is a WIRE FORMAT: off-chain readers fold `RightsSet` masks and every one of them
+    /// hard-codes these positions. A bit silently reused or reordered grants the wrong right with no
+    /// revert anywhere, so the positions are asserted literally here — a reorder reddens this and
+    /// nothing else would.
+    function test_the_bit_layout_is_pinned_where_a_reorder_reddens() public view {
+        assertEq(registry.RIGHT_ISSUE(), R_ISSUE);
+        assertEq(registry.RIGHT_PROTOCOL_ADMIN(), R_PROTOCOL_ADMIN);
+        assertEq(registry.RIGHT_SERVICE_ATTACHED(), R_SERVICE_ATTACHED);
+        assertEq(registry.RIGHT_SERVICE_OWNER_CONFIRMED(), R_SERVICE_OWNER_CONFIRMED);
+        assertEq(registry.RIGHT_SERVICE_STANDING(), R_SERVICE_STANDING);
+        assertEq(registry.RIGHT_SERVICE_CURRENT(), R_SERVICE_CURRENT);
+        // Only the grant is settable; every other bit reports state this core already holds.
+        assertEq(registry.SETTABLE_RIGHTS(), R_ISSUE);
+    }
+
+    /// @dev A bit is not a general-purpose "authorized" flag: setting one grants exactly its own right
+    /// and nothing adjacent. Without this, a layout where two bits happened to be checked by the same
+    /// predicate would look correct.
+    function test_a_wrong_bit_grants_no_right() public {
+        // Every derived bit is refused by the writer, so no caller can fabricate one.
+        vm.startPrank(AUTHORITY);
+        vm.expectRevert(ProviderRegistry.UnsettableRights.selector);
+        registry.setRights(ISSUANCE_SIGNER, R_PROTOCOL_ADMIN);
+        vm.expectRevert(ProviderRegistry.UnsettableRights.selector);
+        registry.setRights(ISSUANCE_SIGNER, R_SERVICE_ATTACHED);
+        vm.expectRevert(ProviderRegistry.UnsettableRights.selector);
+        registry.setRights(ISSUANCE_SIGNER, R_SERVICE_OWNER_CONFIRMED);
+        vm.expectRevert(ProviderRegistry.UnsettableRights.selector);
+        registry.setRights(ISSUANCE_SIGNER, R_SERVICE_STANDING);
+        vm.expectRevert(ProviderRegistry.UnsettableRights.selector);
+        registry.setRights(ISSUANCE_SIGNER, R_SERVICE_CURRENT);
+        // Including one smuggled in beside a legitimate grant.
+        vm.expectRevert(ProviderRegistry.UnsettableRights.selector);
+        registry.setRights(ISSUANCE_SIGNER, R_ISSUE | R_PROTOCOL_ADMIN);
+        // And an unallocated position, so a future bit cannot be pre-set against its own meaning.
+        vm.expectRevert(ProviderRegistry.UnsettableRights.selector);
+        registry.setRights(ISSUANCE_SIGNER, 1 << 6);
+        vm.stopPrank();
+
+        assertEq(registry.rightsOf(ISSUANCE_SIGNER), 0);
+        assertFalse(registry.canIssue(address(serviceA), ISSUANCE_SIGNER));
+        assertFalse(registry.hasRole(registry.DEFAULT_ADMIN_ROLE(), ISSUANCE_SIGNER));
+    }
+
+    /// @dev One function, one address argument, and the answer differs for an EOA and a contract only
+    /// because the core KNOWS different things about them — never because it sniffed `code.length`,
+    /// which is unreliable (a contract in its own constructor reports zero) and would split a clinic
+    /// contract from an individual practitioner's wallet, which this product must not do.
+    function test_rights_of_answers_for_an_eoa_and_a_contract_through_the_same_lookup() public {
+        vm.prank(AUTHORITY);
+        registry.setRights(ISSUANCE_SIGNER, R_ISSUE);
+
+        // A plain wallet: the granted bit, and no service bits.
+        assertEq(registry.rightsOf(ISSUANCE_SIGNER), R_ISSUE);
+        // The registrar key: derived, never written.
+        assertEq(registry.rightsOf(AUTHORITY), R_PROTOCOL_ADMIN);
+        // A stranger: nothing at all.
+        assertEq(registry.rightsOf(STRANGER), 0);
+
+        // An attached service CONTRACT reports its live lifecycle through the same call.
+        uint256 serviceBits = registry.rightsOf(address(serviceA));
+        assertEq(
+            serviceBits,
+            R_SERVICE_ATTACHED | R_SERVICE_OWNER_CONFIRMED
+                | R_SERVICE_STANDING | R_SERVICE_CURRENT
+        );
+
+        // Those bits track state rather than restating it: a suspension clears standing, and the
+        // pointer bit survives it, so they are genuinely independent members.
+        vm.prank(AUTHORITY);
+        registry.setProviderStanding(providerA, ProviderRegistry.Standing.SUSPENDED);
+        uint256 suspended = registry.rightsOf(address(serviceA));
+        assertEq(suspended & R_SERVICE_STANDING, 0);
+        assertTrue(suspended & R_SERVICE_CURRENT != 0);
+        assertTrue(suspended & R_SERVICE_ATTACHED != 0);
+
+        // A contract the registrar never attached is not a service, and says so by omission.
+        ProviderRegistryServiceMock unattached = factoryA.create(RECORD_TYPE, SERVICE_OWNER);
+        assertEq(registry.rightsOf(address(unattached)), 0);
     }
 
     function test_can_issue_folds_provider_service_factory_and_owner_confirmation() public {
@@ -613,7 +725,7 @@ contract ProviderRegistryTest is Test {
         assertFalse(unregisteredOwnerConfirmed);
 
         vm.prank(AUTHORITY);
-        registry.setIssuanceCapability(address(serviceA), ISSUANCE_SIGNER, true);
+        registry.setRights(ISSUANCE_SIGNER, R_ISSUE);
         assertTrue(registry.canIssue(address(serviceA), ISSUANCE_SIGNER));
         {
             (
@@ -669,10 +781,8 @@ contract ProviderRegistryTest is Test {
     {
         ProviderRegistryServiceMock replacement =
             _createAndAttach(factoryA, GENERATION_A, providerA, RECORD_TYPE, SERVICE_OWNER);
-        vm.startPrank(AUTHORITY);
-        registry.setIssuanceCapability(address(serviceA), ISSUANCE_SIGNER, true);
-        registry.setIssuanceCapability(address(replacement), ISSUANCE_SIGNER, true);
-        vm.stopPrank();
+        vm.prank(AUTHORITY);
+        registry.setRights(ISSUANCE_SIGNER, R_ISSUE);
 
         assertTrue(registry.canIssue(address(serviceA), ISSUANCE_SIGNER));
         assertTrue(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
@@ -726,7 +836,7 @@ contract ProviderRegistryTest is Test {
 
         // Only an explicit registrar revocation of the forward-only grant flips the historical answer.
         vm.prank(AUTHORITY);
-        registry.setIssuanceCapability(address(serviceA), ISSUANCE_SIGNER, false);
+        registry.setRights(ISSUANCE_SIGNER, 0);
         assertFalse(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
         assertFalse(registry.canRevoke(address(serviceA), ISSUANCE_SIGNER));
     }
@@ -787,7 +897,7 @@ contract ProviderRegistryTest is Test {
         assertEq(registry.currentService(providerA, RECORD_TYPE), address(serviceA));
 
         vm.prank(AUTHORITY);
-        registry.setIssuanceCapability(address(misbound), ISSUANCE_SIGNER, true);
+        registry.setRights(ISSUANCE_SIGNER, R_ISSUE);
         assertFalse(registry.canIssue(address(misbound), ISSUANCE_SIGNER));
         vm.prank(SERVICE_OWNER);
         registry.repointService(address(misbound));
@@ -1208,7 +1318,7 @@ contract ProviderRegistryTest is Test {
         address newService,
         address setBy
     );
-    event IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed);
+    event RightsSet(address indexed account, uint256 rights);
     event VerifierCapabilitySet(
         bytes32 indexed purpose, bytes32 indexed compatibilityKey, address indexed relayer, bool allowed
     );
@@ -1373,12 +1483,12 @@ contract ProviderRegistryTest is Test {
         vm.prank(AUTHORITY);
         registry.setServiceStanding(address(service), ProviderRegistry.Standing.ACTIVE);
 
-        // Issuance capability is announced service-scoped, never record-type-scoped, so the feed
-        // cannot be read as a fleet-wide grant.
+        // The grant is announced on the ADDRESS and carries the address's whole settable mask, so the
+        // at-issuance pillar can fold the sequence with no prior state and no per-bit event.
         vm.expectEmit(true, true, true, true, address(registry));
-        emit IssuanceCapabilitySet(address(service), ISSUANCE_SIGNER, true);
+        emit RightsSet(ISSUANCE_SIGNER, R_ISSUE);
         vm.prank(AUTHORITY);
-        registry.setIssuanceCapability(address(service), ISSUANCE_SIGNER, true);
+        registry.setRights(ISSUANCE_SIGNER, R_ISSUE);
 
         // The verifier axis announces the purpose AND the derived legacy compatibility key, so an
         // existing `isWhitelistedFor` consumer can follow the grant without recomputing it.

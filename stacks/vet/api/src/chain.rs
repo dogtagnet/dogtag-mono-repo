@@ -79,15 +79,20 @@ sol! {
     /// issuer signer. Record-type callers use `canIssue` / the grant log below.
     #[sol(rpc)]
     contract IProviderAuthority {
-        /// Both leading args indexed, so one filtered `eth_getLogs` per (service, signer) pair
-        /// reconstructs the whole grant history. `setIssuanceCapability` refuses a no-op with
-        /// `NoChange()` and otherwise emits unconditionally, so the log is complete.
+        /// The grant history for ONE ADDRESS. `account` is indexed, so one filtered `eth_getLogs`
+        /// reconstructs the whole sequence. `setRights` refuses a no-op with `NoChange()` and
+        /// otherwise emits unconditionally, so the log is complete.
         ///
-        /// NOTE `topic1` is the SERVICE ADDRESS, not a record-type key. A clone carries exactly one
-        /// record type, so filtering by service inherently scopes the history to it; the separate
-        /// check that the DOCUMENT's claimed record type matches `clone.recordType()` stays at the
-        /// caller, where it can refuse a relabelled credential.
-        event IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed);
+        /// `rights` is the address's COMPLETE settable mask after the write, not a delta, so the last
+        /// event at or before a block IS the mask in force then and the fold needs no prior state.
+        /// A reader interested in one right masks the word.
+        ///
+        /// NOTE there is NO service in this log, and that is the re-keying rather than an omission in
+        /// this declaration: a grant is on the address alone. So the history a verifier folds is the
+        /// signer's, and a root anchored on another provider's clone by a granted signer folds to
+        /// AUTHORIZED. The separate check that the DOCUMENT's claimed record type matches
+        /// `clone.recordType()` still stays at the caller and still refuses a relabelled credential.
+        event RightsSet(address indexed account, uint256 rights);
         function canIssue(address service, address signer) external view returns (bool);
         function isWhitelistedFor(bytes32 key, address signer) external view returns (bool);
     }
@@ -530,7 +535,10 @@ struct MemChainInner {
     /// Separate from `issuance_capabilities` because the two answer different questions and the
     /// whole point is that they can disagree: a signer whose capability has since been withdrawn is
     /// `false` there and still authorised-at-issuance here.
-    grants: HashMap<(String, String, String), Vec<GrantEvent>>,
+    /// (registry_addr, signer) -> that SIGNER's rights history in that authority, oldest first —
+    /// the `RightsSet` log. There is no service in the key, exactly as there is none in the event:
+    /// a grant is on the address alone, so one history answers for every service.
+    grants: HashMap<(String, String), Vec<GrantEvent>>,
     /// (clone_addr, root) -> where that clone's anchoring `RootIssued` sits in the log.
     root_issued_at: HashMap<(String, String), LogPoint>,
     /// clone_addr -> the authority whose capability mapping gates it (`DogTagIssuer.registry()`).
@@ -713,21 +721,22 @@ impl MemChain {
         history: Vec<GrantEvent>,
     ) {
         let mut g = self.inner.lock().unwrap();
-        let key = (
-            registry.to_lowercase(),
-            service.to_lowercase(),
-            signer.to_lowercase(),
-        );
         if g.default_registry.is_empty() {
             g.default_registry = registry.to_lowercase();
         }
-        // Keep `canIssue` consistent with the history's last event, so a fake seeded this way cannot
-        // answer the two questions incoherently.
+        // `canIssue` stays SERVICE-scoped — it folds live-lifecycle terms this fake models per
+        // service — while the history is keyed on the SIGNER alone, exactly as `RightsSet` is. The
+        // `service` argument therefore seeds only the former.
         g.issuance_capabilities.insert(
-            key.clone(),
+            (
+                registry.to_lowercase(),
+                service.to_lowercase(),
+                signer.to_lowercase(),
+            ),
             history.last().map(|e| e.granted).unwrap_or(false),
         );
-        g.grants.insert(key, history);
+        g.grants
+            .insert((registry.to_lowercase(), signer.to_lowercase()), history);
     }
     /// Declare the registry every clone answers `registry()` with, without recording any grant.
     ///
@@ -753,11 +762,13 @@ impl MemChain {
             .governing_registry
             .insert(clone_addr.to_lowercase(), registry.to_lowercase());
     }
-    /// Seed `canIssue` for `(service, signer)` on `registry`.
+    /// Seed `canIssue` for `(service, signer)` on `registry`, AND record the signer's grant.
     ///
-    /// Records NO grant history: a real authority's unwritten `_issuanceCapabilities` mapping
-    /// answers a definite `false` and emits no `IssuanceCapabilitySet`, so the two are seeded
-    /// separately and a test can express either without the other.
+    /// The two halves are keyed differently on purpose, because the contract keys them differently:
+    /// `canIssue` folds live-lifecycle terms and stays per service, while the grant is on the
+    /// signer's ADDRESS and reaches every service. So granting here for one service makes the
+    /// at-issuance pillar answer AUTHORIZED for that signer on ANY service in this registry — which
+    /// is the real behaviour, and a fake that kept a per-service history could not model it.
     pub fn set_issuance_capability(
         &self,
         registry: &str,
@@ -769,20 +780,25 @@ impl MemChain {
         if g.default_registry.is_empty() {
             g.default_registry = registry.to_lowercase();
         }
-        let key = (
-            registry.to_lowercase(),
-            service.to_lowercase(),
-            signer.to_lowercase(),
+        g.issuance_capabilities.insert(
+            (
+                registry.to_lowercase(),
+                service.to_lowercase(),
+                signer.to_lowercase(),
+            ),
+            can_issue,
         );
-        g.issuance_capabilities.insert(key.clone(), can_issue);
-        // The real `setIssuanceCapability` flips the mapping AND emits `IssuanceCapabilitySet` in
-        // one call, so this fake does both: a test that grants and then issues produces the honest
-        // ordering, and the pillar can answer historically without any extra seeding.
+        // The real `setRights` flips the mapping AND emits `RightsSet` in one call, so this fake does
+        // both: a test that grants and then issues produces the honest ordering, and the pillar can
+        // answer historically without any extra seeding.
         let at = g.next_log_point();
-        g.grants.entry(key).or_default().push(GrantEvent {
-            at,
-            granted: can_issue,
-        });
+        g.grants
+            .entry((registry.to_lowercase(), signer.to_lowercase()))
+            .or_default()
+            .push(GrantEvent {
+                at,
+                granted: can_issue,
+            });
     }
     /// Declare `registry` unable to ANSWER at all — an address whose selectors revert, or one
     /// carrying no contract.
@@ -959,10 +975,12 @@ impl ChainClient for MemChain {
         else {
             return Ok(GrantAtIssuance::Undetermined);
         };
-        // Keyed on the SERVICE, exactly as `IssuanceCapabilitySet`'s indexed topics are.
+        // Keyed on the SIGNER alone, exactly as `RightsSet`'s indexed topic is. `clone` selected the
+        // governing AUTHORITY above and no longer narrows the history.
+        let _ = &clone;
         let history = g
             .grants
-            .get(&(governing, clone, signer.to_lowercase()))
+            .get(&(governing, signer.to_lowercase()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         // An EMPTY history is a DEFINITE refusal here, and that is not a shortcut: `issue()` is
@@ -1421,21 +1439,21 @@ impl ChainClient for AlloyChain {
             return Ok(GrantAtIssuance::Undetermined);
         };
 
-        // (3) That authority's grant history for this exact (service, signer) pair. Both leading
-        // args are indexed, so one filtered `eth_getLogs` reconstructs the whole sequence in log
-        // order.
+        // (3) That authority's grant history for this SIGNER. `account` is indexed, so one filtered
+        // `eth_getLogs` reconstructs the whole sequence in log order.
         //
-        // Keyed on the SERVICE ADDRESS, not on a record-type key. A clone carries exactly one record
-        // type, so filtering by service inherently scopes the history to it — and the separate check
-        // that the DOCUMENT's claimed record type matches `clone.recordType()` stays at the caller,
-        // where a relabelled credential is refused.
+        // There is no service in this filter, because the grant carries none: rights are keyed on the
+        // address alone. `issuer_addr` still selected the AUTHORITY above (step 2 resolved it from the
+        // clone's own `registry()`), so a mis-paired client still cannot answer from the wrong
+        // registry's log — what it no longer does is narrow the history to one service. The separate
+        // check that the DOCUMENT's claimed record type matches `clone.recordType()` stays at the
+        // caller, where a relabelled credential is still refused.
         let grants = provider
             .get_logs(
                 &Filter::new()
                     .address(governing)
-                    .event_signature(IProviderAuthority::IssuanceCapabilitySet::SIGNATURE_HASH)
-                    .topic1(parse_addr(issuer_addr).into_word())
-                    .topic2(parse_addr(signer).into_word())
+                    .event_signature(IProviderAuthority::RightsSet::SIGNATURE_HASH)
+                    .topic1(parse_addr(signer).into_word())
                     .from_block(0u64),
             )
             .await
@@ -1447,16 +1465,19 @@ impl ChainClient for AlloyChain {
             let Some(at) = log_point(l) else {
                 return Ok(GrantAtIssuance::Undetermined);
             };
-            // `allowed` is the one NON-indexed argument, so it is the single data word. A body that
-            // does not decode is a malformed log rather than a fact about the credential.
-            let Ok(decoded) =
-                IProviderAuthority::IssuanceCapabilitySet::decode_log_data(l.data(), true)
-            else {
+            // `rights` is the one NON-indexed argument, so it is the single data word — the address's
+            // whole settable mask after that write. A body that does not decode is a malformed log
+            // rather than a fact about the credential.
+            let Ok(decoded) = IProviderAuthority::RightsSet::decode_log_data(l.data(), true) else {
                 return Ok(GrantAtIssuance::Undetermined);
             };
             history.push(GrantEvent {
                 at,
-                granted: decoded.allowed,
+                // Masked in the FULL 256-bit width. Truncating to a u64 first is harmless for every
+                // mask this contract can emit today, which is precisely why the habit would survive
+                // review until a right is allocated above bit 63.
+                granted: (decoded.rights & U256::from(dogtag_standard::verify::RIGHT_ISSUE))
+                    != U256::ZERO,
             });
         }
 

@@ -758,11 +758,15 @@ its nav entry, `POST /v1/admin/whitelist/{grant,revoke}`, the `whitelist_actions
 client methods are all gone. It called `isWhitelistedFor(recordType, address)`, which the single
 authority answers off the orthogonal VERIFY axis for a caller that is not itself an attached service
 - a confident `false` for every genuine issuer signer - and granted through `whitelistFor`, which
-that contract does not implement at all. Its replacements are `setIssuanceCapability` and
+that contract does not implement at all. Its replacements are `setRights` (the address-keyed issue grant - see
+"Rights are a BITMASK ON AN ADDRESS") and
 `setVerifierCapability` on the Providers page; see "The journey is COMPLETE now". What SURVIVED and
-must not be confused with it: `approve_application`'s own `whitelistFor` calls against the
-generation-1 `IssuerRegistry`, `whitelist_for_calldata`/`delist_for_calldata` in `chain.rs`, and the
-Dashboard's "Whitelist admin" authority tile. `dispatch_summary`/`dispatch_all` also outlived it and
+must not be confused with it: the Dashboard's "Whitelist admin" authority tile, and
+`isWhitelistedFor`, which the launch set DOES implement on the orthogonal VERIFY axis.
+`approve_application`'s own `whitelistFor` calls and `whitelist_for_calldata`/`delist_for_calldata`
+in `chain.rs` were listed here as survivors and are now GONE: they targeted a contract no launch-set
+member implements, and the address-keyed `setRights` is the successor the issuance half never had -
+see "Rights are a BITMASK ON AN ADDRESS". `dispatch_summary`/`dispatch_all` also outlived it and
 are now the registrar routes' - the tri-state `outcome` this section describes is still exactly
 right, and is pinned in `tests/provider_journey.rs`.
 
@@ -784,6 +788,130 @@ The vet/groomer verifier product now has a direct, operator-facing **pasted cred
 - **Chain surface**: `ChainClient` gained `is_revoked`; `AlloyChain` binds `DogTagIssuer.isRevoked(bytes32)` and `MemChain` reads the existing in-memory revoked map.
 - **Web (`stacks/vet/web`, `stacks/groomer/web`)**: the shared `@dogtag/ui` `CredentialVerifyPanel` is mounted on each Verify page above `VerifyFlow`. It accepts wrappedDoc JSON, optional issuer signer, and renders pass/fail plus integrity/on-chain/issued/revoked/whitelist pillars with issuer/root details. **As of `webverify-n3` the panel no longer calls `POST /verify/credential`** - see the next section.
 - **Tests/builds**: `stacks/vet/api/tests/flow_memchain.rs::full_issuance_share_revoke_flow` now proves issue -> direct verify valid -> revoke -> direct verify revoked over `MemChain`.
+
+### Rights are a BITMASK ON AN ADDRESS, answered by `ProviderRegistry.rightsOf`
+
+The captain's design, in his words: *"just see receive an address params and return the bits that's
+all. Can be contract can be EOA"*, *"We can even put this access in binary format where the first bit
+represent this the second bit represents that etc."*, *"Business is flexible we need to accommodate
+both business use cases as a decentralized community"*.
+
+One function, one address argument, one `uint256` out. `rightsOf(address)` takes no service, no record
+type, no purpose and no caller context.
+
+**The EOA/contract indifference is a PRODUCT property, not an implementation shortcut.** Nothing
+anywhere reads `account.code.length` to classify the address, for two reasons and the second is the
+one that matters: such a check is unreliable (a contract calling from inside its own constructor
+reports zero code length and reads as an EOA), and it is WRONG HERE - that indifference is exactly
+what lets a clinic (a company contract, or a multisig) and an individual practitioner on a plain
+wallet participate on identical terms. Do not add one back "for validation".
+
+**The bit layout is a WIRE FORMAT and no bit is ever reused or reordered.** A bit whose meaning
+changed silently grants the wrong right: no revert, no error, just wrong - the same failure class as
+the `getContractSet` -> `getDiscoverySet` rename this repo already paid for. The remedy is the one
+already chosen there: **shape and getter name move together.** If the layout changes, `rightsOf` takes
+a new NAME with it, so a client built for the old layout reverts at the dispatcher instead of reading
+a plausible wrong answer. Adding a bit at a fresh, previously-unused position is the one change that
+does NOT need a rename. `RIGHT_ISSUE` is bit 0 and is the ONLY settable bit (`SETTABLE_RIGHTS`); every
+other bit is DERIVED from state the core already holds, and `setRights` refuses to write one -
+recording a derived bit would let the stored value and the fact disagree, with the stored one winning.
+
+**One flat namespace serves both faces of the lookup.** A plain wallet typically reports its granted
+bits; an address the registrar has ATTACHED AS A SERVICE additionally reports that service's live
+lifecycle (`RIGHT_SERVICE_ATTACHED` / `_OWNER_CONFIRMED` / `_STANDING` / `_CURRENT`). The difference
+comes from what the core KNOWS about the address, never from sniffing its code.
+
+**The lookup carries no scoping, and the derived predicates keep every term they ever folded.**
+`canIssue` / `canRevoke` / `isRecognizedIssuer` keep their signatures and compose `_grantedRights[
+signer] & RIGHT_ISSUE` with the service facts the core already holds. **No `canIssue` term was
+dropped** - the ladder `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` is intact, and so is the
+storage-only, no-external-call property `isRecognizedIssuer` needs as a verification input. What
+changed is only that the GRANT is keyed on the signer instead of on `(service, signer)`.
+
+**TWO LAYERS, ANDed, and either one failing refuses (captain's ruling).** The scope-free grant on its
+own would let a signer approved for one provider anchor on ANY service in effective standing,
+including another provider's - and the at-issuance pillar, reading that same signer-keyed `RightsSet`
+history, would answer AUTHORIZED for it, producing a clean verdict on government's UNAUTHENTICATED
+`POST /v1/verify` for a credential its named issuer never issued. So `DogTagIssuer` keeps its OWN
+`issuanceAllowed` list and `onlyIssuanceCapable` requires BOTH:
+
+    registry.canIssue(address(this), msg.sender)   // the authority's scope-free grant + lifecycle
+    && issuanceAllowed[msg.sender]                 // THIS clone's own list
+
+**The scoping lives in the clone, never back in the lookup.** `rightsOf` stays address-in-bits-out,
+because a registrar approves an applicant BEFORE that applicant has a clone - there is nothing to key
+a grant against at approval time. The clone already knows which provider it belongs to, so it is where
+the confinement belongs.
+
+**Neither layer is redundant.** Layer 1 alone is the cross-provider hole; layer 2 alone would let a
+provider admit anyone with no KYC anywhere. Pinned separately by
+`test_a_signer_approved_for_one_provider_cannot_anchor_on_another_providers_clone` and
+`test_the_clone_list_alone_grants_nothing_without_the_authority_bit`. Deleting the clone-side check
+makes the first fail with *"next call did not revert as expected"* - the cross-provider anchor
+succeeds again, which is the demonstration that the list is what closes it.
+
+**Who may write the list (a NEW authority surface, so it is gated):** admitting is the clone
+`owner()`'s ALONE. The protocol admin is deliberately excluded from that direction - it also writes
+the authority bit, so a registrar that could admit would hold both layers at once and reach the same
+cross-provider issuance through itself. REMOVAL is the owner OR the protocol admin, because removal
+only narrows and is the incident-response direction for a compromised staff key. Same asymmetry the
+core already applies on the revocation axis.
+
+**The list gates ISSUE only, never REVOKE.** Removing a signer must stop the next anchor and strand
+nothing already anchored - the forward-only rule `delistFor` follows and the reason `canRevoke` is the
+wider rung. `test_the_clones_own_list_is_what_admits_a_signer_and_only_its_owner_writes_it` pins that
+a removed originator can still invalidate what it issued.
+
+**Being on the list is not an issuance right, and owning the clone still confers nothing.** An owner
+who admits itself and holds no bit cannot anchor - `test_owning_a_clone_confers_no_issuance_right`
+still holds. What stays closed independently is record-type relabelling, via `clone.recordType()`
+versus the document's claim.
+
+**That ordering problem is why the re-keying had to happen.** `approve_application` /
+`delist_application` in `stacks/admin/api` built `whitelistFor` / `delistFor` against a contract no
+launch-set member implements, and had no successor while the grant needed a service. They now call
+`setRights(account, RIGHT_ISSUE)` and `setRights(account, 0)`. Two consequences, both deliberate: an
+application naming several record types produces ONE grant rather than one per type (the record-type
+dimension is gone from the issuance grant entirely), and delisting still does NOT withdraw VERIFY
+capabilities, matching what `delistFor` did. The admin route moved with it -
+`POST /v1/admin/rights/:account/issue`, body `{allowed}`; there is no `:serviceAddress` in it.
+
+**`isWhitelistedFor` was NOT swept up with those two writes, and that carve-out is load-bearing.**
+`ProviderRegistry` does implement it, answering the orthogonal VERIFY axis for a caller that is not
+itself an attached service. Never hand it a record-type key.
+
+**The purpose axis is deliberately NOT collapsed into a VERIFY bit.** `setVerifierCapability(purpose,
+relayer, allowed)` stays purpose-keyed, because a single bit would discard the purpose an owner's
+consent was given FOR - the one thing that makes a consent receipt meaningful. It takes the RAW
+purpose (`purpose_key`), never `verify_key`: the contract derives `verificationKey` itself, and an
+already-derived key derives twice and grants a capability `canVerify` never reads.
+
+**`RightsSet(address indexed account, uint256 rights)` replaces `IssuanceCapabilitySet`, on all five
+surfaces.** `rights` is the account's COMPLETE settable mask after the write, not a delta, so the last
+event at or before a block IS the mask in force then and the fold needs no prior state. Canonical
+topic, confirmed with `cast keccak`:
+`0xbc9c679fe541a4f3fcf5f2887c4adcd6e7703f7ea9d0933b8862662f8290af7f`.
+The five readers are `crates/dogtag-standard-rs` (the shared `RIGHT_ISSUE` constant and
+`grant_in_force_at`, which is unchanged), `stacks/vet/api/src/chain.rs`,
+`stacks/government/api/src/chain.rs`, `packages/ui/src/wallet/contracts.ts`, and the mobile pair
+`RoaxRpc.kt` / `Net.swift`. **Every one reads the ISSUE BIT out of the mask, never the whole word.**
+Bit 0 is the only settable bit today, so "the word equals 1" and "bit 0 is set" agree on every mask
+the contract can emit - and that coincidence is exactly what would let a whole-word comparison survive
+review until a second right is allocated, at which point a mask of `0b11` decodes as malformed and
+refuses every credential its holder ever issued. All four language ports carry cases with higher bits
+set for that reason. Mask in the FULL 256-bit width; never truncate to a `u64` first.
+
+**Migration: there was nothing to migrate, measured rather than assumed.** The ledger's deployed
+`ProviderRegistry` answers `providerCount() == 0`, `serviceCount() == 0` and carries ZERO
+`IssuanceCapabilitySet` logs, so no grant exists on chain to carry across. The C-2 live walk recorded
+elsewhere in this file ran against a since-superseded instance. **The deployment cost is the FULL cascade, and the two-layer ruling is what makes it so.**
+`DogTagIssuer` gains storage and a write, so its runtime hash moves; `DogTagIssuerFactory` checks
+`impl.codehash == keccak256(type(DogTagIssuer).runtimeCode)` at construction and pins `implementation`
+as `immutable`, so a new implementation needs a new factory; `VerificationRegistryConsent.rootIndex`
+is `immutable` and IS that factory, so a new factory needs a new verification registry. That means
+every client repoints and both gitignored mobile bundles are regenerated, rebuilt AND reinstalled -
+standing process on a full redeploy, not a caveat. The factory source needs no edit (it derives the
+hash from the type), but its DEPLOYED bytecode carries the old one.
 
 ### The issuer-whitelist pillar is MANDATORY, and anchors the clone to the FACTORY
 
@@ -831,7 +959,7 @@ Four things about that guard are load-bearing and each is easy to undo:
 - **A REVERT and an UNDELIVERED PROBE are DIFFERENT FACTS, and only the first licenses the generation-1 conclusion.** This shipped wrong on all three Rust sites as `.is_ok()` / `if let Ok(..)`, which reads a timeout, a reset connection or a rate-limit response as "the contract refused it" — could-not-check rendered as a definite answer, reproduced inside the guard built to remove it. Two consequences, and the second is the sharper: on the pillar a transport failure leaves the definite `NotAuthorized` standing, i.e. a forgery accusation from a read that never happened, on the unauthenticated `POST /v1/verify`; in `issuance_capability` it falls through to the LEGACY getter, which `ProviderRegistry` *does* implement and answers `false` for off the orthogonal VERIFY axis at a zero `msg.sender` — a genuine generation-2 signer refused with 403 "address not approved for this recordType yet". **A NODE-LEVEL ERROR IS NOT A CONTRACT ANSWER EITHER, which is the same defect one level in.** The first cut keyed on "the node returned a JSON-RPC error for a request it processed" — alloy's `RpcError::ErrorResp`, mobile's "HTTP 200 carrying an `error` member", the web's `ContractFunctionRevertedError`. A `-32005` rate limit, a `-32603` internal error, a `-32601` method-not-found and a `-32002` resource-unavailable all satisfy that, and none of them is evidence the contract executed anything — so one of them left an empty grant history standing as a definite forgery verdict, on government's unauthenticated `POST /v1/verify` where rate limiting is realistic rather than hypothetical. **Only an EXECUTION REVERT licenses the generation-1 conclusion**, which is also exactly the signal wanted: `IssuerRegistry` has no `isRecognizedIssuer` and no fallback, so its dispatcher reverts. The rule is `code == 3 || message contains "execution reverted"` and it is now identical on all four: Rust `answered_with_execution_revert`, Kotlin/Swift `isExecutionRevert`, and viem's `ExecutionRevertedError`, whose `getNodeError` keys on that same pair. Two things are easy to undo. `ErrorPayload::as_revert_data` is NOT the discriminator — it needs revert DATA, and the revert here is a bare dispatcher refusal carrying none (`"data":"0x"`, confirmed against ROAX 2026-07-31 with the real generation-1 registry). And the web probe uses `client.call`, NOT `readContract`: `getContractError` folds BOTH code `3` and `-32603` into `ContractFunctionRevertedError`, so walking for that class reads an internal error as a refusal — verified empirically against the pinned viem, where the same `-32603` yields `InternalRpcError` through `call`. The message arm is kept alongside the code because several clients spell a revert `-32000`, and without it the pillar would stop refusing every never-granted signer against such a peer. **`MemChain` cannot pin the alloy classification at all** — it is a different `ChainClient` — so the classifier is extracted (`answered_with_execution_revert` / `generation_from_probe`) and pinned by `chain::tests`, while the MemChain cases pin the trait's CONTRACT. The two are separately mutated; do not conflate them.
 - **Generation 2 is probed FIRST in `issuance_capability`**, because `ProviderRegistry` answers the legacy selector too and at a zero `msg.sender` returns the orthogonal VERIFY-axis `false`. Probing legacy-first would take that wrong answer and never reach the successor.
 `ProviderRegistry.sol`'s own doc comment called `isRecognizedIssuer` "THE historical issuer-status question" until this was corrected: that contract landed 2026-07-30 (#111), #127 landed 2026-07-31, so the comment described a pillar that had already changed. **Do not let it pull the pillar back to a getter.**
-Answering the historical question for generation 2 needs an `IssuanceCapabilitySet` decoder on all five surfaces, which is NOT built — `ProviderRegistry` has no deployed address, so it could be validated against nothing. Until then a generation-2 root is honestly *unresolvable* on every one of the five, never refused.
+Answering the historical question for the launch set IS BUILT on all five surfaces, and reads the address-keyed `RightsSet` log rather than a per-service one - see "Rights are a BITMASK ON AN ADDRESS" for the event, the bit every reader masks out of it, and why the answer is now signer-wide rather than scoped to one service. (This paragraph previously said no such decoder existed; it did, and now it reads the re-keyed event.)
 
 **The split is BY QUESTION, so "migrate the record-type callers to `isRecognizedIssuer`" is only half the rule.**
 A pre-issue gate takes **`canIssue`**: `DogTagIssuer.issue` is gated by `onlyIssuanceCapable` == `registry.canIssue(address(this), msg.sender)`, and a preflight on the wider `isRecognizedIssuer` passes where the write reverts — the one thing a preflight exists to prevent. A verifier asking whether a credential was genuinely issued takes neither getter; it asks the past, from events.

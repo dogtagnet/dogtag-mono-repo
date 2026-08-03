@@ -271,12 +271,15 @@ async fn anvil_full_flow() {
 
     // fund the backend signer from anvil acct 0, and whitelist it on-chain for VACCINATION.
     fund(&rpc, &backend_addr, "100000000000000000"); // 0.1 ETH
+    // The grant is on the SIGNER's ADDRESS and names no service — `RIGHT_ISSUE` is bit 0 of the
+    // rights bitmask. `canIssue` below still folds this clone's own lifecycle terms, which is why
+    // that assertion still means something after the re-keying.
     cast_send(
         &rpc,
         PK0,
         &registry,
-        "setIssuanceCapability(address,address,bool)",
-        &[&clone, &backend_addr, "true"],
+        "setRights(address,uint256)",
+        &[&backend_addr, "1"],
     );
     assert_eq!(
         cast_call(
@@ -287,6 +290,22 @@ async fn anvil_full_flow() {
         ),
         "true",
         "the journey must leave the backend signer able to anchor on this clone"
+    );
+    // LAYER 2: the clone's OWN list. `canIssue` above is only the AUTHORITY's half - the grant names
+    // no service, so without this the clone refuses `NotLocallyAllowed`. Admitting is the clone
+    // owner's call, and the owner here is the provider key that created it (PK1), never the
+    // registrar - so this is deliberately not a PK0 transaction.
+    cast_send(
+        &rpc,
+        PK1,
+        &clone,
+        "setIssuanceAllowed(address,bool)",
+        &[&backend_addr, "true"],
+    );
+    assert_eq!(
+        cast_call(&rpc, &clone, "issuanceAllowed(address)(bool)", &[&backend_addr]),
+        "true",
+        "both layers must hold before the backend can anchor"
     );
 
     // --- non-whitelisted signer fails preflight: query a random unwhitelisted addr ---

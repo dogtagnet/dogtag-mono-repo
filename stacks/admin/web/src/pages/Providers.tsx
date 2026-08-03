@@ -462,10 +462,20 @@ function ServiceRow({
         </p>
       ) : null}
 
+      {/*
+        REGISTRY-WIDE, and labelled as such. The issue right is keyed on the ADDRESS, so this is the
+        same list on every service row in the system - a heading reading "may issue on this contract"
+        would imply a scope the data no longer has, which is how an operator comes to believe a
+        holder is confined to one provider.
+      */}
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-muted-foreground">may issue:</span>
-        <CapabilityHolders read={view.issuance} empty="Nobody yet - grant issuance capability." />
+        <span className="text-muted-foreground">holds the issue right (registry-wide):</span>
+        <CapabilityHolders read={view.issuance} empty="Nobody yet - grant the issue right." />
       </div>
+      <p className="mt-0.5 text-[11px] text-muted-foreground" data-testid="issuance-scope-note">
+        The issue right is granted on an address and names no service, so every holder above can
+        anchor on any service in effective standing - not only this one.
+      </p>
 
       <div className="mt-1 text-xs text-muted-foreground" data-testid="service-pointer">
         {view.currentPointer.state === "unavailable" ? (
@@ -695,13 +705,17 @@ function CapabilityDialog({
   const copy =
     target.kind === "issuance"
       ? {
-          title: "Issuance capability",
-          what: `on ${shortAddr(target.service)}`,
-          label: "Signer address",
+          title: "Issue right",
+          // NOT "on <clone>": the write names no service, and a dialog that said otherwise would
+          // describe a narrower grant than the one about to be sent.
+          what: "on this address, registry-wide",
+          label: "Address to grant",
           hint:
-            "The key that will SIGN issuances on this contract. This is the registrar's grant to " +
-            "make and nobody else's: a service delegate carries content-write permissions and does " +
-            "not satisfy canIssue, so a provider cannot grant their own signing key.",
+            "The key that will SIGN issuances. This is the registrar's grant to make and nobody " +
+            "else's: a service delegate carries content-write permissions and does not satisfy " +
+            "canIssue, so a provider cannot grant their own signing key. The grant is on the " +
+            "ADDRESS and names no service, so it reaches EVERY service in effective standing - " +
+            "including other providers'.",
         }
       : target.kind === "verify"
         ? {
@@ -1163,16 +1177,15 @@ export function Providers() {
     setBusy("capability");
     try {
       if (target.kind === "issuance") {
-        const resp = await central.setIssuanceCapability(target.service, {
-          signer: address,
-          allowed,
-        });
+        const resp = await central.setIssueRight(address, { allowed });
         recordDispatch({
           providerId: target.providerId,
           outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
           warning: resp.warning,
           actions: resp.actions,
-          summary: `issuance ${allowed ? "granted to" : "withdrawn from"} ${shortAddr(address)} on ${shortAddr(target.service)}`,
+          // Deliberately does NOT name a service. The grant carries none, so a summary reading
+          // "granted on <clone>" would describe a narrower write than the one just sent.
+          summary: `issue right ${allowed ? "granted to" : "withdrawn from"} ${shortAddr(address)} (every service in standing)`,
         });
         await loadServices(target.providerId);
       } else if (target.kind === "verify") {
