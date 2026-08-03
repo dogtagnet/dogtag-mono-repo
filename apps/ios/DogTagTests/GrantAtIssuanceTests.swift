@@ -71,99 +71,6 @@ final class GrantAtIssuanceTests: XCTestCase {
         XCTAssertEqual(RoaxRpc.grantInForceAt(events.reversed(), anchoredAt: anchored), .notAuthorized)
     }
 
-    // MARK: - the generation guard on the empty-history refusal
-    //
-    // The fold above answers a definite `.notAuthorized` for an empty history, which is right for a
-    // generation-1 `IssuerRegistry` and WRONG for its successor: `Whitelisted(bytes32 indexed
-    // recordType, address indexed signer)` puts the record-type key in `topic1`, and
-    // `ProviderRegistry` records `IssuanceCapabilitySet(service, signer, allowed)` instead, so that
-    // filter matches nothing there and every genuine generation-2 credential arrives empty.
-    //
-    // Mirrors Android's `GrantInForceAtTest` case for case.
-
-    func test_onlyAnExecutionRevertIdentifiesGenerationOne() {
-        XCTAssertEqual(RoaxRpc.generationFromProbe(.refused("execution reverted")), .legacy)
-        // The typed discriminator: geth's execution-reverted code, confirmed against ROAX with the
-        // exact production case (`isRecognizedIssuer` on the deployed generation-1 IssuerRegistry).
-        XCTAssertTrue(RoaxRpc.isExecutionRevert(code: 3, message: "execution reverted"))
-        // …and the message arm, for a client that reports the same revert under another code.
-        XCTAssertTrue(RoaxRpc.isExecutionRevert(code: -32000, message: "execution reverted"))
-    }
-
-    /// A NODE-LEVEL ERROR IS NOT A CONTRACT ANSWER. The first cut raised `.refused` for any JSON-RPC
-    /// error member, which a rate limit satisfies - so one would have left an empty grant history
-    /// standing as a definite refusal, i.e. a forgery verdict against a genuine credential produced by
-    /// a call the contract never ran.
-    ///
-    /// Mirrors Android's `aNodeErrorThatIsNotARevertIsNotAContractAnswer` and the Rust
-    /// `a_node_error_that_is_not_a_revert_is_undetermined_never_generation_one`.
-    func test_aNodeErrorThatIsNotARevertIsNotAContractAnswer() {
-        let nodeErrors: [(Int, String)] = [
-            (-32005, "limit exceeded"),
-            (-32603, "internal error"),
-            (-32601, "the method does not exist/is not available"),
-            (-32002, "resource unavailable"),
-        ]
-        for (code, message) in nodeErrors {
-            XCTAssertFalse(
-                RoaxRpc.isExecutionRevert(code: code, message: message),
-                "\(code) is the node speaking about itself, not the contract executing anything")
-            let probe: RoaxRpc.CallResult =
-                RoaxRpc.isExecutionRevert(code: code, message: message)
-                ? .refused(message) : .unreachable(message)
-            XCTAssertEqual(
-                RoaxRpc.generationFromProbe(probe), .undetermined,
-                "\(code) must not license the generation-1 conclusion")
-        }
-    }
-
-    func test_aProbeThatAnswersIdentifiesTheSuccessor() {
-        XCTAssertEqual(RoaxRpc.generationFromProbe(.success("0x01")), .successor)
-    }
-
-    /// A probe that never arrived establishes NOTHING. Reading it as generation 1 hands the empty
-    /// history back to the fold, which correctly refuses it - so one timeout becomes a forgery verdict
-    /// against a genuine credential.
-    func test_aProbeThatCouldNotBeDeliveredIsUndeterminedNeverGenerationOne() {
-        XCTAssertEqual(RoaxRpc.generationFromProbe(.unreachable("rpc 503")), .undetermined)
-        XCTAssertEqual(RoaxRpc.generationFromProbe(.unreachable("bad rpc json")), .undetermined)
-    }
-
-    func test_anEmptyHistoryIsARefusalOnlyWhenTheAuthorityAnsweredThatItIsGenerationOne() {
-        XCTAssertEqual(
-            RoaxRpc.grantAtIssuance([], anchoredAt: anchored, generation: .legacy), .notAuthorized)
-        XCTAssertEqual(
-            RoaxRpc.grantAtIssuance([], anchoredAt: anchored, generation: .successor), .undetermined)
-        XCTAssertEqual(
-            RoaxRpc.grantAtIssuance([], anchoredAt: anchored, generation: .undetermined), .undetermined)
-    }
-
-    /// The guard is scoped to the EMPTY case, and that scoping is load-bearing: a NON-EMPTY history is
-    /// itself proof the authority speaks generation 1, because those events came out of it. So no
-    /// generation may perturb an answer the forward-only rule already established - including the
-    /// delisted-AFTER pass, which is the one that rule exists to protect.
-    func test_aNonEmptyHistoryIsUnaffectedByWhateverTheProbeSaid() {
-        let delistedAfter = [granted(100), delisted(700)]
-        let delistedBefore = [granted(100), delisted(199)]
-        for g in [RoaxRpc.AuthorityGeneration.legacy, .successor, .undetermined] {
-            XCTAssertEqual(
-                RoaxRpc.grantAtIssuance(delistedAfter, anchoredAt: anchored, generation: g),
-                .authorized)
-            XCTAssertEqual(
-                RoaxRpc.grantAtIssuance(delistedBefore, anchoredAt: anchored, generation: g),
-                .notAuthorized)
-        }
-    }
-
-    /// The generation discriminator's selector. A WRONG value reverts on a real `ProviderRegistry`
-    /// too, which the guard reads as "generation 1" - silently restoring the definite refusal against
-    /// every genuine generation-2 credential, the exact defect the guard removes. Confirmed with
-    /// `cast sig "isRecognizedIssuer(address,address)"`, and byte-identical to the value Android's
-    /// `RoaxRpcSelectorTest` pins.
-    func test_theGenerationProbeSelectorMatchesItsCanonicalSignature() {
-        XCTAssertEqual(RoaxRpc.isRecognizedIssuerSelector, "0x0b137974")
-    }
-
     // MARK: - the derived topic values
 
     /// Independently confirmed with `cast keccak`, and byte-identical to the values Android's
@@ -172,18 +79,21 @@ final class GrantAtIssuanceTests: XCTestCase {
         XCTAssertEqual(
             RoaxRpc.eventTopic("RootIssued(bytes32,address,uint256)"),
             "0xf8cd30a628b432a1200caf81085096c82a5f570da14360572b72d4e0ba57e6d7")
+        // The authority's issuance-grant topic. Pinned because the failure mode is SILENT: a value
+        // derived at the wrong width, or from a drifted signature, matches no log at all - which
+        // reads exactly like "this signer was never granted" and refuses every genuine credential.
         XCTAssertEqual(
-            RoaxRpc.eventTopic("Whitelisted(bytes32,address)"),
-            "0x0ed68b47399672cf072b19a599fa9f99cdc79a286bf59bc301ca44b94f589bce")
+            RoaxRpc.issuanceCapabilitySetTopic,
+            "0x831abb96b1c02fe346a944062a9367343ef9d09be41d65818b796cd1a8676941")
         XCTAssertEqual(
-            RoaxRpc.eventTopic("Delisted(bytes32,address)"),
-            "0xf3af84db5dbf726f68c33f3ded733403e15667370ab38e8cb37fdc874835b00e")
+            RoaxRpc.eventTopic("IssuanceCapabilitySet(address,address,bool)"),
+            RoaxRpc.issuanceCapabilitySetTopic)
     }
 
     /// A topic is 32 bytes and a selector is 4. Stated as its own assertion because the failure mode
     /// of confusing them is silent: the shorter value simply matches nothing.
     func test_anEventTopicIsTheWholeHashNotTheFourByteSelector() {
-        let topic = RoaxRpc.eventTopic("Whitelisted(bytes32,address)")
+        let topic = RoaxRpc.issuanceCapabilitySetTopic
         XCTAssertEqual(topic.count, 66)
         // The registry selector this file can reach IS the 4-byte prefix of `registry()`'s hash, so
         // the two derivations are related exactly as expected and neither is the other.
