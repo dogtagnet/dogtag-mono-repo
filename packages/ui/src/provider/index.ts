@@ -41,6 +41,16 @@ export {
 } from "./readers";
 
 export {
+  checkBlock,
+  describeActionBlock,
+  planGateState,
+  sendBlock,
+  type ActionBlock,
+  type ChainCheck,
+  type PlanGateState,
+} from "./actionAvailability";
+
+export {
   assessCandidateClone,
   ATTACHMENT_IS_A_DOGTAG_STEP,
   nextStepFor,

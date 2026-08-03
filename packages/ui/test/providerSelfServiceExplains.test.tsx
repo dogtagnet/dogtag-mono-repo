@@ -38,12 +38,29 @@ import {
   type ProviderContracts,
 } from "../src/provider";
 
-// Nothing under test reads more of wagmi than these two hooks, and the claims here are about copy
-// rendered before a wallet is involved at all.
+// Mutable, because the reasons under a disabled control are ORDERED - a disconnected wallet
+// outranks an empty field, which outranks an unrun check - so each case has to be driven from its
+// own account state rather than asserted all at once.
+const account: { address?: string; isConnected: boolean; chainId?: number } = {
+  address: undefined,
+  isConnected: false,
+};
 vi.mock("wagmi", () => ({
-  useAccount: () => ({ address: undefined, isConnected: false }),
+  useAccount: () => account,
   useWriteContract: () => ({ writeContractAsync: async () => "0x" }),
 }));
+
+const CONNECTED = "0x2222222222222222222222222222222222222222";
+function connect(chainId?: number) {
+  account.address = CONNECTED;
+  account.isConnected = true;
+  account.chainId = chainId;
+}
+function disconnect() {
+  account.address = undefined;
+  account.isConnected = false;
+  account.chainId = undefined;
+}
 
 const CONTRACTS: ProviderContracts = {
   core: "0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9",
@@ -90,35 +107,166 @@ afterEach(() => {
   host?.remove();
   root = null;
   host = null;
+  disconnect();
 });
+
+const reason = (id: string) => host!.querySelector(`[data-testid='${id}']`);
+const reasonKind = (id: string) => reason(id)?.getAttribute("data-block") ?? null;
 
 describe("a control that cannot be used says why", () => {
   it("names the field flow 3 actually depends on, which is flow 2's and not the one beside it", async () => {
     // The gate is `!candidate`. A provider typing into the Domain field is looking at the wrong
-    // input entirely, so the reason has to name the other step by number.
+    // input entirely, so the reason has to name the other step by number AND say the button is not
+    // gated on the domain they just typed.
+    connect(135);
     const el = await mount({ issuance: true, listing: true });
-    const note = el.querySelector("[data-testid='candidate-required-domain']");
-    expect(note).not.toBeNull();
-    expect(note!.textContent).toMatch(/step 2/i);
+    type("providerId", "0x3f5c9a1e77b204d8e6130fa95c8b47e2d61099af");
+    await turn();
+    const note = el.querySelector("[data-testid='domain-check-reason']")!;
+    expect(note.getAttribute("data-block")).toBe("missingInput");
+    expect(note.textContent).toMatch(/step 2/i);
+    expect(note.textContent).toMatch(/not on the domain above/i);
   });
 
   it("withdraws that reason once the field it names is filled", async () => {
     // The half that makes the case above non-vacuous: a note rendered unconditionally would satisfy
     // it while telling a provider who has already done the thing to go and do it.
+    connect(135);
     await mount({ issuance: true, listing: true });
-    expect(testId("candidate-required-domain")).not.toBeNull();
-    expect(testId("candidate-required-repoint")).not.toBeNull();
+    type("providerId", "0x3f5c9a1e77b204d8e6130fa95c8b47e2d61099af");
+    await turn();
+    expect(reasonKind("domain-check-reason")).toBe("missingInput");
+    expect(reasonKind("repoint-check-reason")).toBe("missingInput");
 
     type("candidate", "0x1111111111111111111111111111111111111111");
     await turn();
 
-    expect(testId("candidate-required-domain")).toBeNull();
-    expect(testId("candidate-required-repoint")).toBeNull();
+    expect(reason("domain-check-reason")).toBeNull();
+    expect(reason("repoint-check-reason")).toBeNull();
   });
 
   it("says the same thing on flow 2, whose Check is gated on that field too", async () => {
+    connect(135);
     const el = await mount({ issuance: true, listing: true });
-    expect(el.querySelector("[data-testid='candidate-required-repoint']")).not.toBeNull();
+    type("providerId", "0x3f5c9a1e77b204d8e6130fa95c8b47e2d61099af");
+    await turn();
+    expect(el.querySelector("[data-testid='repoint-check-reason']")!.textContent).toMatch(
+      /contract you deployed in step 1/i,
+    );
+  });
+});
+
+describe("the FIRST-RUN state - a disabled Deploy with nothing said, which is the defect", () => {
+  // Found by a captain on a live stack. Deploy is gated on a plan, no plan exists before the first
+  // check, and the notice that explains a stale plan renders nothing when there is no plan at all -
+  // so every new provider met a dead button under a heading reading "You deploy it and you own it".
+  const PROVIDER = "0x3f5c9a1e77b204d8e6130fa95c8b47e2d61099af";
+
+  it("tells a connected provider who has checked nothing to run the check first", async () => {
+    connect(135);
+    const el = await mount({ issuance: true, listing: true });
+    type("providerId", PROVIDER);
+    await turn();
+
+    const send = el.querySelector<HTMLButtonElement>("[data-testid='deploy-send']")!;
+    expect(send.disabled).toBe(true);
+    // The disabled button MUST be accompanied by a reason. This is the assertion the page failed.
+    const why = el.querySelector("[data-testid='deploy-send-reason']");
+    expect(why).not.toBeNull();
+    expect(why!.getAttribute("data-block")).toBe("neverChecked");
+    expect(why!.textContent).toMatch(/check what this would deploy/i);
+  });
+
+  it("explains that the check has to match what is in the form now, not merely that one is needed", async () => {
+    // Without this half a provider who checks once, edits a field and finds the button dead again
+    // has no way to have predicted it - the gate looks arbitrary rather than deliberate.
+    connect(135);
+    const el = await mount({ issuance: true, listing: true });
+    type("providerId", PROVIDER);
+    await turn();
+    expect(el.querySelector("[data-testid='deploy-send-reason']")!.textContent).toMatch(
+      /match the values in the form right now/i,
+    );
+  });
+
+  it("gives every send button a reason in that state, not only Deploy", async () => {
+    // Deploy is where it was found; the same shape held for all four flows.
+    connect(135);
+    const el = await mount({ issuance: true, listing: true });
+    type("providerId", PROVIDER);
+    type("candidate", "0x1111111111111111111111111111111111111111");
+    await turn();
+    // Enumerated from the rendered buttons rather than a hand list, so a send added later is
+    // covered without anyone remembering to add it here. A hand list is how flow 3's three sends
+    // came to share one reason in the first place.
+    const sends = Array.from(el.querySelectorAll<HTMLButtonElement>("[data-testid$='-send']"));
+    expect(sends.length).toBeGreaterThanOrEqual(4);
+    for (const b of sends) {
+      const id = b.getAttribute("data-testid")!.replace(/-send$/, "-send-reason");
+      const why = el.querySelector(`[data-testid='${id}']`);
+      expect(why, `${id} missing`).not.toBeNull();
+      expect(why!.getAttribute("data-block")).toBe("neverChecked");
+    }
+  });
+
+  it("never leaves a disabled send button silent, in any of the states this page has", async () => {
+    // The general form of the rule. A disabled control with no reason is the defect whatever put it
+    // in that state, so the invariant is asserted over the buttons rather than over one case.
+    for (const setup of [
+      () => disconnect(),
+      () => connect(135),
+      () => connect(1),
+    ]) {
+      setup();
+      const el = await mount({ issuance: true, listing: true });
+      const sends = Array.from(el.querySelectorAll<HTMLButtonElement>("[data-testid$='-send']"));
+      expect(sends.length).toBeGreaterThan(0);
+      for (const b of sends) {
+        if (!b.disabled) continue;
+        const id = b.getAttribute("data-testid")!.replace(/-send$/, "-send-reason");
+        expect(el.querySelector(`[data-testid='${id}']`), `${id} missing`).not.toBeNull();
+      }
+      root?.unmount();
+      host?.remove();
+    }
+  });
+
+  it("orders the reasons so the first thing to fix is the one shown", async () => {
+    // Six situations with six remedies. A disconnected wallet outranks an unrun check, because
+    // telling somebody to press Check when nothing can be signed sends them in a circle.
+    disconnect();
+    const el = await mount({ issuance: true, listing: true });
+    expect(el.querySelector("[data-testid='deploy-send-reason']")!.getAttribute("data-block")).toBe(
+      "notConnected",
+    );
+  });
+
+  it("reports the wrong chain as its own reason, and only for sends", async () => {
+    // The checks read through the page's own endpoint, so they are correct on any chain; only a
+    // transaction is bound to the wallet's. Gating the checks on it would refuse a preflight that
+    // would have answered usefully.
+    connect(1);
+    const el = await mount({ issuance: true, listing: true });
+    type("providerId", PROVIDER);
+    await turn();
+    expect(el.querySelector("[data-testid='deploy-send-reason']")!.getAttribute("data-block")).toBe(
+      "wrongChain",
+    );
+    expect(el.querySelector("[data-testid='deploy-send-reason']")!.textContent).toMatch(/chain 1\b/);
+    // The Check button is untouched: no reason at all, because nothing is blocking it.
+    expect(reason("deploy-check-reason")).toBeNull();
+  });
+
+  it("does not call an unreported chain the wrong one", async () => {
+    // A connector that reports no chain id is not a wallet on the wrong network. Accusing it would
+    // be could-not-check rendered as a definite answer - the thing this page exists to avoid.
+    connect(undefined);
+    const el = await mount({ issuance: true, listing: true });
+    type("providerId", PROVIDER);
+    await turn();
+    expect(el.querySelector("[data-testid='deploy-send-reason']")!.getAttribute("data-block")).toBe(
+      "neverChecked",
+    );
   });
 });
 

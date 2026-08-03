@@ -72,6 +72,11 @@ import {
   ATTACHMENT_IS_A_DOGTAG_STEP,
   ATTACHMENT_IS_NOT_SELF_SERVICE,
   assessCandidateClone,
+  checkBlock,
+  describeActionBlock,
+  planGateState,
+  sendBlock,
+  type ActionBlock,
   assessDomainClaim,
   canWithdraw,
   CONTACT_ONLY_NOTICE,
@@ -104,6 +109,7 @@ import {
   DOMAIN_ABI,
   FACTORY_ABI,
 } from "../provider/liveReader";
+import { ROAX_CHAIN_ID } from "../wallet/chain";
 import { roaxPublicClient } from "../wallet/contracts";
 import {
   CloneLifecycleCard,
@@ -158,6 +164,23 @@ export interface ProviderSelfServiceFlowsProps {
  * is a spinner that never resolves and a provider who cannot tell whether anything happened.
  */
 const RECEIPT_TIMEOUT_MS = 90_000;
+
+/**
+ * Why the control above cannot be used, or nothing when it can.
+ *
+ * Rendered under the button row rather than as a tooltip, for the reason this repo applies to every
+ * finding: a reason reachable only by hovering is not reported. Muted rather than amber - most of
+ * these are ordinary first-run states ("run the check first"), not warnings, and painting them all
+ * as alarms would train the reader past the ones that are.
+ */
+function ActionReason({ block, testId }: { block: ActionBlock | null; testId: string }): ReactNode {
+  if (!block) return null;
+  return (
+    <p className="text-xs text-muted-foreground" data-testid={testId} data-block={block.kind}>
+      {describeActionBlock(block)}
+    </p>
+  );
+}
 
 /**
  * That a flow waits on a step DogTag takes, said before the provider tries it.
@@ -257,7 +280,9 @@ export function ProviderSelfServiceFlows({
   mirrorToken,
   demoMode = false,
 }: ProviderSelfServiceFlowsProps): ReactNode {
-  const { address, isConnected } = useAccount();
+  // `chainId` is read for the SEND gate only, and `undefined` means the connector did not report
+  // one - which is not the wrong chain. See `ChainCheck`.
+  const { address, isConnected, chainId } = useAccount();
   const { writeContractAsync } = useWriteContract();
 
   const [providerId, setProviderId] = useState(defaultProviderId);
@@ -449,6 +474,47 @@ export function ProviderSelfServiceFlows({
 
   const ready = !busy && !!reader && isConnected && !!caller;
 
+  // ONE derivation of "why can this not be used", shared by all eleven controls. Written out here
+  // rather than inline per button so that adding a control cannot quietly ship without a reason -
+  // which is exactly how Deploy came to be dead and silent on first run.
+  const pre = { busy, connected: isConnected && !!caller, hasReader: !!reader };
+  const chain = { expected: ROAX_CHAIN_ID, actual: chainId };
+  const gate = (missingInput?: string | null) => checkBlock({ ...pre, missingInput });
+  const sendGate = (
+    check: string,
+    plan: Parameters<typeof sendBlock>[0]["plan"],
+    otherwiseBlocked?: string | null,
+  ) => sendBlock({ ...pre, chain, check, plan, otherwiseBlocked });
+
+  const deployPlanState = planGateState({
+    present: !!deployHeld,
+    spent: !!deployHeld?.spent,
+    keyMatches: deployHeld?.key === deployKey,
+    canAct: !!deploy?.canDeploy,
+    verdict: deploy?.verdict,
+  });
+  const clonePlanState = planGateState({
+    present: !!cloneHeld,
+    spent: !!cloneHeld?.spent,
+    keyMatches: cloneHeld?.key === cloneKey,
+    canAct: !!clone?.canRepoint,
+    verdict: clone?.verdict,
+  });
+  const domainPlanState = planGateState({
+    present: !!domainHeld,
+    spent: !!domainHeld?.spent,
+    keyMatches: domainHeld?.key === domainKey,
+    canAct: !!domainState?.canWrite,
+    verdict: domainState?.verdict,
+  });
+  const publicationPlanState = planGateState({
+    present: !!publicationHeld,
+    spent: !!publicationHeld?.spent,
+    keyMatches: publicationHeld?.key === publicationKey,
+    canAct: !!publication?.canPublish,
+    verdict: publication?.verdict,
+  });
+
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
       <Card>
@@ -617,6 +683,11 @@ export function ProviderSelfServiceFlows({
                   Deploy
                 </Button>
               </div>
+              <ActionReason block={gate(providerIdOk ? null : "Enter your provider id to check.")} testId="deploy-check-reason" />
+              <ActionReason
+                block={sendGate("Check what this would deploy", deployPlanState)}
+                testId="deploy-send-reason"
+              />
               <PlanNotice reason={deployRetired} testId="deploy-stale" />
               {deployShown ? (
                 <DeployPlanCard
@@ -651,19 +722,6 @@ export function ProviderSelfServiceFlows({
                   Paste the address step 1 deployed. Only a contract deployed by the DogTag issuer
                   factory can be entered here - anything else is refused, whoever asks.
                 </p>
-                {/* A DISABLED BUTTON MUST SAY WHY. `!candidate` gates this Check and had no
-                    rendered reason, so an empty field produced a dead button and silence - which is
-                    worse than a refusal, because a refusal at least names itself. The other two
-                    terms already had one (the amber not-connected line, the red malformed-id line);
-                    this closes the odd one out. */}
-                {!candidate ? (
-                  <p
-                    className="mt-1 text-xs text-amber-700 dark:text-amber-400"
-                    data-testid="candidate-required-repoint"
-                  >
-                    Enter a contract address to check.
-                  </p>
-                ) : null}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -706,6 +764,20 @@ export function ProviderSelfServiceFlows({
                   Make this my current contract
                 </Button>
               </div>
+              <ActionReason
+                block={gate(
+                  !providerIdOk
+                    ? "Enter your provider id to check."
+                    : !candidate
+                      ? "Enter the address of the contract you deployed in step 1 to check it."
+                      : null,
+                )}
+                testId="repoint-check-reason"
+              />
+              <ActionReason
+                block={sendGate("Check this contract", clonePlanState)}
+                testId="repoint-send-reason"
+              />
               <PlanNotice reason={cloneRetired} testId="repoint-stale" />
               {cloneShown ? <CloneLifecycleCard assessment={cloneShown} retired={cloneRetired} /> : null}
             </CardContent>
@@ -725,19 +797,6 @@ export function ProviderSelfServiceFlows({
               <DependencyNotice testId="domain-dependency">
                 {DOMAIN_REGISTER_NEEDS_TURNING_ON}
               </DependencyNotice>
-              {/* THE ONE THAT COST THE MOST. This Check is gated on `candidate` - step 2's field -
-                  and not on the domain beside it, so typing a domain here and finding the button
-                  still dead is the page's most confusing state, and nothing said a word about it.
-                  Named where it is felt rather than only in the description above. */}
-              {!candidate ? (
-                <p
-                  className="text-xs text-amber-700 dark:text-amber-400"
-                  data-testid="candidate-required-domain"
-                >
-                  Enter your contract address in step 2 first - a domain is published for a
-                  contract, so there is nothing to check until this page knows which one.
-                </p>
-              ) : null}
               <div>
                 <Label htmlFor="domain">Domain</Label>
                 <Input
@@ -836,6 +895,39 @@ export function ProviderSelfServiceFlows({
                   </Button>
                 ) : null}
               </div>
+              <ActionReason
+                block={gate(
+                  candidate
+                    ? null
+                    : "Enter your contract address in step 2 first. A domain is published for a "
+                      + "contract, so there is nothing to check until this page knows which one - "
+                      + "this button is gated on that field, not on the domain above.",
+                )}
+                testId="domain-check-reason"
+              />
+              <ActionReason
+                block={sendGate(
+                  "Check the domain record",
+                  domainPlanState,
+                  domainPlanState === "ready" && !validateDomain(domain).ok
+                    ? "Enter a valid domain to publish one. You can still declare that you deliberately have none."
+                    : null,
+                )}
+                testId="domain-claim-send-reason"
+              />
+              {/* Its own reason, because its own gate: declaring you have no domain does not need a
+                  valid domain in the field, so sharing the claim button's sentence would tell a
+                  provider to fix something this button never asked for. */}
+              <ActionReason
+                block={sendGate("Check the domain record", domainPlanState)}
+                testId="domain-none-send-reason"
+              />
+              {canWithdraw(domainState?.standing) ? (
+                <ActionReason
+                  block={sendGate("Check the domain record", domainPlanState)}
+                  testId="domain-withdraw-send-reason"
+                />
+              ) : null}
               <PlanNotice reason={domainRetired} testId="domain-stale" />
               {domainShown ? <DomainClaimCard assessment={domainShown} retired={domainRetired} /> : null}
             </CardContent>
@@ -1096,6 +1188,20 @@ export function ProviderSelfServiceFlows({
               <p className="text-xs text-muted-foreground" data-testid="withdraw-pin-notice">
                 {WITHDRAW_LOCATION_NOTICE}
               </p>
+            ) : null}
+            <ActionReason
+              block={gate(providerIdOk ? null : "Enter your provider id to check.")}
+              testId="publish-check-reason"
+            />
+            <ActionReason
+              block={sendGate("Check what this would publish", publicationPlanState, publicationMirrorRefusal)}
+              testId="publish-send-reason"
+            />
+            {publication?.canWithdrawPin ? (
+              <ActionReason
+                block={sendGate("Check what this would publish", publicationPlanState)}
+                testId="withdraw-pin-send-reason"
+              />
             ) : null}
             <PlanNotice reason={publicationRetired} testId="publish-stale" />
             {publicationShown ? (
