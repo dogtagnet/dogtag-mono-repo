@@ -34,7 +34,7 @@ describe("chain-addressability", () => {
   });
 
   it("accepts only a 0x-prefixed 20-byte hex value as an address", () => {
-    expect(isEvmAddress("0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F")).toBe(true);
+    expect(isEvmAddress("0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70")).toBe(true);
     expect(isEvmAddress(REAL_TX)).toBe(false); // a hash is not an address
     expect(isEvmAddress("0x0800")).toBe(false);
     expect(isEvmAddress(null)).toBe(false);
@@ -75,8 +75,8 @@ describe("txExplorerHref", () => {
 
 describe("addressExplorerHref", () => {
   it("links a well-formed address and refuses anything else", () => {
-    expect(addressExplorerHref("0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F")).toBe(
-      "https://explorer.roax.net/address/0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F",
+    expect(addressExplorerHref("0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70")).toBe(
+      "https://explorer.roax.net/address/0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70",
     );
     expect(addressExplorerHref("0x08")).toBeNull();
     expect(addressExplorerHref(undefined)).toBeNull();
@@ -95,7 +95,7 @@ describe("isOpaqueIdentifier", () => {
   it("accepts 0x-hex and all-digit field elements", () => {
     expect(isOpaqueIdentifier(REAL_TX)).toBe(true);
     expect(isOpaqueIdentifier("0x0800")).toBe(true);
-    expect(isOpaqueIdentifier("0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F")).toBe(true);
+    expect(isOpaqueIdentifier("0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70")).toBe(true);
     // The indexer renders the on-chain dogTagId as a decimal U256.
     expect(isOpaqueIdentifier("12345678901234567890")).toBe(true);
   });
@@ -115,7 +115,7 @@ describe("shortValue", () => {
 
   it("middle-truncates an opaque identifier exactly as before", () => {
     expect(shortValue(`0x${"33".repeat(32)}`, HEAD)).toBe("0x333333…333333");
-    expect(shortValue("0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F", HEAD)).toBe("0xB5D665…6c5F9F");
+    expect(shortValue("0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70", HEAD)).toBe("0x6F8a0B…5E6f70");
     // A decimal dogTagId is opaque too - head and tail identify it, the middle is noise.
     expect(shortValue("12345678901234567890", HEAD)).toBe("12345678…567890");
     expect(shortValue(REAL_TX)).toBe("0xabababab…ababab");
@@ -178,7 +178,7 @@ describe("emittingContractRole", () => {
 });
 
 describe("emittingCloneName", () => {
-  const CLONE = "0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F";
+  const CLONE = "0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70";
   const FACTORY = "0xED20269E1234567890abcdefABCDEF1234567890";
 
   it("names the clone when the clone is what emitted the event", () => {

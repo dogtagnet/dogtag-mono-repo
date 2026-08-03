@@ -38,7 +38,7 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         rpc_url: "http://localhost:0".to_string(),
         issuer_registry_addr: REGISTRY.to_string(),
         chain_id: 135,
-        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
+        verification_registry_addr: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".to_string(),
         sbt_addr: SBT.to_string(),
         factory_addr: FACTORY.to_string(),
         provider_registry_addr: PROVIDER_REGISTRY.to_string(),

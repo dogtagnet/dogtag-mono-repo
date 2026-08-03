@@ -155,7 +155,7 @@ async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
         rpc_url: rpc.to_string(),
         issuer_registry_addr: registry.to_lowercase(),
         chain_id: 135,
-        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
+        verification_registry_addr: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".to_string(),
         sbt_addr: sbt.to_lowercase(),
         factory_addr: "0x0000000000000000000000000000000000000000".to_string(),
         provider_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),

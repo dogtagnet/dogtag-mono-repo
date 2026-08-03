@@ -15,7 +15,7 @@ import { test, expect, type Page, type Route } from "@playwright/test";
 
 const GOV_CLONE = "0x1111111111111111111111111111111111111111";
 const OTHER_CLONE = "0x2222222222222222222222222222222222222222";
-const REGISTRY = "0xaee540350292e49a9aedf19dd4c3bac6abee6c21";
+const REGISTRY = "0x4f5a6b7c8d9e0f1a2b3c4d5e6f70819203040506";
 /** A well-formed 32-byte transaction hash, as a real ROAX transaction carries. */
 const TX = `0x${"a1".repeat(32)}`;
 /** What the demo indexer really emits: too short to be a transaction hash on any chain. */

@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 const ISSUER_ADDR: &str = "0x1111111111111111111111111111111111111111";
-const REGISTRY_ADDR: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
+const REGISTRY_ADDR: &str = "0x3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192030405";
 const API_TOKEN: &str = "test-gov-token";
 
 fn demo_state() -> (AppState, MemChain) {
@@ -33,7 +33,7 @@ fn demo_state() -> (AppState, MemChain) {
         factory_addr: "0x00000000000000000000000000000000000000fa".into(),
         issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
         dns_doh_endpoint: String::new(),
-        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
+        verification_registry_addr: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: "DogTag Government Authority".into(),

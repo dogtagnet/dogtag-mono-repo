@@ -180,12 +180,12 @@ describe("isDomainVerified", () => {
 describe("expectedTxtName", () => {
   it("builds the normative name, lowercasing an EIP-55 address", () => {
     expect(
-      expectedTxtName("0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F", "MOH.GOV.SG."),
-    ).toBe("0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f._dogtag.moh.gov.sg");
+      expectedTxtName("0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70", "MOH.GOV.SG."),
+    ).toBe("0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70._dogtag.moh.gov.sg");
   });
 
   it("keeps the address label inside the 63-octet DNS label limit", () => {
-    const name = expectedTxtName("0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F", "moh.gov.sg");
+    const name = expectedTxtName("0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70", "moh.gov.sg");
     expect(name.split(".")[0].length).toBe(42);
     expect(name.split(".")[0].length).toBeLessThanOrEqual(63);
   });

@@ -10,10 +10,10 @@
 //! <clone-address-lowercase>._dogtag.<domain>.   IN TXT   "<free-form description>"
 //! ```
 //!
-//! Concretely, for clone `0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F` claiming `moh.gov.sg`:
+//! Concretely, for clone `0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70` claiming `moh.gov.sg`:
 //!
 //! ```text
-//! 0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f._dogtag.moh.gov.sg. IN TXT "Travel clearance issuance"
+//! 0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70._dogtag.moh.gov.sg. IN TXT "Travel clearance issuance"
 //! ```
 //!
 //! **The address is in the NAME, and the VALUE is free-form.** That split is the whole design: the
@@ -609,8 +609,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    const CLONE: &str = "0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F";
-    const CLONE_LC: &str = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f";
+    const CLONE: &str = "0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70";
+    const CLONE_LC: &str = "0x6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70";
 
     // ---- the convention ----
 
@@ -624,7 +624,7 @@ mod tests {
     fn txt_name_tolerates_a_trailing_dot_and_padding() {
         assert_eq!(
             txt_name(
-                "  0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F ",
+                "  0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70 ",
                 " MOH.GOV.SG. "
             )
             .unwrap(),

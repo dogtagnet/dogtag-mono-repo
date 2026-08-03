@@ -50,7 +50,7 @@ const ACTIVITY = {
       id: "0x0800:0",
       type: "whitelisted",
       actor: SIGNER,
-      contract: "0xaee540350292e49a9aedf19dd4c3bac6abee6c21",
+      contract: "0x4f5a6b7c8d9e0f1a2b3c4d5e6f70819203040506",
       recordType: "0x0ea3b61f198af15d1c1f1cd1bd926f52cb69cde62893f72fbb94e628c820321d",
       txHash: "0x0800",
       txUrl: "https://explorer.roax.net/tx/0x0800",

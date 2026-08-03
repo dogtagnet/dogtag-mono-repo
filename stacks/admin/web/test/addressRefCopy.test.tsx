@@ -25,9 +25,9 @@ import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AddressRef } from "../src/components/ChainRef";
 
-const GOOD_ADDRESS = "0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F";
+const GOOD_ADDRESS = "0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f70";
 /** Present, and unusable: 39 hex digits, so no explorer page can exist for it. */
-const BAD_ADDRESS = "0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9";
+const BAD_ADDRESS = "0x6F8a0B1c2D3e4F5A6B7c8D9E0F1A2b3C4d5E6f7";
 
 let container: HTMLDivElement;
 let root: Root;
