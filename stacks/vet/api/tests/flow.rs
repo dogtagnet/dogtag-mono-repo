@@ -291,6 +291,22 @@ async fn anvil_full_flow() {
         "true",
         "the journey must leave the backend signer able to anchor on this clone"
     );
+    // LAYER 2: the clone's OWN list. `canIssue` above is only the AUTHORITY's half - the grant names
+    // no service, so without this the clone refuses `NotLocallyAllowed`. Admitting is the clone
+    // owner's call, and the owner here is the provider key that created it (PK1), never the
+    // registrar - so this is deliberately not a PK0 transaction.
+    cast_send(
+        &rpc,
+        PK1,
+        &clone,
+        "setIssuanceAllowed(address,bool)",
+        &[&backend_addr, "true"],
+    );
+    assert_eq!(
+        cast_call(&rpc, &clone, "issuanceAllowed(address)(bool)", &[&backend_addr]),
+        "true",
+        "both layers must hold before the backend can anchor"
+    );
 
     // --- non-whitelisted signer fails preflight: query a random unwhitelisted addr ---
     let random_addr = "0x000000000000000000000000000000000000dead";

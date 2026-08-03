@@ -313,6 +313,9 @@ fn onboard_issuing_clone(rpc: &str, d: &Deployed, record_type: &str, signer: &st
     // The provider's CURRENT pointer for this record type — the provider's own decision, so its own
     // transaction. Without it the clone is attached and granted and still anchors nothing.
     cast_send_as(rpc, PK1, core, "repointService(address)", &[&clone]);
+    // LAYER 2: the clone's OWN list. The authority's grant above names no service, so the clone
+    // refuses until its OWNER admits the signer — the provider's transaction, never the registrar's.
+    cast_send_as(rpc, PK1, &clone, "setIssuanceAllowed(address,bool)", &[signer, "true"]);
 
     assert_eq!(
         cast_call(rpc, core, "canIssue(address,address)(bool)", &[&clone, signer]),
