@@ -115,7 +115,7 @@ A definite zero is refused at construction with its own error, since `canWriteSe
 
 ### Why `authorizeClone` is deliberately not composed
 
-`docs/ISSUER_V2_OWNERSHIP.md` §8 names this contract as an intended consumer of `DogTagIssuerFactoryV2.authorizeClone`.
+`docs/ISSUER_V2_OWNERSHIP.md` §8 names this contract as an intended consumer of `DogTagIssuerFactory.authorizeClone`.
 This slice does not call it, and that is a considered deviation rather than an oversight.
 Two reasons, either sufficient:
 

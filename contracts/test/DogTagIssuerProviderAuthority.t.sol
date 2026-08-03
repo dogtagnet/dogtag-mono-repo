@@ -29,7 +29,7 @@ import {ProviderRegistry} from "../src/ProviderRegistry.sol";
 /// shape says nothing about agreeing on an answer. Nothing here runs the pair against the core, so the
 /// ladder's behaviour in this tree remains the stand-in's, and a divergence in either contract's
 /// BEHAVIOUR would leave this suite green. Wiring the two together is a cutover step
-/// (`docs/ISSUER_V2_OWNERSHIP.md` §8), not a gap this file closes.
+/// (`docs/ISSUER_OWNERSHIP.md` §8), not a gap this file closes.
 contract DogTagIssuerProviderAuthorityInterfaceTest is Test {
     /// @dev Any non-zero address. The core's constructor is `Ownable(authority)`, which rejects zero.
     address internal constant REGISTRAR = address(0xA11CE);

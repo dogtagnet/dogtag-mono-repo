@@ -79,7 +79,7 @@ interface ICoreRecordPermission {
 /// all. A registrar that needs a claim gone reaches for the fleet-wide lever below, not for the record.
 ///
 /// **`authorizeClone` is deliberately NOT composed, and this is a considered deviation** from the handoff
-/// note in `docs/ISSUER_V2_OWNERSHIP.md` §8, which names this contract as an intended consumer. Two
+/// note in `docs/ISSUER_OWNERSHIP.md` §8, which names this contract as an intended consumer. Two
 /// reasons, either sufficient. It requires `claimant == owner()` exactly, so composing it as the control
 /// term would make every owner-appointed delegate unable to publish a domain and would leave the core's
 /// `SERVICE_PERMISSION_RECORD` bit with no consumer — a functional loss, not a tightening. And it lives on

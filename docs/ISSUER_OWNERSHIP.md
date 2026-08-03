@@ -1,10 +1,10 @@
 # The owner-bearing issuer clone and the self-service factory
 
-`contracts/src/DogTagIssuerV2.sol` and `contracts/src/DogTagIssuerFactoryV2.sol`.
+`contracts/src/DogTagIssuer.sol` and `contracts/src/DogTagIssuerFactory.sol`.
 Registry-plan slice **S-7**.
 
 **Status: deployed on ROAX by S-14, and unwired. Nothing reads either contract.**
-Cutover steps C-3a and C-3b deployed them, so `contracts/deployments/roax.json` carries `DogTagIssuerV2Impl` and `DogTagIssuerFactoryV2` keys - see `_s14_cutover` there for the addresses, transaction hashes and blocks, which are deliberately not copied into this file.
+Cutover steps C-3a and C-3b deployed them, so `contracts/deployments/roax.json` carries `DogTagIssuerImpl` and `DogTagIssuerFactory` keys - see `_s14_cutover` there for the addresses, transaction hashes and blocks, which are deliberately not copied into this file.
 S-15 added a blank `VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR` to the vet and groomer `.env.example` files and to their env plumbing, so the key EXISTS - but it ships empty and the code has no fallback, so nothing in the tree resolves an address from it. That is stronger evidence of unwiredness than an absent key, because a blank fallback-free var cannot quietly resolve to a bundled constant. Client repointing is C-9/C-10 and enabling generation-2 issuance is C-11, both outstanding and both separately captain-authorized.
 State it as "deployed, unwired" rather than as "the cutover is done", and note the ledger is what this repo can speak for - a claim about every chain in existence is not one it can check.
 
@@ -55,7 +55,7 @@ Owner-bearing clones are what force the redeploy. Do not conflate the two if the
 
 ### It is two-step, always
 
-`DogTagIssuerV2` inherits OZ `Ownable2Step`.
+`DogTagIssuer` inherits OZ `Ownable2Step`.
 `transferOwnership` records a pending owner and changes nothing; `acceptOwnership` completes it.
 A single-step transfer to a mistyped address would strand the clone forever - it would keep issuing, but could never again claim a domain, be repointed, or be handed to its real controller.
 
@@ -218,8 +218,8 @@ The pointer is not inherited by a new owner either - a repoint is an explicit ac
 
 The factory has no admin, so all three constructor arguments are permanent, and for `priorIndex` a wrong value also strands the verification registry that points at the factory.
 All three must be non-zero contracts, but the implementation is held to a stronger rule than ABI-shaped probing:
-`impl.codehash` must equal `keccak256(type(DogTagIssuerV2).runtimeCode)`.
-That is exact runtime-bytecode identity with the `DogTagIssuerV2` compiled into this factory; a lookalike that returns correctly shaped words for `owner()`, `pendingOwner()` and `recordType()` is still refused with `ImplementationCodeMismatch`.
+`impl.codehash` must equal `keccak256(type(DogTagIssuer).runtimeCode)`.
+That is exact runtime-bytecode identity with the `DogTagIssuer` compiled into this factory; a lookalike that returns correctly shaped words for `owner()`, `pendingOwner()` and `recordType()` is still refused with `ImplementationCodeMismatch`.
 `test_an_abi_shaped_impostor_implementation_is_refused` pins the distinction.
 This exact identity is also the basis for the getter/no-revert guarantee `resolveActiveIssuer` relies on.
 
@@ -238,7 +238,7 @@ A non-canonical word is deliberately a non-answer rather than a `true`: it state
 
 ### Write-once stays per contract and honest
 
-`DogTagIssuerV2.issue` checks `issuedAt[r]` in its own storage; `registerRoot` checks `rootIssuer[root]` in its own factory's storage.
+`DogTagIssuer.issue` checks `issuedAt[r]` in its own storage; `registerRoot` checks `rootIssuer[root]` in its own factory's storage.
 Both are unchanged. The factory adds one guard and it only ever refuses more.
 
 `rootIssuer` is **generation-local**: this factory's mapping answers only for roots anchored by its own clones, and it can never answer for a generation-1 root.
@@ -250,7 +250,7 @@ The write-once guards being **per contract** is what makes a revocation bypass p
 The tag binding does not stop it either - the SBT is shared, so `R == profileRoot(dogTagId)` still holds.
 Under newest-first resolution the provenance router would then return the fresh clone, `isValid` would be true, and **the revoked credential would verify again.**
 
-`DogTagIssuerFactoryV2` takes an immutable `priorIndex` and **requires it to be non-zero.**
+`DogTagIssuerFactory` takes an immutable `priorIndex` and **requires it to be non-zero.**
 An earlier draft allowed zero to mean "first generation", which silently disabled the whole guard for a generation-2 deployment - the one place it matters most - and made a wiring omission indistinguishable from a deliberate choice.
 There is no first generation to serve: generation 1 already exists, so any factory built from this source has something upstream of it.
 
@@ -329,7 +329,7 @@ That is precisely the attack the on-chain name read exists to defeat.
 So caller control is removed rather than documented:
 
 * `createIssuer` takes **no name argument**.
-* `initialize` takes none either, and nothing in `DogTagIssuerV2` ever writes the slot, so `name()` answers `""` for the life of every generation-2 clone.
+* `initialize` takes none either, and nothing in `DogTagIssuer` ever writes the slot, so `name()` answers `""` for the life of every generation-2 clone.
 * `IssuerCreated` still carries the field - the signature and topic0 are wire-compatible - and always emits the empty string.
 
 A consumer reading `name()` on a generation-2 clone must therefore report authoritative identity **unavailable**, and must not fall back to the document's own claim.

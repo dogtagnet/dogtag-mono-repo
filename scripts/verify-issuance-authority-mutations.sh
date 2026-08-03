@@ -8,7 +8,7 @@
 #
 # Written in bash, never zsh: zsh does not word-split an unquoted "$var", so an array of patterns
 # would run as one iteration and every check would silently pass. Same trap AGENTS.md records for
-# `swiftc $SRC` and for scripts/check-cutover-consumers.sh.
+# `swiftc $SRC`.
 set -uo pipefail
 export LC_ALL=C
 
