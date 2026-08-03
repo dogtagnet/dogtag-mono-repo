@@ -19,5 +19,19 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
+    /**
+     * Raised from vitest's 5s default, which these mounted suites outgrow under contention.
+     *
+     * Observed: `providersPage.test.tsx` runs its 19 tests in ~1.1s when this package is tested
+     * alone, and one of them tripped the 5s per-test limit during a full `pnpm -r` run with other
+     * packages' suites competing for the machine. Nothing here waits on anything unbounded - the
+     * tests mount real components and advance a FIXED number of real macrotask turns, because this
+     * package follows the repo's no-`act()` rule - so the slowness is scheduling, not a hang, and a
+     * timeout is the wrong instrument for catching a hang that cannot happen.
+     *
+     * A flake in a suite whose whole purpose is catching a defect that typechecks perfectly is worse
+     * than the usual: it trains a reader to re-run rather than to read the failure.
+     */
+    testTimeout: 20_000,
   },
 });
