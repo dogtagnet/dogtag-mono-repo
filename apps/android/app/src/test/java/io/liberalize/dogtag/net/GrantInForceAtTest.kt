@@ -3,7 +3,9 @@ package io.liberalize.dogtag.net
 import io.liberalize.dogtag.net.RoaxRpc.GrantAtIssuance
 import io.liberalize.dogtag.net.RoaxRpc.GrantEvent
 import io.liberalize.dogtag.net.RoaxRpc.LogPoint
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
@@ -92,4 +94,48 @@ class GrantInForceAtTest {
         assertEquals(GrantAtIssuance.NotAuthorized, RoaxRpc.grantInForceAt(events.reversed(), anchored))
     }
 
+
+    // ---- reading RIGHT_ISSUE out of the rights mask ------------------------------------------
+
+    private fun word(hex: String) =
+        JSONObject(mapOf("data" to "0x" + "0".repeat(64 - hex.length) + hex))
+
+    /**
+     * The decoder reads a BIT, not the whole word.
+     *
+     * Bit 0 is the only settable right today, so "the word equals 1" and "bit 0 is set" agree on
+     * every mask the contract can currently emit - which is exactly what would let a whole-word
+     * comparison survive review until a second right is allocated. These cases carry masks with
+     * higher bits set, which no honest authority emits YET, precisely so the decoder is pinned
+     * against the day one does.
+     *
+     * Mirrors iOS `test_theIssueRightIsReadAsABitNotAsTheWholeWord`.
+     */
+    @Test
+    fun theIssueRightIsReadAsABitNotAsTheWholeWord() {
+        assertEquals(true, RoaxRpc.issueRightFromLogData(word("1")))
+        assertEquals(false, RoaxRpc.issueRightFromLogData(word("0")))
+        // A future second right held ALONGSIDE the issue right: still granted.
+        assertEquals(true, RoaxRpc.issueRightFromLogData(word("3")))
+        // A future second right held WITHOUT it: not granted, and emphatically not malformed.
+        assertEquals(false, RoaxRpc.issueRightFromLogData(word("2")))
+        assertEquals(true, RoaxRpc.issueRightFromLogData(word("f")))
+        assertEquals(false, RoaxRpc.issueRightFromLogData(word("e")))
+    }
+
+    /**
+     * A body that is not exactly one 32-byte hex word is a log this build does not understand, and
+     * answering either way would state a grant or a withdrawal that was never recorded.
+     *
+     * Mirrors iOS `test_aMalformedRightsBodyIsUndecodableRatherThanFalse`.
+     */
+    @Test
+    fun aMalformedRightsBodyIsUndecodableRatherThanFalse() {
+        assertNull(RoaxRpc.issueRightFromLogData(JSONObject(mapOf("data" to "0x"))))
+        assertNull(RoaxRpc.issueRightFromLogData(JSONObject(mapOf("data" to "0x01"))))
+        assertNull(RoaxRpc.issueRightFromLogData(JSONObject()))
+        assertNull(RoaxRpc.issueRightFromLogData(JSONObject(mapOf("data" to "0x" + "z".repeat(64)))))
+        // Two words - an event with a widened body is not this one.
+        assertNull(RoaxRpc.issueRightFromLogData(JSONObject(mapOf("data" to "0x" + "0".repeat(128)))))
+    }
 }

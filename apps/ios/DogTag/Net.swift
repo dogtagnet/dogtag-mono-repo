@@ -257,16 +257,25 @@ enum RoaxRpc {
     /// BLOCK the grant history is sequenced against.
     static let rootIssuedTopic = eventTopic("RootIssued(bytes32,address,uint256)")
 
-    /// The authority's issuance-grant event. BOTH leading args are indexed, so one filtered
-    /// `eth_getLogs` on `(service, signer)` reconstructs the whole history; `allowed` is the one
-    /// NON-indexed argument, so grant and withdrawal arrive on this single topic and are told apart
-    /// by the log's DATA word rather than by which topic matched.
+    /// The authority's rights-grant event. ONE indexed arg - the ACCOUNT - so one filtered
+    /// `eth_getLogs` reconstructs that address's whole history. There is NO service here, because a
+    /// grant carries none: rights are keyed on the address alone.
+    ///
+    /// `rights` is the one NON-indexed argument and is the account's COMPLETE settable mask after the
+    /// write, so grant and withdrawal arrive on this single topic and are told apart by a BIT of the
+    /// DATA word rather than by which topic matched.
     ///
     /// A topic is the full 32-byte keccak, never a 4-byte selector: the shorter value matches no log
     /// at all, which is indistinguishable from "never granted" and would refuse every credential.
     /// Pinned by `GrantAtIssuanceTests`, and byte-identical to Kotlin's.
-    static let issuanceCapabilitySetTopic =
-        eventTopic("IssuanceCapabilitySet(address,address,bool)")
+    static let rightsSetTopic = eventTopic("RightsSet(address,uint256)")
+
+    /// `ProviderRegistry.RIGHT_ISSUE` - bit 0 of the address rights bitmask.
+    ///
+    /// A WIRE FORMAT position: the contract pins it forever and moves the lookup's NAME if the layout
+    /// ever changes. Mirrored by hand in `dogtag_standard::verify::RIGHT_ISSUE` (Rust), `packages/ui`
+    /// and `RoaxRpc.kt`; move all four together.
+    static let rightIssueBit = 0
 
     /// Where a mined log sits. Ordered by `(blockNumber, logIndex)`; `logIndex` is BLOCK-SCOPED and so
     /// comparable ACROSS contracts within one block, which is the only reason a registry grant and a
@@ -714,13 +723,12 @@ enum RoaxRpc {
         // FIRST regardless, so a clone that somehow emitted twice cannot move the anchoring later.
         guard let anchoredAt = anchoring.compactMap({ logPoint($0) }).min() else { return .undetermined }
 
-        // (3) That authority's grant history for this exact (service, signer) pair. Keyed on the
-        // SERVICE, not a record-type key: a clone carries exactly one record type, so filtering by
-        // service inherently scopes the history to it.
+        // (3) That authority's grant history for this SIGNER. No service narrows it, because the
+        // grant carries none - `clone` selected the governing AUTHORITY above and nothing else.
         guard let grants = await ethGetLogs(
             rpcUrl: rpcUrl, address: governing,
-            topic0: [issuanceCapabilitySetTopic],
-            topics: ["0x" + padAddr(clone), "0x" + padAddr(signer)]
+            topic0: [rightsSetTopic],
+            topics: ["0x" + padAddr(signer)]
         ) else { return .undetermined }
         var history: [GrantEvent] = []
         history.reserveCapacity(grants.count)
@@ -728,8 +736,8 @@ enum RoaxRpc {
             // A grant whose position is unknown cannot be sequenced, and dropping it could turn a
             // withdrawn-before into an authorised. Refuse to answer instead.
             guard let at = logPoint(log) else { return .undetermined }
-            // `allowed` is the one NON-indexed argument, so it is the single DATA word.
-            guard let granted = allowedFromLogData(log) else { return .undetermined }
+            // `rights` is the one NON-indexed argument, so it is the single DATA word.
+            guard let granted = issueRightFromLogData(log) else { return .undetermined }
             history.append(GrantEvent(at: at, granted: granted))
         }
 
@@ -740,18 +748,24 @@ enum RoaxRpc {
         return grantInForceAt(history, anchoredAt: anchoredAt)
     }
 
-    /// The `allowed` word of an `IssuanceCapabilitySet` log, or nil if the body is not a bool.
+    /// Whether the `rights` word of a `RightsSet` log carries `RIGHT_ISSUE`, or nil if the body is
+    /// not one well-formed 256-bit word.
     ///
-    /// Strict on purpose: a word that is neither 0 nor 1 is a log this build does not understand, and
-    /// guessing either way would state a grant or a withdrawal that was never recorded.
-    static func allowedFromLogData(_ log: [String: Any]) -> Bool? {
+    /// Reads the BIT rather than comparing the whole word against 0 or 1. Those two happen to agree
+    /// today, because `RIGHT_ISSUE` is the only settable bit - and that coincidence is exactly what
+    /// would let a whole-word comparison survive review until a second right is allocated, at which
+    /// point a mask of `0b11` would decode as "malformed" and refuse every credential its holder had
+    /// ever issued.
+    ///
+    /// Strict on the SHAPE on purpose: a body that is not exactly one 32-byte hex word is a log this
+    /// build does not understand, and guessing either way would state a grant or a withdrawal that
+    /// was never recorded.
+    static func issueRightFromLogData(_ log: [String: Any]) -> Bool? {
         let raw = ((log["data"] as? String) ?? "").lowercased()
         let body = raw.hasPrefix("0x") ? String(raw.dropFirst(2)) : raw
-        switch String(body.drop(while: { $0 == "0" })) {
-        case "": return false
-        case "1": return true
-        default: return nil
-        }
+        guard body.count == 64, body.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+        guard let low = body.last?.hexDigitValue else { return nil }
+        return (low >> rightIssueBit) & 1 == 1
     }
 
     /// `keccak256(recordType utf8)` — the `IssuerRegistry` whitelist key, and the same value the
