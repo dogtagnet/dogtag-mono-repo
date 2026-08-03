@@ -897,6 +897,16 @@ from one log filter would otherwise miss its most likely entry, and a second top
 existing decoder silently wrong. `setBy` is the FACTORY (the initializing caller) - what actually
 wrote it, and a third value distinguishing a creation seed from an owner's later enrolment.
 
+**STILL OPEN, and the seed narrows this rather than closing it: `setIssuanceAllowed` remains
+unreachable from every portal.** The seed fixes the CREATOR's dead end only. A provider admitting a
+separate STAFF key - the normal case once a clinic stops signing with the key that deployed its
+contract - has no product surface at all and must send the transaction by hand, and so must a
+provider REMOVING a compromised key, which is the incident-response direction and the worse gap of
+the two. So read "no surface writes this list" as still TRUE after this change, not as something the
+seed retired. Closing it is a provider-portal slice: a flow keyed on the clone the provider already
+selected, gated on `owner()` for admit and `owner()`-or-admin for remove, in the shape S-15's four
+flows already use.
+
 **A test helper that admits its own signer must be GUARDED, because `setIssuanceAllowed` refuses a
 no-op.** `_commission` (`DogTagIssuer.t.sol`) and `_onboardIssuingClone` (`LaunchStack.sol`) now test
 `issuanceAllowed(signer)` first, exactly as the `setRights` call beside them already did; a harness

@@ -32,7 +32,9 @@ import {ProtocolRegistry} from "../src/ProtocolRegistry.sol";
 /// service standing, that service being the provider's CURRENT pointer for its record type, and the
 /// signer's scope-free `RIGHT_ISSUE` grant. THEN the clone's own `issuanceAllowed` list must admit
 /// the signer. Missing any one of them reverts the anchor rather than failing a check the test can
-/// see, so {_onboardIssuingClone} performs all of them and returns a clone that can actually anchor.
+/// see, so {_onboardIssuingClone} establishes all of them and returns a clone that can actually
+/// anchor. It WRITES each one it finds absent: the list admission is skipped when `initialize`'s
+/// creation seed has already made it true, because `setIssuanceAllowed` refuses a no-op.
 abstract contract LaunchStack is Test {
     /// @dev The registrar / protocol authority. Owns `ProviderRegistry` and admins the SBT, the
     /// verification registry and the discovery registry — one key, exactly as the deploy script wires
