@@ -81,7 +81,7 @@ import {
   UserPlus,
   Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../app/AppContext";
 import { env } from "../lib/env";
 import { AddressRef } from "../components/ChainRef";
@@ -183,7 +183,17 @@ function DispatchEntry({ record }: { record: DispatchRecord }) {
       </div>
       {record.warning ? <p className="mt-1 text-muted-foreground">{record.warning}</p> : null}
       <div className="mt-2 space-y-2">
-        {record.actions.map((a, i) => (
+        {/* Defensive on a REQUIRED field, because this component renders the operator's only copy of
+            unsigned calldata: a throw here unmounts the whole log and takes every payload recorded
+            before it, which is precisely what `DispatchLog` exists to prevent. A response carrying no
+            actions says so rather than rendering as an empty, successful-looking record. */}
+        {(record.actions ?? []).length === 0 ? (
+          <p className="text-xs text-amber-600 dark:text-amber-500">
+            The backend reported no dispatched actions for this request, so there is nothing here to
+            sign or to look up.
+          </p>
+        ) : null}
+        {(record.actions ?? []).map((a, i) => (
           <div key={i} className="text-xs">
             {a.disposition === "executed" ? (
               <TxRef event={{ txHash: a.txHash }} href={txExplorerHref({ txHash: a.txHash })} />
@@ -637,6 +647,151 @@ function Resolvers({
   );
 }
 
+/**
+ * What a capability dialog is being opened FOR. One shape, three uses.
+ *
+ * These three writes each name an address that gains a power, so they get the same reviewed dialog
+ * rather than three ad-hoc prompts: `setIssuanceCapability` in particular names the key that may
+ * SIGN credentials, which is the last write on this page that should be one keystroke from sent.
+ */
+type CapabilityTarget =
+  | { kind: "issuance"; providerId: string; service: string }
+  | { kind: "verify"; purpose: string }
+  | { kind: "resolver"; resolverKind: ResolverKind };
+
+/**
+ * The shared grant/withdraw dialog.
+ *
+ * Carrying the DIRECTION is not a nicety: every one of these three is a two-way lever on the
+ * contract - `setIssuanceCapability(false)`, `setVerifierCapability(false)` and
+ * `setResolverApproved(..., false)` are all real, and the panels above render a withdrawn entry
+ * struck through. A control labelled "Grant / withdraw" that can only grant implies a state it gives
+ * no way to reach.
+ */
+function CapabilityDialog({
+  target,
+  busy,
+  onClose,
+  onSubmit,
+}: {
+  target: CapabilityTarget | null;
+  busy: boolean;
+  onClose: () => void;
+  onSubmit: (target: CapabilityTarget, address: string, allowed: boolean) => void;
+}) {
+  const [address, setAddress] = useState("");
+  const [allowed, setAllowed] = useState(true);
+  // Reset whenever the dialog is opened for a different target, so a value typed for one service
+  // can never be carried into another.
+  const key = target ? JSON.stringify(target) : "";
+  const [openedFor, setOpenedFor] = useState("");
+  if (key !== openedFor) {
+    setOpenedFor(key);
+    setAddress("");
+    setAllowed(true);
+  }
+  if (!target) return null;
+
+  const copy =
+    target.kind === "issuance"
+      ? {
+          title: "Issuance capability",
+          what: `on ${shortAddr(target.service)}`,
+          label: "Signer address",
+          hint:
+            "The key that will SIGN issuances on this contract. This is the registrar's grant to " +
+            "make and nobody else's: a service delegate carries content-write permissions and does " +
+            "not satisfy canIssue, so a provider cannot grant their own signing key.",
+        }
+      : target.kind === "verify"
+        ? {
+            title: "Verify capability",
+            what: `for "${target.purpose}"`,
+            label: "Relayer address",
+            hint:
+              "The relayer that may submit verifications for this purpose. This grants no issuance: " +
+              "the verify axis is orthogonal, and an issuer is not implicitly a verifier.",
+          }
+        : {
+            title: `${target.resolverKind === "directory" ? "Directory" : "Domain"} resolver`,
+            what: "",
+            label: "Resolver address",
+            hint:
+              target.resolverKind === "directory"
+                ? "The deployed ProviderDirectory. Approving is the whole of the registrar's part - the provider must then SELECT it on their own portal."
+                : "The deployed ServiceDomainResolver. Approving is the whole of the registrar's part - the provider must then SELECT it on their own portal.",
+          };
+  const verb = target.kind === "resolver" ? (allowed ? "Approve" : "Pull") : allowed ? "Grant" : "Withdraw";
+  const ok = /^0x[0-9a-fA-F]{40}$/.test(address.trim());
+
+  return (
+    <Dialog open onOpenChange={(v) => (v ? null : onClose())}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>
+            {copy.title} {copy.what}
+          </DialogTitle>
+          <DialogDescription>{copy.hint}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label htmlFor="cap-addr">{copy.label}</Label>
+            <Input
+              id="cap-addr"
+              className="mt-1 font-mono text-xs"
+              placeholder="0x…"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+            />
+            {address.trim() !== "" && !ok ? (
+              <p className="mt-1 text-xs text-destructive">
+                Not a 0x-prefixed 20-byte address.
+              </p>
+            ) : null}
+          </div>
+          {/* Labelled, because the segmented choice and the footer button otherwise both read
+              "Grant" with nothing saying which one is the action. */}
+          <div>
+            <Label>Direction</Label>
+          <div className="mt-1 flex gap-2" data-testid="capability-direction">
+            <Button
+              type="button"
+              size="sm"
+              variant={allowed ? "secondary" : "outline"}
+              onClick={() => setAllowed(true)}
+            >
+              {target.kind === "resolver" ? "Approve" : "Grant"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={!allowed ? "secondary" : "outline"}
+              onClick={() => setAllowed(false)}
+            >
+              {target.kind === "resolver" ? "Pull" : "Withdraw"}
+            </Button>
+          </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => onSubmit(target, address.trim(), allowed)}
+            disabled={!ok || busy}
+            title={ok ? undefined : "Enter a 0x-prefixed 20-byte address first."}
+            data-testid="capability-submit"
+          >
+            {busy ? <Spinner className="mr-2 h-4 w-4" /> : null}
+            {verb}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function Providers() {
   const { central } = useApp();
   const { toast } = useToast();
@@ -697,6 +852,7 @@ export function Providers() {
   const [preflight, setPreflight] = useState<AttachPreflightResp | null>(null);
   const [preflightKey, setPreflightKey] = useState("");
   const [attachSpent, setAttachSpent] = useState(false);
+  const [capability, setCapability] = useState<CapabilityTarget | null>(null);
 
   const attachCurrentKey = useMemo(
     () => attachKey(attachFor ?? "", candidate),
@@ -992,85 +1148,66 @@ export function Providers() {
     }
   }
 
-  async function grantIssuance(pid: string, service: string) {
-    const signer = window.prompt(
-      `Signer address to grant issuance capability on ${shortAddr(service)}.\n\n` +
-        "This is the key that will SIGN issuances. It is the registrar's grant to make: a service " +
-        "delegate carries content-write permissions and does not satisfy canIssue.",
-      "",
-    );
-    if (!signer) return;
-    setBusy(`${service}:issuance`);
+  /**
+   * The three capability writes, all through the reviewed dialog.
+   *
+   * They used to read their address from `window.prompt` and send it straight through - no review,
+   * no direction, and unstubbable in a jsdom test, which is why they had no UI coverage at all. That
+   * was worst on `setIssuanceCapability`, the one write that names a key allowed to sign credentials.
+   */
+  async function submitCapability(
+    target: CapabilityTarget,
+    address: string,
+    allowed: boolean,
+  ) {
+    setBusy("capability");
     try {
-      const resp = await central.setIssuanceCapability(service, { signer, allowed: true });
-      recordDispatch({
-        providerId: pid,
-        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
-        warning: resp.warning,
-        actions: resp.actions,
-        summary: `issuance capability → ${shortAddr(signer)} on ${shortAddr(service)}`,
-      });
-      await loadServices(pid);
+      if (target.kind === "issuance") {
+        const resp = await central.setIssuanceCapability(target.service, {
+          signer: address,
+          allowed,
+        });
+        recordDispatch({
+          providerId: target.providerId,
+          outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+          warning: resp.warning,
+          actions: resp.actions,
+          summary: `issuance ${allowed ? "granted to" : "withdrawn from"} ${shortAddr(address)} on ${shortAddr(target.service)}`,
+        });
+        await loadServices(target.providerId);
+      } else if (target.kind === "verify") {
+        const resp = await central.setVerifierCapability({
+          purpose: target.purpose,
+          relayer: address,
+          allowed,
+        });
+        recordDispatch({
+          providerId: `verify:${target.purpose}`,
+          outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+          warning: resp.warning,
+          actions: resp.actions,
+          summary: `verify:${target.purpose} ${allowed ? "granted to" : "withdrawn from"} ${shortAddr(address)}`,
+        });
+        await loadVerifiers();
+      } else {
+        const resp = await central.setResolverApproved({
+          kind: target.resolverKind,
+          resolver: address,
+          approved: allowed,
+        });
+        recordDispatch({
+          providerId: `${target.resolverKind} resolver`,
+          outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+          warning: resp.warning,
+          actions: resp.actions,
+          summary: `${target.resolverKind} resolver ${allowed ? "approved" : "pulled"}: ${shortAddr(address)}`,
+        });
+        await loadResolvers();
+      }
+      setCapability(null);
     } catch (e) {
       toast({
-        title: "Issuance grant failed",
-        description: e instanceof Error ? e.message : String(e),
-        variant: "danger",
-      });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function setVerifier(purpose: string) {
-    const relayer = window.prompt(
-      `Relayer address that may submit verifications for "${purpose}".`,
-      "",
-    );
-    if (!relayer) return;
-    setBusy(`verify:${purpose}`);
-    try {
-      const resp = await central.setVerifierCapability({ purpose, relayer, allowed: true });
-      recordDispatch({
-        providerId: purpose,
-        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
-        warning: resp.warning,
-        actions: resp.actions,
-        summary: `verify:${purpose} → ${shortAddr(relayer)}`,
-      });
-      await loadVerifiers();
-    } catch (e) {
-      toast({
-        title: "Verify grant failed",
-        description: e instanceof Error ? e.message : String(e),
-        variant: "danger",
-      });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function setResolver(kind: ResolverKind) {
-    const resolver = window.prompt(
-      `${kind === "directory" ? "ProviderDirectory" : "ServiceDomainResolver"} address to approve.\n\n` +
-        "Approval is only half: the provider must then SELECT this resolver on their own portal.",
-      "",
-    );
-    if (!resolver) return;
-    setBusy(`resolver:${kind}`);
-    try {
-      const resp = await central.setResolverApproved({ kind, resolver, approved: true });
-      recordDispatch({
-        providerId: `${kind} resolver`,
-        outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
-        warning: resp.warning,
-        actions: resp.actions,
-        summary: `${kind} resolver → ${shortAddr(resolver)}`,
-      });
-      await loadResolvers();
-    } catch (e) {
-      toast({
-        title: "Resolver approval failed",
+        title: "Capability change failed",
         description: e instanceof Error ? e.message : String(e),
         variant: "danger",
       });
@@ -1176,8 +1313,8 @@ export function Providers() {
                     p.approvals.entries.some((e) => e.recordType === rt && e.allowed);
                   const open = expanded === pid;
                   return (
-                    <>
-                    <TableRow key={pid}>
+                    <Fragment key={pid}>
+                    <TableRow>
                       <TableCell className="align-top">
                         <div className="flex items-center gap-1">
                           <button
@@ -1276,7 +1413,7 @@ export function Providers() {
                       </TableCell>
                     </TableRow>
                     {open ? (
-                      <TableRow key={`${pid}-services`}>
+                      <TableRow>
                         <TableCell colSpan={5} className="bg-muted/30">
                           <div className="space-y-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1327,7 +1464,7 @@ export function Providers() {
                                     onStanding={(svc, standing) =>
                                       void setServiceStanding(pid, svc, standing)
                                     }
-                                    onGrant={(svc) => void grantIssuance(pid, svc)}
+                                    onGrant={(svc) => setCapability({ kind: "issuance", providerId: pid, service: svc })}
                                   />
                                 ))}
                               </div>
@@ -1336,7 +1473,7 @@ export function Providers() {
                         </TableCell>
                       </TableRow>
                     ) : null}
-                    </>
+                    </Fragment>
                   );
                 })}
               </TableBody>
@@ -1352,15 +1489,22 @@ export function Providers() {
         data={verifiers}
         loadError={verifierError}
         busy={busy !== null}
-        onSet={(p) => void setVerifier(p)}
+        onSet={(p) => setCapability({ kind: "verify", purpose: p })}
         onRefresh={() => void loadVerifiers()}
       />
       <Resolvers
         data={resolvers}
         loadError={resolverError}
         busy={busy !== null}
-        onSet={(k) => void setResolver(k)}
+        onSet={(k) => setCapability({ kind: "resolver", resolverKind: k })}
         onRefresh={() => void loadResolvers()}
+      />
+
+      <CapabilityDialog
+        target={capability}
+        busy={busy !== null}
+        onClose={() => setCapability(null)}
+        onSubmit={(t, addr, allowed) => void submitCapability(t, addr, allowed)}
       />
 
       <Dialog

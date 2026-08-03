@@ -297,11 +297,6 @@
   },
   "consumers": [
     {
-      "path": "packages/ui/src/wallet/contracts.ts",
-      "class": "runtime-constant",
-      "note": "DEPLOYED_ADDRESSES - the web verifier, the tag-discovery scan and the admin bench read these as defaults."
-    },
-    {
       "path": "apps/ios/DogTag/roax.json",
       "class": "runtime-constant",
       "note": "COMPILE-TIME bundle. Needs an app rebuild AND reinstall - the C-10 long pole."

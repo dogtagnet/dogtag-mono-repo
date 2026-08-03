@@ -656,6 +656,21 @@ function withService(service: Record<string, unknown>) {
     if (url.includes("/services")) {
       return json({ registry: REGISTRY, providerId: PID, services: [service] });
     }
+    if (url.includes("/issuance-capability") || url.includes("/standing")) {
+      return json({
+        outcome: "executed",
+        executed: true,
+        warning: null,
+        actions: [
+          {
+            disposition: "executed",
+            txHash: `0x${"e1".repeat(32)}`,
+            holder: `0x${"ad".repeat(20)}`,
+            summary: "registrar action",
+          },
+        ],
+      });
+    }
     return json(listBody([oneProvider()]));
   });
 }
@@ -802,5 +817,132 @@ describe("Providers - the services panel", () => {
     expect(resolvers!.textContent).toContain("the provider selects it");
     // Neither may be nested inside the provider table, which would misstate what it applies to.
     expect(verify!.closest("table"), "verify must not live inside a provider row").toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The capability dialog.
+//
+// These three writes previously read their address from `window.prompt` and sent it straight
+// through: no review, no direction, and unstubbable in jsdom - which is exactly why they had no
+// coverage at all. The worst of the three is `setIssuanceCapability`, which names a key allowed to
+// SIGN credentials.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Open the issuance-capability dialog on the one attached service.
+ *
+ * The dialog renders through a PORTAL, so everything it contains lives under `document.body` rather
+ * than inside `container` - the same reason the registration-dialog helpers above are
+ * document-scoped.
+ */
+async function openIssuanceDialog() {
+  await expandServices();
+  buttonWithText("Issuance capability")!.click();
+  await settle();
+}
+
+function capabilitySubmit() {
+  return document.body.querySelector<HTMLButtonElement>('[data-testid="capability-submit"]');
+}
+
+function directionButtons() {
+  return [
+    ...document.body.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="capability-direction"] button',
+    ),
+  ];
+}
+
+function lastPost(fetchMock: { mock: { calls: unknown[][] } }) {
+  const post = fetchMock.mock.calls.find(
+    ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+  );
+  if (!post) throw new Error("no write was sent");
+  return { url: String(post[0]), body: JSON.parse(String((post[1] as RequestInit).body)) };
+}
+
+describe("Providers - the capability dialog", () => {
+  it("will not send until a well-formed address has been entered", async () => {
+    vi.stubGlobal("fetch", withService(serviceView()));
+    await mount();
+    await openIssuanceDialog();
+    expect(capabilitySubmit(), "the dialog must render").not.toBeNull();
+    expect(capabilitySubmit()!.disabled, "nothing typed yet").toBe(true);
+
+    type(byId("cap-addr"), "0xnope");
+    await settle();
+    expect(capabilitySubmit()!.disabled, "a malformed address must not be sendable").toBe(true);
+    expect(document.body.textContent).toContain("Not a 0x-prefixed 20-byte address");
+  });
+
+  it("sends the address that was entered, granting by default", async () => {
+    const fetchMock = withService(serviceView());
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    await openIssuanceDialog();
+    const signer = `0x${"c3".repeat(20)}`;
+    type(byId("cap-addr"), signer);
+    await settle();
+    capabilitySubmit()!.click();
+    await settle();
+
+    const { url, body } = lastPost(fetchMock);
+    expect(url).toContain("/issuance-capability");
+    expect(body).toEqual({ signer, allowed: true });
+  });
+
+  /**
+   * The control says "Grant / withdraw" and every one of these is a two-way lever on the contract -
+   * the panels even render a withdrawn entry struck through. A dialog that could only grant would
+   * imply a state it gives no way to reach.
+   */
+  it("can withdraw as well as grant, which is what its label promises", async () => {
+    const fetchMock = withService(serviceView());
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    await openIssuanceDialog();
+    type(byId("cap-addr"), `0x${"c3".repeat(20)}`);
+    await settle();
+    const withdraw = directionButtons().find((b) => b.textContent?.trim() === "Withdraw");
+    expect(withdraw, "a withdraw direction must be offered").toBeDefined();
+    withdraw!.click();
+    await settle();
+    capabilitySubmit()!.click();
+    await settle();
+    expect(lastPost(fetchMock).body.allowed).toBe(false);
+  });
+
+  /** The resolver lever names its two directions in the registry's own words. */
+  it("labels the resolver directions approve and pull", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (b: unknown) =>
+          new Response(JSON.stringify(b), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.includes("/verifier-capabilities")) return json({ registry: REGISTRY, purposes: [] });
+        if (url.includes("/resolvers")) {
+          return json({
+            registry: REGISTRY,
+            kinds: [
+              { kind: "directory", listing: { state: "resolved", resolvers: [] } },
+              { kind: "domain", listing: { state: "resolved", resolvers: [] } },
+            ],
+          });
+        }
+        if (url.includes("/services")) {
+          return json({ registry: REGISTRY, providerId: PID, services: [] });
+        }
+        return json(listBody([oneProvider()]));
+      }),
+    );
+    await mount();
+    buttonWithText("Approve / pull")!.click();
+    await settle();
+    expect(directionButtons().map((b) => b.textContent?.trim())).toEqual(["Approve", "Pull"]);
   });
 });

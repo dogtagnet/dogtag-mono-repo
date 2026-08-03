@@ -641,8 +641,24 @@ The web surface for the captain's "deploy contracts from our factory". A new **I
 - **Deploy routes through the GovernanceAction layer — the web NEVER assumes the old EOA.** Submit calls `POST /v1/admin/factory/issuers`; the response `result.disposition` is either `executed` (hosted key IS the factory owner → real ROAX tx, shown with an `explorer.roax.net/tx/…` link) or `proposed` (ownership sits with the governance signer post Phase-2 → the `{target, calldata, holder}` payload is rendered for out-of-band execution, nothing broadcast). An **authority banner** at the top reads `GET /v1/admin/governance/authority` and tells the operator up-front which path a deploy will take ("Hosted key deploys directly" vs "Deploys route to governance as proposals"). This is why the tooling `ADMIN_PRIVATE_KEY` must be signer-1 `0x8E27E117…` post-handover — otherwise every deploy comes back `proposed` rather than executed.
 - **Clone list is best-effort.** The table reads `GET /v1/admin/activity/issuers` (needs the oversight indexer); a 503/unwired indexer degrades to an inline "activity unavailable" note WITHOUT breaking deploys or the preview (those need only the chain). Client types + `predictIssuer`/`createIssuer`/`governanceAuthority`/`listIssuers` methods live in `packages/ui/src/api/{types,central}.ts`. Web has no unit suite — `tsc --noEmit` + `vite build` are the gates.
 
-### Admin whitelist management console (PR-E: `admin-whitelist-mgmt`)
-Promotes the read-only `stacks/admin/web` Whitelist viewer to a **direct grant/revoke management console** — the whitelisting machinery `approve_application` runs, exposed as a standalone control-plane action decoupled from the issuer-application queue (key rotation, ad-hoc grants, incident response). Web + backend; builds on PR-A's `GovernanceAction`.
+### Admin whitelist management console (PR-E: `admin-whitelist-mgmt`) - DELETED, historical only
+
+**This console no longer exists**, and nothing below describes a live surface: the page, its route,
+its nav entry, `POST /v1/admin/whitelist/{grant,revoke}`, the `whitelist_actions` builder and the
+client methods are all gone. It called `isWhitelistedFor(recordType, address)`, which the single
+authority answers off the orthogonal VERIFY axis for a caller that is not itself an attached service
+- a confident `false` for every genuine issuer signer - and granted through `whitelistFor`, which
+that contract does not implement at all. Its replacements are `setIssuanceCapability` and
+`setVerifierCapability` on the Providers page; see "The journey is COMPLETE now". What SURVIVED and
+must not be confused with it: `approve_application`'s own `whitelistFor` calls against the
+generation-1 `IssuerRegistry`, `whitelist_for_calldata`/`delist_for_calldata` in `chain.rs`, and the
+Dashboard's "Whitelist admin" authority tile. `dispatch_summary`/`dispatch_all` also outlived it and
+are now the registrar routes' - the tri-state `outcome` this section describes is still exactly
+right, and is pinned in `tests/provider_journey.rs`.
+
+The rest of this section is kept as the record of what that console did and why.
+
+It promoted the read-only `stacks/admin/web` Whitelist viewer to a **direct grant/revoke management console** — the whitelisting machinery `approve_application` runs, exposed as a standalone control-plane action decoupled from the issuer-application queue (key rotation, ad-hoc grants, incident response). Web + backend; builds on PR-A's `GovernanceAction`.
 - **Two new admin-gated endpoints (`routes.rs`, admin-session):** `POST /v1/admin/whitelist/grant` and `POST /v1/admin/whitelist/revoke`. Body `{ signer, recordType?, verifyPurposes? }` (at least one of `recordType`/`verifyPurposes` required — else 400; malformed signer → 400). **Grant** builds a `whitelistFor` `GovernanceAction` per capability (the `recordType` key via `to_record_type_key` + each `verify_key(purpose)`) and, for a `DOG_PROFILE` recordType, ALSO a `grantRole(ISSUER)` action on the SBT (idempotent: `has_issuer_role` pre-check → `{status:"alreadyHeld"}` when already held). **Revoke** builds `delistFor` per capability; it does NOT revoke `ISSUER_ROLE` or on-chain roots (that is a DEFAULT_ADMIN `adminRevoke`, a PR-F Governance action) — mirrors `delist_application` (delistFor only).
 - **Everything routes through `governance::dispatch` (never the direct `whitelist_for`/`delist_for` path).** The whitelist capabilities are gated by `Authority::Role{registry, whitelist_admin_role(), default_admin:false}`; the DOG_PROFILE ISSUER grant by `Authority::Role{sbt, default_admin_role(), default_admin:true}` (the SBT is `AccessControlDefaultAdminRules`, so `defaultAdmin()` resolves the holder). Response: `{ signer, recordType, actions: [Disposition…], issuerRole?, outcome, executed, warning }` — each `Disposition` is `executed{txHash,holder}` (hosted key holds the role) or `proposed{holder,hostedSigner,target,calldata,authority}` (role moved to governance; `hostedSigner` names the key that was checked, so a wrong-key proposal is distinguishable from a designed one). So a grant/revoke flips executed→proposed by construction the moment WHITELIST_ADMIN leaves the hosted key (Phase-2), exactly like the factory deploy.
 - **`outcome` is the request-level verdict, and it is TRI-state because "nothing was broadcast" has two meanings.** `governance::DispatchOutcome::classify` folds EVERY dispatched action (the whitelist capabilities **and** the separate ISSUER_ROLE action, so the not-one-tx claim can only be made when none landed) into `executed` (≥1 broadcast), `proposed_by_design` (nothing broadcast **and** the deployment declared propose-only via `ADMIN_PROPOSE_ONLY`/`ALLOW_UNAUTHORIZED_ADMIN_SIGNER` — a correct outcome, calm `warning`, never says the key is wrong), or `proposed_unauthorized` (nothing broadcast, not declared — the loud wrong-key `warning`). The boolean `executed` is retained for back-compat and `warning` is `null` only for `executed`. The declaration is a REPORTING input only: it never changes what is dispatched, and holdership is always read live from the chain.
@@ -1696,12 +1712,19 @@ produced TWO instances of this failing on opposite axes, both on `ISSUER_REGISTR
 it is a rule and not an anecdote. Full record: `docs/CLIENT_REPOINT.md`.
 
 **`ISSUER_REGISTRY_ADDR` therefore moves NOWHERE at C-9 - neither axis.** *Write axis:*
-`ProviderRegistry` implements NEITHER `whitelistFor` NOR `delistFor` and has no fallback, so the
-admin grant/revoke console stays on generation 1 through C-12. It would not even fail cleanly -
-`hasRole(WHITELIST_ADMIN, owner)` returns true, so `governance::dispatch` reads the hosted key as the
-holder and BROADCASTS a reverting transaction instead of proposing - and worse, C-12's delisting
-freeze runs through that same console, and that freeze is the operational precondition for closing
-`CloneProvenanceRouter`'s open mirror direction. *Read axis, the one that looked safe:*
+`ProviderRegistry` implements NEITHER `whitelistFor` NOR `delistFor` and has no fallback.
+**UPDATE: the admin grant/revoke console this paragraph was written around has since been DELETED**
+(see "The journey is COMPLETE now"), for exactly the reasons it gives - so there is no longer a
+console to keep on generation 1, and the "it would not even fail cleanly" hazard below is now
+historical rather than live. Recorded rather than cut, because the MECHANISM still binds any future
+caller: `hasRole(WHITELIST_ADMIN, owner)` returns true on the successor, so `governance::dispatch`
+would read the hosted key as the holder and BROADCAST a reverting transaction instead of proposing.
+**The consequence that IS still live: C-12's delisting freeze no longer has an admin UI.** It ran
+through that console, and it is the operational precondition for closing `CloneProvenanceRouter`'s
+open mirror direction - so it is now a `cast`/script operation against the generation-1
+`IssuerRegistry`. `whitelist_for` / `delist_for` survive in `stacks/admin/api/src/chain.rs` (the
+issuer-application approval flow still uses them), so the calldata builders are there; what is gone
+is the button. *Read axis, the one that looked safe:*
 `ProviderRegistry.isWhitelistedFor` (`ProviderRegistry.sol:787-793`) branches on `msg.sender` - an
 attached service gets its own grant, EVERY OTHER caller gets `_verifierCapabilities[key][signer]`,
 the orthogonal VERIFY axis. Every production read is a plain `eth_call` with NO `from`
@@ -4303,10 +4326,11 @@ deliberate, so an absent flag can never be read as "live").
 Two consequences worth carrying. Documentation that asserts one of these outcomes is wrong for anyone on
 the other stack, so **branch on the observable rather than picking a side** - `docs/DEMO_CLICKS.md` does
 this in its "Which stack am I on?" section. And a per-portal `VITE_*` gap behaves the same way: a
-hand-started `vite dev` for `stacks/admin/web` typically carries only `VITE_DEMO_MODE=1`, which makes the
-Whitelist page report `VITE_ISSUER_REGISTRY_ADDR is not set` while `demo-up.sh` passes it. That is not a
-chain fault or a data fault. (The bench's issuer-domain row was the other half of this pair until it was
-removed - see "The bench's issuer-domain rows were REMOVED".)
+hand-started `vite dev` for `stacks/admin/web` typically carries only `VITE_DEMO_MODE=1`, while
+`demo-up.sh` passes the rest. That is not a chain fault or a data fault. (The two worked examples of
+this pair are both gone now - the Whitelist page's `VITE_ISSUER_REGISTRY_ADDR is not set` went with
+the console, and the bench's issuer-domain row with the rows themselves; see "The bench's
+issuer-domain rows were REMOVED". The SHAPE still recurs, which is why it is kept.)
 
 Also note the tunnels are **per backend and rotate on every restart** (`VET_PUBLIC_URL` /
 `GROOMER_PUBLIC_URL` / the government stack's own `DEPLOYMENT_URL`), so a hostname copied out of a doc or
@@ -5798,6 +5822,20 @@ a different remedy - a suspended provider is the registrar's to lift, an unconfi
 `confirmServiceOwner`, a deprecated generation is terminal, and no active issuer is one grant away.
 One bool would tell an admin something is wrong while withholding the only thing that says what to do.
 
+**All three capability writes go through ONE reviewed dialog, never `window.prompt`.** They shipped
+as prompts first, which broke the page's own stated rule (a send addresses values that were CHECKED),
+left the write that names a credential-SIGNING key one keystroke from sent, and was unstubbable in
+jsdom - so those three paths had no UI coverage at all. The dialog also carries the DIRECTION: every
+one of them is a two-way lever on the contract, the panels render a withdrawn entry struck through,
+and a control labelled "Grant / withdraw" that could only grant would imply a state it gives no way
+to reach. Note the dialog renders through a PORTAL, so its nodes are under `document.body` rather
+than inside the test's `container`.
+
+**`DispatchEntry` is defensive on a REQUIRED field, deliberately.** It renders the operator's only
+copy of unsigned calldata, so a throw there unmounts the whole log and takes every payload recorded
+before it - exactly what `DispatchLog` exists to prevent. A response carrying no actions says so
+rather than rendering as an empty, successful-looking record.
+
 **`MemChain` needs a `set_clone` seeder** (added), because the registrar attaches contracts the
 PROVIDER deployed on their own portal - a different actor from the admin factory route, so
 `create_issuer` is not the path that puts them there. And the capability-log failure switch is its
@@ -5846,9 +5884,14 @@ in the route), an unavailable `effectiveService` rendered as `false`, a could-no
 toned as the failure red, an unreadable services read falling through to an empty list, an unreadable
 capability log becoming an empty holder set, and `setVerifierCapability` sending the derived key.
 
-**Pre-existing lint fixed along the way**: `packages/ui/src/wallet/contracts.ts` carried four orphans
-from phase 1's generation-probe deletion (`BaseError`, `encodeFunctionData`, `ExecutionRevertedError`
-and `PROVIDER_AUTHORITY_ABI`) that failed `tsc --noEmit` on `origin/main`.
+**Two pre-existing failures fixed along the way, both red on `origin/main`.**
+`packages/ui/src/wallet/contracts.ts` carried four orphans from phase 1's generation-probe deletion
+(`BaseError`, `encodeFunctionData`, `ExecutionRevertedError`, `PROVIDER_AUTHORITY_ABI`) that failed
+`tsc --noEmit`. And `make check-cutover-consumers` was RED: that same file was still declared in
+`scripts/cutover-consumers.json` while carrying no moving address, because phase 1 repointed it to
+the generation-2 set and left the entry behind. That is the manifest's stale direction, which the
+gate exists to catch, so the entry is dropped rather than the check loosened. **Run that gate after
+deleting or repointing any file** - it is the one check designed for exactly this.
 
 ## The content-addressed profile and logo mirror (S-17) - and the one rule that defines it
 
