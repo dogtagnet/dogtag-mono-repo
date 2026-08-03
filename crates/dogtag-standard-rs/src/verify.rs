@@ -292,9 +292,14 @@ pub trait RpcAdapter {
     /// the CHAIN says this root belongs to, never the one the envelope claims.
     fn issuer_record_type(&self, issuer_addr: &str) -> Result<Option<String>, AdapterError>;
 
-    /// Was `signer` authorised for `record_type_key` at the moment `merkle_root` was anchored on
-    /// `issuer_addr`? Reconstructed from `Whitelisted`/`Delisted` logs — see [`GrantAtIssuance`] for
-    /// why the current-state getter cannot be asked instead.
+    /// Was `signer` authorised to anchor on `issuer_addr` at the moment `merkle_root` was anchored?
+    /// Reconstructed from the authority's `IssuanceCapabilitySet` log — see [`GrantAtIssuance`] for
+    /// why the current-state predicate cannot be asked instead.
+    ///
+    /// It takes no record type either: the log is keyed on the SERVICE, and a clone carries exactly
+    /// one record type, so filtering by service inherently scopes the history to it. The separate
+    /// check that the DOCUMENT's claimed record type matches `issuer_record_type` stays at the
+    /// caller, where a relabelled credential is refused.
     ///
     /// It takes NO registry address, same reasoning as [`RpcAdapter::root_issuer`]: an address the
     /// caller or the document could name is an address an attacker can name. The implementor reads
@@ -308,7 +313,6 @@ pub trait RpcAdapter {
     fn whitelisted_at_issuance(
         &self,
         issuer_addr: &str,
-        record_type_key: &str,
         signer: &str,
         merkle_root: &str,
     ) -> Result<GrantAtIssuance, AdapterError>;
@@ -528,10 +532,10 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
                 // and ask about the moment this root was ANCHORED, not about now. Delisting is
                 // forward-only (`DogTagIssuer.sol:82`), so a current-state read refuses every
                 // credential a since-rotated signer ever issued. See [`GrantAtIssuance`].
-                Ok(Some(chain_rt_key)) => (
+                Ok(Some(_)) => (
                     match opts
                         .rpc
-                        .whitelisted_at_issuance(clone, &chain_rt_key, &signer, root)
+                        .whitelisted_at_issuance(clone, &signer, root)
                     {
                         Ok(GrantAtIssuance::Authorized) => IssuerWhitelistState::Passed,
                         Ok(GrantAtIssuance::NotAuthorized) => IssuerWhitelistState::Failed,
@@ -822,7 +826,7 @@ mod tests {
                 .insert((CLONE.to_lowercase(), root), ANCHORED_AT);
             // Granted well before the anchoring and never withdrawn — the ordinary honest history.
             c.grants.insert(
-                (REGISTRY.to_lowercase(), rt, SIGNER.to_lowercase()),
+                (REGISTRY.to_lowercase(), CLONE.to_lowercase(), SIGNER.to_lowercase()),
                 vec![GrantEvent {
                     at: GRANTED_AT,
                     granted: true,
@@ -830,14 +834,10 @@ mod tests {
             );
             c
         }
-        /// Rewrite the `(recordType, signer)` grant history in the GOVERNING registry.
+        /// Rewrite the `(service, signer)` grant history in the GOVERNING authority.
         fn with_grants(mut self, history: Vec<GrantEvent>) -> Self {
             self.grants.insert(
-                (
-                    REGISTRY.to_lowercase(),
-                    record_type_key("VACCINATION"),
-                    SIGNER.to_lowercase(),
-                ),
+                (REGISTRY.to_lowercase(), CLONE.to_lowercase(), SIGNER.to_lowercase()),
                 history,
             );
             self
@@ -943,7 +943,6 @@ mod tests {
         fn whitelisted_at_issuance(
             &self,
             issuer_addr: &str,
-            record_type_key: &str,
             signer: &str,
             merkle_root: &str,
         ) -> Result<GrantAtIssuance, AdapterError> {
@@ -953,14 +952,11 @@ mod tests {
             let Some(registry) = self.governing_registry.get(&clone) else {
                 return Ok(GrantAtIssuance::Undetermined);
             };
-            let Some(anchored_at) = self.root_issued_at.get(&(clone, root)) else {
+            let Some(anchored_at) = self.root_issued_at.get(&(clone.clone(), root)) else {
                 return Ok(GrantAtIssuance::Undetermined);
             };
-            let key = (
-                registry.to_lowercase(),
-                record_type_key.to_lowercase(),
-                signer.to_lowercase(),
-            );
+            // Keyed on the SERVICE, exactly as `IssuanceCapabilitySet`'s indexed topics are.
+            let key = (registry.to_lowercase(), clone, signer.to_lowercase());
             let history = self.grants.get(&key).map(Vec::as_slice).unwrap_or(&[]);
             Ok(grant_in_force_at(history, *anchored_at))
         }

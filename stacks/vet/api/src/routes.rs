@@ -545,7 +545,6 @@ async fn prepare(
         Ok(a) => a,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
-    let rt_key = app::rt_key(&body.record_type);
     // PRESENT TENSE, deliberately: "may this signer anchor a new root right now". Asked
     // service-scoped against the clone we are about to write to, so the authority is that clone's
     // own `registry()` and this preflight refuses exactly what the write would refuse — on either
@@ -553,7 +552,7 @@ async fn prepare(
     // `ChainClient::issuance_capability`.
     match st
         .chain
-        .issuance_capability(&issuer_addr, &rt_key, &signer_addr)
+        .issuance_capability(&issuer_addr, &signer_addr)
         .await
     {
         Ok(IssuanceCapability::Authorized) => {}
@@ -679,10 +678,9 @@ async fn confirm_inner(st: &AppState, record_id: &str, tx_hash: &str) -> Result<
     //
     // Asking the historical question also makes this path generation-correct for free, since
     // `whitelisted_at_issuance` resolves the authority off the clone rather than off configuration.
-    let rt_key = app::rt_key(&r.record_type);
     match st
         .chain
-        .whitelisted_at_issuance(&issuer_addr, &rt_key, &signer, &r.root)
+        .whitelisted_at_issuance(&issuer_addr, &signer, &r.root)
         .await
     {
         Ok(GrantAtIssuance::Authorized) => {}
@@ -1006,8 +1004,7 @@ async fn issuer_signers(State(st): State<AppState>, headers: HeaderMap) -> Resp 
     // first; `issuer/signers` is operator-gated and read-only, so no gate depends on it.
     let mut matrix = Vec::new();
     for (rt, issuer_addr) in st.cfg.issuer_addrs.iter() {
-        let key = app::rt_key(rt);
-        let wl = match st.chain.issuance_capability(issuer_addr, &key, &active).await {
+        let wl = match st.chain.issuance_capability(issuer_addr, &active).await {
             Ok(IssuanceCapability::Authorized) => Some(true),
             Ok(IssuanceCapability::NotAuthorized) => Some(false),
             Ok(IssuanceCapability::Undetermined) | Err(_) => None,
@@ -1395,7 +1392,7 @@ async fn verify_credential(
                         Ok(Some(chain_rt_key)) if !chain_rt_key.eq_ignore_ascii_case(&rt_key) => {
                             (Some(signer), Some(false))
                         }
-                        Ok(Some(chain_rt_key)) => {
+                        Ok(Some(_)) => {
                             // ...and about the moment this root was ANCHORED, not about now.
                             // Delisting is forward-only (`DogTagIssuer.sol:82`; `adminRevoke` is the
                             // retroactive lever), so `isWhitelistedFor` — a current-state getter —
@@ -1405,7 +1402,7 @@ async fn verify_credential(
                             // `Whitelisted`/`Delisted` logs, so any verifier with an RPC reproduces it.
                             match st
                                 .chain
-                                .whitelisted_at_issuance(clone, &chain_rt_key, &signer, &claimed_root)
+                                .whitelisted_at_issuance(clone, &signer, &claimed_root)
                                 .await
                             {
                                 Ok(GrantAtIssuance::Authorized) => (Some(signer), Some(true)),

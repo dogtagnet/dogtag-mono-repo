@@ -256,7 +256,7 @@ impl RpcAdapter for ChainRpcAdapter<'_> {
         );
         self.blocking(async move {
             st.chain
-                .whitelisted_at_issuance(&issuer_addr, &record_type_key, &signer, &merkle_root)
+                .whitelisted_at_issuance(&issuer_addr, &signer, &merkle_root)
                 .await
         })
     }
