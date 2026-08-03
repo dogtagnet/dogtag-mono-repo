@@ -1,40 +1,39 @@
 # The owner-bearing issuer clone and the self-service factory
 
-`contracts/src/DogTagIssuer.sol` and `contracts/src/DogTagIssuerFactory.sol`.
-Registry-plan slice **S-7**.
+`contracts/src/DogTagIssuer.sol` and `contracts/src/DogTagIssuerFactory.sol` - two of the ten contracts in the launch set.
 
-**Status: deployed on ROAX by S-14, and unwired. Nothing reads either contract.**
-Cutover steps C-3a and C-3b deployed them, so `contracts/deployments/roax.json` carries `DogTagIssuerImpl` and `DogTagIssuerFactory` keys - see `_s14_cutover` there for the addresses, transaction hashes and blocks, which are deliberately not copied into this file.
-S-15 added a blank `VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR` to the vet and groomer `.env.example` files and to their env plumbing, so the key EXISTS - but it ships empty and the code has no fallback, so nothing in the tree resolves an address from it. That is stronger evidence of unwiredness than an absent key, because a blank fallback-free var cannot quietly resolve to a bundled constant. Client repointing is C-9/C-10 and enabling generation-2 issuance is C-11, both outstanding and both separately captain-authorized.
-State it as "deployed, unwired" rather than as "the cutover is done", and note the ledger is what this repo can speak for - a claim about every chain in existence is not one it can check.
+**Status: deployed on ROAX, with no provider onboarded and no client reading them yet.**
+`contracts/deployments/roax.json` carries the `DogTagIssuerImpl` and `DogTagIssuerFactory` addresses, their transaction hashes and their blocks; they are deliberately not copied into this file.
+`providerCount` is 0, so no clone has been created and nothing has been issued - registering a provider, clearing it for a record type, attaching its clone and granting an issuance capability are registrar decisions about a particular business, outside the deploy script.
+Nothing under `stacks/`, `apps/`, `packages/` or `crates/` resolves either address yet, so the running demo stack and both mobile bundles still name contracts that no longer decide anything.
+The ledger is what this repo can speak for; a claim about every chain in existence is not one it can check.
 
 ---
 
-## 1. Why this exists
+## 1. Why these contracts look the way they do
 
 The captain's requirement:
 
 > only whitelisted people, AND owner of contracts can post their DNS on the smart contract
 
-That cannot be enforced against the contracts as deployed, and the reason is not that it is unimplemented.
-It is that **there is no owner to check.**
-`DogTagIssuer` is `Initializable` only: it has no owner, no admin and no controller, and every write is gated on `IssuerRegistry.isWhitelistedFor(recordType, msg.sender)` and nothing else.
-The question "who controls this contract?" has no on-chain answer.
+The earlier issuer design could not enforce that, and the reason was not that it was unimplemented.
+It was that **there was no owner to check.**
+That clone was `Initializable` only - no owner, no admin, no controller - and every write was gated on a record-type whitelist and nothing else, so the question "who controls this contract?" had no on-chain answer.
 
-`IssuerDomainRegistry` had to substitute a proxy for the missing owner - `_isSpawningBusiness`, which recomputes a clone's deterministic address from `keccak256(recordType, business)` and compares.
+The domain surface built against it had to substitute a proxy for the missing owner: recompute a clone's deterministic address from `keccak256(recordType, business)` and compare.
 That is a sound proof of *what the salt was*, and it is not a proof of *who controls the contract*.
-It authorizes whoever was passed as `business` at creation, and `stacks/admin/api/src/routes.rs::resolve_business` defaults that to the operator's own signer - so on every clone deployed to date, the "self-service" tier authorizes the operator rather than the organisation.
-`IssuerDomainRegistry`'s own doc says as much, which is why its tier 3 `domainAdmin` exists at all.
+It authorizes whoever was passed as `business` at creation, and an operator creating on a provider's behalf passes its own signer - so that tier authorized the operator rather than the organisation.
 
 And the second requirement:
 
 > they can deploy their own clone contracts from the factory after being approved. then they can also change their smart contract address, to a VALID CLONED smart contract, spun off FROM our factory contract.
 
-`DogTagIssuerFactory.createIssuer` is `onlyOwner`, so no provider can deploy anything - every clone in existence was minted by the protocol multisig.
+The earlier `createIssuer` was `onlyOwner`, so no provider could deploy anything; every clone was minted by the protocol multisig.
 
-This slice supplies both: a real owner, and a creation path a provider can reach.
+`DogTagIssuer` and `DogTagIssuerFactory` supply both: a real owner, and a creation path a provider can reach.
+Both failures above are recorded because they are the shapes to avoid regressing into, not because either contract still exists.
 
-## 3. Ownership semantics
+## 2. Ownership semantics
 
 ### It is two-step, always
 
@@ -49,7 +48,7 @@ It zeroes the pending owner, never the owner, so it is the recovery path for a f
 
 After `initialize`, the owner is non-zero forever. Two paths could otherwise vacate it, and both are closed in the contract:
 
-* **`renounceOwnership` is disabled.** An ownerless clone is precisely the generation-1 state this contract exists to end. OZ's default would let one transaction re-enter it, irreversibly.
+* **`renounceOwnership` is disabled.** An ownerless clone is precisely the state §1 describes this contract as existing to end. OZ's default would let one transaction re-enter it, irreversibly.
 * **`acceptOwnership` refuses `msg.sender == address(0)`.** OZ compares `pendingOwner() != msg.sender`; with no transfer pending both sides are the zero address, the comparison passes, and ownership transfers to zero. Unreachable in practice - nobody can sign as the zero address - but unreachable by EVM accident rather than by contract. The invariant is worth holding where a test can assert it.
 
 ### Ownership is CONTROL, and confers no capability of its own
@@ -66,12 +65,12 @@ A completed two-step handover therefore suspends both until the registrar calls 
 Read the two statements together - ownership grants nothing, and moving ownership pauses everything until the registrar catches up.
 `test_a_handover_suspends_issuance_until_the_registrar_reconfirms` pins it.
 
-`revoke` keeps generation 1's authority split exactly: the H-1 originator, or the core's protocol admin.
+`revoke` keeps the long-standing authority split exactly: the H-1 originator, or the core's protocol admin.
 Extending revocation to the clone owner would let an owner revoke credentials it did not issue. That is a distinct governance decision and is deliberately not taken here.
 
 ### The three issuance-axis reads are a nested ladder, and the gaps are the point
 
-The core publishes `isRecognizedIssuer ⊇ canRevoke ⊇ canIssue`, and generation 2 depends on the gaps:
+The core publishes `isRecognizedIssuer ⊇ canRevoke ⊇ canIssue`, and this pair depends on the gaps:
 
 * `issue` asks **`canIssue`** - the narrow rung, which additionally folds every live lifecycle term: provider and service standing, an active factory generation, and the provider's current pointer for the record type.
 * the ordinary `revoke` arm asks **`canRevoke`** - which omits those terms, so a clone the provider has since superseded stays revocable by the originator that anchored on it.
@@ -84,12 +83,12 @@ Both substitutions are real defects in those states: upward (`issue` asking `can
 ### There is exactly one creation path, and it takes no owner argument
 
 `createIssuer` sets the owner to `msg.sender` and salts the clone with the same address.
-An "operator creates on behalf of a provider" variant was considered and rejected: it is the shape that produced the generation-1 weakness above.
+An "operator creates on behalf of a provider" variant was considered and rejected: it is the shape that produced the §1 weakness above.
 
 With a single path, **`owner()` and the salt binding agree at creation.**
 They can diverge afterwards, and only through the two-step handover - which is the one act that is supposed to move control.
 So the salt records who *created* a clone, not who controls it now, and a later divergence is a completed rotation rather than a fault to repair.
-Do not read a salt recomputation as an ownership proof; that is the generation-1 mistake in a new place.
+Do not read a salt recomputation as an ownership proof; that is the §1 mistake in a new place.
 
 Note the caller need not be the provider's controller: the core's create permission is delegable, so `msg.sender` may be a delegate, and then the clone is owned by the **delegate**.
 The rule is exactly "the owner is the caller", with no exception.
@@ -106,7 +105,7 @@ It could not, and this is worth recording rather than quietly changing: on the c
 
 ---
 
-## 4. The forgery-proof repoint
+## 3. The forgery-proof repoint
 
 ### Which check enforces it
 
@@ -114,14 +113,14 @@ It could not, and this is worth recording rather than quietly changing: on the c
 That mapping is written in exactly one place - `createIssuer` - so an address is in it if and only if this factory deployed it. No other path sets it.
 
 The predicate is published once, on the factory, as `authorizeClone(candidate, claimant) -> bytes32 recordType`, so that a consumer can call it instead of re-deriving it.
-S-6's service attachment is meant to, and two parallel implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in this codebase already.
-S-9's domain write was the other intended consumer and has since shipped composing the core's `canWriteService` instead - a considered deviation, argued at §8 and in full in `docs/SERVICE_DOMAIN_RESOLVER.md`.
+`ProviderRegistry`'s service attachment is meant to, and two parallel implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in this codebase already.
+`ServiceDomainResolver`'s domain write was the other intended consumer and instead composes the core's `canWriteService` - a considered deviation, argued in full in `docs/SERVICE_DOMAIN_RESOLVER.md`.
 
 **No consumer composes it yet, so this is not the only place the rule lives.**
-S-9 now exists (`contracts/src/ServiceDomainResolver.sol`) but deliberately does not call it, and `ProviderRegistry` derives both halves itself: provenance through its own fail-soft `isClone` staticcall (`_factoryRecognizes`) and control through its own fail-soft `owner()` staticcall (`_readServiceOwner`).
-On the core's own per-issuance predicates that shape is deliberate rather than an omission, for two specific reasons: those reads sit inside `canIssue`, which a generation-2 clone asks on every `issue`, so the reverting `authorizeClone` cannot serve that call site; and `_isOwnerConfirmed` compares the live `owner()` against the registrar's recorded `confirmedOwner`, so it needs the owner VALUE, which neither shape returns.
+`ServiceDomainResolver` deliberately does not call it, and `ProviderRegistry` derives both halves itself: provenance through its own fail-soft `isClone` staticcall (`_factoryRecognizes`) and control through its own fail-soft `owner()` staticcall (`_readServiceOwner`).
+On the core's own per-issuance predicates that shape is deliberate rather than an omission, for two specific reasons: those reads sit inside `canIssue`, which a clone asks on every `issue`, so the reverting `authorizeClone` cannot serve that call site; and `_isOwnerConfirmed` compares the live `owner()` against the registrar's recorded `confirmedOwner`, so it needs the owner VALUE, which neither shape returns.
 Both derivations fail closed, so nothing is presently unguarded.
-The attachment path is the one this predicate is meant to serve, and §8 records reconciling it as S-6's obligation.
+The attachment path is the one this predicate is meant to serve, and reconciling it remains `ProviderRegistry`'s obligation.
 
 That applies inside the factory too: `authorizeClone` and the non-reverting `cloneAuthorization` are thin wrappers over ONE private `_authorization`, so the rule cannot be half-changed and the two shapes cannot end up applying its parts in different orders.
 Both public forms keep their own failure vocabulary (`NotAClone` versus `NotCloneOwner`), because a provider whose clone is genuine must not be told its address is a forgery.
@@ -130,7 +129,7 @@ Three questions, three answers:
 
 1. **Provenance** - `isClone[candidate]`, from the factory's own storage, never from the request. This is what stops a hand-rolled contract.
 2. **Control** - `IOwnedIssuer(candidate).owner() == claimant`, read live from the named contract. Without it, provider A could repoint its listing at provider B's genuine clone: not contract forgery, but misattribution. *"There's no way to do any false contract inputs"* is true of provenance and silent about attribution.
-3. **Attachment** - that the clone belongs to *this provider* in the authority core - is S-6's, not this factory's. This predicate answers provenance and control; the core composes it with identity.
+3. **Attachment** - that the clone belongs to *this provider* in the authority core - is `ProviderRegistry`'s, not this factory's. This predicate answers provenance and control; the core composes it with identity.
 
 `_authorization` also refuses a zero `claimant` before it makes any external call.
 That arm is **defence in depth and no test distinguishes it**, deliberately so on both counts: a real clone's `owner()` can never be zero (see above), so the owner comparison already refuses a zero claimant, and the guard only saves the call. It is recorded here rather than given a mutation-table row it could not honestly earn.
@@ -158,7 +157,7 @@ A non-clone is refused before any external call, so it cannot execute at all - n
 
 ### The nonce, and why the repoint has no target without it
 
-Generation 1 salts a clone `keccak256(recordType, business)`, and `Clones.cloneDeterministic` reverts on a repeated `(implementation, salt)` pair.
+The earlier factory salted a clone `keccak256(recordType, business)`, and `Clones.cloneDeterministic` reverts on a repeated `(implementation, salt)` pair.
 So a provider has **exactly one possible clone address per record type**, and a second `createIssuer` for the same pair simply reverts.
 *"They can also change their smart contract address to a VALID CLONED smart contract"* is then unreachable: there is no second address to move to.
 
@@ -182,7 +181,7 @@ That is correct behaviour rather than a limitation: retroactively re-attributing
 **Nothing routes through it.**
 An `issue` call reaches whichever clone the caller called, and whether it succeeds is decided entirely by the core's `canIssue` - which folds the core's OWN providerId-keyed pointer, not this one.
 So this pointer authorizes nothing, redirects nothing, and a stale one cannot cause a wrong anchor; a clone with no designation at all anchors normally (`test_the_pointer_is_advisory_and_gates_no_issuance`).
-Do not describe it as the thing that selects a provider's live issuer on chain - it is the self-service *statement* of that selection, and S-6's registrar-confirmed attachment is the authoritative record of which contracts belong to which organisation.
+Do not describe it as the thing that selects a provider's live issuer on chain - it is the self-service *statement* of that selection, and `ProviderRegistry`'s registrar-confirmed attachment is the authoritative record of which contracts belong to which organisation.
 They are complementary and keyed differently on purpose: an owner address is a key, an organisation is not.
 
 The raw mapping is the **current** stored value, not a history - one address per slot, overwritten by each repoint.
@@ -195,57 +194,55 @@ The pointer is not inherited by a new owner either - a repoint is an explicit ac
 
 ---
 
-## 5. What does not regress
+## 4. What does not regress
 
 ### Every immutable dependency is identified or behaviour-checked before it is stored
 
-The factory has no admin, so all three constructor arguments are permanent, and for `priorIndex` a wrong value also strands the verification registry that points at the factory.
-All three must be non-zero contracts, but the implementation is held to a stronger rule than ABI-shaped probing:
+The factory has no admin, so both constructor arguments - the implementation and the authority core - are permanent.
+Both must be non-zero contracts, but the implementation is held to a stronger rule than ABI-shaped probing:
 `impl.codehash` must equal `keccak256(type(DogTagIssuer).runtimeCode)`.
 That is exact runtime-bytecode identity with the `DogTagIssuer` compiled into this factory; a lookalike that returns correctly shaped words for `owner()`, `pendingOwner()` and `recordType()` is still refused with `ImplementationCodeMismatch`.
 `test_an_abi_shaped_impostor_implementation_is_refused` pins the distinction.
 This exact identity is also the basis for the getter/no-revert guarantee `resolveActiveIssuer` relies on.
 
-The authority core and prior index cannot be authenticated by a compiled-in runtime in the same way, so they are checked for code and for the exact ABI behaviour this factory needs.
+The authority core cannot be authenticated by a compiled-in runtime in the same way, so it is checked for code and for the exact ABI behaviour this factory needs.
 An EOA is not enough - a `staticcall` to one *succeeds* with empty returndata - and neither is a contract that does not answer a selector or answers with the wrong width.
-The core must answer `false` to all four zero-everything capability queries.
-The prior index must answer `false` both for `isRootAnchored(bytes32(0))` and for `isGeneration(address(this))` while this factory is still under construction.
-Those checks refuse an indiscriminately permissive core, an index which claims every root, and an index which falsely claims the not-yet-appended factory as a generation.
+The core must answer `false` to all four zero-everything capability queries: `canCreateService`, `canIssue`, `canRevoke` and `hasRole`.
+That refuses an indiscriminately permissive core - one which would authorize a zero provider, a zero clone and a zero signer.
 
 **A dependency that did not answer and one that answered a definite `true` are refused under separate errors, each naming the dependency and the probed selector.**
-`AuthorityDoesNotAnswer` / `PriorIndexDoesNotAnswer` cover the four shapes in which nothing was stated - a revert, no code path for the selector, the wrong returndata width, and a word that is neither 0 nor 1.
-`AuthorityAuthorizesUnconditionally`, `PriorIndexClaimsEveryRoot` and `PriorIndexPrematurelyClaimsThisFactory` are the definite-`true` answers, and each is a different accusation with a different remedy.
+`AuthorityDoesNotAnswer` covers the four shapes in which nothing was stated - a revert, no code path for the selector, the wrong returndata width, and a word that is neither 0 nor 1.
+`AuthorityAuthorizesUnconditionally` is the definite-`true` answer, and it is a different accusation with a different remedy.
 Both classes are equally fail-closed; only the diagnostic differs, and a single error for both told an operator to hunt a missing selector when the real cause was an authorization rule that authorizes everything - this codebase's could-not-check-rendered-as-a-neighbouring-state defect, inverted.
 A non-canonical word is deliberately a non-answer rather than a `true`: it states no boolean, so reporting it as a deliberate authorization would be the same collapse in the other direction.
-`test_a_dependency_answering_a_non_canonical_boolean_is_a_non_answer` holds that for both dependency slots, and the definite-`true` diagnostics are held by `test_an_authority_that_authorizes_indiscriminately_is_refused`, `test_a_prior_index_that_claims_every_root_is_refused` and `test_a_prior_index_that_prematurely_claims_this_generation_is_refused`.
+`test_a_dependency_answering_a_non_canonical_boolean_is_a_non_answer` holds that, and the definite-`true` diagnostic is held by `test_an_authority_that_authorizes_indiscriminately_is_refused`.
 
 ### Write-once stays per contract and honest
 
 `DogTagIssuer.issue` checks `issuedAt[r]` in its own storage; `registerRoot` checks `rootIssuer[root]` in its own factory's storage.
 Both are unchanged. The factory adds one guard and it only ever refuses more.
 
-`rootIssuer` is **generation-local**: this factory's mapping answers only for roots anchored by its own clones, and it can never answer for a generation-1 root.
-Resolution across generations is the router's job, on the read side.
+`rootIssuer` is **factory-local**: this factory's mapping answers only for roots anchored by its own clones.
+A root anchored through any earlier factory resolves to the zero address here, which is why `VerificationRegistryConsent.rootIndex` naming this factory retires every previously anchored credential - see `_root_index` in the ledger.
 
-### The S-6 capability ladder, under a widened clone set
+### The capability ladder, under a widened clone set
 
-Self-service widens who may add to `isClone`: under generation 1 only the protocol owner could, and now any approved provider can.
-For generation 2, the S-6 capability ladder supersedes every older whitelist-only description: V2 does **not** reduce creation or writes to the legacy `isWhitelistedFor(recordType, signer)` question.
+Self-service widens who may add to `isClone`: previously only the protocol owner could, and now any approved provider can.
+So creation and writes are **not** reduced to a record-type whitelist question.
 Creation asks `canCreateService(providerId, recordType, caller)`; anchoring asks `canIssue(clone, caller)`; revocation asks `canRevoke(clone, caller)`.
 Those core reads compose the registrar's provider approval, service attachment, confirmed ownership, record type and signer grants.
 A provider approved only for VACCINATION can therefore create only a VACCINATION clone, whose core attachment and `recordType()` remain VACCINATION, so nothing it produces can read as a TRAVEL credential.
-Whitelist-only wording remains accurate for generation 1 and is superseded for this pair.
 
-The other thing a widened `isClone` set could have carried is a **free-text `name()`**, and that is closed at the source - see §6.
+The other thing a widened `isClone` set could have carried is a **free-text `name()`**, and that is closed at the source - see §5.
 
-Root squatting is unchanged in kind: any approved signer could already burn a root through `"root taken"` in generation 1.
+Root squatting is unchanged in kind: any approved signer could already burn a root through `"root taken"`.
 State the salting defence narrowly, because it is narrower than it sounds: salted Poseidon roots make it infeasible to **guess** a root, and a root becomes public the moment an `issue` transaction is observable, so an attacker watching pending transactions can still front-run one specific anchor.
 What salting rules out is blind, untargeted squatting - not a targeted race.
 
 ### The factory has no admin surface
 
 No owner, no privileged function.
-Nothing about it can be repointed or captured - the property `IssuerDomainRegistry`'s doc asks of a factory reference: *"a repointable factory reference would let one transaction redefine what counts as a genuine clone."*
+Nothing about it can be repointed or captured, which is the property any consumer holding a factory reference needs: a repointable factory reference would let one transaction redefine what counts as a genuine clone.
 Here there is nothing to repoint, in either direction.
 
 `test_the_factory_has_no_owner_or_transfer_ownership_selector` holds this for the three named selectors only, and its own comment is careful about what it establishes.
@@ -254,21 +251,21 @@ A failing call establishes that the selector is **not reachable** - no such func
 
 ### Event compatibility
 
-`IssuerCreated(address indexed clone, bytes32 indexed recordType, string name)` and the clone's `RootIssued`/`RootRevoked` are **byte-identical** to generation 1's, as is `RootRegistered`, so the oversight indexer's existing decoders read a generation-2 clone with no change.
+`IssuerCreated(address indexed clone, bytes32 indexed recordType, string name)` and the clone's `RootIssued`/`RootRevoked` kept their **historic signatures byte for byte**, as did `RootRegistered`, so the oversight indexer's existing decoders read these clones with no change.
 The owner arrives as an additive `IssuerOwnerRegistered(clone, owner, providerId, cloneNonce)` from the factory - not by widening an existing event, which would change its topic0 and silently drop it from the feed.
 
-`test_the_legacy_creation_and_anchoring_event_topics_are_unchanged` asserts each `topic0` against the **literal generation-1 signature string**, not against this generation's own declaration, so a widened event fails there even though it would still be self-consistent.
-It also asserts the emitted `name` is empty, which is the wire half of §6.
+`test_the_legacy_creation_and_anchoring_event_topics_are_unchanged` asserts each `topic0` against the **literal historic signature string**, not against this contract's own declaration, so a widened event fails there even though it would still be self-consistent.
+It also asserts the emitted `name` is empty, which is the wire half of §5.
 
 ---
 
-## 6. The legacy `name()` is permanently empty, and that is the fix
+## 5. The legacy `name()` is permanently empty, and that is the fix
 
-Generation 1's `name` was written by the factory's `onlyOwner` `createIssuer` at KYC time, and **that provenance is the only reason a consumer could read it as an authoritative issuer identity.**
+The earlier factory wrote `name` from its `onlyOwner` `createIssuer` at KYC time, and **that provenance was the only reason a consumer could read it as an authoritative issuer identity.**
 The three deferred consumers of this field are `stacks/government/api/src/routes.rs`,
 `packages/ui/src/domain/issuerDomainBinding.ts`, and the event-detail rendering in
 `packages/ui/src/chain/provenance.ts`.
-They must all treat generation 2's empty value as identity unavailable and never turn the document's own claim into an authoritative fallback.
+They must all treat the empty value as identity unavailable and never turn the document's own claim into an authoritative fallback.
 
 Self-service breaks that argument at its root.
 A caller-supplied name would be a provider-chosen string arriving with genuine factory provenance: a signer approved only for VACCINATION could create a clone named `"US Department of Agriculture"`, and because the clone really is factory-descended, link-1 provenance resolves, the on-chain name is read, and it renders as the authoritative issuer beside a green check.
@@ -277,26 +274,25 @@ That is precisely the attack the on-chain name read exists to defeat.
 So caller control is removed rather than documented:
 
 * `createIssuer` takes **no name argument**.
-* `initialize` takes none either, and nothing in `DogTagIssuer` ever writes the slot, so `name()` answers `""` for the life of every generation-2 clone.
+* `initialize` takes none either, and nothing in `DogTagIssuer` ever writes the slot, so `name()` answers `""` for the life of every clone.
 * `IssuerCreated` still carries the field - the signature and topic0 are wire-compatible - and always emits the empty string.
 
-A consumer reading `name()` on a generation-2 clone must therefore report authoritative identity **unavailable**, and must not fall back to the document's own claim.
-Registrar-controlled identity for this generation comes from the authority core instead: its publication-safe identity anchor, reached through the core's directory resolver.
+A consumer reading `name()` on a clone must therefore report authoritative identity **unavailable**, and must not fall back to the document's own claim.
+Registrar-controlled identity comes from the authority core instead: its publication-safe identity anchor, reached through the core's directory resolver.
 
-**Reconciling the existing readers is a later slice, and is out of scope here.**
-Those files are not part of S-7 and are deliberately untouched; what this slice guarantees is that there is no provider-chosen string for them to mistake.
+**Reconciling the three readers named above is outstanding, and is out of scope for this file.**
+They are deliberately untouched; what these contracts guarantee is that there is no provider-chosen string for them to mistake.
 
 ---
 
-## 9. Build and test
+## 6. Build and test
 
 ```sh
-cd contracts && forge test --match-contract IssuerV2
+cd contracts && forge test --match-contract DogTagIssuer
 ```
 
-63 tests in `IssuerV2Test`, 3 more in `IssuerV2ProviderAuthorityInterfaceTest`; 231 in the whole `contracts` suite.
-That total moved from 202 when S-6's `ProviderRegistryTest` landed in the same tree, so a `202` anywhere is stale rather than a different way of counting.
-`--match-contract IssuerV2` (not `IssuerV2Test`) is what runs both of this slice's suites.
+53 tests in `DogTagIssuerTest`, 3 more in `DogTagIssuerProviderAuthorityInterfaceTest`; 295 in the whole `contracts` suite.
+`--match-contract DogTagIssuer` (not `DogTagIssuerTest`) is what runs both of this pair's suites.
 Prefer `forge test` over a bare `forge build`: it compiles only the real dependency closure.
 The blanket "never a bare `forge build`" rule recorded here described a real failure - a full build compiled the vendored OpenZeppelin submodule's `certora/harnesses/*`, which import generated files that are not present, and failed with "File not found" (a submodule artifact, not a project error).
 That **no longer reproduces**: re-measured 2026-07-30 on Foundry 1.5.1-stable with the submodules at their pinned revisions (`openzeppelin-contracts` `v4.8.0-743-g69c8def5`, `forge-std` `v1.9.4`), a bare `forge build` from a removed `out/` exits 0.
@@ -304,11 +300,11 @@ The mechanism of the change was not established, so read that as a measurement o
 
 A fresh worktree has no `contracts/lib` contents; run `git submodule update --init --recursive contracts/lib/forge-std contracts/lib/openzeppelin-contracts` first.
 
-### `IssuerV2ProviderAuthorityInterfaceTest`, and why its negative control has the shape it does
+### `DogTagIssuerProviderAuthorityInterfaceTest`, and why its negative control has the shape it does
 
 The pair reaches the authority core through an interface it declares locally, and Solidity checks nothing across that seam, so this suite pins the agreement against the REAL `ProviderRegistry` on both axes a signature has: selector equality for the argument lists, and single written external function types both sides are assigned to, so a diverged return type or state mutability fails the BUILD instead of surviving to misdecode at runtime.
 
-Five mutations were applied, run and reverted against a temporary harness (not committed, matching §9's convention below). Each landed on its expected outcome, and the tree was asserted byte-identical afterwards:
+Five mutations were applied, run and reverted against a temporary harness, which by this repo's convention is not committed. Each landed on its expected outcome, and the tree was asserted byte-identical afterwards:
 
 | mutation | outcome |
 |---|---|
@@ -328,4 +324,4 @@ Two things guard against that, and neither is optional if the mock is ever exten
 * **The three rungs are derived from one set of registrar facts, and none is independently settable.** Three free booleans would let a test assert `canIssue` true while `canRevoke` was false, which the real core cannot produce.
 * **`test_the_authority_ladder_is_nested_not_three_independent_switches` asserts the containment directly**, walking a clone through attach, grant, repoint, suspension and handover and checking `canIssue ⇒ canRevoke ⇒ isRecognizedIssuer` at each step.
 
-The owner term is read **live** off the clone and compared against the registrar-confirmed owner, which is what makes the handover-suspension behaviour in §3 real rather than stipulated.
+The owner term is read **live** off the clone and compared against the registrar-confirmed owner, which is what makes the handover-suspension behaviour in §2 real rather than stipulated.
