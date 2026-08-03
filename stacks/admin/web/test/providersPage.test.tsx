@@ -730,6 +730,26 @@ describe("Providers - the services panel", () => {
    * Attaching lands the service at PENDING and `canIssue` folds it, so the panel must say what is
    * still missing rather than reading as done.
    */
+  /**
+   * The issue right is keyed on the ADDRESS, so the holder list rendered inside a SERVICE row is the
+   * same list on every service row in the system. Unlabelled, that heading reads as "who may issue on
+   * this contract" and an operator concludes a holder is confined to one provider - which is exactly
+   * the scope the re-keying removed. Pinned because it is a product CLAIM about scope, not decoration.
+   */
+  it("labels the issuance holders as registry-wide, never as scoped to this service", async () => {
+    vi.stubGlobal("fetch", withService(serviceView()));
+    await mount();
+    await expandServices();
+    const row = container.querySelector('[data-testid="service-row"]')!;
+    expect(row.textContent).toContain("registry-wide");
+    const note = container.querySelector('[data-testid="issuance-scope-note"]');
+    expect(note, "the scope must be stated, not left to the heading").not.toBeNull();
+    expect(note!.textContent).toContain("names no service");
+    expect(note!.textContent).toContain("any service in effective standing");
+    // And it must not claim the narrower thing the old per-service grant did.
+    expect(row.textContent).not.toContain("may issue on this contract");
+  });
+
   it("says what is blocking a freshly attached service rather than reporting it as ready", async () => {
     vi.stubGlobal("fetch", withService(serviceView()));
     await mount();

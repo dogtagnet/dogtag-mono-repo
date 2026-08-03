@@ -118,7 +118,12 @@ describe("the five lifecycle terms are reported APART", () => {
         isCurrent: true,
       }),
     );
-    expect(blocker).toContain("Grant issuance capability");
+    // The grant remedy names the ADDRESS and explicitly disclaims a service, because the right is
+    // keyed on the address: a remedy reading "grant it on this service" would describe a write that
+    // does not exist.
+    expect(blocker).toContain("issue right");
+    expect(blocker).toContain("ADDRESS");
+    expect(blocker).toContain("names no service");
   });
 
   // The pointer informs the REMEDY only. Folding it into a term's `held` would make one of the five

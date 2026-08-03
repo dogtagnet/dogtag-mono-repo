@@ -277,10 +277,17 @@ pub struct ServiceRecord {
 /// withholding the only thing that says what to do about it.
 ///
 /// `has_active_issuer` is the one term that is NOT independent of its neighbours: the contract
-/// answers `_activeIssuerCount != 0 && _serviceIssuanceEligible(..)`, which re-folds the owner and
+/// answers `_issueRightHolders != 0 && _serviceIssuanceEligible(..)`, which re-folds the owner and
 /// the standings AND adds the provider's current pointer. So it can be false with all four of the
 /// others true, and the remedy in that state is the PROVIDER's `repointService` - never another
 /// registrar grant.
+///
+/// The counter is REGISTRY-WIDE since rights moved onto the address (`_issueRightHolders`, not the
+/// removed per-service `_activeIssuerCount`): a grant names no service, so "some signer can issue
+/// here" is a property of the whole registry folded against THIS service's lifecycle. Practical
+/// consequence for the remedy an admin acts on: on any registry where at least one address already
+/// holds `RIGHT_ISSUE`, a false here can ONLY come from the lifecycle half, so a remedy naming a
+/// grant would send them to a step that changes nothing.
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceEffective {
     #[serde(rename = "providerStanding")]

@@ -57,12 +57,18 @@ export function effectiveTerms(
   // which is a THIRD state: naming either cause there would be a definite remedy derived from a
   // read that never happened.
   const pointer = currentPointer && currentPointer.state === "resolved" ? currentPointer : null;
+  // The grant half is REGISTRY-WIDE: rights are keyed on the address, so "some key holds the issue
+  // right" is a property of the whole registry rather than of this service. Once any address holds
+  // it, this term can only be false because of the lifecycle half - so the grant remedy names the
+  // right honestly (any address, no service) instead of implying a per-service grant that does not
+  // exist and would change nothing here.
   const issuerRemedy = !pointer
-    ? "Either no key holds issuance capability, or the provider has not published this contract " +
-      "as its current service - the pointer read did not complete, so which of the two applies is " +
-      "not established here."
+    ? "Either no address anywhere holds the issue right, or the provider has not published this " +
+      "contract as its current service - the pointer read did not complete, so which of the two " +
+      "applies is not established here."
     : pointer.isCurrent
-      ? "Grant issuance capability to the key that will sign."
+      ? "No address holds the issue right yet. Grant it to the key that will sign - the grant is " +
+        "on that ADDRESS and names no service, so it reaches every service in standing."
       : "The provider has not published this contract as its current service for this record " +
         "type. Only the provider can repoint it, on their own portal - the registrar cannot do " +
         "it for them.";
