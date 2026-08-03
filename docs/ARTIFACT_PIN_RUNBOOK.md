@@ -176,7 +176,9 @@ incapable of performing a rotation.
 ```bash
 cd contracts
 
-export PROTOCOL_REGISTRY=0xf5492A671E69b1A13f7Fd123C021830eB1ea8081   # deployments/roax.json
+# Read the address from the ledger rather than pasting one - a pasted address survives a redeploy
+# and then pins an artifact set on a registry nobody reads.
+export PROTOCOL_REGISTRY=$(python3 -c "import json;print(json.load(open('deployments/roax.json'))['ProtocolRegistry'])")
 export CONSENT_ZKEY_SHA256=0xf83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868
 export CONSENT_WITNESS_MOBILE_SHA256=0x2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793
 export CONSENT_R1CS_SHA256=0x828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7

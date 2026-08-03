@@ -12,6 +12,20 @@ unwalked step is fine, and an unwalked step written as though it were walked is 
 exists to avoid.
 §10 records exactly what was and was not covered, and when.
 
+> **STATUS 2026-08-03: the chain state this guide was walked against is SUPERSEDED, and the walk has
+> not been repeated.**
+> The launch set was deployed on ROAX in one run; `contracts/deployments/roax.json` is the only place
+> its addresses live.
+> Every `0x…` address written into the steps below - the provider registry, the factory, both typed
+> resolvers - belongs to the earlier deployment and answers for nothing now.
+> **The observed results are still reported as observed**, because they were, and rewriting them to
+> match a chain nobody has walked would be exactly the defect stated above.
+> Two things follow for a reader. The provider walk in §2 cannot be reproduced at all yet:
+> `providerCount()` on the deployed core is **0** (checked 2026-08-03), so no provider is registered,
+> no clone exists and nothing has been issued - onboarding one is registrar work outside the deploy
+> script. And the portals are not repointed, so the `VITE_*` values shown below still name the old
+> contracts; take addresses from the ledger rather than from this page.
+
 The order below is the order to read it in.
 Each role picks up the state the previous one left.
 
@@ -214,8 +228,8 @@ Issuance and verification are untouched either way - they stay on the generation
 these four variables feed only that one page.
 
 Run this from the repository root, after `demo-up.sh` has finished.
-The addresses are the committed ones from `contracts/deployments/roax.json`; nothing here needs
-filling in except the provider id, which §1.2 gives you:
+**The four addresses below are the SUPERSEDED ones this walk used** - take the current values from
+`contracts/deployments/roax.json` instead, and see the status banner at the top of this guide:
 
 ```
 kill $(lsof -nP -iTCP:41873 -sTCP:LISTEN -t)     # the vet portal's dev server, by PID

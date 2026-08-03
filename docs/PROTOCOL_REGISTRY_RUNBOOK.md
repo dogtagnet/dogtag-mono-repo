@@ -4,14 +4,19 @@ Deploying the `ProtocolRegistry` and publishing the single owner-hidden protocol
 That version is keyed by the internal version string `dogtag-levelb/1` (artifact axis: `dogtag-levelb-artifacts/1`) - an internal identifier, not a product label.
 Its keccak keys the on-chain registry, so the string is never renamed.
 
-**Status: EXECUTED on ROAX (2026-07-23, the r8 fresh redeploy).**
-`ProtocolRegistry` is deployed at `0xf5492A671E69b1A13f7Fd123C021830eB1ea8081` (recorded in `contracts/deployments/roax.json`), with `PUBLISH_TIMELOCK = 0` (the explicit testnet opt-in below) and the single version published and **active** on both axes: `dogtag-levelb/1` + `dogtag-levelb-artifacts/1` + their binding (propose → immediate execute).
+**Status: NOT PUBLISHED on the launch set.**
+`ProtocolRegistry` is deployed - its address is in `contracts/deployments/roax.json` - but it carries no published discovery set, and this runbook has not been run against it.
+Verified on chain 2026-08-03: `getContractSet(keccak256("dogtag-levelb/1"))` **reverts**, which is the contract failing closed on an unknown id rather than an error.
+The ledger's `_publication` note records the same thing.
 
-This document remains the reproducible procedure (a future environment, or a mainnet deploy with the full 2-day timelock).
+An earlier registry did carry a published, active `dogtag-levelb/1` on both axes; that instance is superseded and is not a write target.
+Read any "EXECUTED" statement about publication as describing that earlier instance, not this one.
+
+Consequence, and it is the intended state rather than a gap to paper over: an app validating a platform's version claim against this anchor resolves nothing and **fails closed**.
+That is correct for an unpublished deployment - a discovery anchor that answered before anyone published would be asserting a version nobody staged.
+
+This document is the reproducible procedure for publishing.
 Executing it requires the governance/publisher key and is the captain's to authorize and run.
-
-**This document is about the DEPLOYED generation-1 registry.**
-The generation-2 discovery layer is a separate contract with a different record and a non-zero timelock floor, deployed by S-14 (cutover C-8) and carrying no published discovery set: see `docs/PROTOCOL_REGISTRY_V2.md` and `_s14_cutover` in `contracts/deployments/roax.json`.
 The `PUBLISH_TIMELOCK = 0` recorded above is the specific defect that registry exists to correct, and it is correctable only at deploy time because the value is immutable.
 
 ## Why this is the long pole

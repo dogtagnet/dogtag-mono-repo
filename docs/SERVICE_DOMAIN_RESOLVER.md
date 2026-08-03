@@ -18,13 +18,13 @@ What moves is where the three questions behind a claim are answered: authority t
 
 ## Superseding the shipped registry costs nothing, and that was re-verified rather than inherited
 
-The plan's §9.4 records `boundCloneCount() == 0`.
-Re-verified live against `https://devrpc.roax.net` (chainId 135) at head **303690** on 2026-07-30, before any of this was written:
+The registry this supersedes held no bindings at all, so there was nothing to migrate.
+Re-verified live against `https://devrpc.roax.net` (chainId 135) at head **303690** on 2026-07-30, before any of this was written - reproduced here as the measurement that settled it, though that contract's source has since been deleted and the instance is no longer a read target:
 
 ```
-$ cast call 0xD3B121FEaCde93b95288912EAdbB10824550FdBF "boundCloneCount()(uint256)"
+$ cast call <the superseded IssuerDomainRegistry> "boundCloneCount()(uint256)"
 0
-$ eth_getLogs address=0xD3B121FE… fromBlock=0x0 toBlock=latest
+$ eth_getLogs address=<same> fromBlock=0x0 toBlock=latest
 0 logs
 ```
 

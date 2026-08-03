@@ -47,10 +47,10 @@ Neither half alone is sufficient, so forging a displayed issuer identity require
 <clone-address-lowercase>._dogtag.<domain>.   IN TXT   "<free-form description>"
 ```
 
-Concretely, for clone `0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F` claiming `moh.gov.sg`:
+Concretely, for a clone at `0xCLONE…` claiming `moh.gov.sg` (illustrative - no clone exists on the launch set yet, since `providerCount` is 0):
 
 ```
-0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f._dogtag.moh.gov.sg. IN TXT "Travel clearance issuance"
+0x<clone address, lowercased>._dogtag.moh.gov.sg. IN TXT "Travel clearance issuance"
 ```
 
 **The address is in the NAME; the VALUE is free-form.**
