@@ -71,6 +71,68 @@ describe("the five lifecycle terms are reported APART", () => {
     expect(issuanceBlocker(terms)).toContain("not established");
   });
 
+  /**
+   * `hasActiveIssuer` is the one term the chain does not answer independently: it re-folds the
+   * owner, both standings AND the provider's current pointer. So it is the state a registrar
+   * reaches when it has finished, and the remedy that unblocks it is the PROVIDER's repoint - a
+   * sentence naming another registrar grant sends the admin back to the step they just completed.
+   */
+  it("names the provider's repoint when the pointer is what is missing", () => {
+    const terms = effectiveTerms({ ...ALL_HELD, hasActiveIssuer: false }, {
+      state: "resolved",
+      service: `0x${"0".repeat(40)}`,
+      isCurrent: false,
+    });
+    const blocker = issuanceBlocker(terms);
+    expect(blocker).toContain("repoint");
+    expect(blocker).toContain("provider");
+    expect(blocker, "the registrar cannot fix this by granting again").not.toContain(
+      "Grant issuance capability",
+    );
+  });
+
+  /**
+   * The pointer is TRI-state, so the remedy is too. An unreadable pointer read leaves both causes
+   * possible, and naming either would be a definite remedy derived from a read that never happened
+   * - beside a `service-pointer` line that already says the read did not complete.
+   */
+  it("asserts no remedy at all when the pointer read itself failed", () => {
+    const blocker = issuanceBlocker(
+      effectiveTerms({ ...ALL_HELD, hasActiveIssuer: false }, {
+        state: "unavailable",
+        reason: "rpc died",
+      }),
+    );
+    expect(blocker).toContain("pointer read did not complete");
+    expect(blocker, "we did not establish that nobody is granted").not.toContain(
+      "Grant issuance capability",
+    );
+    expect(blocker, "nor that the provider failed to repoint").not.toContain("Only the provider");
+  });
+
+  it("falls back to the grant remedy when the provider HAS repointed", () => {
+    const blocker = issuanceBlocker(
+      effectiveTerms({ ...ALL_HELD, hasActiveIssuer: false }, {
+        state: "resolved",
+        service: "0xsvc",
+        isCurrent: true,
+      }),
+    );
+    expect(blocker).toContain("Grant issuance capability");
+  });
+
+  // The pointer informs the REMEDY only. Folding it into a term's `held` would make one of the five
+  // stop meaning what the wire says it means, and the chain already folds it inside hasActiveIssuer.
+  it("never lets the pointer change which terms are held", () => {
+    const withPointer = effectiveTerms(ALL_HELD, {
+      state: "resolved",
+      service: `0x${"0".repeat(40)}`,
+      isCurrent: false,
+    });
+    expect(withPointer.map((t) => t.held)).toEqual(effectiveTerms(ALL_HELD).map((t) => t.held));
+    expect(issuanceBlocker(withPointer)).toBeNull();
+  });
+
   it("tones a could-not-establish term as a warning, never as the failure red", () => {
     expect(termTone(null)).toBe("warning");
     expect(termTone(false)).toBe("danger");

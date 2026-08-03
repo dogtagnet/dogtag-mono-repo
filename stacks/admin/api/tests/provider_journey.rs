@@ -93,7 +93,7 @@ async fn attach(app: &axum::Router, tok: &str) -> (StatusCode, serde_json::Value
 /// that attaches and grants issuance without it produces a service that still issues nothing.
 #[tokio::test]
 async fn attach_then_stand_up_then_grant_issuance_completes_the_journey() {
-    let (app, tok, _chain) = seeded().await;
+    let (app, tok, chain) = seeded().await;
 
     let (s, b) = attach(&app, &tok).await;
     assert_eq!(s, StatusCode::OK, "{b}");
@@ -140,15 +140,39 @@ async fn attach_then_stand_up_then_grant_issuance_completes_the_journey() {
     assert_eq!(s, StatusCode::OK, "{b}");
     let svc = &b["services"][0];
     assert_eq!(svc["service"]["standing"], "active");
-    // All five lifecycle terms now hold, and they are reported APART rather than as one bool.
+    assert_eq!(svc["issuance"]["entries"][0]["holder"], SIGNER);
+    assert_eq!(svc["issuance"]["entries"][0]["allowed"], true);
+
+    // The registrar has now done everything a registrar CAN do, and the service still cannot issue.
+    // `hasActiveIssuer` re-folds the provider's current pointer, which only the provider's own
+    // `repointService` writes - so the honest state here is four terms held and that one not.
     let e = &svc["effective"];
     assert_eq!(e["providerStanding"], "active", "{b}");
     assert_eq!(e["serviceStanding"], "active", "{b}");
     assert_eq!(e["factoryActive"], true, "{b}");
     assert_eq!(e["ownerConfirmed"], true, "{b}");
-    assert_eq!(e["hasActiveIssuer"], true, "{b}");
-    assert_eq!(svc["issuance"]["entries"][0]["holder"], SIGNER);
-    assert_eq!(svc["issuance"]["entries"][0]["allowed"], true);
+    assert_eq!(
+        e["hasActiveIssuer"], false,
+        "the pointer is unwritten, so the chain cannot answer true here: {b}"
+    );
+    assert_eq!(svc["currentPointer"]["isCurrent"], false, "{b}");
+
+    // The provider's own repoint, the one step no registrar route performs.
+    chain.set_current_service(PROVIDER_REGISTRY, PID, &record_type_key("VACCINATION"), SERVICE);
+
+    let (s, b) = call(&app, "GET", &format!("/v1/admin/providers/{PID}/services"), Some(&tok), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let svc = &b["services"][0];
+    assert_eq!(svc["currentPointer"]["isCurrent"], true, "{b}");
+    let e = &svc["effective"];
+    assert_eq!(e["providerStanding"], "active", "{b}");
+    assert_eq!(e["serviceStanding"], "active", "{b}");
+    assert_eq!(e["factoryActive"], true, "{b}");
+    assert_eq!(e["ownerConfirmed"], true, "{b}");
+    assert_eq!(
+        e["hasActiveIssuer"], true,
+        "the repoint is the difference, and nothing else moved: {b}"
+    );
 }
 
 /// The preflight resolves the generation by PROBING each active factory's own `isClone`, so an admin
@@ -321,13 +345,18 @@ async fn verify_capability_is_keyed_by_purpose_and_carries_the_raw_purpose_word(
 
     let (s, b) = call(&app, "GET", "/v1/admin/verifier-capabilities", Some(&tok), None).await;
     assert_eq!(s, StatusCode::OK, "{b}");
-    let p = b["purposes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["purpose"] == "travel_check")
-        .unwrap();
+    let offered = b["purposes"].as_array().unwrap();
+    let p = offered.iter().find(|p| p["purpose"] == "travel_check").unwrap();
     assert_eq!(p["relayers"]["entries"][0]["holder"], SIGNER, "{b}");
+    // The console can only grant what it OFFERS, and the offered set is hand-mirrored from the
+    // labels in circulation (`stacks/owner/web/src/lib/consents.ts`). A label that exists nowhere
+    // else grants under a key `canVerify` is never asked about, and a real one that is missing
+    // cannot be granted from here at all - so both directions are checked against those literals.
+    let labels: Vec<&str> = offered.iter().map(|p| p["purpose"].as_str().unwrap()).collect();
+    for real in ["boarding_intake", "travel_check", "grooming_intake", "daycare_access", "service_animal"] {
+        assert!(labels.contains(&real), "{real} is in circulation and must be grantable: {b}");
+    }
+    assert_eq!(labels.len(), 5, "no label the portals never use may be offered: {b}");
     // Granting a verify capability grants NO issuance: the two axes are orthogonal.
     let (_s, sv) = call(&app, "GET", &format!("/v1/admin/providers/{PID}/services"), Some(&tok), None).await;
     assert!(sv["services"].as_array().unwrap().is_empty(), "{sv}");

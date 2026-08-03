@@ -918,8 +918,13 @@ export interface ServiceRecord {
  *
  * Never render them as one "working" bool. Each has a different remedy - a suspended provider is the
  * registrar's to lift, an unconfirmed owner needs `confirmServiceOwner`, an inactive generation is
- * terminal, and no active issuer is one capability grant away - so a single bool would tell an admin
- * that something is wrong while withholding the only thing that says what to do about it.
+ * terminal - so a single bool would tell an admin that something is wrong while withholding the only
+ * thing that says what to do about it.
+ *
+ * `hasActiveIssuer` is the one term that is NOT independent of its neighbours: the contract answers
+ * `_activeIssuerCount != 0 && _serviceIssuanceEligible(..)`, which re-folds the owner and the
+ * standings AND adds the provider's current pointer. So it can be false with all four of the others
+ * true, and the remedy in that state is the PROVIDER's `repointService`, not a registrar action.
  */
 export interface ServiceEffective {
   providerStanding: ProviderStanding;

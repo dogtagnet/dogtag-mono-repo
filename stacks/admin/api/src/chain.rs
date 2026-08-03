@@ -1339,20 +1339,42 @@ impl ChainClient for MemChain {
         // The fake stores the RESOLVED owner at attachment and models no post-attach handover, so a
         // service that exists is owner-confirmed. `confirmServiceOwner` is a separate lever.
         let owner_confirmed = rec.map(|s| s.confirmed_owner != zero_addr()).unwrap_or(false);
-        let has_active_issuer = g
+        let service_standing = rec.map(|s| s.standing).unwrap_or(Standing::None);
+        let any_grant = g
             .issuance_log
-            .get(&(registry, service))
+            .get(&(registry.clone(), service.clone()))
             .map(|log| {
                 let folded = crate::provider_registry::fold_capabilities(log);
                 folded.iter().any(|e| e.allowed)
             })
             .unwrap_or(false);
+        // `hasActiveIssuer` is `_activeIssuerCount != 0 && _serviceIssuanceEligible(..)`, and that
+        // predicate folds the confirmed owner, `_serviceStandingIsEffective` AND the provider's
+        // current pointer - which only the provider's own `repointService` writes. A fake that
+        // folded the grant alone would report a service as ready to issue in exactly the state the
+        // registrar reaches when it has finished, where every issuance through it reverts.
+        let standing_effective = rec.is_some()
+            && service_standing == Standing::Active
+            && provider_standing == Standing::Active
+            && factory_active;
+        let is_current = rec
+            .map(|s| {
+                g.current_services
+                    .get(&(
+                        registry,
+                        s.provider_id.to_lowercase(),
+                        s.record_type_key.to_lowercase(),
+                    ))
+                    .map(|c| c.eq_ignore_ascii_case(&service))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
         Ok(ServiceEffective {
             provider_standing,
-            service_standing: rec.map(|s| s.standing).unwrap_or(Standing::None),
+            service_standing,
             factory_active,
             owner_confirmed,
-            has_active_issuer,
+            has_active_issuer: any_grant && owner_confirmed && standing_effective && is_current,
         })
     }
 

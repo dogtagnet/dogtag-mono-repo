@@ -273,8 +273,14 @@ pub struct ServiceRecord {
 ///
 /// Never pre-AND them into one bool. Each has a different remedy - a suspended provider is the
 /// registrar's to lift, an unconfirmed owner needs `confirmServiceOwner`, an inactive factory
-/// generation is terminal, and no active issuer is a capability grant away - so one bool would tell
-/// an admin that something is wrong while withholding the only thing that says what to do about it.
+/// generation is terminal - so one bool would tell an admin that something is wrong while
+/// withholding the only thing that says what to do about it.
+///
+/// `has_active_issuer` is the one term that is NOT independent of its neighbours: the contract
+/// answers `_activeIssuerCount != 0 && _serviceIssuanceEligible(..)`, which re-folds the owner and
+/// the standings AND adds the provider's current pointer. So it can be false with all four of the
+/// others true, and the remedy in that state is the PROVIDER's `repointService` - never another
+/// registrar grant.
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceEffective {
     #[serde(rename = "providerStanding")]
@@ -390,8 +396,20 @@ impl ResolverKind {
 ///
 /// `setVerifierCapability` is keyed by PURPOSE and not by service - it is the verify axis, which is
 /// orthogonal to issuance - so it is never rendered as a property of a service row.
-pub const KNOWN_VERIFY_PURPOSES: &[&str] =
-    &["groomer_intake", "boarding_intake", "travel_check", "vet_visit"];
+///
+/// HAND-MIRRORED from `PURPOSE_LABELS` in `stacks/owner/web/src/lib/consents.ts`, which is the list
+/// of labels actually in circulation across the portals; there is no shared source across the
+/// language boundary, so the two move together or not at all. The label is keccak-reduced by
+/// `purpose_key` into the word the contract stores under `verificationKey(purpose)`, so a label that
+/// exists nowhere else grants under a key `canVerify` is never asked about - a transaction that
+/// succeeds and grants nothing, reached through the label axis rather than the derived-key one.
+pub const KNOWN_VERIFY_PURPOSES: &[&str] = &[
+    "boarding_intake",
+    "travel_check",
+    "grooming_intake",
+    "daycare_access",
+    "service_animal",
+];
 
 /// `providerId` is `bytes20` - 40 hex characters. Zero is the one value the contract refuses
 /// (`ZeroProviderId()`, `ProviderRegistry.sol:288`); there is deliberately no format, checksum or

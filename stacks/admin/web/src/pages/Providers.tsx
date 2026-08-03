@@ -414,7 +414,7 @@ function ServiceRow({
   onGrant: (service: string) => void;
 }) {
   const s = view.service;
-  const terms = effectiveTerms(view.effective);
+  const terms = effectiveTerms(view.effective, view.currentPointer);
   const blocker = issuanceBlocker(terms);
   return (
     <div className="rounded-md border p-3" data-testid="service-row">

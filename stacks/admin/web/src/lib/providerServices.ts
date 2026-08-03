@@ -6,7 +6,12 @@
  * exists inside JSX can only be tested by rendering it.
  */
 
-import type { AttachPreflightResp, ProviderStanding, ServiceEffective } from "@dogtag/ui";
+import type {
+  AttachPreflightResp,
+  CurrentPointerRead,
+  ProviderStanding,
+  ServiceEffective,
+} from "@dogtag/ui";
 
 /**
  * The plan key for an attach: any change to it retires a reviewed preflight.
@@ -35,12 +40,32 @@ export interface EffectiveTerm {
  * They are reported APART rather than as one "can issue" bool because each has a different fix, and
  * a single bool would tell an admin that something is wrong while withholding the only thing that
  * says what to do about it. `unavailable` yields all five as `null` - could-not-check, never "no".
+ *
+ * `currentPointer` is read for the LAST term's remedy only and is never folded into any term's
+ * `held`: the chain already folds the pointer inside `hasActiveIssuer`, so ANDing it here a second
+ * time would make one of the five stop meaning what the wire says it means.
  */
 export function effectiveTerms(
   effective: ServiceEffective | { unavailable: string } | undefined,
+  currentPointer?: CurrentPointerRead,
 ): EffectiveTerm[] {
   const unknown = effective === undefined || "unavailable" in effective;
   const e = unknown ? null : (effective as ServiceEffective);
+  // By the time the last term is the FIRST failing one the other four hold, so the only two causes
+  // it can be reporting are "nobody is granted" and "the provider has not repointed" - and only the
+  // second has a remedy the registrar cannot perform. But the pointer read can itself have failed,
+  // which is a THIRD state: naming either cause there would be a definite remedy derived from a
+  // read that never happened.
+  const pointer = currentPointer && currentPointer.state === "resolved" ? currentPointer : null;
+  const issuerRemedy = !pointer
+    ? "Either no key holds issuance capability, or the provider has not published this contract " +
+      "as its current service - the pointer read did not complete, so which of the two applies is " +
+      "not established here."
+    : pointer.isCurrent
+      ? "Grant issuance capability to the key that will sign."
+      : "The provider has not published this contract as its current service for this record " +
+        "type. Only the provider can repoint it, on their own portal - the registrar cannot do " +
+        "it for them.";
   return [
     {
       key: "providerStanding",
@@ -71,9 +96,11 @@ export function effectiveTerms(
     },
     {
       key: "hasActiveIssuer",
-      label: "Has an issuer",
+      // NOT "has an issuer": the chain re-folds the owner, both standings and the provider's
+      // current pointer into this one, so it answers "may somebody issue through this now".
+      label: "An issuer may issue now",
       held: e ? e.hasActiveIssuer : null,
-      remedy: "Grant issuance capability to the key that will sign.",
+      remedy: issuerRemedy,
     },
   ];
 }

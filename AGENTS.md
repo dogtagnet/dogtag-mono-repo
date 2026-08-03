@@ -5819,8 +5819,24 @@ halves are reported apart and must never be pre-ANDed into one "working" bool.
 
 **The five `effectiveService` terms are reported APART on the wire and on screen**, because each has
 a different remedy - a suspended provider is the registrar's to lift, an unconfirmed owner needs
-`confirmServiceOwner`, a deprecated generation is terminal, and no active issuer is one grant away.
+`confirmServiceOwner`, a deprecated generation is terminal.
 One bool would tell an admin something is wrong while withholding the only thing that says what to do.
+
+**`hasActiveIssuer` is the ONE term that is not independent of its neighbours, and reading it as
+"needs a grant" points an admin at the step they just finished.** The contract answers
+`_activeIssuerCount != 0 && _serviceIssuanceEligible(..)`, and that predicate re-folds the confirmed
+owner and `_serviceStandingIsEffective` AND adds `_currentService[providerId][recordType] == service`
+- a pointer only the PROVIDER's own `repointService`/`confirmServiceOwner` writes. So the state a
+registrar reaches the moment it has finished attach -> `setServiceStanding(ACTIVE)` ->
+`setIssuanceCapability` is four terms held and this one false, which is exactly what the live ROAX
+walk recorded. Three consequences, and each has been got wrong once: `MemChain::service_effective`
+must COMPOSE that whole predicate (a fake folding the grant alone lets a journey test certify a state
+the chain cannot produce, agreeing with itself), the journey test must assert BOTH states with a
+`set_current_service` between them rather than seeding the pointer up front, and the blocking sentence
+must name the provider's repoint. The pointer informs the REMEDY only and is never folded into any
+term's `held` - the chain already folds it inside this one, so ANDing it again client-side would make
+one of the five stop meaning what the wire says it means. `currentPointer` is itself tri-state, so an
+unreadable pointer read yields its own sentence and never a confident "grant a capability".
 
 **All three capability writes go through ONE reviewed dialog, never `window.prompt`.** They shipped
 as prompts first, which broke the page's own stated rule (a send addresses values that were CHECKED),
