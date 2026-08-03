@@ -26,12 +26,13 @@ import {ProtocolRegistry} from "../src/ProtocolRegistry.sol";
 ///
 /// # Issuance takes SIX registrar facts, and a suite that skips one gets a silent refusal
 ///
-/// `DogTagIssuer.issue` is gated by `ProviderRegistry.canIssue(service, signer)`, which folds a
-/// registered provider in ACTIVE standing, a service attached under a registered factory generation,
-/// a confirmed live owner, an effective service standing, that service being the provider's CURRENT
-/// pointer for its record type, and an issuance grant for the signer. Missing any one of them reverts
-/// the anchor rather than failing a check the test can see, so {_onboardIssuingClone} performs all of
-/// them and returns a clone that can actually anchor.
+/// `DogTagIssuer.issue` is gated by TWO layers, ANDed. The authority's
+/// `ProviderRegistry.canIssue(service, signer)` folds a registered provider in ACTIVE standing, a
+/// service attached under a registered factory generation, a confirmed live owner, an effective
+/// service standing, that service being the provider's CURRENT pointer for its record type, and the
+/// signer's scope-free `RIGHT_ISSUE` grant. THEN the clone's own `issuanceAllowed` list must admit
+/// the signer. Missing any one of them reverts the anchor rather than failing a check the test can
+/// see, so {_onboardIssuingClone} performs all of them and returns a clone that can actually anchor.
 abstract contract LaunchStack is Test {
     /// @dev The registrar / protocol authority. Owns `ProviderRegistry` and admins the SBT, the
     /// verification registry and the discovery registry — one key, exactly as the deploy script wires
@@ -117,6 +118,13 @@ abstract contract LaunchStack is Test {
         // exists and is attached still anchors nothing until its owner designates it.
         vm.prank(providerKey);
         core.repointService(clone);
+
+        // LAYER 2: this clone's OWN list. The registrar's grant above is scope-free — it names no
+        // service — so without this the clone refuses `NotLocallyAllowed`. Admitting is the OWNER's
+        // call and nobody else's, which is why it is the provider's transaction rather than the
+        // registrar's.
+        vm.prank(providerKey);
+        DogTagIssuer(clone).setIssuanceAllowed(signer, true);
     }
 
     /// @dev Mints a tag to the custodian with `profileRoot = root`. `profileRoot` is write-once and the

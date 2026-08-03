@@ -316,6 +316,10 @@ contract ProviderSelfServiceTest is Test {
         uint256 issueRight = core.RIGHT_ISSUE();
         vm.prank(REGISTRAR);
         core.setRights(PROVIDER_KEY, issueRight);
+        // LAYER 2: the clone's own list. The registrar's grant names no service, so the clone still
+        // refuses until its OWNER admits the signer.
+        vm.prank(PROVIDER_KEY);
+        DogTagIssuer(firstClone).setIssuanceAllowed(PROVIDER_KEY, true);
         vm.prank(PROVIDER_KEY);
         core.repointService(firstClone);
 

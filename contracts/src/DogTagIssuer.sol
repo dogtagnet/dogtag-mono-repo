@@ -136,11 +136,27 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     mapping(bytes32 => uint256) public revokedAt; // 0 = not revoked
     mapping(bytes32 => address) public issuedBy; // H-1 originator
 
+    /// @notice THIS CLONE'S OWN list of addresses that may anchor through it — the second of the two
+    /// layers `issue` requires, and the one that makes the authority's grant safe to keep scope-free.
+    ///
+    /// The authority answers `rightsOf(address)`: one address in, a bitmask out, with no service in the
+    /// question. That is deliberate and must stay that way — a registrar approves an applicant before
+    /// that applicant has a clone, so there is nothing to key a grant against. The consequence, on its
+    /// own, is that a signer approved for one provider could anchor on ANY clone in effective standing.
+    ///
+    /// So the scoping lives HERE, in the contract that already knows which provider it belongs to,
+    /// rather than being pushed back into the lookup. Both layers must hold and either one refuses.
+    mapping(address => bool) public issuanceAllowed;
+
     /// @dev The shape every off-chain decoder — the oversight indexer, the web verifier, both mobile
     /// clients — is written against. A widened event is a changed `topic0`, which drops the log from
     /// every one of them silently rather than loudly.
     event RootIssued(bytes32 indexed root, address indexed by, uint256 ts);
     event RootRevoked(bytes32 indexed root, address indexed by, uint256 ts);
+    /// @dev Who changed this clone's own list, so an operator can reconstruct it without a getter
+    /// call per candidate. `setBy` distinguishes an owner's enrolment from an admin's emergency
+    /// removal, which have different meanings and different remedies.
+    event IssuanceAllowedSet(address indexed signer, bool allowed, address indexed setBy);
 
     /// @dev Why `adminRevoke` passed over a requested root. An emergency sweep must not abort on one
     /// stale entry, so the alternative to reporting is silence — a caller told the whole batch succeeded
@@ -156,6 +172,14 @@ contract DogTagIssuer is Initializable, Ownable2Step {
 
     /// @dev The caller holds no current grant to anchor on this clone (`canIssue`).
     error NotIssuanceCapable();
+    /// @dev The authority's grant holds, but THIS clone has not admitted the caller. Kept apart from
+    /// {NotIssuanceCapable} because the two have different remedies and different owners: one is the
+    /// registrar's grant, the other is this provider's own list.
+    error NotLocallyAllowed();
+    /// @dev Neither the clone owner nor the protocol admin.
+    error NotOwnerOrAdmin();
+    /// @dev The list already reads that way. Its own error rather than {BadRoot}, which is about roots.
+    error NoChange();
     /// @dev The caller holds no current grant to invalidate on this clone (`canRevoke`).
     error NotRevocationCapable();
     error BadRoot();
@@ -173,8 +197,19 @@ contract DogTagIssuer is Initializable, Ownable2Step {
         _disableInitializers(); // lock the implementation itself; only clones initialize
     }
 
+    /// @dev TWO LAYERS, ANDed, and either one failing refuses.
+    ///
+    /// (1) the authority's scope-free grant — `canIssue` folds `rightsOf(signer) & RIGHT_ISSUE` with
+    ///     every lifecycle term this clone's own service record carries; and
+    /// (2) THIS clone's own list, which the authority knows nothing about.
+    ///
+    /// Layer 1 alone is what leaves a signer approved for one provider able to anchor on another's
+    /// clone. Layer 2 alone would let a provider admit anyone it liked, with no KYC anywhere. Neither
+    /// is redundant, and the order is deliberate: the authority answers first so a caller with no
+    /// standing at all learns THAT, rather than being told it is merely not on a list.
     modifier onlyIssuanceCapable() {
         if (!registry.canIssue(address(this), msg.sender)) revert NotIssuanceCapable();
+        if (!issuanceAllowed[msg.sender]) revert NotLocallyAllowed();
         _;
     }
 
@@ -206,6 +241,51 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     function acceptOwnership() public override {
         if (msg.sender == address(0)) revert OwnerCannotBeZero();
         super.acceptOwnership();
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // This clone's own issuance list — the second layer
+    // ---------------------------------------------------------------------------------------------
+
+    /// @notice Admit or remove an address from THIS clone's issuance list.
+    ///
+    /// # Who may write it, and why the two directions differ
+    ///
+    /// **Admitting is the OWNER's alone.** This is a new authority surface, so it is gated rather than
+    /// left open, and the gate is the clone's own `owner()` — the provider that deployed it and the only
+    /// party that knows which keys are its own staff. The protocol admin is deliberately EXCLUDED from
+    /// this direction: a registrar that could enrol an address onto any clone could enrol its own key,
+    /// and since it also writes the authority bit it would hold both layers at once — which is exactly
+    /// the cross-provider issuance this list exists to prevent, reintroduced through the registrar.
+    ///
+    /// **Removing is the owner OR the protocol admin.** Removal only ever narrows, it is the incident
+    /// -response direction for a compromised staff key, and it cannot manufacture an issuance right for
+    /// anybody. This is the same asymmetry the core already applies on the revocation axis: the safety
+    /// direction gets the wider authority.
+    ///
+    /// # This is not an issuance right
+    ///
+    /// Being on this list grants nothing by itself — `issue` still asks the authority first, so an
+    /// address the registrar never granted is refused however this list reads. Owning the clone is
+    /// likewise still not a capability: an owner who admits itself and holds no bit cannot anchor.
+    /// Pinned by `test_owning_a_clone_confers_no_issuance_right`.
+    ///
+    /// # It gates ISSUE only, never REVOKE
+    ///
+    /// `revoke` does not consult this list, and that is deliberate rather than an omission. Removing a
+    /// signer must stop the next anchor and strand nothing already anchored — the same forward-only rule
+    /// `delistFor` follows and the reason `canRevoke` is the wider rung. A removed originator can still
+    /// invalidate what it issued.
+    function setIssuanceAllowed(address signer, bool allowed) external {
+        // The zero address can never sign, so admitting it could only ever be a mistake.
+        if (signer == address(0)) revert NotLocallyAllowed();
+        bool asOwner = msg.sender == owner();
+        // Only a REMOVAL may come from the protocol admin; admitting is the owner's alone.
+        bool asAdmin = !allowed && registry.hasRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        if (!asOwner && !asAdmin) revert NotOwnerOrAdmin();
+        if (issuanceAllowed[signer] == allowed) revert NoChange();
+        issuanceAllowed[signer] = allowed;
+        emit IssuanceAllowedSet(signer, allowed, msg.sender);
     }
 
     // ---------------------------------------------------------------------------------------------

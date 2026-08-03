@@ -150,6 +150,82 @@ async fn government_verifies_a_vet_issued_credential() {
     assert_eq!(v["recomputedRoot"], root);
 }
 
+/// THE CROSS-PROVIDER ATTACK, AT THE SURFACE IT WOULD HAVE LANDED ON.
+///
+/// `POST /v1/verify` is UNAUTHENTICATED, so it is where a forged credential is cheapest to present.
+/// The attack the address-keyed grant opened, and the second layer closes:
+///
+///   1. the registrar grants a signer `RIGHT_ISSUE` - a bitmask on an ADDRESS, naming no service;
+///   2. that signer anchors on ANOTHER provider's clone;
+///   3. `issuedBy[R]` records it, the factory attributes the root to the clone it was written
+///      through, and the credential reads as that other provider's;
+///   4. the pillar folds the signer's own `RightsSet` history and answers AUTHORIZED;
+///   5. this endpoint returns a clean verdict for a credential its named issuer never issued.
+///
+/// Step 2 is now refused by `DogTagIssuer.issuanceAllowed` - proved at the contract level by
+/// `test_a_signer_approved_for_one_provider_cannot_anchor_on_another_providers_clone`, which asserts
+/// the revert AND that nothing reaches the factory index. So the root arrives here UNANCHORED, and
+/// this test pins what this endpoint does with it: not a clean verdict.
+///
+/// The CONTROL is the second half, and it is what stops this being vacuous: the identical credential,
+/// with the anchoring that the pre-closure chain would have permitted, verifies clean. So the
+/// difference in verdict is the anchoring - i.e. exactly the step the clone's list removes - and not
+/// something incidental about the fixture.
+#[tokio::test]
+async fn a_cross_provider_root_the_clone_refused_never_reaches_a_clean_verdict() {
+    let (root, wrapped) = vet_issue_vaccination("7");
+    let factory = "0x00000000000000000000000000000000000000fa";
+
+    // LAYER 1 HOLDS: the registrar's grant is scope-free, so the authority raises no objection to
+    // this signer. Seeded so the refusal below cannot be coming from the authority.
+    let chain = MemChain::new().with_signer(VET_SIGNER).with_factory(factory);
+    chain.set_record_type(
+        VACC_CLONE,
+        &government_api::app::record_type_key("VACCINATION"),
+    );
+    chain.set_issuance_capability(REGISTRY, VACC_CLONE, VET_SIGNER, true);
+
+    // ...and the anchoring simply never happened, because the clone refused it. Nothing else about
+    // the credential is altered - it is byte-identical to the one that verifies in the control.
+    let gov = government_stack(chain);
+    let (status, v) = post(
+        &gov,
+        "/v1/verify",
+        json!({ "wrapped_doc": wrapped.clone(), "signer_addr": VET_SIGNER }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify answers: {v}");
+    // Integrity still passes - the document is genuine cleartext. That is the point: integrity alone
+    // was never what stopped this, and the verdict must still refuse.
+    assert_eq!(v["fragments"]["integrity"], true, "the document itself is intact: {v}");
+    assert_eq!(v["fragments"]["onchain"], false, "nothing was anchored: {v}");
+    assert_ne!(
+        v["fragments"]["issuerWhitelisted"], true,
+        "the pillar must NOT reach a definite pass for a root no clone anchored: {v}"
+    );
+    assert_eq!(v["verdict"], false, "an unanchored root must never verify: {v}");
+
+    // THE CONTROL: the same credential, anchored as the pre-closure chain would have allowed, is
+    // clean. Without this the assertions above would also pass against a verifier that refused
+    // everything.
+    let anchored = MemChain::new().with_signer(VET_SIGNER).with_factory(factory);
+    anchored.set_record_type(
+        VACC_CLONE,
+        &government_api::app::record_type_key("VACCINATION"),
+    );
+    anchored.set_issuance_capability(REGISTRY, VACC_CLONE, VET_SIGNER, true);
+    anchored.issue(VACC_CLONE, &root).await.expect("anchors");
+    let gov2 = government_stack(anchored);
+    let (status2, v2) = post(
+        &gov2,
+        "/v1/verify",
+        json!({ "wrapped_doc": wrapped, "signer_addr": VET_SIGNER }),
+    )
+    .await;
+    assert_eq!(status2, StatusCode::OK);
+    assert_eq!(v2["verdict"], true, "the control must verify: {v2}");
+}
+
 #[tokio::test]
 async fn government_rejects_a_tampered_vet_credential() {
     // A vet credential whose cleartext was altered after issuance: integrity recompute != anchored R.
