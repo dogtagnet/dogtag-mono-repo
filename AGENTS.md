@@ -12,6 +12,47 @@ That guard test caught the drift and its pin was updated to 2 rather than delete
 What is genuinely unchanged is the `document.instructions` constraints above, the post-stage commit guard, and the standing `--skip=document` policy - which is why the practical exposure is small: every Dogtag run starts with `--skip=document`, so that step does not execute at all.
 Do not soften this into "no functional change".
 
+## No-mistakes gate policy - PAUSED, and the flags for when it returns
+
+**The gate is PAUSED fleet-wide by captain ruling (2026-08-03):** "pause on no mistakes for now ...
+just do development and e2e test and unit test ... only put it back up when i instruct you to." Do
+not run it until the captain says so. What replaces it is stated below, and it is a higher bar rather
+than a lower one.
+
+When it returns, the flags are `--skip=document,ci`, and the two halves are NOT the same kind of rule:
+
+- **`--skip=document` always.** Measured fleet-wide: 26 fixes out of 1371, about 2%. It is standing
+  policy for every dogtag run regardless of repository state.
+- **`,ci` ONLY where no workflow triggers on a pull request.** That is a CONDITION to re-derive, not a
+  value to inherit: `ci` waits on PR checks, so where none can be produced it monitors for a result
+  that never arrives and contributes zero safety. For dogtag it holds today - `.github/workflows/`
+  contains exactly `ios-mobile-e2e.yml` and `android-mobile-e2e.yml`, both `on: workflow_dispatch`
+  only. **If dogtag ever gains a PR-triggered workflow, drop the `ci` skip** - check the trigger, do
+  not copy this line forward.
+
+**Review is NEVER skipped.** It produced 1215 of those 1371 fixes, and on this branch alone it caught
+both mobile test modules silently failing to COMPILE - 17 call sites referencing symbols the change
+had deleted. That failure is worth naming because it is this repo's standing defect class: a module
+that does not compile reports NOTHING, and nothing is indistinguishable from success. Speed is never a
+reason to trim review.
+
+### What "legit tests" means now that the gate is off (captain, 2026-08-03)
+
+"The process just needs to make sure the e2e tests and the unit tests are legit and they pass before
+pushing." Four things, SHOWN rather than asserted, before any push:
+
+1. **They compiled AND ran** - paste the runner's own output with real counts. **A module reporting
+   zero tests is a FAILURE, never nothing-to-run.** That is exactly how both mobile suites went
+   silently dead here, and how a Gradle `BUILD SUCCESSFUL` can mean no test executed at all: read the
+   JUnit XML in `app/build/test-results/`, not the console summary.
+2. **They can fail** - break the behaviour you changed, watch the SPECIFIC test redden, revert, and
+   say which test and which mutation.
+3. **They cover the change** - the tests that ran must exercise what you actually changed, not a
+   suite that happens to be green.
+4. **Counts, not adjectives** - "832 passed, 0 failed", never "tests pass". Both platforms for mobile.
+
+Anything you cannot run, say so plainly and why. Could-not-check must never be reported as pass.
+
 ## No-mistakes Test safety (high priority, conditional)
 
 When acting as the no-mistakes Test or evidence agent, use the configured targeted command plus at most the smallest checks directly relevant to the submitted diff. Never run `cargo test --workspace` or another full monorepo suite locally, and do not expand into browsers or screenshots unless the diff changes that UI. Treat 15 minutes as a prompt/supervision budget, not a hard enforced timeout; park with a finding instead of broadening beyond it.
