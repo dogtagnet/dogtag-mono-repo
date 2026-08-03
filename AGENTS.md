@@ -761,9 +761,12 @@ authority answers off the orthogonal VERIFY axis for a caller that is not itself
 that contract does not implement at all. Its replacements are `setRights` (the address-keyed issue grant - see
 "Rights are a BITMASK ON AN ADDRESS") and
 `setVerifierCapability` on the Providers page; see "The journey is COMPLETE now". What SURVIVED and
-must not be confused with it: `approve_application`'s own `whitelistFor` calls against the
-generation-1 `IssuerRegistry`, `whitelist_for_calldata`/`delist_for_calldata` in `chain.rs`, and the
-Dashboard's "Whitelist admin" authority tile. `dispatch_summary`/`dispatch_all` also outlived it and
+must not be confused with it: the Dashboard's "Whitelist admin" authority tile, and
+`isWhitelistedFor`, which the launch set DOES implement on the orthogonal VERIFY axis.
+`approve_application`'s own `whitelistFor` calls and `whitelist_for_calldata`/`delist_for_calldata`
+in `chain.rs` were listed here as survivors and are now GONE: they targeted a contract no launch-set
+member implements, and the address-keyed `setRights` is the successor the issuance half never had -
+see "Rights are a BITMASK ON AN ADDRESS". `dispatch_summary`/`dispatch_all` also outlived it and
 are now the registrar routes' - the tri-state `outcome` this section describes is still exactly
 right, and is pinned in `tests/provider_journey.rs`.
 
