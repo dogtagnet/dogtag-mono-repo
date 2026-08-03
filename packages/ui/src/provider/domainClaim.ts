@@ -235,4 +235,17 @@ export function canWithdraw(standing: DomainClaimStanding | undefined): boolean 
   return standing?.disposition === DomainDisposition.CLAIMED;
 }
 
+/**
+ * The two-step dependency this flow sits behind, said BEFORE a provider tries it.
+ *
+ * Same rule as {@link ATTACHMENT_IS_A_DOGTAG_STEP}: a permanent dependency, never a current status.
+ * `ProviderRegistry.setResolverApproved` is `onlyOwner`, and `setDomainResolver` reverts
+ * `ResolverNotApproved` until that has happened - so the ORDER is fixed by the contract and the
+ * first half is DogTag's whatever the chain currently says. Naming both halves is what makes "not
+ * your fault" concrete rather than reassuring: a provider who is told only "it is blocked" cannot
+ * tell whether they are the one who is meant to act.
+ */
+export const DOMAIN_REGISTER_NEEDS_TURNING_ON =
+  "Publishing a domain needs the domain register switched on for your contract, in two steps: DogTag approves the register, and only then can it be selected for your contract. Neither has a page here yet, so if this stops at the first check, that is why - it is not something you have set up wrongly.";
+
 export { DomainDisposition };

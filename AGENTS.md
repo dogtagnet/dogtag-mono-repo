@@ -2276,6 +2276,138 @@ generation-2 set is deployed but unwired, and a value shipped in a template opts
 copies it into reading generation 2 without anyone deciding to. The code has no fallback either, so a
 blank cannot fall through to a bundled constant.
 
+### The page must explain ITSELF; the click-through guide is the backup
+
+The captain walked this page and asked what the contract number was for, which is the whole finding:
+1,118 lines of flows carrying essentially no explanatory copy. Fixing only `docs/DEMO_CLICKS.md`
+would have been fixing the backup. Copy lives in the two places the repo already splits it - product
+sentences that make a CLAIM are exported constants beside their logic and are testable
+(`ATTACHMENT_IS_A_DOGTAG_STEP`, `DOMAIN_REGISTER_NEEDS_TURNING_ON`, `DIRECTORY_NEEDS_TURNING_ON`,
+beside `REPOINT_SCOPE_NOTICE` and the three in `directoryPlan.ts`), while presentational hints stay
+inline in the component. `WhyThisExists` (`ProviderSelfServicePanel.tsx`) is the progressive-disclosure
+primitive: native `<details>`, so no state and no interaction with this package's no-`act()` rule.
+
+- **A DEPENDENCY IS PERMANENT; A BLOCKAGE IS CURRENT, and only the first may be written into copy.**
+  "DogTag must attach this before you can select it" stays true after the gap closes; "this is
+  currently blocked" goes stale silently and would need a live read - which on a failed read would
+  render could-not-check as an accusation, the defect this page is built against. `attachService` is
+  `onlyOwner` and `setResolverApproved` is `onlyOwner` with `setDirectoryResolver`/`setDomainResolver`
+  reverting `ResolverNotApproved` until it has run, so the dependency and its ORDER are properties of
+  the contracts rather than of today's chain state. The checks report what is true now; the notice
+  reports what the flow needs. `providerSelfServiceExplains.test.tsx` pins that these notices contain
+  no "currently"/"is blocked" wording.
+- **A DISABLED CONTROL MUST RENDER A REASON, AND THE FIRST-RUN STATE IS THE ONE THAT SHIPS BROKEN.**
+  Found on a live stack, and it is the sharpest instance of everything above: **Deploy** is gated on
+  a plan (`!deploy?.canDeploy`), no plan exists before the first check, and `retiredBecause` answers
+  `null` when no plan is HELD - so the one notice that could have spoken rendered nothing for the
+  state every new provider is in. A dead button, in silence, under "You deploy it and you own it".
+  The words "run the check first" appeared nowhere in the 1,118-line file. Note the shape: the
+  explanation path covered `spent` and `edited` - the two states you reach by USING the page - and
+  not `never`, the one you start in, which is exactly the state a developer never sits in long
+  enough to notice. `provider/actionAvailability.ts` is now the ONE decision, and eleven controls
+  render it.
+  - **Eight reasons, kept apart.** Not connected, wrong chain, an action in flight, never checked,
+    checked-then-edited, already sent, refused, could-not-resolve. They had all rendered identically
+    - as nothing - and collapsing them into one "unavailable" would fix the silence while keeping
+    the part that costs time. `providerSelfServiceExplains.test.tsx` asserts no two share a sentence.
+  - **The never-checked sentence must ALSO explain the form-match gating**, or a provider who checks
+    once, edits a field and finds the button dead again has no way to have predicted it.
+  - **WRONG CHAIN GATES SENDS ONLY.** `ready` never had a chain term and still does not: the checks
+    read through the page's own configured endpoint and are correct on any network, so gating them
+    would refuse a preflight that would have answered usefully. Only a transaction is bound to the
+    wallet's chain. A connector reporting NO chain id is not accused of being on the wrong one -
+    could-not-check is not a definite answer, here as everywhere else in this repo.
+  - **Enumerate the rendered buttons in the invariant test, never a hand list.** A hand list is
+    precisely how flow 3's three sends - `domain-claim-send`, `domain-none-send`,
+    `domain-withdraw-send`, with genuinely different gates - came to share one reason; the
+    enumerating test caught it in the same run that introduced it.
+- **A DISABLED CONTROL MUST RENDER A REASON, and one gate had none for its whole life.** Flow 3's
+  Check is gated on flow 2's **Contract address** (`!candidate`), not on the Domain field beside it,
+  so typing a domain and finding the button dead was the page's most confusing state with nothing
+  said. Its two siblings already had reasons (`!isConnected` an amber line, `!providerIdOk` a red
+  one), which is exactly why the odd one out survived review. Audit each Check button's disabled
+  terms against what is rendered when you add one.
+- **The `cloneNonce` explanation is the CREATE2 salt, and the contract already says so.**
+  `DogTagIssuerFactoryV2._salt = keccak256(abi.encode(recordType, business, cloneNonce))` with
+  `business == msg.sender`, so two of three inputs are fixed and the number is the only dial; without
+  it there is exactly one possible address per record type per owner, forever, and nothing to repoint
+  TO. That reasoning was already written in `DogTagIssuerFactoryV2.sol`'s header and in a
+  `deployPlan.ts` comment - both places no user will ever read.
+- **A refusal says what happened, what it MEANS, and what to do.** The taken-nonce case is
+  `isFactoryClone` - a STORAGE read of what the factory has already deployed - so it must be described
+  as "two contracts cannot share one address", never as a revert: nothing was sent, and asserting a
+  transaction outcome from a storage read is the conflation every could-not-run state here exists to
+  prevent. Pinned in both directions by `providerDomainAndDeploy.test.ts`.
+
+### The wallet layer must never speak for the subject of the page
+
+Four live findings, all on the shared wallet path, all one root shape: a wallet's answer read at one
+fixed depth and then presented where an answer about the PROVIDER belongs.
+
+- **NEVER `window.ethereum`.** Connection goes through AppKit/wagmi EIP-6963 discovery - the wallet
+  the USER picked - while the global is whichever extension won a race for it. With two extensions
+  installed those are routinely different wallets: a captain connected one, the switch request opened
+  in another sitting on Ethereum Mainnet, and its dialog reported chain `0x1` against a site asking
+  for `0x87`. `useSwitchChain` reaches the connected connector by construction; anything else needs
+  `useAccount().connector.getProvider()`. `WalletButton` is shared, so this reached EVERY portal.
+- **4902 is MetaMask's dialect, not the protocol's.** The add-chain fallback keyed on it alone, so a
+  wallet answering `4100` fell through to a dead end and the captain added ROAX by hand. Providers
+  also WRAP - viem under `cause`, extensions under `data.originalError` - so a top-level `err.code`
+  read misses a code plainly present two levels down. `wallet/walletError.ts` walks the whole chain
+  and matches message text too, since some wallets put the only usable information there.
+- **`4100 Unauthorized` IS THE MOST DANGEROUS STRING A WALLET CAN RETURN TO THIS PAGE.** It reads as
+  "not authorized", and it was rendered unlabelled in red inside the card headed "Your provider
+  record" directly under the provider id - so it was read as a verdict about the provider while the
+  admin portal showed that same provider ACTIVE and approved. `run()`'s own comment asserted that
+  reading was impossible. **Being true about an error's origin is not the same as being unmistakable
+  on screen, and only the second is a property of the product** - fix the rendering, not the comment.
+  A fault is now labelled, placed OUTSIDE that card, and states what was not established.
+- **A fault must not outlive its cause.** The message cleared only at the start of the next action,
+  so it survived the wallet switch it had just asked for and went on reading as current.
+
+**THE SEND PATH HAD NONE OF THE GUARDS THE RECEIPT PATH HAD, AND IT LOST A MINED TRANSACTION.**
+`sendAndFollow` did `await send()` FIRST and recorded the attempt only after that promise resolved,
+with no timeout. A captain's deploy mined - the clone is on chain, his account nonce was 1 - and the
+page showed nothing at all, forever. Meanwhile the receipt path a few lines below had a bounded wait
+AND an explicit `unknown` whose comment says an unfetchable receipt is neither success nor failure.
+Generalize it: **the place a promise can hang indefinitely is the place that most needs the
+three-state treatment, and it is easy to miss precisely because nothing is rendered there to look
+wrong.** `awaitingWallet` and `walletSilent` are separate states from `submitted` and `unknown` - a
+wallet that has not answered has no hash, so it must never be sent to an explorer, and it has not
+failed either.
+
+### A guide can be entirely correct and still unreachable
+
+The captain read the section covering flow 2's stop - twice over, in the closing paragraph and in the
+outcome table - and still could not tell whether it was his mistake. Nothing was inaccurate; the
+important fact was simply in the wrong PLACE. Three rules came out of it, and they generalize past
+this document:
+
+- **A summary of what will happen goes BEFORE the steps, not after them.** An outcome table at the
+  end sits after the sections it would have explained, so the reader meets each surprise first and
+  the explanation only once it can no longer help.
+- **Assemble the sequence; do not leave the reader to.** Every fact about the three-move
+  deploy → attach → select flow was already in the guide, and none of it was stated as a sequence, so
+  a reader had to build it themselves from four sections. `provider/types.ts` already carried exactly
+  that sequence in a comment - lift a framing that exists rather than inventing a second one.
+- **The crucial sentence must not be the last paragraph.** Lead a section that stops with the fact
+  that it stops and why; the table and the blockquote are evidence and belong after.
+
+**A MUTATION HARNESS THAT RESTORES WITH `git checkout --` DESTROYS UNCOMMITTED WORK - COMMIT FIRST.**
+`scripts/verify-provider-selfservice-mutations.sh` and any ad-hoc equivalent take git as the pristine
+baseline, so running one over uncommitted edits reverts every file in its `TARGETS` and reports every
+subsequent mutation as INERT ("scrutinee absent"), which reads exactly like a harness bug rather than
+like your work having just been deleted. This happened during this slice; only files OUTSIDE `TARGETS`
+survived. The existing note that a target missing from `TARGETS` leaves the tree mutated is the
+inverse of the same hazard - both follow from that one `git checkout --`.
+
+**Two mutations from this slice are worth keeping as worked examples of an INERT mutation**, since
+both initially read as an unpinned claim. Appending text to a note cannot redden an assertion that the
+note's ELEMENT is absent - the mutation has to target the CONDITION. And deleting the three-input
+sentence from the contract-number disclosure left `/record type/` and `/wallet/` matching the
+paragraphs BELOW it, so the test survived removal of the thing it was named for; the fix was to assert
+the enumeration, not words scattered near it. Check the scrutinee, not just the diff.
+
 **Rendering a vet- or groomer-portal page locally without a backend:** seed
 `localStorage["vet.opToken"]` (or `"groomer.opToken"`) with any string - the Layout gates on its presence, so no login round trip is needed - and build with
 `VITE_VET_API_BASE` and `VITE_CENTRAL_API_BASE` set to an absolute dead host, which takes `/api` out of

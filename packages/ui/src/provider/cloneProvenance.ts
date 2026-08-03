@@ -384,5 +384,20 @@ export function nextStepFor(lifecycle: CloneLifecycle, verdict: ProviderVerdict)
 export const REPOINT_SCOPE_NOTICE =
   "Selecting a different contract changes where NEW credentials are anchored. Credentials you have already issued stay with the contract that issued them, and stay revocable there.";
 
+/**
+ * That this flow depends on a step the provider cannot take, said BEFORE they try it.
+ *
+ * A DEPENDENCY, not a status. `attachService` is `onlyOwner` on the core, so "DogTag must attach it
+ * first" is a permanent property of the design and stays true after the gap closes; a sentence
+ * claiming the flow is currently blocked would go stale silently, and deriving one from a live read
+ * would mean rendering a could-not-run state as an accusation. The checks report what is true now;
+ * this reports what this flow needs.
+ *
+ * The second sentence is the part a provider actually needs: without it, hitting the wall reads as
+ * something they misconfigured, and they go looking for a setting that does not exist.
+ */
+export const ATTACHMENT_IS_A_DOGTAG_STEP =
+  "Before you can select a contract here, DogTag has to attach it to your provider record. That step is theirs, not yours, and there is no page for it yet - so if this stops at the attachment check, nothing is wrong with what you deployed.";
+
 /** Re-exported so a renderer can name a disposition without importing the reader module. */
 export { DomainDisposition, ZERO_ADDR };

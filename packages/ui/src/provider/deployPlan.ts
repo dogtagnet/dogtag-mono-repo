@@ -138,7 +138,18 @@ export async function planCloneDeployment(
           "clone-provenance",
           "Is this contract number still free?",
           "fail",
-          `Contract number ${cloneNonce} already exists at ${predictedAddress}. Choose another number.`,
+          // What happened, what it means, what to do - in that order, because "already exists"
+          // alone reads as an error the provider made. It is not: each number produces one fixed
+          // address, so a used number has nothing left to give.
+          //
+          // "Cannot share an address" and NOT "the chain would reject it". This is `isFactoryClone`
+          // - the factory's own record of what it has already deployed - so it is a storage read,
+          // and describing it as an observed transaction outcome would be asserting something
+          // nobody sent.
+          `Contract number ${cloneNonce} has already been used: it produced the contract at `
+            + `${predictedAddress}. Each number produces one fixed address and two contracts cannot `
+            + `share one, so this number has nothing left to deploy. Choose another number - the `
+            + `address changes with it.`,
         ),
       );
     }
@@ -171,7 +182,11 @@ function deployNextStep(verdict: ProviderVerdict, nonceTaken: boolean): string {
   }
   if (verdict === "refused") {
     return nonceTaken
-      ? "Choose a different contract number."
+      ? // Says out loud that the provider record is fine, because a refusal on this page otherwise
+        // sends people to re-check their standing and their approvals - neither of which is the
+        // cause when the only failing check is a number that is already spent.
+        "Choose a different contract number. Nothing is wrong with your provider record or your "
+          + "approval - that one number's address is simply taken."
       : "This cannot be deployed yet. The failed checks above say why.";
   }
   return "Ready to deploy. You will own the contract. DogTag then attaches it to your provider record before you can select it.";

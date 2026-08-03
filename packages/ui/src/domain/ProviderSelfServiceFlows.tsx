@@ -41,7 +41,7 @@
  */
 
 import { Sparkles } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { keccak256, toHex } from "viem";
 import { useAccount, useWriteContract } from "wagmi";
 import { Button } from "../components/Button";
@@ -69,13 +69,21 @@ import {
 import { blankContactFields } from "../directory/registration";
 import { DEMO_PROVIDER_LISTING } from "../schema/demoData";
 import {
+  ATTACHMENT_IS_A_DOGTAG_STEP,
   ATTACHMENT_IS_NOT_SELF_SERVICE,
   assessCandidateClone,
+  checkBlock,
+  describeActionBlock,
+  planGateState,
+  sendBlock,
+  type ActionBlock,
   assessDomainClaim,
   canWithdraw,
   CONTACT_ONLY_NOTICE,
   CONTACTS_ARE_ANCHORED_NOT_SERVED,
   createLiveProviderReader,
+  DIRECTORY_NEEDS_TURNING_ON,
+  DOMAIN_REGISTER_NEEDS_TURNING_ON,
   mayContinueAfter,
   mirrorPublicationRefusal,
   outcomeFromReceiptStatus,
@@ -101,6 +109,8 @@ import {
   DOMAIN_ABI,
   FACTORY_ABI,
 } from "../provider/liveReader";
+import { ROAX_CHAIN_ID } from "../wallet/chain";
+import { classifySurfaceFault, type SurfaceFault } from "../wallet/walletError";
 import { roaxPublicClient } from "../wallet/contracts";
 import {
   CloneLifecycleCard,
@@ -108,6 +118,7 @@ import {
   DirectoryPublicationCard,
   PublishedListingCard,
   DomainClaimCard,
+  WhyThisExists,
   type PlanRetirement,
 } from "./ProviderSelfServicePanel";
 
@@ -154,6 +165,110 @@ export interface ProviderSelfServiceFlowsProps {
  * is a spinner that never resolves and a provider who cannot tell whether anything happened.
  */
 const RECEIPT_TIMEOUT_MS = 90_000;
+
+/**
+ * How long to wait for the WALLET to answer before saying we cannot tell.
+ *
+ * Generous, because a person may be reading the transaction, fetching a hardware key, or unlocking
+ * an extension - and a premature could-not-tell beside a request they are about to approve is its
+ * own kind of wrong. But bounded, because the alternative is what happened: a promise that never
+ * resolves and a page that shows nothing at all while the transaction mines.
+ */
+const WALLET_TIMEOUT_MS = 180_000;
+
+/**
+ * A fault in the wallet or in this page, rendered so it can never be read as a verdict.
+ *
+ * THE DEFECT: a bare wallet string was rendered unlabelled in red inside the card headed "Your
+ * provider record", directly beneath the provider id, the record type and the caller address. When
+ * a wallet answered `4100 Unauthorized`, that put the words "not been authorized" exactly where an
+ * answer about the provider's authorization belongs - and a captain read it that way while the
+ * chain said his provider was ACTIVE and approved. The most misleading sentence a wallet could
+ * return, in the worst possible position.
+ *
+ * Three things fix it, and all three are load-bearing:
+ *
+ *   * **It is labelled**, so the layer at fault is named before the message is read.
+ *   * **It states what was NOT established.** Silence about the provider, next to a wallet's
+ *     refusal, is read as an answer about the provider; saying so explicitly is the only thing that
+ *     stops it. This is the codebase's could-not-run rule - a question nobody could answer is not a
+ *     failed check - applied to a thrown error.
+ *   * **It sits outside the provider-record card**, so position cannot imply what the words deny.
+ *
+ * Amber rather than red, deliberately. Red is this page's colour for a failed CHECK, and a fault
+ * that establishes nothing must not borrow the styling of an answer.
+ */
+function WalletFaultNotice({ fault }: { fault: SurfaceFault | null }): ReactNode {
+  if (!fault) return null;
+  return (
+    <div
+      className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-300"
+      data-testid="wallet-fault"
+      data-fault={fault.kind}
+    >
+      <p className="font-semibold">
+        {fault.kind === "walletRejected"
+          ? "You cancelled this in your wallet"
+          : fault.kind === "surfaceFault"
+            ? "This page hit a problem"
+            : "Your wallet could not complete this"}
+      </p>
+      {/* The denial comes BEFORE the wallet's own words, so the qualification is read first rather
+          than as an afterthought to a sentence that has already landed. */}
+      <p className="mt-1" data-testid="wallet-fault-established">
+        {fault.established}
+      </p>
+      <p className="mt-1" data-testid="wallet-fault-next">
+        {fault.nextStep}
+      </p>
+      <p className="mt-2 break-words text-xs opacity-80">
+        Your wallet said: <span className="font-mono">{fault.detail}</span>
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Why the control above cannot be used, or nothing when it can.
+ *
+ * Rendered under the button row rather than as a tooltip, for the reason this repo applies to every
+ * finding: a reason reachable only by hovering is not reported. Muted rather than amber - most of
+ * these are ordinary first-run states ("run the check first"), not warnings, and painting them all
+ * as alarms would train the reader past the ones that are.
+ */
+function ActionReason({ block, testId }: { block: ActionBlock | null; testId: string }): ReactNode {
+  if (!block) return null;
+  return (
+    <p className="text-xs text-muted-foreground" data-testid={testId} data-block={block.kind}>
+      {describeActionBlock(block)}
+    </p>
+  );
+}
+
+/**
+ * That a flow waits on a step DogTag takes, said before the provider tries it.
+ *
+ * Deliberately not styled as a failure. It states a DEPENDENCY, which is permanent and true whether
+ * or not the step has happened yet - so it must not read as "this is broken", and it must not go
+ * stale the day the step is taken. What it does buy is the thing a wall never tells you: that
+ * hitting it is not something you did.
+ */
+function DependencyNotice({
+  children,
+  testId,
+}: {
+  children: ReactNode;
+  testId: string;
+}): ReactNode {
+  return (
+    <p
+      className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+      data-testid={testId}
+    >
+      {children}
+    </p>
+  );
+}
 
 /**
  * A plan plus the inputs it was computed FROM, and whether it has already been acted on.
@@ -228,7 +343,9 @@ export function ProviderSelfServiceFlows({
   mirrorToken,
   demoMode = false,
 }: ProviderSelfServiceFlowsProps): ReactNode {
-  const { address, isConnected } = useAccount();
+  // `chainId` is read for the SEND gate only, and `undefined` means the connector did not report
+  // one - which is not the wrong chain. See `ChainCheck`.
+  const { address, isConnected, chainId } = useAccount();
   const { writeContractAsync } = useWriteContract();
 
   const [providerId, setProviderId] = useState(defaultProviderId);
@@ -256,8 +373,13 @@ export function ProviderSelfServiceFlows({
   );
 
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // A CLASSIFIED fault, not a raw string. The kind is what lets the renderer say whose fault it is
+  // and what nothing was established about - which a message alone cannot carry.
+  const [fault, setFault] = useState<SurfaceFault | null>(null);
   const [sent, setSent] = useState<SendRecord[]>([]);
+  // Row identity, minted before the wallet is asked. A hash cannot serve, because at that moment
+  // there is not one - which is what kept the old code from recording anything at all until after.
+  const sendSeq = useRef(0);
 
   const reader = useMemo(
     () => (missingConfig.length ? null : createLiveProviderReader({ contracts, rpcUrl })),
@@ -304,6 +426,15 @@ export function ProviderSelfServiceFlows({
   }, [reader, providerId, providerIdOk, mirrorBase, sent.length]);
   const caller = address as `0x${string}` | undefined;
 
+  // A FAULT MUST NOT OUTLIVE THE THING THAT CAUSED IT. It used to clear only at the start of the
+  // next run(), so a wallet message stayed on screen while the user did exactly what it asked -
+  // switched wallet, switched network, connected the right account - and went on reading as current
+  // long after it had stopped being true. Which, for a message that was already being read as a
+  // verdict about the provider, made it a verdict that could not be withdrawn.
+  useEffect(() => {
+    setFault(null);
+  }, [isConnected, address, chainId]);
+
   // The input fingerprints. Anything a plan's answer depends on belongs in its key; a value left out
   // is a value that can be edited after Check without disabling the button, which is the whole bug.
   const identity = `${caller ?? ""}|${providerId}`;
@@ -341,15 +472,25 @@ export function ProviderSelfServiceFlows({
 
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
-    setError(null);
+    setFault(null);
     try {
       await fn();
     } catch (e) {
-      // A throw here is a fault in THIS surface or a rejected signature - never a verdict about the
-      // provider. Every chain READ the engine makes is already caught and reported as its own
-      // could-not-run, and every transaction OUTCOME is reported as its own record, so nothing that
-      // reaches here can be mistaken for either.
-      setError(e instanceof Error ? e.message.split("\n")[0]! : String(e));
+      // A throw here is a fault in THIS surface or in the wallet - never a verdict about the
+      // provider. Every chain READ the engine makes is caught and reported as its own could-not-run,
+      // and every transaction OUTCOME is reported as its own record.
+      //
+      // THAT WAS ONCE ASSERTED HERE AS THOUGH IT SETTLED THE MATTER, AND IT DID NOT. A bare wallet
+      // string was rendered unlabelled in red directly under the provider id, the record type and
+      // the caller address - so a captain whose wallet answered EIP-1193 `4100 Unauthorized` read
+      // it as his PROVIDER being unauthorized, while the admin portal showed that same provider
+      // ACTIVE and approved for the record type. The comment said that reading was impossible; the
+      // rendering made it the natural one. Being true about the origin is not the same as being
+      // unmistakable on screen, and only the second is a property of the product.
+      //
+      // So the fault is now classified and rendered as a fault - what could not be done, that
+      // nothing about the provider was established, and what to do - by `WalletFaultNotice`.
+      setFault(classifySurfaceFault(e));
     } finally {
       setBusy(false);
     }
@@ -368,31 +509,80 @@ export function ProviderSelfServiceFlows({
       retire: () => void,
       send: () => Promise<`0x${string}`>,
     ): Promise<SendState> => {
-      const hash = await send();
+      const id = `send-${++sendSeq.current}`;
+      const settle = (record: SendRecord) =>
+        setSent((s) => s.map((r) => (r.id === record.id ? record : r)));
+
+      // RECORDED BEFORE THE WALLET IS ASKED. This is the whole fix: the row used to be created only
+      // after `send()` resolved, so the entire wallet window had no on-screen state - and a wallet
+      // that never answered left the page blank forever while a transaction mined on chain.
+      setSent((s) => [sendRecord(id, what, "awaitingWallet"), ...s]);
+
+      // Follow a hash to its receipt. Extracted so the LATE path below - a wallet that answers after
+      // we stopped waiting - gets exactly the same treatment rather than a second, thinner copy.
+      const follow = async (hash: `0x${string}`): Promise<SendState> => {
+        try {
+          const receipt = await roaxPublicClient(rpcUrl).waitForTransactionReceipt({
+            hash,
+            timeout: RECEIPT_TIMEOUT_MS,
+          });
+          const state = outcomeFromReceiptStatus(receipt.status);
+          settle(sendRecord(id, what, state, { hash }));
+          return state;
+        } catch (e) {
+          // NOT a failure and NOT a success. A receipt we could not fetch says nothing about whether
+          // the transaction mined - it is routed here rather than into the page-level fault notice,
+          // which would collapse it into the same bucket as a wallet refusal.
+          const reason = e instanceof Error ? e.message.split("\n")[0]! : String(e);
+          settle(sendRecord(id, what, "unknown", { hash, unknownReason: reason }));
+          return "unknown";
+        }
+      };
+
+      const pending = send();
+      let timedOut = false;
+      let hash: `0x${string}`;
+      try {
+        hash = await Promise.race([
+          pending,
+          new Promise<never>((_, reject) =>
+            setTimeout(() => {
+              timedOut = true;
+              reject(new Error("wallet-timeout"));
+            }, WALLET_TIMEOUT_MS),
+          ),
+        ]);
+      } catch (e) {
+        if (!timedOut) {
+          // A genuine rejection: nothing was submitted, so the attempt is withdrawn entirely rather
+          // than left on screen as something that might have happened.
+          setSent((s) => s.filter((r) => r.id !== id));
+          throw e;
+        }
+        // The wallet has not answered. It MAY still have broadcast - so the plan is retired (it may
+        // have been acted on) and the row says so, with the two things the user can actually do.
+        retire();
+        settle(
+          sendRecord(id, what, "walletSilent", {
+            unknownReason:
+              "Your wallet did not respond in time. It may still have sent this - check your wallet's "
+              + "activity, and run the check again: if the contract was created, the check reports that "
+              + "contract number as already used and names the address.",
+          }),
+        );
+        // If it answers late, upgrade the row and follow it properly rather than leaving a
+        // could-not-tell standing next to a transaction we can now see.
+        void pending.then((late) => void follow(late)).catch(() => {});
+        return "walletSilent";
+      }
+
       // The plan that authorized this is retired HERE, before the outcome is known, so every
       // terminal state inherits it and no handler can forget one. It is a required parameter rather
       // than an optional one so a new flow cannot silently omit it. A rejected signature never
       // reaches this line, which is correct: nothing was submitted, so nothing was falsified.
       retire();
-      setSent((s) => [sendRecord(hash, what, "submitted"), ...s]);
-      const settle = (record: SendRecord) =>
-        setSent((s) => s.map((r) => (r.hash === record.hash ? record : r)));
-      try {
-        const receipt = await roaxPublicClient(rpcUrl).waitForTransactionReceipt({
-          hash,
-          timeout: RECEIPT_TIMEOUT_MS,
-        });
-        const state = outcomeFromReceiptStatus(receipt.status);
-        settle(sendRecord(hash, what, state));
-        return state;
-      } catch (e) {
-        // NOT a failure and NOT a success. A receipt we could not fetch says nothing about whether
-        // the transaction mined - it is routed here rather than into the page-level error, which
-        // would collapse it into the same bucket as a rejected signature.
-        const reason = e instanceof Error ? e.message.split("\n")[0]! : String(e);
-        settle(sendRecord(hash, what, "unknown", reason));
-        return "unknown";
-      }
+      settle(sendRecord(id, what, "submitted", { hash }));
+      return follow(hash);
     },
     [rpcUrl],
   );
@@ -419,6 +609,47 @@ export function ProviderSelfServiceFlows({
   }
 
   const ready = !busy && !!reader && isConnected && !!caller;
+
+  // ONE derivation of "why can this not be used", shared by all eleven controls. Written out here
+  // rather than inline per button so that adding a control cannot quietly ship without a reason -
+  // which is exactly how Deploy came to be dead and silent on first run.
+  const pre = { busy, connected: isConnected && !!caller, hasReader: !!reader };
+  const chain = { expected: ROAX_CHAIN_ID, actual: chainId };
+  const gate = (missingInput?: string | null) => checkBlock({ ...pre, missingInput });
+  const sendGate = (
+    check: string,
+    plan: Parameters<typeof sendBlock>[0]["plan"],
+    otherwiseBlocked?: string | null,
+  ) => sendBlock({ ...pre, chain, check, plan, otherwiseBlocked });
+
+  const deployPlanState = planGateState({
+    present: !!deployHeld,
+    spent: !!deployHeld?.spent,
+    keyMatches: deployHeld?.key === deployKey,
+    canAct: !!deploy?.canDeploy,
+    verdict: deploy?.verdict,
+  });
+  const clonePlanState = planGateState({
+    present: !!cloneHeld,
+    spent: !!cloneHeld?.spent,
+    keyMatches: cloneHeld?.key === cloneKey,
+    canAct: !!clone?.canRepoint,
+    verdict: clone?.verdict,
+  });
+  const domainPlanState = planGateState({
+    present: !!domainHeld,
+    spent: !!domainHeld?.spent,
+    keyMatches: domainHeld?.key === domainKey,
+    canAct: !!domainState?.canWrite,
+    verdict: domainState?.verdict,
+  });
+  const publicationPlanState = planGateState({
+    present: !!publicationHeld,
+    spent: !!publicationHeld?.spent,
+    keyMatches: publicationHeld?.key === publicationKey,
+    canAct: !!publication?.canPublish,
+    verdict: publication?.verdict,
+  });
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
@@ -466,6 +697,15 @@ export function ProviderSelfServiceFlows({
                 A provider id is 20 bytes: 0x followed by 40 hex characters.
               </p>
             ) : null}
+            {/* Why this page is shorter here than a vet's. Without it a groomer sees a page with
+                one card and no way to tell whether the rest is missing, hidden, or broken. */}
+            {!capabilities.issuance ? (
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="listing-only-note">
+                Your listing is the whole of this page for you. Issuing contracts, and the domain
+                that belongs to one, apply to businesses that issue credentials - you verify them,
+                so there is nothing here for you to deploy.
+              </p>
+            ) : null}
           </div>
           {capabilities.issuance ? (
             <div>
@@ -481,14 +721,11 @@ export function ProviderSelfServiceFlows({
           ) : (
             <p className="break-all font-mono text-xs text-muted-foreground">{address}</p>
           )}
-          {error ? (
-            <p className="text-sm text-red-700 dark:text-red-400" data-testid="page-error">
-              {error}
-            </p>
-          ) : null}
           <SendLog records={sent} />
         </CardContent>
       </Card>
+
+      <WalletFaultNotice fault={fault} />
 
       {capabilities.issuance ? (
         <>
@@ -497,7 +734,8 @@ export function ProviderSelfServiceFlows({
             <CardHeader>
               <CardTitle>1. Deploy your own contract</CardTitle>
               <CardDescription>
-                You deploy it and you own it. DogTag does not deploy it for you.
+                You deploy it and you own it - DogTag does not deploy it for you. Check first: it
+                shows you the exact address you are about to create, before anything is sent.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
@@ -510,9 +748,30 @@ export function ProviderSelfServiceFlows({
                   inputMode="numeric"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  You can have more than one contract per record type. The number is what gives you
-                  somewhere to move to later.
+                  This number is the only part of your contract&apos;s address that you choose.
+                  Leave it at 0 for your first one.
                 </p>
+                {/* The question the captain actually asked, answered where he asked it. The old
+                    hint said what the number lets you DO and never why it exists, which is the
+                    half that makes it make sense. */}
+                <WhyThisExists question="Why is there a number at all?" testId="why-contract-number">
+                  <p>
+                    Your contract&apos;s address is not assigned to you - it is worked out in
+                    advance from exactly three things: the record type, the wallet you deploy from,
+                    and this number.
+                  </p>
+                  <p>
+                    The first two are already fixed, so this number is the only one you can vary.
+                    Without it every wallet would have exactly one possible address per record type,
+                    for good - and if that contract ever had to be replaced, there would be nowhere
+                    to move to.
+                  </p>
+                  <p>
+                    That is what step 2 is for: deploy a contract under a new number, then select it
+                    there. Use a new number if a key is compromised or you need to start fresh;
+                    otherwise 0 is the answer.
+                  </p>
+                </WhyThisExists>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -557,6 +816,11 @@ export function ProviderSelfServiceFlows({
                   Deploy
                 </Button>
               </div>
+              <ActionReason block={gate(providerIdOk ? null : "Enter your provider id to check.")} testId="deploy-check-reason" />
+              <ActionReason
+                block={sendGate("Check what this would deploy", deployPlanState)}
+                testId="deploy-send-reason"
+              />
               <PlanNotice reason={deployRetired} testId="deploy-stale" />
               {deployShown ? (
                 <DeployPlanCard
@@ -575,6 +839,9 @@ export function ProviderSelfServiceFlows({
               <CardDescription>{REPOINT_SCOPE_NOTICE}</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
+              <DependencyNotice testId="repoint-dependency">
+                {ATTACHMENT_IS_A_DOGTAG_STEP}
+              </DependencyNotice>
               <div>
                 <Label htmlFor="candidate">Contract address</Label>
                 <Input
@@ -585,8 +852,8 @@ export function ProviderSelfServiceFlows({
                   className="font-mono"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Only a contract deployed by the DogTag issuer factory can be entered here. Anything
-                  else is refused, whoever asks.
+                  Paste the address step 1 deployed. Only a contract deployed by the DogTag issuer
+                  factory can be entered here - anything else is refused, whoever asks.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -630,6 +897,20 @@ export function ProviderSelfServiceFlows({
                   Make this my current contract
                 </Button>
               </div>
+              <ActionReason
+                block={gate(
+                  !providerIdOk
+                    ? "Enter your provider id to check."
+                    : !candidate
+                      ? "Enter the address of the contract you deployed in step 1 to check it."
+                      : null,
+                )}
+                testId="repoint-check-reason"
+              />
+              <ActionReason
+                block={sendGate("Check this contract", clonePlanState)}
+                testId="repoint-send-reason"
+              />
               <PlanNotice reason={cloneRetired} testId="repoint-stale" />
               {cloneShown ? <CloneLifecycleCard assessment={cloneShown} retired={cloneRetired} /> : null}
             </CardContent>
@@ -640,11 +921,15 @@ export function ProviderSelfServiceFlows({
             <CardHeader>
               <CardTitle>3. Your domain</CardTitle>
               <CardDescription>
-                Publishing no domain, and never having said, are different things here - and both are
-                recorded as themselves.
+                A domain belongs to one of your contracts, so this acts on the contract address you
+                entered in step 2. Publishing no domain, and never having said, are different things
+                here - and both are recorded as themselves.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
+              <DependencyNotice testId="domain-dependency">
+                {DOMAIN_REGISTER_NEEDS_TURNING_ON}
+              </DependencyNotice>
               <div>
                 <Label htmlFor="domain">Domain</Label>
                 <Input
@@ -743,6 +1028,39 @@ export function ProviderSelfServiceFlows({
                   </Button>
                 ) : null}
               </div>
+              <ActionReason
+                block={gate(
+                  candidate
+                    ? null
+                    : "Enter your contract address in step 2 first. A domain is published for a "
+                      + "contract, so there is nothing to check until this page knows which one - "
+                      + "this button is gated on that field, not on the domain above.",
+                )}
+                testId="domain-check-reason"
+              />
+              <ActionReason
+                block={sendGate(
+                  "Check the domain record",
+                  domainPlanState,
+                  domainPlanState === "ready" && !validateDomain(domain).ok
+                    ? "Enter a valid domain to publish one. You can still declare that you deliberately have none."
+                    : null,
+                )}
+                testId="domain-claim-send-reason"
+              />
+              {/* Its own reason, because its own gate: declaring you have no domain does not need a
+                  valid domain in the field, so sharing the claim button's sentence would tell a
+                  provider to fix something this button never asked for. */}
+              <ActionReason
+                block={sendGate("Check the domain record", domainPlanState)}
+                testId="domain-none-send-reason"
+              />
+              {canWithdraw(domainState?.standing) ? (
+                <ActionReason
+                  block={sendGate("Check the domain record", domainPlanState)}
+                  testId="domain-withdraw-send-reason"
+                />
+              ) : null}
               <PlanNotice reason={domainRetired} testId="domain-stale" />
               {domainShown ? <DomainClaimCard assessment={domainShown} retired={domainRetired} /> : null}
             </CardContent>
@@ -760,6 +1078,9 @@ export function ProviderSelfServiceFlows({
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
+            <DependencyNotice testId="directory-dependency">
+              {DIRECTORY_NEEDS_TURNING_ON}
+            </DependencyNotice>
             <div className="grid gap-3 sm:grid-cols-2">
               {PROVIDER_CONTACT_CHANNELS.map((channel) => (
                 // Five channels in a two-column grid, so the last would sit half-width alone. A URL
@@ -1001,6 +1322,20 @@ export function ProviderSelfServiceFlows({
                 {WITHDRAW_LOCATION_NOTICE}
               </p>
             ) : null}
+            <ActionReason
+              block={gate(providerIdOk ? null : "Enter your provider id to check.")}
+              testId="publish-check-reason"
+            />
+            <ActionReason
+              block={sendGate("Check what this would publish", publicationPlanState, publicationMirrorRefusal)}
+              testId="publish-send-reason"
+            />
+            {publication?.canWithdrawPin ? (
+              <ActionReason
+                block={sendGate("Check what this would publish", publicationPlanState)}
+                testId="withdraw-pin-send-reason"
+              />
+            ) : null}
             <PlanNotice reason={publicationRetired} testId="publish-stale" />
             {publicationShown ? (
               <DirectoryPublicationCard
@@ -1067,11 +1402,16 @@ function PlanNotice({
 }
 
 const SEND_STATE_STYLE: Readonly<Record<SendState, string>> = {
+  // Neutral while we are simply waiting for a person to act - nothing is wrong yet, and painting it
+  // as a warning would report an ordinary pause as a problem.
+  awaitingWallet: "text-muted-foreground",
   // Amber, not neutral: an outcome nobody has established yet is a gap in what is known.
   submitted: "text-amber-700 dark:text-amber-400",
   succeeded: "text-emerald-700 dark:text-emerald-400",
   reverted: "text-red-700 dark:text-red-400",
   unknown: "text-amber-700 dark:text-amber-400",
+  // Amber and never red: a wallet that did not answer has not failed the transaction.
+  walletSilent: "text-amber-700 dark:text-amber-400",
 };
 
 /**
@@ -1087,21 +1427,29 @@ function SendLog({ records }: { records: readonly SendRecord[] }): ReactNode {
       {records.map((r) => {
         const href = sendExplorerHref(r);
         return (
-          <li key={r.hash} data-testid={`sent-${r.state}`}>
+          <li key={r.id} data-testid={`sent-${r.state}`}>
             <span className="text-muted-foreground">{r.what}</span>{" "}
             <span className={SEND_STATE_STYLE[r.state]}>{sendStateLabel(r.state)}</span>
             <br />
-            {href ? (
-              <a
-                className="break-all font-mono underline"
-                href={href}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {r.hash}
-              </a>
+            {/* No hash yet is its own case, not an empty line: a blank where a transaction id
+                belongs reads as one that failed to produce one. */}
+            {r.hash ? (
+              href ? (
+                <a
+                  className="break-all font-mono underline"
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {r.hash}
+                </a>
+              ) : (
+                <span className="break-all font-mono text-muted-foreground">{r.hash}</span>
+              )
             ) : (
-              <span className="break-all font-mono text-muted-foreground">{r.hash}</span>
+              <span className="text-muted-foreground">
+                No transaction id yet - your wallet has not returned one.
+              </span>
             )}
             {r.unknownReason ? (
               // Printed, not hovered - the same rule the check rows follow. This sentence is what
