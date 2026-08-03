@@ -102,6 +102,8 @@ export {
 } from "./liveReader";
 
 export {
+  hasNoHash,
+  isUnsettled,
   mayContinueAfter,
   outcomeFromReceiptStatus,
   sendExplorerHref,

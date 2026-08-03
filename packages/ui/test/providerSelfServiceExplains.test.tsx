@@ -270,6 +270,34 @@ describe("the FIRST-RUN state - a disabled Deploy with nothing said, which is th
   });
 });
 
+describe("a wallet fault is never rendered as a verdict about the provider", () => {
+  // The captain saw "The requested method and/or account has not been authorized by the user." in
+  // red under his provider id, while the admin portal showed that same provider ACTIVE and approved
+  // for VACCINATION. The chain said authorized; the page said not. The page was wrong - that string
+  // is EIP-1193 4100, raised by a wallet extension about a SITE, and it establishes nothing about a
+  // provider record.
+  const PROVIDER = "0x3f5c9a1e77b204d8e6130fa95c8b47e2d61099af";
+
+  it("is not rendered inside the provider-record card, where a verdict belongs", async () => {
+    connect(135);
+    const el = await mount({ issuance: true, listing: true });
+    type("providerId", PROVIDER);
+    await turn();
+    // Position is the half a label cannot fix: under the provider id, the record type and the
+    // caller address, any red sentence reads as an answer about that provider.
+    const record = el.querySelector("[data-testid='provider-record-card']");
+    if (record) expect(record.querySelector("[data-testid='wallet-fault']")).toBeNull();
+    // And the element that used to carry it there is gone entirely.
+    expect(el.querySelector("[data-testid='page-error']")).toBeNull();
+  });
+
+  it("renders nothing at all when there is no fault", async () => {
+    connect(135);
+    const el = await mount({ issuance: true, listing: true });
+    expect(el.querySelector("[data-testid='wallet-fault']")).toBeNull();
+  });
+});
+
 describe("a flow that waits on a DogTag step says so before it is tried", () => {
   it("states the dependency on flows 2, 3 and 4, with no check run and no wallet connected", async () => {
     // BEFORE clicking is the whole point: hitting the wall first and reading the explanation second

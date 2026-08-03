@@ -125,6 +125,82 @@ afterEach(() => {
   root = null;
 });
 
+describe("the wallet window is never a blank page", () => {
+  // FOUND ON CHAIN. A captain pressed Deploy, confirmed in his wallet, and the portal showed nothing
+  // - ever. The deploy mined, the clone exists, and his account nonce was 1, so it was the only
+  // transaction he had ever sent. `sendAndFollow` awaited the wallet FIRST and recorded the attempt
+  // only after that promise resolved, so the whole wallet window had no on-screen state and a
+  // promise that never resolved left the page blank for good.
+
+  it("records the attempt BEFORE the wallet answers, not after", async () => {
+    // The assertion the old code could not pass: state on screen while the wallet is still open.
+    let release!: (h: string) => void;
+    writeContractAsync.mockImplementationOnce(
+      () => new Promise<string>((res) => { release = res; }),
+    );
+    type("candidate", CLONE_A);
+    byText("Check this contract").click();
+    await settle();
+    button("repoint-send").click();
+    await settle();
+
+    // The wallet has not answered. The page must already say what is happening.
+    expect(host.querySelector("[data-testid='sent-awaitingWallet']")).not.toBeNull();
+    expect(host.textContent).toContain("waiting for your wallet to respond");
+    // And it must not invent a transaction id it does not have.
+    expect(host.textContent).toContain("No transaction id yet");
+
+    release(HASH);
+    await settle();
+    expect(host.querySelector("[data-testid='sent-awaitingWallet']")).toBeNull();
+    expect(host.querySelector("[data-testid='sent-succeeded']")).not.toBeNull();
+  });
+
+  it("withdraws the row entirely when the wallet rejects, since nothing was sent", async () => {
+    // The opposite half: a refusal must not leave something on screen that might have happened.
+    writeContractAsync.mockRejectedValueOnce(
+      Object.assign(new Error("User rejected the request."), { code: 4001 }),
+    );
+    type("candidate", CLONE_A);
+    byText("Check this contract").click();
+    await settle();
+    button("repoint-send").click();
+    await settle();
+
+    expect(host.querySelector("[data-testid='sent-awaitingWallet']")).toBeNull();
+    expect(host.querySelector("[data-testid='sent-walletSilent']")).toBeNull();
+    // It is reported as the wallet fault it is, with the denial that keeps it off the provider.
+    const fault = host.querySelector("[data-testid='wallet-fault']");
+    expect(fault).not.toBeNull();
+    expect(fault!.getAttribute("data-fault")).toBe("walletRejected");
+    expect(host.querySelector("[data-testid='wallet-fault-established']")!.textContent).toMatch(
+      /nothing about your provider record was checked/i,
+    );
+  });
+
+  it("a wallet fault is labelled and states what was NOT established", async () => {
+    // The 4100 case, which is the one that read as a verdict about the provider.
+    writeContractAsync.mockRejectedValueOnce(
+      Object.assign(
+        new Error("The requested method and/or account has not been authorized by the user."),
+        { code: 4100 },
+      ),
+    );
+    type("candidate", CLONE_A);
+    byText("Check this contract").click();
+    await settle();
+    button("repoint-send").click();
+    await settle();
+
+    const fault = host.querySelector("[data-testid='wallet-fault']")!;
+    expect(fault.getAttribute("data-fault")).toBe("walletUnauthorized");
+    expect(fault.textContent).toMatch(/your wallet could not complete this/i);
+    expect(fault.textContent).toMatch(/says nothing about whether you are authorized/i);
+    // The wallet's own words are kept for diagnosis, but never stand alone.
+    expect(fault.textContent).toMatch(/has not been authorized by the user/);
+  });
+});
+
 describe("a plan stops gating anything once its inputs change", () => {
   it("disables the send and says why when the checked address is edited", async () => {
     type("candidate", CLONE_A);
@@ -408,8 +484,10 @@ describe("a submitted transaction is reported as submitted, and settled by its r
     // Printed, not hovered - the sentence that distinguishes "we could not follow it" from "it failed".
     expect(host.textContent).toContain("Why the outcome is not known");
     expect(host.textContent).toContain("Timed out while waiting");
-    // And it is not routed into the page-level error, which would put it in the same bucket as a
-    // rejected signature and lose which transaction it was about.
-    expect(host.querySelector("[data-testid='page-error']")).toBeNull();
+    // And it is not routed into the page-level fault notice, which would put it in the same bucket
+    // as a wallet refusal and lose which transaction it was about. (Repointed from the removed
+    // `page-error` testid - an absence assertion against an element that no longer exists passes
+    // whatever the code does, which is the same vacuity this suite exists to avoid.)
+    expect(host.querySelector("[data-testid='wallet-fault']")).toBeNull();
   });
 });

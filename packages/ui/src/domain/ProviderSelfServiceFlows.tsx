@@ -41,7 +41,7 @@
  */
 
 import { Sparkles } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { keccak256, toHex } from "viem";
 import { useAccount, useWriteContract } from "wagmi";
 import { Button } from "../components/Button";
@@ -110,6 +110,7 @@ import {
   FACTORY_ABI,
 } from "../provider/liveReader";
 import { ROAX_CHAIN_ID } from "../wallet/chain";
+import { classifySurfaceFault, type SurfaceFault } from "../wallet/walletError";
 import { roaxPublicClient } from "../wallet/contracts";
 import {
   CloneLifecycleCard,
@@ -164,6 +165,68 @@ export interface ProviderSelfServiceFlowsProps {
  * is a spinner that never resolves and a provider who cannot tell whether anything happened.
  */
 const RECEIPT_TIMEOUT_MS = 90_000;
+
+/**
+ * How long to wait for the WALLET to answer before saying we cannot tell.
+ *
+ * Generous, because a person may be reading the transaction, fetching a hardware key, or unlocking
+ * an extension - and a premature could-not-tell beside a request they are about to approve is its
+ * own kind of wrong. But bounded, because the alternative is what happened: a promise that never
+ * resolves and a page that shows nothing at all while the transaction mines.
+ */
+const WALLET_TIMEOUT_MS = 180_000;
+
+/**
+ * A fault in the wallet or in this page, rendered so it can never be read as a verdict.
+ *
+ * THE DEFECT: a bare wallet string was rendered unlabelled in red inside the card headed "Your
+ * provider record", directly beneath the provider id, the record type and the caller address. When
+ * a wallet answered `4100 Unauthorized`, that put the words "not been authorized" exactly where an
+ * answer about the provider's authorization belongs - and a captain read it that way while the
+ * chain said his provider was ACTIVE and approved. The most misleading sentence a wallet could
+ * return, in the worst possible position.
+ *
+ * Three things fix it, and all three are load-bearing:
+ *
+ *   * **It is labelled**, so the layer at fault is named before the message is read.
+ *   * **It states what was NOT established.** Silence about the provider, next to a wallet's
+ *     refusal, is read as an answer about the provider; saying so explicitly is the only thing that
+ *     stops it. This is the codebase's could-not-run rule - a question nobody could answer is not a
+ *     failed check - applied to a thrown error.
+ *   * **It sits outside the provider-record card**, so position cannot imply what the words deny.
+ *
+ * Amber rather than red, deliberately. Red is this page's colour for a failed CHECK, and a fault
+ * that establishes nothing must not borrow the styling of an answer.
+ */
+function WalletFaultNotice({ fault }: { fault: SurfaceFault | null }): ReactNode {
+  if (!fault) return null;
+  return (
+    <div
+      className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-300"
+      data-testid="wallet-fault"
+      data-fault={fault.kind}
+    >
+      <p className="font-semibold">
+        {fault.kind === "walletRejected"
+          ? "You cancelled this in your wallet"
+          : fault.kind === "surfaceFault"
+            ? "This page hit a problem"
+            : "Your wallet could not complete this"}
+      </p>
+      {/* The denial comes BEFORE the wallet's own words, so the qualification is read first rather
+          than as an afterthought to a sentence that has already landed. */}
+      <p className="mt-1" data-testid="wallet-fault-established">
+        {fault.established}
+      </p>
+      <p className="mt-1" data-testid="wallet-fault-next">
+        {fault.nextStep}
+      </p>
+      <p className="mt-2 break-words text-xs opacity-80">
+        Your wallet said: <span className="font-mono">{fault.detail}</span>
+      </p>
+    </div>
+  );
+}
 
 /**
  * Why the control above cannot be used, or nothing when it can.
@@ -310,8 +373,13 @@ export function ProviderSelfServiceFlows({
   );
 
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // A CLASSIFIED fault, not a raw string. The kind is what lets the renderer say whose fault it is
+  // and what nothing was established about - which a message alone cannot carry.
+  const [fault, setFault] = useState<SurfaceFault | null>(null);
   const [sent, setSent] = useState<SendRecord[]>([]);
+  // Row identity, minted before the wallet is asked. A hash cannot serve, because at that moment
+  // there is not one - which is what kept the old code from recording anything at all until after.
+  const sendSeq = useRef(0);
 
   const reader = useMemo(
     () => (missingConfig.length ? null : createLiveProviderReader({ contracts, rpcUrl })),
@@ -358,6 +426,15 @@ export function ProviderSelfServiceFlows({
   }, [reader, providerId, providerIdOk, mirrorBase, sent.length]);
   const caller = address as `0x${string}` | undefined;
 
+  // A FAULT MUST NOT OUTLIVE THE THING THAT CAUSED IT. It used to clear only at the start of the
+  // next run(), so a wallet message stayed on screen while the user did exactly what it asked -
+  // switched wallet, switched network, connected the right account - and went on reading as current
+  // long after it had stopped being true. Which, for a message that was already being read as a
+  // verdict about the provider, made it a verdict that could not be withdrawn.
+  useEffect(() => {
+    setFault(null);
+  }, [isConnected, address, chainId]);
+
   // The input fingerprints. Anything a plan's answer depends on belongs in its key; a value left out
   // is a value that can be edited after Check without disabling the button, which is the whole bug.
   const identity = `${caller ?? ""}|${providerId}`;
@@ -395,15 +472,25 @@ export function ProviderSelfServiceFlows({
 
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
-    setError(null);
+    setFault(null);
     try {
       await fn();
     } catch (e) {
-      // A throw here is a fault in THIS surface or a rejected signature - never a verdict about the
-      // provider. Every chain READ the engine makes is already caught and reported as its own
-      // could-not-run, and every transaction OUTCOME is reported as its own record, so nothing that
-      // reaches here can be mistaken for either.
-      setError(e instanceof Error ? e.message.split("\n")[0]! : String(e));
+      // A throw here is a fault in THIS surface or in the wallet - never a verdict about the
+      // provider. Every chain READ the engine makes is caught and reported as its own could-not-run,
+      // and every transaction OUTCOME is reported as its own record.
+      //
+      // THAT WAS ONCE ASSERTED HERE AS THOUGH IT SETTLED THE MATTER, AND IT DID NOT. A bare wallet
+      // string was rendered unlabelled in red directly under the provider id, the record type and
+      // the caller address - so a captain whose wallet answered EIP-1193 `4100 Unauthorized` read
+      // it as his PROVIDER being unauthorized, while the admin portal showed that same provider
+      // ACTIVE and approved for the record type. The comment said that reading was impossible; the
+      // rendering made it the natural one. Being true about the origin is not the same as being
+      // unmistakable on screen, and only the second is a property of the product.
+      //
+      // So the fault is now classified and rendered as a fault - what could not be done, that
+      // nothing about the provider was established, and what to do - by `WalletFaultNotice`.
+      setFault(classifySurfaceFault(e));
     } finally {
       setBusy(false);
     }
@@ -422,31 +509,80 @@ export function ProviderSelfServiceFlows({
       retire: () => void,
       send: () => Promise<`0x${string}`>,
     ): Promise<SendState> => {
-      const hash = await send();
+      const id = `send-${++sendSeq.current}`;
+      const settle = (record: SendRecord) =>
+        setSent((s) => s.map((r) => (r.id === record.id ? record : r)));
+
+      // RECORDED BEFORE THE WALLET IS ASKED. This is the whole fix: the row used to be created only
+      // after `send()` resolved, so the entire wallet window had no on-screen state - and a wallet
+      // that never answered left the page blank forever while a transaction mined on chain.
+      setSent((s) => [sendRecord(id, what, "awaitingWallet"), ...s]);
+
+      // Follow a hash to its receipt. Extracted so the LATE path below - a wallet that answers after
+      // we stopped waiting - gets exactly the same treatment rather than a second, thinner copy.
+      const follow = async (hash: `0x${string}`): Promise<SendState> => {
+        try {
+          const receipt = await roaxPublicClient(rpcUrl).waitForTransactionReceipt({
+            hash,
+            timeout: RECEIPT_TIMEOUT_MS,
+          });
+          const state = outcomeFromReceiptStatus(receipt.status);
+          settle(sendRecord(id, what, state, { hash }));
+          return state;
+        } catch (e) {
+          // NOT a failure and NOT a success. A receipt we could not fetch says nothing about whether
+          // the transaction mined - it is routed here rather than into the page-level fault notice,
+          // which would collapse it into the same bucket as a wallet refusal.
+          const reason = e instanceof Error ? e.message.split("\n")[0]! : String(e);
+          settle(sendRecord(id, what, "unknown", { hash, unknownReason: reason }));
+          return "unknown";
+        }
+      };
+
+      const pending = send();
+      let timedOut = false;
+      let hash: `0x${string}`;
+      try {
+        hash = await Promise.race([
+          pending,
+          new Promise<never>((_, reject) =>
+            setTimeout(() => {
+              timedOut = true;
+              reject(new Error("wallet-timeout"));
+            }, WALLET_TIMEOUT_MS),
+          ),
+        ]);
+      } catch (e) {
+        if (!timedOut) {
+          // A genuine rejection: nothing was submitted, so the attempt is withdrawn entirely rather
+          // than left on screen as something that might have happened.
+          setSent((s) => s.filter((r) => r.id !== id));
+          throw e;
+        }
+        // The wallet has not answered. It MAY still have broadcast - so the plan is retired (it may
+        // have been acted on) and the row says so, with the two things the user can actually do.
+        retire();
+        settle(
+          sendRecord(id, what, "walletSilent", {
+            unknownReason:
+              "Your wallet did not respond in time. It may still have sent this - check your wallet's "
+              + "activity, and run the check again: if the contract was created, the check reports that "
+              + "contract number as already used and names the address.",
+          }),
+        );
+        // If it answers late, upgrade the row and follow it properly rather than leaving a
+        // could-not-tell standing next to a transaction we can now see.
+        void pending.then((late) => void follow(late)).catch(() => {});
+        return "walletSilent";
+      }
+
       // The plan that authorized this is retired HERE, before the outcome is known, so every
       // terminal state inherits it and no handler can forget one. It is a required parameter rather
       // than an optional one so a new flow cannot silently omit it. A rejected signature never
       // reaches this line, which is correct: nothing was submitted, so nothing was falsified.
       retire();
-      setSent((s) => [sendRecord(hash, what, "submitted"), ...s]);
-      const settle = (record: SendRecord) =>
-        setSent((s) => s.map((r) => (r.hash === record.hash ? record : r)));
-      try {
-        const receipt = await roaxPublicClient(rpcUrl).waitForTransactionReceipt({
-          hash,
-          timeout: RECEIPT_TIMEOUT_MS,
-        });
-        const state = outcomeFromReceiptStatus(receipt.status);
-        settle(sendRecord(hash, what, state));
-        return state;
-      } catch (e) {
-        // NOT a failure and NOT a success. A receipt we could not fetch says nothing about whether
-        // the transaction mined - it is routed here rather than into the page-level error, which
-        // would collapse it into the same bucket as a rejected signature.
-        const reason = e instanceof Error ? e.message.split("\n")[0]! : String(e);
-        settle(sendRecord(hash, what, "unknown", reason));
-        return "unknown";
-      }
+      settle(sendRecord(id, what, "submitted", { hash }));
+      return follow(hash);
     },
     [rpcUrl],
   );
@@ -585,14 +721,11 @@ export function ProviderSelfServiceFlows({
           ) : (
             <p className="break-all font-mono text-xs text-muted-foreground">{address}</p>
           )}
-          {error ? (
-            <p className="text-sm text-red-700 dark:text-red-400" data-testid="page-error">
-              {error}
-            </p>
-          ) : null}
           <SendLog records={sent} />
         </CardContent>
       </Card>
+
+      <WalletFaultNotice fault={fault} />
 
       {capabilities.issuance ? (
         <>
@@ -1269,11 +1402,16 @@ function PlanNotice({
 }
 
 const SEND_STATE_STYLE: Readonly<Record<SendState, string>> = {
+  // Neutral while we are simply waiting for a person to act - nothing is wrong yet, and painting it
+  // as a warning would report an ordinary pause as a problem.
+  awaitingWallet: "text-muted-foreground",
   // Amber, not neutral: an outcome nobody has established yet is a gap in what is known.
   submitted: "text-amber-700 dark:text-amber-400",
   succeeded: "text-emerald-700 dark:text-emerald-400",
   reverted: "text-red-700 dark:text-red-400",
   unknown: "text-amber-700 dark:text-amber-400",
+  // Amber and never red: a wallet that did not answer has not failed the transaction.
+  walletSilent: "text-amber-700 dark:text-amber-400",
 };
 
 /**
@@ -1289,21 +1427,29 @@ function SendLog({ records }: { records: readonly SendRecord[] }): ReactNode {
       {records.map((r) => {
         const href = sendExplorerHref(r);
         return (
-          <li key={r.hash} data-testid={`sent-${r.state}`}>
+          <li key={r.id} data-testid={`sent-${r.state}`}>
             <span className="text-muted-foreground">{r.what}</span>{" "}
             <span className={SEND_STATE_STYLE[r.state]}>{sendStateLabel(r.state)}</span>
             <br />
-            {href ? (
-              <a
-                className="break-all font-mono underline"
-                href={href}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {r.hash}
-              </a>
+            {/* No hash yet is its own case, not an empty line: a blank where a transaction id
+                belongs reads as one that failed to produce one. */}
+            {r.hash ? (
+              href ? (
+                <a
+                  className="break-all font-mono underline"
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {r.hash}
+                </a>
+              ) : (
+                <span className="break-all font-mono text-muted-foreground">{r.hash}</span>
+              )
             ) : (
-              <span className="break-all font-mono text-muted-foreground">{r.hash}</span>
+              <span className="text-muted-foreground">
+                No transaction id yet - your wallet has not returned one.
+              </span>
             )}
             {r.unknownReason ? (
               // Printed, not hovered - the same rule the check rows follow. This sentence is what
