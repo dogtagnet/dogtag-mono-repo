@@ -625,7 +625,7 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
   const doc = isObject(input.wrappedDoc) ? input.wrappedDoc : {};
   const blockNumber = input.blockNumber ?? null;
   const factoryAddr = input.factoryAddr?.trim() || DEPLOYED_ADDRESSES.DogTagIssuerFactory;
-  const registryAddr = input.registryAddr?.trim() || DEPLOYED_ADDRESSES.IssuerRegistry;
+  const registryAddr = input.registryAddr?.trim() || DEPLOYED_ADDRESSES.ProviderRegistry;
   const today = input.today ?? todayIso();
 
   const issuerMeta = isObject(doc.issuer) ? doc.issuer : {};

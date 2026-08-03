@@ -216,12 +216,12 @@ function genuineChain(doc: WrappedDoc): ChainCfg {
     recordTypes: { [CLONE.toLowerCase()]: VACCINATION_KEY },
     // The clone is governed by the registry this client is configured with - the matched pair a
     // factory guarantees, since `registry` is written once from the factory's own immutable.
-    issuerRegistries: { [CLONE.toLowerCase()]: DEPLOYED_ADDRESSES.IssuerRegistry },
+    issuerRegistries: { [CLONE.toLowerCase()]: DEPLOYED_ADDRESSES.ProviderRegistry },
     // ...and the log agrees with the getters: granted at 800_000, anchored at 900_000. It sits in the
     // registry that GOVERNS the clone, which is the only log an `onlyWhitelisted` issuance can rest on.
     rootIssuedLogs: { [k(CLONE, root)]: ISSUED_AT_LOG },
     grants: {
-      [k3(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)]: [
+      [k3(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)]: [
         { kind: "whitelisted", ...GRANTED_AT_LOG },
       ],
     },
@@ -598,7 +598,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     expect(row.outcome).not.toBe("fail");
     const read = r.reads.find((x) => x.method === "whitelistHistory");
     expect(read?.contract.toLowerCase()).toBe(FOREIGN_REGISTRY.toLowerCase());
-    expect(read?.contract.toLowerCase()).not.toBe(DEPLOYED_ADDRESSES.IssuerRegistry.toLowerCase());
+    expect(read?.contract.toLowerCase()).not.toBe(DEPLOYED_ADDRESSES.ProviderRegistry.toLowerCase());
   });
 
   it("keeps a genuinely empty GOVERNING log a definite refusal - that IS evidence", async () => {
@@ -625,11 +625,11 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const r = await bench(doc, {
       ...genuineChain(doc),
       grants: {
-        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)]: [
+        [k3(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)]: [
           { kind: "whitelisted", blockNumber: ISSUED_AT_LOG.blockNumber + 50n, logIndex: 0 },
         ],
       },
-      authorityGenerations: { [DEPLOYED_ADDRESSES.IssuerRegistry.toLowerCase()]: "successor" },
+      authorityGenerations: { [DEPLOYED_ADDRESSES.ProviderRegistry.toLowerCase()]: "successor" },
     });
     const row = check(r, "whitelisted-at-issuance");
     expect(row.outcome).toBe("fail");
@@ -683,7 +683,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const r = await bench(doc, {
       ...cfg,
       grants: {
-        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)]: UNPOSITIONED_LOG,
+        [k3(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)]: UNPOSITIONED_LOG,
       },
     });
     const row = check(r, "whitelisted-at-issuance");
@@ -733,7 +733,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const r = await bench(doc, {
       ...genuineChain(doc),
       grants: {
-        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)]: UNPOSITIONED_LOG,
+        [k3(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)]: UNPOSITIONED_LOG,
       },
     });
     const row = check(r, "issuer-whitelisted");
@@ -785,10 +785,10 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const doc = validDoc();
     const cfg = genuineChain(doc);
     const logs = fakeGrantHistoryReader(cfg);
-    expect(await logs.grants(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)).not.toEqual([]);
+    expect(await logs.grants(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)).not.toEqual([]);
     expect(await logs.grants(FOREIGN_REGISTRY, CLONE, SIGNER)).toEqual([]);
     const reader = fakeReader(cfg);
-    expect(await reader.grantHistory(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)).not.toEqual(
+    expect(await reader.grantHistory(DEPLOYED_ADDRESSES.ProviderRegistry, CLONE, SIGNER)).not.toEqual(
       [],
     );
     expect(await reader.grantHistory(FOREIGN_REGISTRY, CLONE, SIGNER)).toEqual([]);

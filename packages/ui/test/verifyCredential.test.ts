@@ -27,7 +27,7 @@ const ISSUER: IssuerMeta = {
 const SIGNER = "0xabc0000000000000000000000000000000000abc";
 /**
  * The registry the CLONE names - `DogTagIssuer.registry()`, the only authority whose `_wl` log can
- * answer for that contract's issuances. Deliberately NOT `DEPLOYED_ADDRESSES.IssuerRegistry`: the
+ * answer for that contract's issuances. Deliberately NOT `DEPLOYED_ADDRESSES.ProviderRegistry`: the
  * pillar must ask this one, so a fake that used the configured address could not tell the two apart.
  */
 const GOVERNING_REGISTRY = "0x00000000000000000000000000000000005e6157";
@@ -234,7 +234,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     // CHAIN-resolved clone and the CHAIN-resolved signer. Never anything supplied by the caller or
     // the document, and never this client's own configured registry.
     expect(calls.grantHistory).toEqual([[GOVERNING_REGISTRY, CLONE, SIGNER]]);
-    expect(calls.grantHistory[0][0]).not.toBe(DEPLOYED_ADDRESSES.IssuerRegistry);
+    expect(calls.grantHistory[0][0]).not.toBe(DEPLOYED_ADDRESSES.ProviderRegistry);
   });
 
   it("delisting is FORWARD-ONLY: after the anchoring it verifies, before it does not", async () => {

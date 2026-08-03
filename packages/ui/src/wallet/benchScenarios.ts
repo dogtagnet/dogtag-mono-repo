@@ -75,7 +75,7 @@ import {
 // ── the scripted world ──────────────────────────────────────────────────────────────────────────
 
 /** The registry and factory this client is configured with. Never sourced from a document. */
-export const SCENARIO_REGISTRY = DEPLOYED_ADDRESSES.IssuerRegistry;
+export const SCENARIO_REGISTRY = DEPLOYED_ADDRESSES.ProviderRegistry;
 export const SCENARIO_FACTORY = DEPLOYED_ADDRESSES.DogTagIssuerFactory;
 
 /** The clone the factory names for an honest root. */
