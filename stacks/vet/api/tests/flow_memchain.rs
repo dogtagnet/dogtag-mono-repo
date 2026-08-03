@@ -34,7 +34,7 @@ async fn full_issuance_share_revoke_flow() {
 
     // admin whitelists the backend signer for VACCINATION on-chain (emulated).
     let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend_addr);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend_addr, true);
     // The clone's own immutable `recordType()`, as the factory's `createIssuer` fixes it. The pillar
     // asks the CHAIN which record type a root belongs to rather than trusting the envelope, so a clone
     // that never declared one leaves the pillar indeterminate.
@@ -231,8 +231,7 @@ async fn confirm_refuses_bogus_txhash() {
     );
     let app = vet_api::router(state);
     let (_admin, op, backend_addr) = boot_custody(&app).await;
-    let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend_addr);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend_addr, true);
 
     // switch to WALLET mode so prepare returns an unsigned tx WITHOUT confirming (leaves it prepared).
     let (s, _b) = call(
@@ -304,8 +303,7 @@ async fn auth_gates_and_settings_409() {
     );
 
     // settings 409 when a prepared record is outstanding.
-    let rt = record_type_key("VACCINATION");
-    mem.whitelist(REGISTRY, &rt, &backend_addr);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend_addr, true);
     let (s, _b) = call(
         &app,
         "PUT",

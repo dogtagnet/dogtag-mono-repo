@@ -14,7 +14,7 @@ mod common;
 use axum::http::StatusCode;
 use common::*;
 use std::sync::Arc;
-use vet_api::chain::{record_type_key, ChainClient, MemChain};
+use vet_api::chain::{ChainClient, MemChain};
 
 const REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
 const ISSUER: &str = "0x00000000000000000000000000000000000000bb";
@@ -33,7 +33,7 @@ async fn booted() -> (axum::Router, MemChain, String) {
     );
     let app = vet_api::router(state);
     let (_admin, op, backend_addr) = boot_custody(&app).await;
-    mem.whitelist(REGISTRY, &record_type_key("VACCINATION"), &backend_addr);
+    mem.set_issuance_capability(REGISTRY, ISSUER, &backend_addr, true);
     (app, mem, op)
 }
 

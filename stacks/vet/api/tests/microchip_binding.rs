@@ -711,7 +711,12 @@ async fn boot_import() -> Import {
     let app = vet_api::router(state);
     let (_admin, op, backend) = boot_custody(&app).await;
     let rt = vet_api::chain::record_type_key("VACCINATION");
-    mem.whitelist("0x00000000000000000000000000000000000000aa", &rt, &backend);
+    mem.set_issuance_capability(
+        "0x00000000000000000000000000000000000000aa",
+        "0x00000000000000000000000000000000000000bb",
+        &backend,
+        true,
+    );
     mem.set_record_type("0x00000000000000000000000000000000000000bb", &rt);
     Import { app, op, store }
 }
