@@ -116,11 +116,15 @@ sol! {
     /// genuine issuer signer.
     #[sol(rpc)]
     contract IProviderAuthority {
-        /// Both leading args indexed, so one filtered `eth_getLogs` per (service, signer) pair
-        /// reconstructs the whole issuance grant history. Keyed on the SERVICE, not a record-type
-        /// key: a clone carries exactly one record type, and the check that the DOCUMENT's claimed
-        /// type matches `recordType()` stays at the caller.
-        event IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed);
+        /// The grant history for ONE ADDRESS: `account` is indexed, so one filtered `eth_getLogs`
+        /// reconstructs the whole sequence. `rights` is the address's COMPLETE settable mask after
+        /// the write, so the last event at or before a block IS the mask in force then.
+        ///
+        /// There is NO service here — rights are keyed on the address alone — so the history a
+        /// verifier folds is the signer's, and a root anchored on another provider's clone by a
+        /// granted signer folds to AUTHORIZED. The check that the DOCUMENT's claimed type matches
+        /// `recordType()` stays at the caller and still refuses a relabelled credential.
+        event RightsSet(address indexed account, uint256 rights);
         function isWhitelistedFor(bytes32 key, address signer) external view returns (bool);
     }
 
@@ -777,19 +781,18 @@ impl ChainClient for AlloyChain {
             return Ok(GrantAtIssuance::Undetermined);
         };
 
-        // (3) That authority's grant history for this exact (service, signer) pair. Both leading
-        // args are indexed, so one filtered `eth_getLogs` reconstructs the whole sequence.
+        // (3) That authority's grant history for this SIGNER. `account` is indexed, so one filtered
+        // `eth_getLogs` reconstructs the whole sequence.
         //
-        // Keyed on the SERVICE ADDRESS, not a record-type key. A clone carries exactly one record
-        // type, so filtering by service inherently scopes the history to it; the check that the
-        // DOCUMENT's claimed type matches `recordType()` stays at the caller.
+        // No service in the filter, because the grant carries none. `issuer_addr` still selected the
+        // AUTHORITY above, so a mis-paired client still cannot answer from the wrong registry's log;
+        // what it no longer does is narrow the history to one service.
         let grants = provider
             .get_logs(&bounded(
                 Filter::new()
                     .address(governing)
-                    .event_signature(IProviderAuthority::IssuanceCapabilitySet::SIGNATURE_HASH)
-                    .topic1(parse_addr(issuer_addr).into_word())
-                    .topic2(parse_addr(signer).into_word()),
+                    .event_signature(IProviderAuthority::RightsSet::SIGNATURE_HASH)
+                    .topic1(parse_addr(signer).into_word()),
             ))
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
@@ -800,13 +803,18 @@ impl ChainClient for AlloyChain {
             let Some(at) = log_point(l) else {
                 return Ok(GrantAtIssuance::Undetermined);
             };
-            // `allowed` is the one NON-indexed argument, so it is the single data word.
-            let Ok(decoded) =
-                IProviderAuthority::IssuanceCapabilitySet::decode_log_data(l.data(), true)
-            else {
+            // `rights` is the one NON-indexed argument, so it is the single data word — the whole
+            // settable mask after that write.
+            let Ok(decoded) = IProviderAuthority::RightsSet::decode_log_data(l.data(), true) else {
                 return Ok(GrantAtIssuance::Undetermined);
             };
-            history.push(GrantEvent { at, granted: decoded.allowed });
+            // Masked in the FULL 256-bit width; truncating to a u64 first is harmless for every mask
+            // this contract can emit today, which is what would let the habit survive review.
+            history.push(GrantEvent {
+                at,
+                granted: (decoded.rights & U256::from(dogtag_standard::verify::RIGHT_ISSUE))
+                    != U256::ZERO,
+            });
         }
 
         // (4) An EMPTY history is a DEFINITE refusal, and that is evidence about the credential
@@ -942,7 +950,9 @@ struct MemChainInner {
     /// (registry_addr, record_type, signer) -> that pair's grant history IN THAT REGISTRY, oldest
     /// first. Separate from `whitelist` because the two answer different questions and can disagree:
     /// a delisted signer is `false` above and still authorised-at-issuance here.
-    grants: HashMap<(String, String, String), Vec<GrantEvent>>,
+    /// (registry_addr, signer) -> that SIGNER's rights history in that authority, oldest first — the
+    /// `RightsSet` log. No service in the key, exactly as there is none in the event.
+    grants: HashMap<(String, String), Vec<GrantEvent>>,
     /// (clone_addr, root) -> where that clone's anchoring `RootIssued` sits in the log.
     root_issued_at: HashMap<(String, String), LogPoint>,
     /// clone_addr -> the registry whose `_wl` gates it (`DogTagIssuer.registry()`).
@@ -1192,9 +1202,11 @@ impl MemChain {
         );
     }
     /// Grant `signer` the issuance capability on `service` —
-    /// `ProviderRegistry.setIssuanceCapability`. Flips the mapping AND emits
-    /// `IssuanceCapabilitySet`, exactly as the real call does, so a test that grants and then issues
-    /// produces the honest ordering the pillar reads back.
+    /// `ProviderRegistry.setRights`. Records the signer's grant AND emits `RightsSet`, exactly as the
+    /// real call does, so a test that grants and then issues produces the honest ordering the pillar
+    /// reads back. The `service` argument no longer selects which grant is written — rights are on the
+    /// address — and is kept so existing callers read unchanged; it still seeds the per-service
+    /// current-state map.
     pub fn set_issuance_capability(
         &self,
         registry: &str,
@@ -1218,17 +1230,22 @@ impl MemChain {
     /// edge-triggered.
     fn grant(&self, registry: &str, service: &str, signer: &str, granted: bool) {
         let mut g = self.inner.lock().unwrap();
-        let key = (
-            registry.to_lowercase(),
-            service.to_lowercase(),
-            signer.to_lowercase(),
-        );
         if g.default_registry.is_empty() {
             g.default_registry = registry.to_lowercase();
         }
+        // The current-state map stays per service (it stands in for reads that fold lifecycle terms);
+        // the HISTORY is keyed on the signer alone, exactly as `RightsSet` is.
+        g.whitelist.insert(
+            (
+                registry.to_lowercase(),
+                service.to_lowercase(),
+                signer.to_lowercase(),
+            ),
+            granted,
+        );
         let at = g.next_log_point();
         g.grants
-            .entry(key)
+            .entry((registry.to_lowercase(), signer.to_lowercase()))
             .or_default()
             .push(GrantEvent { at, granted });
     }
@@ -1256,21 +1273,22 @@ impl MemChain {
         history: Vec<GrantEvent>,
     ) {
         let mut g = self.inner.lock().unwrap();
-        let key = (
-            registry.to_lowercase(),
-            service.to_lowercase(),
-            signer.to_lowercase(),
-        );
         if g.default_registry.is_empty() {
             g.default_registry = registry.to_lowercase();
         }
         // Keep the current-state mapping consistent with the history's last event, so a fake seeded
-        // this way cannot answer the two questions incoherently.
+        // this way cannot answer the two questions incoherently. That map stays per service; the
+        // history is keyed on the signer alone.
         g.whitelist.insert(
-            key.clone(),
+            (
+                registry.to_lowercase(),
+                service.to_lowercase(),
+                signer.to_lowercase(),
+            ),
             history.last().map(|e| e.granted).unwrap_or(false),
         );
-        g.grants.insert(key, history);
+        g.grants
+            .insert((registry.to_lowercase(), signer.to_lowercase()), history);
     }
     /// Declare the registry every clone's `registry()` answers, before any grant is recorded.
     ///
@@ -1489,10 +1507,12 @@ impl ChainClient for MemChain {
         else {
             return Ok(GrantAtIssuance::Undetermined);
         };
-        // Keyed on the SERVICE, exactly as `IssuanceCapabilitySet`'s indexed topics are.
+        // Keyed on the SIGNER alone, exactly as `RightsSet`'s indexed topic is. `clone` selected the
+        // governing AUTHORITY above and no longer narrows the history.
+        let _ = &clone;
         let history = g
             .grants
-            .get(&(governing, clone, signer.to_lowercase()))
+            .get(&(governing, signer.to_lowercase()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         // An EMPTY history is a DEFINITE refusal: `issue()` is `onlyIssuanceCapable`, so an honest

@@ -271,12 +271,15 @@ async fn anvil_full_flow() {
 
     // fund the backend signer from anvil acct 0, and whitelist it on-chain for VACCINATION.
     fund(&rpc, &backend_addr, "100000000000000000"); // 0.1 ETH
+    // The grant is on the SIGNER's ADDRESS and names no service — `RIGHT_ISSUE` is bit 0 of the
+    // rights bitmask. `canIssue` below still folds this clone's own lifecycle terms, which is why
+    // that assertion still means something after the re-keying.
     cast_send(
         &rpc,
         PK0,
         &registry,
-        "setIssuanceCapability(address,address,bool)",
-        &[&clone, &backend_addr, "true"],
+        "setRights(address,uint256)",
+        &[&backend_addr, "1"],
     );
     assert_eq!(
         cast_call(
