@@ -40,8 +40,9 @@ PRODUCTION is a **delta over REMOTE**, not a separate stack: do REMOTE first, th
 
 ```
                                   ROAX testnet chain (chainId 135, RPC https://devrpc.roax.net)
-                                  IssuerRegistry · VerificationRegistryConsent · DogTagSBTConsent
+                                  ProviderRegistry · VerificationRegistryConsent · DogTagSBTConsent
                                   Groth16VerifierConsent · ProtocolRegistry · IssuerFactory/Impl
+                                  ProviderDirectory · ServiceDomainResolver
                                                           ▲   ▲   ▲
                   on-chain reads/writes (--legacy gas)    │   │   │   on-chain reads (verify nullifier, etc.)
         ┌─────────────────────────────────────────────────┘   │   └─────────────────────────────┐
@@ -93,40 +94,45 @@ Transactions initiated through an injected or WalletConnect wallet still use tha
 
 ### 3.1 Address Book
 
-**The single machine-readable source of truth is `contracts/deployments/roax.json`.** Human-readable
-snapshots of the full table are mirrored in this file, `docs/DEPLOY.md` (labelled "snapshot —
-authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — and demo runbooks (e.g.
-`docs/DEMO.md`) may cite specific demo-clone / verifier addresses. **All of these must mirror
-`roax.json`**; don't introduce addresses anywhere else — link here instead.
+**The single source of truth is `contracts/deployments/roax.json`, and it is now the ONLY place
+addresses live.**
+This file used to mirror the full table, and `docs/DEPLOY.md` and `README.md` mirrored it in turn.
+That is exactly how all three came to state a dead address book at once: a mirror is only as good as
+the discipline updating it, and a stale address reads as a checked fact.
+So the mirrors are gone rather than refreshed - do not reintroduce one here or anywhere else.
 
-**The owner-revealing contract line is RETIRED.** Its four `VerificationRegistry` generations, the
-`ConsentKeyRegistry`, the `DogTagSBT`, and the non-consent `Groth16Verifier` remain in the ledger for
-historical reads only - none of them is a live write target.
-The live set is `DogTagSBTConsent` + `VerificationRegistryConsent` + `Groth16VerifierConsent` on top of
-the shared base.
+There is one set and one owner-hidden model.
+The ledger carries no retired generation and no superseded instance; every contract in
+`contracts/src` appears in it exactly once, deployed by a single run of `contracts/script/Deploy.s.sol`:
 
-| Contract | Address | Legacy / notes |
-|---|---|---|
-| IssuerRegistry | `0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21` | — |
-| VerificationRegistry (RETIRED owner-revealing registry) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` | Source deleted; final instance kept for historical reads. Earlier generations: `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` = `_4arg_legacy`; `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` = `_preMetaTx_legacy`; `0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8` = `_zk0_legacy` |
-| VerificationRegistryConsent (**the live owner-hidden registry**) | `0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B` | 4-arg `recordVerificationZK(a,b,c,pub[7])`, `pub = [dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`; requires `msg.sender == relayer` and `R == profileRoot(dogTagId)`; owner-blind `Verified` (no `subject`). Wiring verified against `DogTagSBTConsent` `0xBEbc45A8…`. `0x53F988Ae…` = `_M4_mutableRoot_legacy` (**DEPRECATED / DO NOT USE**; its immutable `sbt` points at the retired mutable-root SBT; never live; zero `Verified`); `0x57A2998…` = `_preErasureGate_legacy` (RETIRED; lacks the erasure gate); the M5 instance `0xb9B313C1…` is deployment history since the 2026-07-23 r8 fresh redeploy. Deployment details: `contracts/deployments/roax.json` `_r8_fresh_redeploy` |
-| ConsentKeyRegistry (RETIRED) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` | The consent key now lives inside the tree as the per-tag `owner.consentKey` leaf - there is no on-chain key registry. `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` = `_preMetaTx_legacy` |
-| DogTagSBT (RETIRED owner-revealing SBT) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` | Source deleted; mutable-root instance kept for historical reads only |
-| DogTagSBTConsent (**the live owner-hidden SBT**) | `0xBEbc45A838643D27004827b797b30A464b2b02c0` | Deployed block 253245 (r8 fresh redeploy); write-once `profileRoot`; neutral custodian `0x637A5146…`; verified. Minted via `POST /profiles/issue/custodial-bind` → `mintCustodial(dogTagId, R)` - no owner address in the calldata |
-| Groth16Verifier (RETIRED) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` | Paired with the retired verification circuit; `0x138b433071Ad806E841B5AD53623290a9bf21761` = `_v1_legacy` |
-| Groth16VerifierConsent (**the live consent verifier**) | `0x1A9027986B859dc3879896B053deA78F636BE9b1` | Wired into `VerificationRegistryConsent` at construction; runtime byte-identical to the audited M3 ceremony verifier `0x272be146…` (frozen VK unchanged) |
-| Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` | circomlib-exact; deployed with the retired owner-revealing set |
-| DogTagIssuerFactory | `0xED20269E3eBF0119739aaB5258741F3aEb49F140` | `onlyOwner createIssuer` |
-| DogTagIssuerImpl | `0xe4aC139eB257C309Ec448C116A6F657Dab5590BA` | clone impl |
-| ProtocolRegistry (**the on-chain discovery anchor**) | `0xf5492A671E69b1A13f7Fd123C021830eB1ea8081` | Two-axis version registry; `PUBLISH_TIMELOCK = 0` (testnet opt-in); `dogtag-levelb/1` + `dogtag-levelb-artifacts/1` + binding published + active (r8). See [PROTOCOL_REGISTRY_RUNBOOK.md](./PROTOCOL_REGISTRY_RUNBOOK.md) |
-| IssuerDomainRegistry (on-chain half of the issuer↔domain binding) | `0xD3B121FEaCde93b95288912EAdbB10824550FdBF` | Deployed but **EMPTY**: `boundCloneCount == 0`, so this does NOT make domain verification work - it only makes a claim readable once one is published; until then every clone's on-chain domain check reports itself unavailable. Additive (reads the factory + `IssuerRegistry`, writes to neither); deploy with `DeployIssuerDomainRegistry.s.sol`, never `Deploy.s.sol`. The getter is `issuerRegistry()`, not `registry()`. Consumers are fallback-free (`ISSUER_DOMAIN_REGISTRY_ADDR` + both compile-time mobile bundles), so an unset value fails silently. The admin portal's `VITE_ISSUER_DOMAIN_REGISTRY_ADDR` and the bench's two issuer-domain rows were REMOVED - with `boundCloneCount == 0` they could never answer. See [ISSUER_DOMAIN_BINDING.md](./ISSUER_DOMAIN_BINDING.md) |
-| deployer EOA (genesis) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` | Governance/admin authority removed in Phase-2, but the retired owner-revealing SBT's `ISSUER_ROLE` + record-type whitelists remain; **not a neutral custodian** |
-| **governance authority / admin** | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` | signer-1 - WHITELIST_ADMIN + DEFAULT_ADMIN + factory owner + SBT ISSUER + PLASMA source (live since Phase-2) |
-| demo clone VACCINATION | `0x1456f93f7376789c46408CC4616751eB853edD9A` | `demo_clones` |
-| demo clone DOG_PROFILE | `0x0e56Ae2e1ef684d3e90d7699B981C6B76df922bf` | `demo_clones` |
-| chainId | 135 | ROAX testnet |
-| consent zkey sha256 (repo) | `f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868` | the **live** `circuits/build/consent_final.zkey` (committed); ceremony transcript [CEREMONY_TRANSCRIPT.consent.md](./CEREMONY_TRANSCRIPT.consent.md) |
-| zkey sha256 (retired circuit) | `9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992` | the retired verification circuit's testnet self-run **v2** key (Hermez ptau + drand beacon); kept as provenance - see [CEREMONY_TRANSCRIPT.md](./CEREMONY_TRANSCRIPT.md) |
+| contract | role |
+|---|---|
+| `ProviderRegistry` | provider identity, standing, service attachment, and every authority predicate |
+| `DogTagIssuer` | the clone implementation: `issue`/`revoke`/`isValid`, owned by its provider |
+| `DogTagIssuerFactory` | self-service clone deployment AND the write-once `rootIssuer` root index |
+| `DogTagSBTConsent` | the tag; write-once `profileRoot`, minted only to a neutral custodian |
+| `Groth16VerifierConsent` | the frozen consent ceremony VK, on chain |
+| `VerificationRegistryConsent` | owner-blind verify |
+| `ProviderDirectory` / `ServiceDomainResolver` | the typed resolvers, selected per provider/service |
+| `ProtocolRegistry` | the discovery trust anchor: two axes, one binding, timelocked writes |
+
+Read these four ledger notes before pointing anything at that set:
+
+- `_roles` - which key holds what, and which key must broadcast the deploy.
+- `_root_index` - `VerificationRegistryConsent.rootIndex` IS the factory, and it is immutable, so
+  replacing the factory means replacing the registry too and repointing every client.
+- `_frozen_verifier` - the consent verifier was redeployed with byte-identical runtime, so the
+  on-chain VK is unchanged and no zero-knowledge artifact rotated.
+- `_provisioning` - no provider is onboarded (`providerCount` is 0), so no clone exists and nothing
+  has been issued.
+
+Two non-address constants that do belong in prose, because they are artifact hashes rather than
+deployment state:
+
+| constant | value |
+|---|---|
+| chainId | 135 (ROAX testnet) |
+| consent zkey sha256 | `f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868` - the live committed `circuits/build/consent_final.zkey`; transcript [CEREMONY_TRANSCRIPT.consent.md](./CEREMONY_TRANSCRIPT.consent.md) |
 
 ### 3.2 Service + Port tables
 
