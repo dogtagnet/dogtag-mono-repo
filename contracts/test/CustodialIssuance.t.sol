@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Test, Vm} from "forge-std/Test.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 import {DogTagIssuer} from "../src/DogTagIssuer.sol";
+import {ProviderRegistry} from "../src/ProviderRegistry.sol";
 import {DogTagSBTConsent} from "../src/DogTagSBTConsent.sol";
 import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.sol";
 import {LaunchStack} from "./LaunchStack.sol";
@@ -266,6 +267,92 @@ contract CustodialIssuanceTest is LaunchStack {
         vm.prank(vetSigner);
         travel.revoke(root);
         assertTrue(travel.isRevoked(root), "removal must not strand a root as unrevocable");
+    }
+
+    /// @dev THE CAPTAIN'S ASK, walked end to end against the REAL core: a provider can use the contract
+    /// it just deployed.
+    ///
+    /// Every step here is a real transaction by the party that owns that step, and there is deliberately
+    /// NO `setIssuanceAllowed` anywhere in this test - that is the whole assertion. Before the creation
+    /// seed this journey ended in `NotLocallyAllowed` at the last line, and no product surface writes the
+    /// list, so the provider had no way through.
+    ///
+    /// It deliberately does not use {_onboardIssuingClone}: that helper writes layer 2 for a separate
+    /// signer, which would leave it unclear whether the seed or the helper made the anchor land.
+    function test_a_provider_anchors_through_the_clone_it_just_deployed_without_admitting_itself()
+        public
+    {
+        bytes20 SOLO_PROVIDER = bytes20(uint160(0x5010));
+        address SOLO_KEY = address(0x5010C0);
+        bytes32 SOLO_TYPE = keccak256("BOARDING");
+
+        // The registrar's half of onboarding.
+        vm.startPrank(admin);
+        core.registerProvider(
+            SOLO_PROVIDER, SOLO_KEY, IDENTITY_DIGEST, 1, 0xe3, 0x12, bytes("ipfs://identity")
+        );
+        core.setProviderStanding(SOLO_PROVIDER, ProviderRegistry.Standing.ACTIVE);
+        core.setServiceCreationApproval(SOLO_PROVIDER, SOLO_TYPE, true);
+        vm.stopPrank();
+
+        // The provider deploys its own contract, and is on its list without having written anything.
+        vm.prank(SOLO_KEY);
+        DogTagIssuer solo = DogTagIssuer(factory.createIssuer(SOLO_PROVIDER, SOLO_TYPE, 0));
+        assertEq(solo.owner(), SOLO_KEY, "the provider owns what it deployed");
+        assertTrue(solo.issuanceAllowed(SOLO_KEY), "the deployer is not on the list it just created");
+
+        // The registrar attaches it and grants the bit - the KYC half, which the seed does not touch.
+        vm.startPrank(admin);
+        core.attachService(SOLO_PROVIDER, address(solo), FACTORY_GENERATION, SOLO_KEY);
+        core.setServiceStanding(address(solo), ProviderRegistry.Standing.ACTIVE);
+        core.setRights(SOLO_KEY, core.RIGHT_ISSUE());
+        vm.stopPrank();
+
+        // The provider selects it, then anchors through it. No local admit was ever needed.
+        vm.startPrank(SOLO_KEY);
+        core.repointService(address(solo));
+        bytes32 own = keccak256("anchored through the contract the provider just deployed");
+        solo.issue(own);
+        vm.stopPrank();
+
+        assertTrue(solo.isValid(own), "a provider could not use the contract it deployed");
+        assertEq(factory.rootIssuer(own), address(solo), "the factory recorded it against this clone");
+        assertEq(solo.issuedBy(own), SOLO_KEY);
+    }
+
+    /// @dev The seed is not a grant. Asserted against the REAL core rather than a mock, because the claim
+    /// is about `rightsOf` - a freshly deployed clone admits its creator locally and still anchors
+    /// nothing, so a reader cannot conclude the seed made the registrar's approval optional.
+    ///
+    /// This is the counterpart of {test_the_clone_list_alone_grants_nothing_without_the_authority_bit}:
+    /// that one has the owner admit a third party, this one is the entry nobody wrote.
+    function test_the_seeded_creator_still_anchors_nothing_without_the_authority_bit() public {
+        bytes20 UNGRANTED = bytes20(uint160(0x0067));
+        address UNGRANTED_KEY = address(0x0067C0);
+        bytes32 UNGRANTED_TYPE = keccak256("GROOMING");
+
+        vm.startPrank(admin);
+        core.registerProvider(
+            UNGRANTED, UNGRANTED_KEY, IDENTITY_DIGEST, 1, 0xe3, 0x12, bytes("ipfs://identity")
+        );
+        core.setProviderStanding(UNGRANTED, ProviderRegistry.Standing.ACTIVE);
+        core.setServiceCreationApproval(UNGRANTED, UNGRANTED_TYPE, true);
+        vm.stopPrank();
+
+        vm.prank(UNGRANTED_KEY);
+        DogTagIssuer clone = DogTagIssuer(factory.createIssuer(UNGRANTED, UNGRANTED_TYPE, 0));
+
+        // LAYER 2 holds - the seed wrote it. LAYER 1 does not: the registrar granted no bit.
+        assertTrue(clone.issuanceAllowed(UNGRANTED_KEY), "the creator is seeded");
+        assertEq(core.rightsOf(UNGRANTED_KEY) & core.RIGHT_ISSUE(), 0, "granted nothing");
+
+        bytes32 root = keccak256("seeded locally, approved nowhere");
+        vm.prank(UNGRANTED_KEY);
+        vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
+        clone.issue(root);
+
+        assertEq(factory.rootIssuer(root), address(0), "the factory has no record of it");
+        assertFalse(clone.isIssued(root));
     }
 
     /// @dev Neither layer is redundant, stated as its own case so a later reader cannot conclude the

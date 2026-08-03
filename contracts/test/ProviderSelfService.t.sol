@@ -316,10 +316,15 @@ contract ProviderSelfServiceTest is Test {
         uint256 issueRight = core.RIGHT_ISSUE();
         vm.prank(REGISTRAR);
         core.setRights(PROVIDER_KEY, issueRight);
-        // LAYER 2: the clone's own list. The registrar's grant names no service, so the clone still
-        // refuses until its OWNER admits the signer.
-        vm.prank(PROVIDER_KEY);
-        DogTagIssuer(firstClone).setIssuanceAllowed(PROVIDER_KEY, true);
+        // LAYER 2: the clone's own list. The registrar's grant names no service, so the clone would
+        // still refuse if this address were not on the list - and here it already is, because
+        // `initialize` seeds the CREATOR and `PROVIDER_KEY` is what deployed this clone. Asserted
+        // rather than written: `setIssuanceAllowed` refuses a no-op, so the write this replaces would
+        // now revert `NoChange`.
+        assertTrue(
+            DogTagIssuer(firstClone).issuanceAllowed(PROVIDER_KEY),
+            "the creator is seeded onto its own clone's list"
+        );
         vm.prank(PROVIDER_KEY);
         core.repointService(firstClone);
 

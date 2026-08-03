@@ -123,8 +123,14 @@ abstract contract LaunchStack is Test {
         // service — so without this the clone refuses `NotLocallyAllowed`. Admitting is the OWNER's
         // call and nobody else's, which is why it is the provider's transaction rather than the
         // registrar's.
-        vm.prank(providerKey);
-        DogTagIssuer(clone).setIssuanceAllowed(signer, true);
+        //
+        // Guarded for the same reason as `setRights` above: `initialize` seeds the CREATOR onto the
+        // list, so a caller passing the provider key as its own signer would otherwise revert
+        // `NoChange` on a write that has already happened.
+        if (!DogTagIssuer(clone).issuanceAllowed(signer)) {
+            vm.prank(providerKey);
+            DogTagIssuer(clone).setIssuanceAllowed(signer, true);
+        }
     }
 
     /// @dev Mints a tag to the custodian with `profileRoot = root`. `profileRoot` is write-once and the

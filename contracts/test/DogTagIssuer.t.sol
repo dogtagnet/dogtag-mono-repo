@@ -341,8 +341,14 @@ contract DogTagIssuerTest is Test {
         vm.stopPrank();
         // LAYER 2. The authority's grant is scope-free, so the clone's own list is what confines the
         // signer to THIS contract - and only the clone's owner may write it.
-        vm.prank(clone.owner());
-        clone.setIssuanceAllowed(signer, true);
+        //
+        // Guarded, because `initialize` seeds the CREATOR onto the list and `setIssuanceAllowed`
+        // refuses a no-op: `_live` commissions the creator as its own signer, so an unguarded write
+        // would revert `NoChange` there. Same reason the `setRights` call above is guarded.
+        if (!clone.issuanceAllowed(signer)) {
+            vm.prank(clone.owner());
+            clone.setIssuanceAllowed(signer, true);
+        }
     }
 
     function _live(bytes20 providerId, address who, bytes32 rt, uint96 nonce)
@@ -420,6 +426,9 @@ contract DogTagIssuerTest is Test {
     function test_a_freshly_created_clone_can_anchor_nothing() public {
         DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
 
+        // The creation seed has already written LAYER 2 for this caller, so the refusal below is
+        // layer 1 and nothing else - the seed grants nothing by itself.
+        assertTrue(clone.issuanceAllowed(providerA), "the creator is seeded");
         assertFalse(authority.canIssue(address(clone), providerA));
         vm.prank(providerA);
         vm.expectRevert(DogTagIssuer.NotIssuanceCapable.selector);
@@ -683,8 +692,98 @@ contract DogTagIssuerTest is Test {
         assertEq(clone.owner(), controller);
     }
 
+    // =============================================================================================
+    // The creation seed - an ordinary list entry, written once, implying nothing
+    // =============================================================================================
+
+    /// @notice The papercut this seed removes: before it, `initialize` left `issuanceAllowed` empty, so
+    /// a provider deployed its own contract and was refused by it. No surface in the product writes that
+    /// list, so the only party who could fix it had no way to.
+    ///
+    /// The event is asserted, not just the storage. It is the SAME `IssuanceAllowedSet` every other write
+    /// emits, deliberately - an operator reconstructing the list from one log filter would otherwise miss
+    /// its single most likely entry, and a second topic would leave every existing decoder silently
+    /// wrong. `setBy` is the factory, which is what actually performed the write.
+    function test_the_creator_is_seeded_onto_its_own_clones_list_at_creation() public {
+        address predicted = factory.predictIssuer(VACCINATION, providerA, 4);
+
+        vm.expectEmit(true, true, false, true, predicted);
+        emit DogTagIssuer.IssuanceAllowedSet(providerA, true, address(factory));
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 4);
+
+        assertTrue(clone.issuanceAllowed(providerA), "the creator is not on its own clone's list");
+        // ONE entry, and nobody else's. The seed names the creator and no other address.
+        assertFalse(clone.issuanceAllowed(stranger), "the seed admitted an address it was not given");
+        assertFalse(clone.issuanceAllowed(address(0)), "the seed admitted the zero address");
+        assertFalse(clone.issuanceAllowed(admin), "the registrar was seeded onto a provider's clone");
+    }
+
+    /// @notice THE property the seed must not cost: ownership is CONTROL and confers no capability. The
+    /// seed is a value in a mapping, not a rule, so the owner can be taken off the list - issuance stops
+    /// - and is still the owner afterwards.
+    ///
+    /// This is the test that fails if anyone "simplifies" the seed into an `owner() == msg.sender` arm of
+    /// {onlyIssuanceCapable}: that reading of the captain's ask makes removal unenforceable, which
+    /// silently disarms the withdrawal lever `test_withdrawing_the_grant_stops_issuance_without_stripping_ownership`
+    /// exists to protect.
+    function test_the_seeded_creator_is_an_ordinary_list_entry_that_removal_costs_no_ownership() public {
+        DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
+
+        // It really is a working entry first - otherwise the refusal below could mean anything.
+        vm.prank(providerA);
+        clone.issue(ROOT_1);
+        assertTrue(clone.isValid(ROOT_1));
+
+        // Removing it is an ordinary removal: no special protection, no separate error.
+        vm.prank(providerA);
+        clone.setIssuanceAllowed(providerA, false);
+        assertFalse(clone.issuanceAllowed(providerA));
+
+        // Issuance stops, and stops at LAYER 2 - the authority still permits it, so this is the list.
+        assertTrue(authority.canIssue(address(clone), providerA), "the authority still permits it");
+        vm.prank(providerA);
+        vm.expectRevert(DogTagIssuer.NotLocallyAllowed.selector);
+        clone.issue(ROOT_2);
+
+        // Ownership is untouched, and every owner power still works.
+        assertEq(clone.owner(), providerA, "removal from the list cost the creator its ownership");
+        vm.prank(providerA);
+        clone.transferOwnership(controller);
+        vm.prank(controller);
+        clone.acceptOwnership();
+        assertEq(clone.owner(), controller);
+
+        // And forward-only: what was already anchored stays anchored and stays revocable.
+        assertTrue(clone.isValid(ROOT_1), "removal invalidated an anchored root");
+    }
+
+    /// @notice The seed happens ONCE, at creation. A handover seeds nobody: re-seeding on transfer would
+    /// make ownership imply the right on an ongoing basis, and would silently re-admit an address a
+    /// previous owner had deliberately removed.
+    function test_a_handover_does_not_seed_the_new_owner() public {
+        DogTagIssuer clone = _create(PROVIDER_A, providerA, VACCINATION, 0);
+        assertTrue(clone.issuanceAllowed(providerA), "the creator was seeded");
+        assertFalse(clone.issuanceAllowed(controller));
+
+        vm.prank(providerA);
+        clone.transferOwnership(controller);
+        vm.prank(controller);
+        clone.acceptOwnership();
+        assertEq(clone.owner(), controller);
+
+        assertFalse(clone.issuanceAllowed(controller), "a handover seeded the incoming owner");
+        // Nor is the outgoing owner swept off it. The list is not derived from ownership in either
+        // direction - it is written only by `initialize` and `setIssuanceAllowed`.
+        assertTrue(clone.issuanceAllowed(providerA), "a handover silently removed a list entry");
+    }
+
     /// @notice The owner is not an issuance signer by virtue of owning. Stated as a test because merging
     /// the two would silently disarm the withdrawal lever above.
+    ///
+    /// @dev The creation seed does not reach this case and that is the point: `controller` acquired the
+    /// clone through a handover, so it is not on the list - and the refusal here is `NotIssuanceCapable`
+    /// rather than `NotLocallyAllowed`, because the authority is asked first and it holds no grant for
+    /// this address either.
     function test_owning_a_clone_confers_no_issuance_right() public {
         DogTagIssuer clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
         vm.prank(providerA);
