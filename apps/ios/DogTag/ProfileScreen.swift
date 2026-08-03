@@ -260,7 +260,7 @@ struct ProfileScreen: View {
         VStack(alignment: .leading, spacing: 10) {
             kv("Chain", "ROAX (chainId \(roax.chainId))")
             kv("DogTagSBT", String(roax.dogTagSbt.prefix(16)) + "…")
-            kv("IssuerRegistry", String(roax.issuerRegistry.prefix(16)) + "…")
+            kv("ProviderRegistry", String(roax.issuerRegistry.prefix(16)) + "…")
             kv("ProtocolRegistry", roax.protocolRegistry.isEmpty
                ? "pending deployment" : String(roax.protocolRegistry.prefix(16)) + "…")
 

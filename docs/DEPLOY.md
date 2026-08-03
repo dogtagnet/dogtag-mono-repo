@@ -93,10 +93,32 @@ forge verify-contract --rpc-url $ROAX_RPC \
 # repeat per contract; addresses are in deployments/roax.json
 ```
 
+## 2b. Write the configuration from the ledger
+
+**Nothing is transcribed by hand.** `Deploy.s.sol` wrote `contracts/deployments/roax.json`; these two
+scripts project it onto every consumer. Every `.env.example` ships its addresses BLANK, so this step
+is what makes a stack runnable - and pasting is exactly how a wrong address gets in, silently, since
+it compiles and connects and keeps answering until somebody notices a verdict that makes no sense.
+
+```bash
+# per backend/portal - prints to stdout, so you choose where it lands and can diff it against
+# whatever a stack is running. A key missing from the ledger is an ERROR naming it, never a zero.
+scripts/gen-deployment-env.sh --list                  # admin vet groomer government indexer …web mobile
+scripts/gen-deployment-env.sh vet      >> stacks/vet/.env
+scripts/gen-deployment-env.sh vet-web  >> stacks/vet/web/.env
+
+# both mobile bundles (gitignored; a fresh checkout has neither and both apps refuse to build)
+make gen-mobile-config
+```
+
+Then restart the backends. `make check-addresses` is the gate that keeps this true rather than a
+promise that decays: it fails on any undeclared file carrying a ledger or retired address.
+
 ## 3. Rebuild and reinstall the mobile apps
 
-A full redeploy ends here, every time. Vendor the artifacts, rebuild both apps and reinstall them on
-each handset - `docs/MOBILE_BUILD.md` has the per-platform steps.
+A full redeploy ends here, every time. Vendor the artifacts, regenerate the address bundle
+(`make gen-mobile-config`, §2b - the apps will not build without it), rebuild both apps and reinstall
+them on each handset - `docs/MOBILE_BUILD.md` has the per-platform steps.
 
 This is a normal step of redeploying, not a caveat or a cost to work around. The apps bundle one
 generated address - the `ProtocolRegistry` anchor - and resolve the rest of the set from it at

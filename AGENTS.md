@@ -363,7 +363,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 374 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 295 tests over 13 suites (12 `.t.sol` files; one carries two contracts), measured 2026-08-03. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -2413,8 +2413,9 @@ both-sources-merged-once, and a deliberately corrupted store.
   file.
   Then make the same change in `project.yml` so a later regeneration agrees.
   Verify with `plutil -lint apps/ios/DogTag.xcodeproj/project.pbxproj`, confirm
-  `grep -c 'consent_final.zkey\|consent.graph'` is unchanged (that count is the trap's canary), and
-  build + test both schemes.
+  `grep -c 'consent_final.zkey\|consent.graph\|roax.json'` is unchanged (that count is the trap's
+  canary - `roax.json` is ON it because it is gitignored and referenced identically now, so it drops
+  out of the pbxproj exactly the same way), and build + test both schemes.
 - To eyeball record lists without a backend: install to a booted sim, write `pets.json` +
   `credentials.json` into the app's `get_app_container … data`/Documents dir, relaunch, screenshot.
 
@@ -2521,8 +2522,9 @@ entry, using fresh 24-char hex IDs). Do NOT blindly `xcodegen generate` — rege
 silently strips the vendored prover resources (zkey / witness graph) from the pbxproj.
 
 If you genuinely need a regen (e.g. adding a target), the safe procedure is: vendor the consent
-pair per docs/MOBILE_BUILD.md §4 (`cp circuits/build/consent_final.zkey apps/ios/DogTag/` + the
-`consent.graph` copy) - or `touch` both paths if you only need the wiring, not a proving build -
+pair AND generate the address bundle per docs/MOBILE_BUILD.md §4 (`make vendor-mobile-artifacts &&
+make gen-mobile-config`) - or `touch` all THREE paths if you only need the wiring, not a proving
+build; `roax.json` is gitignored too now, so it drops out the same way -
 so xcodegen sees them (the committed pbxproj references the CONSENT pair; the retired
 verification pair is gone from the wiring), `xcodegen generate`, then confirm with
 `git diff --no-color apps/ios/DogTag.xcodeproj/project.pbxproj | grep '^-'` that **no** zkey/graph

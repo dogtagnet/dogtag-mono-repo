@@ -433,7 +433,7 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
         ) {
             KV("Chain", "ROAX (chainId ${roax.chainId})")
             KV("DogTagSBT", roax.dogTagSbt.take(16) + "…")
-            KV("IssuerRegistry", roax.issuerRegistry.take(16) + "…")
+            KV("ProviderRegistry", roax.issuerRegistry.take(16) + "…")
             KV("ProtocolRegistry", roax.protocolRegistry.ifBlank { "Not deployed" }.take(16) + "…")
             HorizontalDivider(color = c.muted.copy(alpha = 0.3f))
             Text("Blockchain endpoint", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
