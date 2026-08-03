@@ -25,28 +25,29 @@ use crate::auth::{self, keccak256_hex, ShareClaims};
 // exists in `contracts/deployments/roax.json`. `whitelistFor` and `delistFor` are implemented by NO
 // contract in the launch set, and `ISSUER_REGISTRY_ADDR` ships blank with no fallback.
 //
-// So `approve_application` and `delist_application` below still build those calls against an address
-// that resolves to nothing. What each of their two loops needs is NOT the same:
+// RESOLVED. Both halves now target the launch set, and neither builds a call against an address that
+// resolves to nothing:
 //
-//   * the VERIFY loop has an exact successor - `ProviderRegistry.setVerifierCapability(purpose,
-//     relayer, allowed)`, which is what `VerificationRegistryConsent` reads via `canVerify`. Note it
-//     takes the RAW purpose and derives `verificationKey` itself, so feeding it `verify_key(purpose)`
-//     would derive twice and grant a capability nothing reads.
-//   * the ISSUANCE loop has NONE. `setIssuanceCapability` is keyed on a SERVICE address, and an
-//     issuer application has no deployed clone at approval time. The replacement for that half is the
-//     registrar journey on `/v1/admin/providers*`, walked live on chain in #139.
+//   * the VERIFY loop uses `ProviderRegistry.setVerifierCapability(purpose, relayer, allowed)`, which
+//     is what `VerificationRegistryConsent` reads via `canVerify`. It takes the RAW purpose and
+//     derives `verificationKey` itself, so feeding it `verify_key(purpose)` would derive twice and
+//     grant a capability nothing reads.
+//   * the ISSUANCE loop uses `ProviderRegistry.setRights(account, RIGHT_ISSUE)`. It had no successor
+//     while the grant was keyed on a SERVICE, because an issuer application has no deployed clone at
+//     approval time - there was nothing to key against. Keying rights on the ADDRESS is what removes
+//     that ordering problem, and this route is the reason it had to.
 //
-// Rewiring this is a live-behaviour change to two admin surfaces (`IssuerApplications.tsx`,
-// `Wizard.tsx`), so it is left for a deliberate decision rather than made silently here. The on-chain
-// acceptance test that covered the retired write (`tests/whitelist.rs`) has been deleted, since it
-// deployed a contract that no longer exists; the route keeps its hermetic coverage in `central.rs`
-// and `dns_gate.rs`.
+// TWO CONSEQUENCES, both widenings, both deliberate. An application naming several record types now
+// produces ONE grant rather than one per type: the record-type dimension is gone from the issuance
+// grant entirely, so approving an applicant for `VACCINATION` alone no longer withholds anything from
+// it on another type. And the grant reaches every service in effective standing, including another
+// provider's - see `ProviderRegistry.rightsOf`.
 use crate::chain::{
     attach_service_calldata, create_issuer_calldata, default_admin_role, purpose_key,
-    record_type_key, register_provider_calldata, set_issuance_capability_calldata,
+    record_type_key, register_provider_calldata, set_rights_calldata,
     set_provider_standing_calldata, set_resolver_approved_calldata,
     set_service_creation_approval_calldata, set_service_standing_calldata,
-    set_verifier_capability_calldata, verify_key, whitelist_admin_role,
+    set_verifier_capability_calldata, whitelist_admin_role,
 };
 use crate::crypto;
 use crate::governance::{self, Authority, GovernanceAction};
@@ -1003,47 +1004,56 @@ async fn approve_application(
             "whitelisting an issuer while its DNS legitimacy record is unverified (admin confirmed)"
         );
     }
-    // for EACH (address, recordType): admin signer calls whitelistFor(keccak256(recordType), address).
+    // for EACH address: admin signer calls setRights(address, RIGHT_ISSUE) on the authority core.
+    //
+    // ONE call per address, not one per (address, recordType): the grant carries no record type any
+    // more. `app_rec.record_types` still decides the SBT `ISSUER_ROLE` grant below and the stored
+    // application, so it has not become inert — it just no longer keys the issuance grant.
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
     let mut txs = Vec::new();
     for addr in &app_rec.addresses {
-        for rt in &app_rec.record_types {
-            let rt_key = record_type_key(rt);
-            match st
-                .chain
-                .whitelist_for(
-                    st.cfg.admin_signer_index,
-                    &st.cfg.issuer_registry_addr,
-                    &rt_key,
-                    addr,
-                )
-                .await
-            {
-                Ok(sent) => txs.push(sent.tx_hash),
-                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("whitelistFor: {e}")),
-            }
+        match st
+            .chain
+            .set_rights(
+                st.cfg.admin_signer_index,
+                &registry,
+                addr,
+                dogtag_standard::verify::RIGHT_ISSUE,
+            )
+            .await
+        {
+            Ok(sent) => txs.push(sent.tx_hash),
+            Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("setRights: {e}")),
         }
     }
-    // for EACH (address, verifyPurpose): admin signer calls whitelistFor(verify_key(purpose), address)
-    // so the verifier can relay VERIFY:<purpose> verifications (the on-chain VerificationRegistry checks
-    // this exact key against the relayer). verify_key byte-matches the on-chain `_verifyKey`.
+    // for EACH (address, verifyPurpose): admin signer calls setVerifierCapability(purpose, address,
+    // true) so the verifier can relay VERIFY:<purpose> verifications (`VerificationRegistryConsent`
+    // asks the core's own `canVerify`).
+    //
+    // The RAW purpose, via `purpose_key` — NEVER `verify_key`. The contract derives
+    // `verificationKey(purpose) = keccak256(abi.encode("VERIFY:", purpose))` itself, so an
+    // already-derived key derives TWICE and writes under a key `canVerify` never reads: a
+    // transaction that succeeds, costs gas and grants nothing, with no error anywhere.
+    //
+    // The purpose axis is deliberately NOT collapsed into a rights bit. A single VERIFY bit would
+    // discard the purpose an owner's consent was given FOR, which is the one thing that makes a
+    // consent receipt meaningful.
     for addr in &app_rec.addresses {
         for purpose in &app_rec.verify_purposes {
-            let vk = verify_key(purpose);
+            let pk = purpose_key(purpose);
             match st
                 .chain
-                .whitelist_for(
-                    st.cfg.admin_signer_index,
-                    &st.cfg.issuer_registry_addr,
-                    &vk,
-                    addr,
-                )
+                .set_verifier_capability(st.cfg.admin_signer_index, &registry, &pk, addr, true)
                 .await
             {
                 Ok(sent) => txs.push(sent.tx_hash),
                 Err(e) => {
                     return err(
                         StatusCode::BAD_GATEWAY,
-                        &format!("whitelistFor(verify): {e}"),
+                        &format!("setVerifierCapability: {e}"),
                     )
                 }
             }
@@ -1141,23 +1151,25 @@ async fn delist_application(
         Some(a) => a,
         None => return err(StatusCode::NOT_FOUND, "application not found"),
     };
+    // Withdrawing the grant is `setRights(address, 0)` — the account's complete settable mask
+    // afterwards. One call per address, for the same reason approval is: no record type keys it.
+    //
+    // This deliberately does NOT withdraw the VERIFY capabilities, matching what `delistFor` did
+    // before it: the two axes are orthogonal, and a delisted issuer is not thereby barred from
+    // relaying verifications it was separately approved for.
+    let registry = match provider_registry_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
     let mut txs = Vec::new();
     for addr in &app_rec.addresses {
-        for rt in &app_rec.record_types {
-            let rt_key = record_type_key(rt);
-            match st
-                .chain
-                .delist_for(
-                    st.cfg.admin_signer_index,
-                    &st.cfg.issuer_registry_addr,
-                    &rt_key,
-                    addr,
-                )
-                .await
-            {
-                Ok(sent) => txs.push(sent.tx_hash),
-                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("delistFor: {e}")),
-            }
+        match st
+            .chain
+            .set_rights(st.cfg.admin_signer_index, &registry, addr, 0)
+            .await
+        {
+            Ok(sent) => txs.push(sent.tx_hash),
+            Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("setRights: {e}")),
         }
     }
     app_rec.status = "delisted".to_string();
@@ -2371,9 +2383,12 @@ async fn provider_services(
             }),
             Err(e) => json!({ "state": "unavailable", "reason": e.to_string() }),
         };
+        // REGISTRY-WIDE now, and identical for every service in this list: a grant is on the
+        // address and names no service. Reported per service anyway, because "who may issue here" is
+        // still the question an operator is asking on this row — the answer just stopped varying.
         let issuance = capabilities_from(
-            st.chain.issuance_capability_log(&registry, addr).await,
-            "IssuanceCapabilitySet",
+            st.chain.issuance_rights_log(&registry).await,
+            "RightsSet",
         );
         services.push(json!({
             "service": record,
@@ -2742,24 +2757,27 @@ async fn service_set_standing(
 
 #[derive(Deserialize)]
 struct IssuanceCapabilityReq {
-    /// The key that will sign issuances on this service.
-    signer: String,
     /// Stated explicitly rather than as a toggle, so the request says what it wants rather than what
     /// it believes is currently true.
     allowed: bool,
 }
 
-/// `POST /v1/admin/services/:serviceAddress/issuance-capability` - grant or withdraw the right to
-/// issue on one service (`onlyOwner`).
+/// `POST /v1/admin/rights/:account/issue` - grant or withdraw `RIGHT_ISSUE` on ONE ADDRESS
+/// (`onlyOwner`).
 ///
-/// This is one half of what replaced the deleted record-type whitelist. Note what it does NOT do:
-/// `setServiceDelegate` grants CONTENT-WRITE permissions and does not satisfy `canIssue`, so a
-/// server-held key is granted here and by the registrar alone - "the provider grants its own server
-/// key" is not reachable on the deployed contract.
-async fn service_set_issuance_capability(
+/// The path carries an ACCOUNT and no service, because the grant does not: `setRights(account,
+/// rights)` is keyed on the address alone. That is what makes an approval possible at all before the
+/// applicant has a clone, and it is why this replaced a route that took a `:serviceAddress`.
+///
+/// The account is deliberately not classified as an EOA or a contract, here or on chain.
+///
+/// Note what this does NOT do: `setServiceDelegate` grants CONTENT-WRITE permissions and does not
+/// satisfy `canIssue`, so a server-held key is granted here and by the registrar alone - "the
+/// provider grants its own server key" is not reachable on the deployed contract.
+async fn rights_set_issue(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Path(service_address): Path<String>,
+    Path(account): Path<String>,
     Json(body): Json<IssuanceCapabilityReq>,
 ) -> Resp {
     if let Err(e) = require_admin(&st, &headers).await {
@@ -2769,54 +2787,46 @@ async fn service_set_issuance_capability(
         Ok(a) => a,
         Err(e) => return e,
     };
-    let service = match valid_service_addr(&service_address) {
-        Ok(a) => a,
-        Err(e) => return e,
-    };
-    let signer = body.signer.trim().to_lowercase();
+    let signer = account.trim().to_lowercase();
     if !is_valid_addr(&signer) || is_zero_addr(&signer) {
         return err(
             StatusCode::BAD_REQUEST,
-            "signer must be a valid non-zero 0x-prefixed 20-byte address",
+            "account must be a valid non-zero 0x-prefixed 20-byte address",
         );
     }
+    // NO service-existence precheck. There deliberately is none to make: a grant names no service,
+    // and the whole reason the grant moved to the address is that an applicant is approved BEFORE it
+    // has a clone. A check here would reinstate exactly the ordering problem this removed.
 
-    if let Ok(rec) = st.chain.service_record(&registry, &service).await {
-        if !rec.attached {
-            return err(
-                StatusCode::NOT_FOUND,
-                "this address is not an attached service - attachService binds it to a provider \
-                 first, and setIssuanceCapability refuses an unknown service with UnknownService()",
-            );
-        }
-    }
     // A definite current bit refuses a `NoChange()` revert; an UNAVAILABLE log deliberately does not,
     // because could-not-check must not block a legitimate grant. The contract stays the real gate.
-    let read = capabilities_from(
-        st.chain.issuance_capability_log(&registry, &service).await,
-        "IssuanceCapabilitySet",
-    );
+    let read = capabilities_from(st.chain.issuance_rights_log(&registry).await, "RightsSet");
     if read.allowed(&signer) == Some(body.allowed) {
         return err_json(
             StatusCode::CONFLICT,
             json!({
                 "error": format!(
-                    "this signer's issuance capability on {service} is already {} - the contract \
-                     refuses a no-op with NoChange()",
+                    "this address already holds RIGHT_ISSUE = {} - the contract refuses a no-op \
+                     with NoChange()",
                     body.allowed
                 ),
-                "signer": signer,
+                "account": signer,
                 "allowed": body.allowed,
             }),
         );
     }
 
     let verb = if body.allowed { "grant" } else { "withdraw" };
+    let rights = if body.allowed {
+        dogtag_standard::verify::RIGHT_ISSUE
+    } else {
+        0
+    };
     let action = GovernanceAction {
         target: registry.clone(),
-        calldata: set_issuance_capability_calldata(&service, &signer, body.allowed),
+        calldata: set_rights_calldata(&signer, rights),
         authority: provider_registry_authority(&registry),
-        summary: format!("setIssuanceCapability({verb} service={service}, signer={signer})"),
+        summary: format!("setRights({verb} RIGHT_ISSUE account={signer})"),
     };
     let results = match dispatch_all(&st, &[action]).await {
         Ok(r) => r,
@@ -2824,7 +2834,7 @@ async fn service_set_issuance_capability(
     };
     let (outcome, executed, warning) = dispatch_summary(&st, &results);
     ok(json!({
-        "serviceAddress": service,
+        "account": signer,
         "signer": signer,
         "allowed": body.allowed,
         "actions": results,
@@ -3372,8 +3382,8 @@ pub fn admin_router(state: AppState) -> Router {
             post(service_set_standing),
         )
         .route(
-            "/v1/admin/services/:serviceAddress/issuance-capability",
-            post(service_set_issuance_capability),
+            "/v1/admin/rights/:account/issue",
+            post(rights_set_issue),
         )
         .route(
             "/v1/admin/verifier-capabilities",
