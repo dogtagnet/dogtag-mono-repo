@@ -59,6 +59,22 @@ fn agreeing_contracts(m: &manifest::Manifest) -> OnchainContractSet {
     }
 }
 
+/// A SYNTHETIC on-chain record. `dogtag_prover` ships none - a deployment mirrors chain state and is
+/// the caller's configuration - and every case below is about the reconcile/validation RULES, which
+/// do not depend on which addresses the members hold. Distinct per member so a field-order mistake
+/// cannot pass on two slots sharing a value.
+fn test_deployment() -> manifest::VersionDeployment {
+    manifest::VersionDeployment {
+        chain_id: 135,
+        factory: "0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607".to_string(),
+        verification_registry: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".to_string(),
+        sbt: "0x3c5e7A9b0D2F4a6c8E0b1d3F5A7c9e0B2D4F6a80".to_string(),
+        verifier: "0x4d6F8B0C2E4A6b8d0F2c4e6a8b0D2F4c6e8A0b90".to_string(),
+        provider_registry: None,
+        root_index: None,
+    }
+}
+
 fn agreeing_artifacts(m: &manifest::Manifest) -> OnchainArtifactSet {
     OnchainArtifactSet {
         artifact_set_id: m.artifact_set_id.clone(),
@@ -76,7 +92,7 @@ fn agreeing_artifacts(m: &manifest::Manifest) -> OnchainArtifactSet {
 /// honest platform's claims, and the result selects the version's artifact by `circuit_id`.
 #[test]
 fn manifest_trust_tier_validates_honest_claims() {
-    let m = manifest::build(VERSION).expect("Level-B is a known version");
+    let m = manifest::build(VERSION, &test_deployment()).expect("Level-B is a known version");
     let anchor = anchor_from_manifest(&m, true, true);
     let claims = honest_claims(&m);
     let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
@@ -92,7 +108,7 @@ fn manifest_trust_tier_validates_honest_claims() {
 /// the registry/chain nor swap the purpose the owner consents to.
 #[test]
 fn manifest_trust_tier_fails_closed_on_each_mismatch() {
-    let m = manifest::build(VERSION).unwrap();
+    let m = manifest::build(VERSION, &test_deployment()).unwrap();
     let anchor = anchor_from_manifest(&m, true, true);
     let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
 
@@ -125,7 +141,7 @@ fn manifest_trust_tier_fails_closed_on_each_mismatch() {
 /// even against a valid manifest anchor.
 #[test]
 fn manifest_trust_tier_enforces_min_app_version() {
-    let m = manifest::build(VERSION).unwrap();
+    let m = manifest::build(VERSION, &test_deployment()).unwrap();
     // Level-B's floor is 1.4.0; an older build must be refused.
     assert_eq!(m.min_app_version, "1.4.0");
     let anchor = anchor_from_manifest(&m, true, true);
@@ -141,7 +157,7 @@ fn manifest_trust_tier_enforces_min_app_version() {
 /// even when the manifest itself carries no lifecycle bit — the anti-downgrade defense (§8.4).
 #[test]
 fn deprecated_onchain_version_fails_closed() {
-    let m = manifest::build(VERSION).unwrap();
+    let m = manifest::build(VERSION, &test_deployment()).unwrap();
     // The online caller passes the on-chain bits; here the contract set is retired, the artifacts are not.
     let anchor = anchor_from_manifest(&m, false, true);
     let claims = honest_claims(&m);
@@ -158,7 +174,7 @@ fn deprecated_onchain_version_fails_closed() {
 #[test]
 fn reconciled_anchor_enforces_onchain_precedence() {
     let key = test_key();
-    let m = manifest::build(VERSION).unwrap();
+    let m = manifest::build(VERSION, &test_deployment()).unwrap();
     let signed: SignedManifest = manifest::sign(&m, &key);
 
     // Agreeing on-chain record -> reconcile clean -> anchor validates honest claims.
@@ -200,7 +216,7 @@ fn reconciled_anchor_enforces_onchain_precedence() {
 #[test]
 fn onchain_deprecation_flows_through_reconciliation_and_fails_closed() {
     let key = test_key();
-    let m = manifest::build(VERSION).unwrap();
+    let m = manifest::build(VERSION, &test_deployment()).unwrap();
     let signed: SignedManifest = manifest::sign(&m, &key);
 
     let mut deprecated = agreeing_contracts(&m);
@@ -236,7 +252,7 @@ fn onchain_deprecation_flows_through_reconciliation_and_fails_closed() {
 /// redeploy": nothing the app checks about the CHAIN moves when the zkey does.
 #[test]
 fn an_artifact_rotation_leaves_the_onchain_axis_of_the_anchor_untouched() {
-    let m = manifest::build(VERSION).unwrap();
+    let m = manifest::build(VERSION, &test_deployment()).unwrap();
     let before = anchor_from_manifest(&m, true, true);
 
     // The chain has rotated the binding: a new artifact set with new pins, a new host and a new floor.
@@ -277,7 +293,7 @@ fn an_artifact_rotation_leaves_the_onchain_axis_of_the_anchor_untouched() {
 #[test]
 fn deprecating_either_axis_fails_closed() {
     let key = test_key();
-    let m = manifest::build(VERSION).unwrap();
+    let m = manifest::build(VERSION, &test_deployment()).unwrap();
     let signed: SignedManifest = manifest::sign(&m, &key);
     let claims = honest_claims(&m);
     let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
@@ -333,7 +349,7 @@ fn the_generation_two_members_reach_the_validated_version() {
 
     let key = test_key();
     // A generation-2 version's manifest: same frozen artifacts, plus the two new addresses.
-    let mut m = manifest::build(VERSION).unwrap();
+    let mut m = manifest::build(VERSION, &test_deployment()).unwrap();
     m.provider_registry = Some(PROVIDER_REGISTRY.to_string());
     m.root_index = Some(ROOT_INDEX.to_string());
     let signed: SignedManifest = manifest::sign(&m, &key);
@@ -369,7 +385,7 @@ fn the_generation_two_members_reach_the_validated_version() {
 #[test]
 fn a_stale_manifest_cannot_steer_the_root_index() {
     let key = test_key();
-    let mut m = manifest::build(VERSION).unwrap();
+    let mut m = manifest::build(VERSION, &test_deployment()).unwrap();
     m.provider_registry = Some("0x9309aB1c2D3e4F5061728394a5B6c7D8e9F00112".to_string());
     m.root_index = Some("0x120127E4a5B6c7D8E9f001122334455667788990".to_string());
     let signed: SignedManifest = manifest::sign(&m, &key);

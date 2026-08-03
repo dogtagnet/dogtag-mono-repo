@@ -135,7 +135,10 @@ export const SAMPLE_TRAVEL_CLEARANCE_DOC: WrappedDoc = {
     version: "dogtag-levelb/1",
     verificationRegistry: "0x5e7F9a0b1c2d3E4f5a6B7c8d9e0f1a2b3c4D5E6f",
     issuerClone: "0x1111111111111111111111111111111111111111",
-    issuerSigner: "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
+    // Synthetic, like the two above. `protocol` sits OUTSIDE the Merkle root - `checkIntegrity`
+    // folds only `data` + `privacy.obfuscated` - so changing this cannot move `signature.merkleRoot`
+    // and needs no regeneration, unlike anything under `data`.
+    issuerSigner: "0x7A0c2E4b6D8f0A1c3E5b7D9f0A2c4E6b8D0f1A20",
     statusBaseUrl: "https://travel.authority.example-demo.net",
   },
 };

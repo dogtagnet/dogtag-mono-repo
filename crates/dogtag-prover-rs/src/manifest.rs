@@ -66,14 +66,24 @@ pub const DOGTAG_MANIFEST_PUBKEY_HEX: Option<&str> = None;
 ///
 /// Combined with an [`ArtifactDescriptor`] (the pins/circuit half) and an [`ArtifactRelease`] (the
 /// off-chain artifact axis) this is everything the manifest needs.
+///
+/// SUPPLIED BY THE CALLER, never by this crate. It used to be a `const` of `&'static str`s, and that
+/// was the wrong shape twice over. It is a MIRROR of chain state, so it is configuration by nature -
+/// its own note called itself a redeploy landmine, and by the time that was acted on every one of its
+/// four addresses had been superseded, so this build would have served a manifest disagreeing with
+/// the chain on every member. And a library constant cannot be repointed by the operator who actually
+/// ran the deploy. `reconcile` treating the chain as authoritative made the consequence a pile of
+/// phantom conflicts rather than a wrong answer, but a fallback that can only ever conflict is not a
+/// fallback. The caller reads these from its own configuration - for vet-api, the same env the deploy
+/// writes via `scripts/gen-deployment-env.sh`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionDeployment {
     pub chain_id: u64,
-    pub factory: &'static str,
-    pub verification_registry: &'static str,
-    pub sbt: &'static str,
+    pub factory: String,
+    pub verification_registry: String,
+    pub sbt: String,
     /// The on-chain VK identity (`Groth16Verifier*` address). NOT a hash.
-    pub verifier: &'static str,
+    pub verifier: String,
     /// The provider-authority core in the verification registry's immutable `issuerRegistry` slot —
     /// generation 2's `ProviderRegistryV2.DiscoverySet.providerRegistry`.
     ///
@@ -82,12 +92,12 @@ pub struct VersionDeployment {
     /// manifest-`Some` against an on-chain-`None` as a CONFLICT, so claiming an address a
     /// generation-1 record cannot supply would make every reconcile of that version report a phantom
     /// disagreement.
-    pub provider_registry: Option<&'static str>,
+    pub provider_registry: Option<String>,
     /// The contract in the verification registry's immutable `rootIndex` slot — generation 2's
     /// `CloneProvenanceRouter`. `None` for a generation-1 version, for the same reason as
     /// [`Self::provider_registry`]: generation 1's record carries no separate root index (there, the
     /// root index IS `factory`, and duplicating it here would assert a member the chain does not have).
-    pub root_index: Option<&'static str>,
+    pub root_index: Option<String>,
 }
 
 /// The OFF-CHAIN ARTIFACT AXIS half, mirroring `ProtocolRegistry.ArtifactSet` plus the binding that
@@ -109,23 +119,6 @@ pub struct ArtifactRelease {
     /// new enough to load, not of the deployed contracts.
     pub min_app_version: &'static str,
 }
-
-/// `dogtag-levelb/1` on-chain set — the fresh owner-hidden set (r8 redeploy, roax.json).
-///
-/// NOTE (redeploy landmine): these are hard-coded non-env constants; a fresh redeploy MUST
-/// repoint every one or discovery silently resolves to non-existent contracts.
-pub const LEVEL_B_DEPLOYMENT: VersionDeployment = VersionDeployment {
-    chain_id: 135,
-    factory: "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
-    verification_registry: "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
-    sbt: "0xBEbc45A838643D27004827b797b30A464b2b02c0",
-    verifier: "0x1A9027986B859dc3879896B053deA78F636BE9b1",
-    // Neither exists on generation 1: the live `ProtocolRegistry.ContractSet` has no provider-authority
-    // or root-index member, and this version's root index IS its factory. A generation-2 version
-    // published to `ProtocolRegistryV2` fills both.
-    provider_registry: None,
-    root_index: None,
-};
 
 /// The artifact set currently BOUND to `dogtag-levelb/1` (mirrors `activeArtifactSetOf`).
 pub const LEVEL_B_ARTIFACT_RELEASE: ArtifactRelease = ArtifactRelease {
@@ -189,28 +182,20 @@ pub const LEVEL_B_V2_AWAITING: AwaitingDeployment = AwaitingDeployment {
 /// nothing — this changes the DIAGNOSIS, never the outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentStatus {
-    Recorded(&'static VersionDeployment),
+    /// This build serves the version. Its on-chain record is CONFIGURATION and comes from the caller
+    /// (see [`VersionDeployment`]), which is why this arm carries no addresses of its own.
+    Served,
     AwaitingDeployment(&'static AwaitingDeployment),
     Unknown,
 }
 
-/// Classify a version key. Fail-closed in every arm: only `Recorded` can yield a manifest.
+/// Classify a version key. Fail-closed in every arm: only `Served` can yield a manifest, and even
+/// then only if the caller supplies the deployment.
 pub fn deployment_status(version: &str) -> DeploymentStatus {
     match version {
-        crate::artifact::LEVEL_B_V1 => DeploymentStatus::Recorded(&LEVEL_B_DEPLOYMENT),
+        crate::artifact::LEVEL_B_V1 => DeploymentStatus::Served,
         LEVEL_B_V2_VERSION => DeploymentStatus::AwaitingDeployment(&LEVEL_B_V2_AWAITING),
         _ => DeploymentStatus::Unknown,
-    }
-}
-
-/// The on-chain contract-set record for a known version key, or `None` for an unrecognized one
-/// (fail-closed — the serving path returns 404, never a guessed/empty manifest).
-///
-/// `None` for BOTH absences; use [`deployment_status`] where the two must be told apart.
-pub fn deployment_for(version: &str) -> Option<&'static VersionDeployment> {
-    match deployment_status(version) {
-        DeploymentStatus::Recorded(d) => Some(d),
-        _ => None,
     }
 }
 
@@ -223,13 +208,20 @@ pub fn artifact_release_for(version: &str) -> Option<&'static ArtifactRelease> {
     }
 }
 
-/// Build the manifest content for a known version from its file-verified descriptor, its on-chain
-/// contract set, and its bound artifact set. `None` if the version is unrecognized.
-pub fn build(version: &str) -> Option<Manifest> {
+/// Build the manifest content for a known version from its file-verified descriptor, the CALLER's
+/// on-chain contract set, and its bound artifact set. `None` if the version is unrecognized.
+///
+/// `deployment` is a parameter rather than a table lookup because it mirrors chain state, which this
+/// crate cannot know and must not guess - see [`VersionDeployment`]. The descriptor and the artifact
+/// release stay internal: those ARE properties of this build (it file-verifies the pins against the
+/// committed artifacts), so they are not the caller's to supply.
+pub fn build(version: &str, deployment: &VersionDeployment) -> Option<Manifest> {
     let desc = crate::artifact::resolve(Some(version)).ok()?;
-    let deploy = deployment_for(version)?;
+    if !matches!(deployment_status(version), DeploymentStatus::Served) {
+        return None;
+    }
     let release = artifact_release_for(version)?;
-    Some(Manifest::from_descriptor(desc, deploy, release))
+    Some(Manifest::from_descriptor(desc, deployment, release))
 }
 
 /// The manifest CONTENT for one version (§5.2 TRUST tier). Mirrors BOTH on-chain axes — the
@@ -304,8 +296,8 @@ impl Manifest {
             verification_registry: deploy.verification_registry.to_string(),
             sbt: deploy.sbt.to_string(),
             verifier: deploy.verifier.to_string(),
-            provider_registry: deploy.provider_registry.map(str::to_string),
-            root_index: deploy.root_index.map(str::to_string),
+            provider_registry: deploy.provider_registry.clone(),
+            root_index: deploy.root_index.clone(),
             circuit_id: desc.circuit_id.to_string(),
             num_public: desc.num_public,
             public_signal_layout: desc.public_signal_layout.iter().map(|s| s.to_string()).collect(),
@@ -648,10 +640,26 @@ mod tests {
         SigningKey::from_bytes(&[7u8; 32])
     }
 
+    /// A SYNTHETIC on-chain record. The crate ships none - a deployment mirrors chain state and is
+    /// the caller's to supply - and these tests are about the manifest's shape, its signing and its
+    /// reconcile rules, none of which depend on which addresses the members hold. Distinct per member
+    /// so a field-order mistake cannot pass on two slots sharing a value.
+    fn test_deployment() -> VersionDeployment {
+        VersionDeployment {
+            chain_id: 135,
+            factory: "0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607".to_string(),
+            verification_registry: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".to_string(),
+            sbt: "0x3c5e7A9b0D2F4a6c8E0b1d3F5A7c9e0B2D4F6a80".to_string(),
+            verifier: "0x4d6F8B0C2E4A6b8d0F2c4e6a8b0D2F4c6e8A0b90".to_string(),
+            provider_registry: None,
+            root_index: None,
+        }
+    }
+
     fn levelb_manifest() -> Manifest {
         Manifest::from_descriptor(
             artifact::resolve(Some(artifact::LEVEL_B_V1)).unwrap(),
-            &LEVEL_B_DEPLOYMENT,
+            &test_deployment(),
             &LEVEL_B_ARTIFACT_RELEASE,
         )
     }
@@ -698,7 +706,7 @@ mod tests {
     fn a_recognized_but_undeployed_version_is_distinguished_from_an_unknown_one() {
         assert!(matches!(
             deployment_status(crate::artifact::LEVEL_B_V1),
-            DeploymentStatus::Recorded(_)
+            DeploymentStatus::Served
         ));
         assert!(matches!(
             deployment_status(LEVEL_B_V2_VERSION),
@@ -709,12 +717,14 @@ mod tests {
     }
 
     /// ...and it still FAILS CLOSED. The point of the state is diagnosis, never permission: only a
-    /// `Recorded` version may yield a deployment or a manifest.
+    /// `Served` version may yield a manifest, and supplying a perfectly good deployment does not
+    /// change that - which is the case worth pinning now that the deployment is a parameter, because
+    /// a caller CAN hand `build` a valid record for a version this build does not serve.
     #[test]
-    fn an_undeployed_version_still_yields_no_deployment_and_no_manifest() {
-        assert!(deployment_for(LEVEL_B_V2_VERSION).is_none());
-        assert!(build(LEVEL_B_V2_VERSION).is_none());
+    fn an_undeployed_version_still_yields_no_manifest_even_with_a_deployment() {
+        assert!(build(LEVEL_B_V2_VERSION, &test_deployment()).is_none());
         assert!(artifact_release_for(LEVEL_B_V2_VERSION).is_none());
+        assert!(build("dogtag-levelb/9", &test_deployment()).is_none());
     }
 
     /// The awaiting record carries no address field at all, so it cannot become a placeholder that

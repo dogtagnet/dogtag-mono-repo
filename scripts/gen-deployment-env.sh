@@ -96,6 +96,10 @@ case "$1" in
     echo "FACTORY_ADDR=$FACTORY"
     echo "VERIFICATION_REGISTRY_CONSENT_ADDR=$VREG"
     echo "SBT_CONSENT_ADDR=$SBT"
+    # The on-chain VK identity. Read by the signed-manifest serving path
+    # (`protocol::deployment_from_env`), which mirrors the published record and refuses to serve
+    # rather than guess a member. These five names ARE `protocol::DEPLOYMENT_ENV`.
+    echo "GROTH16_VERIFIER_CONSENT_ADDR=$VERIFIER"
     # Deliberately NOT emitted: PROFILE_ISSUER_ADDR / VACCINATION_ISSUER_ADDR. Those are per-provider
     # DogTagIssuer CLONES, deployed by a provider rather than by Deploy.s.sol, so the ledger holds no
     # key for them and inventing one would name a contract that does not exist.

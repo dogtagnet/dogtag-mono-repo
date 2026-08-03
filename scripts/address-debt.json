@@ -35,13 +35,11 @@
   ],
   "stillHardcoded": {
     "AGENTS.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "crates/dogtag-prover-rs/src/manifest.rs": "consumer; must read from configuration",
     "docs/CEREMONY_TRANSCRIPT.consent.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
     "docs/CEREMONY_TRANSCRIPT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
     "docs/DEMO_CLICKS.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
     "docs/PREREQUISITES.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
     "docs/PRODUCTION_DEPLOYMENT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "docs/REMOTE_DEPLOYMENT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "stacks/owner/web/src/lib/sampleDoc.ts": "consumer; must read from configuration"
+    "docs/REMOTE_DEPLOYMENT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger"
   }
 }

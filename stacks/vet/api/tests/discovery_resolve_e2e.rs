@@ -44,7 +44,18 @@ fn token_from_qr(qr: &str) -> String {
 /// The dogtag-owned TRUST tier for the version this deployment serves, resolved the way an app would
 /// (P3 signed manifest / on-chain record), NOT from the platform's claims.
 fn dogtag_anchor() -> TrustedAnchor {
-    let m = dogtag_prover::manifest::build(VERSION).expect("unified version is known");
+    let deployment = dogtag_prover::manifest::VersionDeployment {
+        chain_id: 135,
+        factory: "0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607".to_string(),
+        verification_registry: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".to_string(),
+        sbt: "0x3c5e7A9b0D2F4a6c8E0b1d3F5A7c9e0B2D4F6a80".to_string(),
+        verifier: "0x4d6F8B0C2E4A6b8d0F2c4e6a8b0D2F4c6e8A0b90".to_string(),
+        provider_registry: None,
+        root_index: None,
+    };
+    // Synthetic on purpose: the crate ships no deployment (it mirrors chain state), and this
+    // test is about the resolve path rather than about which addresses the record carries.
+    let m = dogtag_prover::manifest::build(VERSION, &deployment).expect("unified version is known");
     anchor_from_manifest(&m, true, true)
 }
 

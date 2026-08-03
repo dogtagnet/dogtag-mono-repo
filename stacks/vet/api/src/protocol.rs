@@ -55,13 +55,73 @@ pub fn signing_key() -> Result<SigningKey, SigningKeyError> {
     }
 }
 
+/// The env vars carrying this deployment's on-chain contract set - the same names
+/// `scripts/gen-deployment-env.sh vet` emits from the deploy ledger, so the deploy WRITES this
+/// configuration rather than an operator transcribing it.
+pub const DEPLOYMENT_ENV: [&str; 5] = [
+    "CHAIN_ID",
+    "FACTORY_ADDR",
+    "VERIFICATION_REGISTRY_CONSENT_ADDR",
+    "SBT_CONSENT_ADDR",
+    "GROTH16_VERIFIER_CONSENT_ADDR",
+];
+
+/// The manifest's on-chain half could not be assembled, naming the variable at fault.
+///
+/// A manifest MIRRORS chain state, so this is configuration - `dogtag_prover` deliberately ships no
+/// deployment constant. It used to, and by the time that was looked at every one of its four
+/// addresses had been superseded: this stack would have served a manifest disagreeing with the chain
+/// on every member. `reconcile` treats the chain as authoritative, so the damage was bounded to a
+/// pile of phantom conflicts rather than a wrong answer - but a fallback that can only ever conflict
+/// is not a fallback, and nothing said so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploymentConfigError {
+    /// The env var that is unset or unusable. Named so the remedy is the message.
+    pub var: &'static str,
+}
+
+/// Assemble the on-chain half from env, or name the first variable that is missing.
+///
+/// Fail-closed with NO defaults: a placeholder or a zero address here would be served, signed, as
+/// dogtag's own statement of what the version is.
+///
+/// `provider_registry`/`root_index` stay `None`. That absence is load-bearing rather than an
+/// omission - `reconcile` reads a manifest-`Some` against an on-chain-`None` as a CONFLICT, so
+/// claiming a member the published record does not carry would make every reconcile report a
+/// disagreement that is really ours.
+pub fn deployment_from_env() -> Result<manifest::VersionDeployment, DeploymentConfigError> {
+    fn need(var: &'static str) -> Result<String, DeploymentConfigError> {
+        match std::env::var(var) {
+            Ok(v) if !v.trim().is_empty() => Ok(v.trim().to_string()),
+            _ => Err(DeploymentConfigError { var }),
+        }
+    }
+    let chain_id = need("CHAIN_ID")?
+        .parse::<u64>()
+        .map_err(|_| DeploymentConfigError { var: "CHAIN_ID" })?;
+    Ok(manifest::VersionDeployment {
+        chain_id,
+        factory: need("FACTORY_ADDR")?,
+        verification_registry: need("VERIFICATION_REGISTRY_CONSENT_ADDR")?,
+        sbt: need("SBT_CONSENT_ADDR")?,
+        verifier: need("GROTH16_VERIFIER_CONSENT_ADDR")?,
+        provider_registry: None,
+        root_index: None,
+    })
+}
+
 /// Build + sign the manifest for a known version, or `None` if the version is unrecognized.
-/// The content is assembled DRY from the file-verified artifact descriptor (§3.2) + deployment.
-pub fn signed_manifest(version: &str, key: &SigningKey) -> Option<SignedManifest> {
+/// The content is assembled DRY from the file-verified artifact descriptor (§3.2) + the caller's
+/// deployment.
+pub fn signed_manifest(
+    version: &str,
+    key: &SigningKey,
+    deployment: &manifest::VersionDeployment,
+) -> Option<SignedManifest> {
     if version != dogtag_standard::wrap::LEVEL_B_VERSION {
         return None;
     }
-    let content = manifest::build(version)?;
+    let content = manifest::build(version, deployment)?;
     Some(manifest::sign(&content, key))
 }
 
@@ -101,7 +161,25 @@ pub async fn get_manifest(Query(q): Query<ManifestQuery>) -> impl IntoResponse {
                 .into_response();
         }
     };
-    if let Some(sm) = signed_manifest(&q.version, &key) {
+    // The on-chain half is configuration, exactly like the key above, and refused the same way: a
+    // 503 naming the variable, never a manifest built on a guess. Checked BEFORE the version is
+    // classified so a misconfigured stack is told what to set rather than being told its perfectly
+    // good version key is unknown.
+    let deployment = match deployment_from_env() {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": "manifest deployment not configured",
+                    "detail": format!("{} is unset or unusable", e.var),
+                    "remedy": "run scripts/gen-deployment-env.sh vet and load its output",
+                })),
+            )
+                .into_response();
+        }
+    };
+    if let Some(sm) = signed_manifest(&q.version, &key, &deployment) {
         return (StatusCode::OK, Json(sm)).into_response();
     }
     // Still 404 in both arms — there is genuinely no manifest either way, and neither is servable.
@@ -134,6 +212,20 @@ mod tests {
     use super::*;
     use dogtag_prover::manifest::verify;
 
+    /// A SYNTHETIC on-chain record. The crate ships none - a deployment mirrors chain state - and
+    /// these tests are about the signing/serving path, not about which addresses it carries.
+    fn test_deployment() -> manifest::VersionDeployment {
+        manifest::VersionDeployment {
+            chain_id: 135,
+            factory: "0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607".to_string(),
+            verification_registry: "0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70".to_string(),
+            sbt: "0x3c5e7A9b0D2F4a6c8E0b1d3F5A7c9e0B2D4F6a80".to_string(),
+            verifier: "0x4d6F8B0C2E4A6b8d0F2c4e6a8b0D2F4c6e8A0b90".to_string(),
+            provider_registry: None,
+            root_index: None,
+        }
+    }
+
     fn test_key() -> SigningKey {
         SigningKey::from_bytes(&[7u8; 32])
     }
@@ -143,7 +235,7 @@ mod tests {
     #[test]
     fn serves_a_verifiable_manifest() {
         let key = test_key();
-        let sm = signed_manifest("dogtag-levelb/1", &key).expect("known version");
+        let sm = signed_manifest("dogtag-levelb/1", &key, &test_deployment()).expect("known version");
 
         // Cross the wire as JSON and back, then verify offline.
         let wire = serde_json::to_string(&sm).unwrap();
@@ -155,14 +247,14 @@ mod tests {
     #[test]
     fn only_the_unified_version_is_servable() {
         let key = test_key();
-        assert!(signed_manifest("dogtag-levela/1", &key).is_none());
-        assert!(signed_manifest("dogtag-levelb/1", &key).is_some());
+        assert!(signed_manifest("dogtag-levela/1", &key, &test_deployment()).is_none());
+        assert!(signed_manifest("dogtag-levelb/1", &key, &test_deployment()).is_some());
     }
 
     /// An unrecognized version is not served (fail-closed → the handler 404s).
     #[test]
     fn unknown_version_is_not_served() {
-        assert!(signed_manifest("dogtag-levelc/9", &test_key()).is_none());
+        assert!(signed_manifest("dogtag-levelc/9", &test_key(), &test_deployment()).is_none());
     }
 
     /// The signing-key loader tells UNSET apart from SET-but-malformed, so the serving path can log a
