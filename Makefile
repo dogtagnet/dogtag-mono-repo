@@ -8,7 +8,10 @@ help: ## list targets
 ## ---- build / test ----
 build: sdk-ts sdk-rs contracts ## build everything buildable
 
-test: parity test-ts test-rs test-contracts ## run all test suites
+test: check-addresses parity test-ts test-rs test-contracts ## run all test suites
+
+check-addresses: ## assert no consumer hardcodes a deployed address (hermetic) - runs in `test`
+	bash scripts/check-no-hardcoded-addresses.sh
 
 parity: ## NORMATIVE Poseidon 4-language anchor gate (t=2/3/6/7) — BLOCKS downstream
 	cd circuits && pnpm run parity

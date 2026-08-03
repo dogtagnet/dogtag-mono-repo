@@ -113,6 +113,64 @@ Two landmines for whoever does that work:
 - **`apps/*/roax.json` are COMPILE-TIME.** Editing them is not a repoint; it takes effect only after a
   rebuild and a reinstall on each handset.
 
+## Addresses, the publish timelock, and the mobile rebuild (captain, 2026-08-03)
+
+Five rules that travel together, because they are one decision about where truth lives.
+
+**1. Testnet publishes have NO wait; production defaults to 2 days.** `ProtocolRegistry` enforces no
+floor at all - `MIN_PUBLISH_TIMELOCK` is 0 - so a development chain deploys, publishes, tests and
+redeploys in one sitting. The captain's words: "no wait at all for testnet just straight multiple
+deployment and tests and iteration ... only have this wait for production". Production safety is
+`Deploy.validatePublishTimelock`, which DEFAULTS to `DEFAULT_PUBLISH_TIMELOCK` (2 days) and refuses
+anything else unless a testnet opt-in is stated aloud. What a timelock buys is unchanged and is why
+production keeps it: a zero lets the publisher key repoint the entire declared protocol set in one
+transaction with no window for anyone to notice.
+
+**2. The floor MOVED off the contract to the deploy script - it was not quietly dropped.** It lived on
+the contract because of a specific claim: `PUBLISH_TIMELOCK` is immutable, so a wrong value "cannot be
+repaired - only replaced, and replacing this registry means repointing every client including two
+compile-time mobile bundles". A contract-level guard was proportionate to a mistake that was
+effectively permanent, and a script guard is bypassable by a direct `forge create`. That premise
+expired with rule 4: a mobile rebuild+reinstall now accompanies every full redeploy, so replacing the
+registry is ROUTINE, and a script guard is proportionate to a repairable mistake in a way it was not
+to a permanent one. The cost is real and pinned by
+`test_the_contract_no_longer_guards_a_direct_deployment`: a deployment bypassing the script can pick
+any delay on any chain. Restoring the floor is one constant - the error and the comparison are still
+there.
+
+**3. NEVER detect production from `block.chainid`.** ROAX 135 IS the live chain here, and that exact
+trap already shipped: a `require(block.chainid == 135)` guard passed on precisely the deployment it
+claimed to refuse. A condition that cannot fail on the case it names is worse than none, because it
+reads as protection. Production is a DEPLOY-TIME choice - the script's default plus an explicit
+opt-in - never sniffed at runtime.
+
+**4. Every full redeploy ends in a mobile rebuild + reinstall.** Standing process, in the captain's
+words: "everytime we redeploy the entire process we will then rebuild the mobile apps - rebuild and
+reinstall so that everything remains clear." Do not contort a design to avoid one, and do not write it
+up as a caveat - it is a normal step of redeploying, and `docs/DEPLOY.md` states it as one.
+
+**5. Contract addresses come from the deploy ledger; apps bundle only the `ProtocolRegistry` anchor.**
+`contracts/deployments/roax.json` is the only place an address lives. Backends and portals read theirs
+from configuration; the phones bundle ONE generated anchor address and resolve factory, verification
+registry, SBT, verifier and provider registry from `getDiscoverySet` at runtime.
+
+That is NOT rebuild-avoidance - rule 4 says a rebuild happens anyway. It is so the app can CHECK a
+platform's version claim instead of trusting it, which is the property `ProtocolRegistry` exists for;
+build-time-generating all nine addresses would throw that away and leave the app trusting whatever it
+was told. It also removes eight chances to get one wrong.
+
+**OPERATOR-configurable YES, HOLDER-configurable NO.** A holder who can repoint the registry or the
+factory can change what "genuine" means - a forged registry verifies forged credentials cleanly, with
+every check passing. This is why only HALF the RPC-endpoint pattern transfers: for transport a holder
+override is safe because a wrong peer is caught by the `eth_chainId` guard, and addresses have no
+equivalent guard, since a forged registry answers every question consistently. The existing carve-out
+that forbids routing the anchor read through the holder's chosen endpoint stays, and extends to
+addresses absolutely.
+
+`make check-addresses` (`scripts/check-no-hardcoded-addresses.sh`) is what keeps rule 5 true rather
+than a promise that decays: it fails on any undeclared file carrying a ledger or retired address, AND
+on any declared file that no longer carries one, so `scripts/address-debt.json` can only shrink.
+
 ## Product model (non-negotiable)
 
 **dogtag is ONE owner-hidden model. There is no Level-A/Level-B split, mode, or vocabulary in the product.**
@@ -4755,10 +4813,12 @@ bench runs in a browser.
 - **The two mobile bundles still carry the address** (`apps/*/roax.json`). They are COMPILE-TIME, so
   changing them is a rebuild-and-reinstall (C-10), not an edit.
 
-**`make check-cutover-consumers` did NOT flag this, and that is not a bug in the gate.** The manifest
-declares CONSUMER FILES, not a per-address file list, and `stacks/admin/web/.env.example` still
-carries other moving addresses - so dropping one address from a still-declared file leaves the tree
-and the manifest in agreement. Do not read a green gate as proof that an address is untouched.
+**`make check-addresses` does NOT flag this, and that is not a bug in the gate.** The manifest
+declares address-bearing FILES, not a per-address file list, and `stacks/admin/web/.env.example` still
+carries other addresses - so dropping one address from a still-declared file leaves the tree and the
+manifest in agreement. Do not read a green gate as proof that a particular address is untouched: it
+proves no UNDECLARED file carries one and no declared file has quietly been cleaned, which is a
+different claim.
 
 ### The issuer↔domain DNS binding — read `docs/ISSUER_DOMAIN_BINDING.md` before touching it
 
@@ -5275,11 +5335,13 @@ capability log becoming an empty holder set, and `setVerifierCapability` sending
 **Two pre-existing failures fixed along the way, both red on `origin/main`.**
 `packages/ui/src/wallet/contracts.ts` carried four orphans from phase 1's generation-probe deletion
 (`BaseError`, `encodeFunctionData`, `ExecutionRevertedError`, `PROVIDER_AUTHORITY_ABI`) that failed
-`tsc --noEmit`. And `make check-cutover-consumers` was RED: that same file was still declared in
-`scripts/cutover-consumers.json` while carrying no moving address, because phase 1 repointed it to
-the generation-2 set and left the entry behind. That is the manifest's stale direction, which the
-gate exists to catch, so the entry is dropped rather than the check loosened. **Run that gate after
-deleting or repointing any file** - it is the one check designed for exactly this.
+`tsc --noEmit`. And the consumer-inventory gate was RED: that same file was still declared while carrying no
+moving address, because phase 1 repointed it and left the entry behind. That is the manifest's stale
+direction, which the gate exists to catch, so the entry is dropped rather than the check loosened.
+**That gate is now `make check-addresses`** (`scripts/check-no-hardcoded-addresses.sh`), repurposed
+from the retired cutover check: its cutover framing is dead, but its function - assert the tree
+agrees with a declared inventory of address-bearing files, in BOTH directions - is the permanent
+guard the addresses-as-configuration work needs. **Run it after deleting or repointing any file.**
 
 ## The content-addressed profile and logo mirror (S-17) - and the one rule that defines it
 

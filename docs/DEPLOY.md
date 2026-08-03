@@ -93,7 +93,22 @@ forge verify-contract --rpc-url $ROAX_RPC \
 # repeat per contract; addresses are in deployments/roax.json
 ```
 
-## 3. Post-deploy wiring
+## 3. Rebuild and reinstall the mobile apps
+
+A full redeploy ends here, every time. Vendor the artifacts, rebuild both apps and reinstall them on
+each handset - `docs/MOBILE_BUILD.md` has the per-platform steps.
+
+This is a normal step of redeploying, not a caveat or a cost to work around. The apps bundle one
+generated address - the `ProtocolRegistry` anchor - and resolve the rest of the set from it at
+runtime, so a redeploy that moves the anchor needs the bundle regenerated. Everything else the app
+needs comes from `getDiscoverySet`, which is what lets it CHECK a platform's version claim rather than
+trust it.
+
+Publish the discovery set before or with the reinstall: until `getDiscoverySet` answers, the apps
+resolve nothing and fail closed, which is correct for an unpublished deployment but leaves them
+unable to verify. See `docs/PROTOCOL_REGISTRY_RUNBOOK.md`.
+
+## 4. Post-deploy wiring
 
 1. **Onboard the provider (registrar, `onlyOwner` on `ProviderRegistry`).** `whitelistFor` no longer
    exists anywhere; authority is service-scoped now, and it is a SEQUENCE rather than one call:
@@ -128,7 +143,7 @@ forge verify-contract --rpc-url $ROAX_RPC \
    The prod ceremony + timelock procedure are in `docs/CEREMONY_RUNBOOK.md` (concise version:
    `docs/CEREMONY.md`) and `docs/PRODUCTION_DEPLOYMENT.md` §3.2.
 
-## 4. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
+## 5. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
 
 > **RETIRED / HISTORICAL - not runnable.**
 > This section covered the retired owner-revealing `verification.circom` ceremony + verifier deploy.
@@ -144,7 +159,7 @@ forge verify-contract --rpc-url $ROAX_RPC \
 > public random beacon, published transcript, pinned zkey hash enforced by the prover) live in those
 > docs and still BLOCK a production ZK go-live.
 
-## 5. Bring up the stacks (Docker)
+## 6. Bring up the stacks (Docker)
 
 Each stack is `web` (nginx serving the Vite build) + `api` (Rust) + `mongo` (**internal to the compose
 network only — NEVER published to the host**). Build context for all images is the **monorepo root**
@@ -172,7 +187,7 @@ make up-groomer   # groomer : web 43617, api 43618  (vet-api binary, BUSINESS_TY
 The **groomer** stack has **no separate api crate** — its `api` service runs the **`vet-api` binary**
 with `BUSINESS_TYPE=groomer` (host `43618` → container `43618`).
 
-## 6. Post-up custody bring-up (per business stack)
+## 7. Post-up custody bring-up (per business stack)
 
 The vet/groomer api boots **locked**. Via the operator/admin portal (custody routes are
 localhost/session-bound, `/admin/*`):
