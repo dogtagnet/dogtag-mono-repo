@@ -35,11 +35,6 @@
   ],
   "stillHardcoded": {
     "AGENTS.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "apps/android/app/src/test/java/io/liberalize/dogtag/net/AnchorResolverTest.kt": "mobile source; anchor-resolution work",
-    "apps/android/app/src/test/java/io/liberalize/dogtag/net/IssuerDomainBindingTest.kt": "mobile source; anchor-resolution work",
-    "apps/ios/DogTagTests/AnchorResolverTests.swift": "mobile source; anchor-resolution work",
-    "apps/ios/DogTagTests/IssuerDomainBindingTests.swift": "mobile source; anchor-resolution work",
-    "contracts/test/ProtocolRegistry.t.sol": "test fixture; keep only if the test's MEANING needs the real deployed address, else replace with a synthetic one",
     "crates/dogtag-prover-rs/src/manifest.rs": "consumer; must read from configuration",
     "docs/CEREMONY_TRANSCRIPT.consent.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
     "docs/CEREMONY_TRANSCRIPT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",

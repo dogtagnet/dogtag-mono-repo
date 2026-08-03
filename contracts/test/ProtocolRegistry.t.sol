@@ -630,12 +630,29 @@ contract ProtocolRegistryTest is Test {
     /// `getDiscoverySet` — never by hand-editing hex, which tests your idea of the ABI rather than the ABI.
     ///
     /// Neither mobile suite runs in CI, so this assertion is the only automated end of the pair.
+    ///
+    /// THE FIVE ADDRESSES ARE SYNTHETIC, DELIBERATELY, and must stay that way. What this vector pins
+    /// is the record's ARITY and MEMBER ORDER - that the encoder lays a 9-member static tuple down one
+    /// word per member, in this sequence - and that property is independent of which addresses the
+    /// members hold. Using the live deployed ones bought nothing and cost the thing `make
+    /// check-addresses` exists to prevent: a real address pasted into a test is a real address in the
+    /// tree, and this file was one of the entries in `scripts/address-debt.json` because of it.
+    ///
+    /// Distinct per member on purpose, so a member-order regression cannot pass by two slots holding
+    /// the same value.
+    ///
+    /// Regenerate by re-encoding, never by hand-editing hex - a hand-built vector is written from the
+    /// same understanding as the decoder, so a shared mistake passes both. Run this test, read the
+    /// actual bytes out of the failure message, and paste them into all THREE files. That the two
+    /// mobile suites carry these exact bytes is what makes the trio one contract rather than three
+    /// independent guesses; they had already drifted apart once, when this end was made synthetic and
+    /// the mobile pair was left holding a live capture.
     function test_the_golden_encoding_the_mobile_decoders_are_pinned_against() public {
         ProtocolRegistry.DiscoverySet memory d = ProtocolVersions.levelBDiscovery(
-            0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607, // factory (generation 2)
-            0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87, // verificationRegistry
-            0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc, // sbt (the SHARED, reused one)
-            0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a, // verifier (frozen ceremony VK)
+            0x1C9Ac2eB3f1A2D4B5C6d7E8f90A1B2C3D4e5F607, // factory
+            0x2B4d6f8a0c1e3a5b7d9f0e2C4a6b8d0F1E3A5c70, // verificationRegistry
+            0x3c5e7A9b0D2F4a6c8E0b1d3F5A7c9e0B2D4F6a80, // sbt
+            0x4d6F8B0C2E4A6b8d0F2c4e6a8b0D2F4c6e8A0b90, // verifier
             0x9309aB1c2d3E4F5061728394A5B6C7D8E9F00112 // providerRegistry (authority core)
         );
         vm.warp(1_800_000_000);
@@ -645,9 +662,9 @@ contract ProtocolRegistryTest is Test {
             abi.encode(reg.getDiscoverySet(v2Id)),
             hex"36a8d69d16a9f540fa11be5f0311ebd5efd8e971b66cd704a6e197ee15b01b3d"
             hex"0000000000000000000000001c9ac2eb3f1a2d4b5c6d7e8f90a1b2c3d4e5f607"
-            hex"000000000000000000000000b9b313c17fd8725bb50a7f41121ac4cf5f4fec87"
-            hex"00000000000000000000000096cba4580d79bc9b8e51fc1b3a044a29592afffc"
-            hex"000000000000000000000000272be146c0aed6401000e9aa8241201f6f0fdf1a"
+            hex"0000000000000000000000002b4d6f8a0c1e3a5b7d9f0e2c4a6b8d0f1e3a5c70"
+            hex"0000000000000000000000003c5e7a9b0d2f4a6c8e0b1d3f5a7c9e0b2d4f6a80"
+            hex"0000000000000000000000004d6f8b0c2e4a6b8d0f2c4e6a8b0d2f4c6e8a0b90"
             hex"0000000000000000000000009309ab1c2d3e4f5061728394a5b6c7d8e9f00112"
             hex"a708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f"
             hex"000000000000000000000000000000000000000000000000000000006b4c7500"
