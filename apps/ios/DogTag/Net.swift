@@ -253,6 +253,78 @@ enum RoaxRpc {
     /// `initialize` from the factory's own `immutable registry`, with no setter.
     static let registrySelector = functionSelector("registry()")
 
+    /// `DogTagIssuer.RootIssued`, indexed on the root - the anchoring event, and so the issuance
+    /// BLOCK the grant history is sequenced against.
+    static let rootIssuedTopic = eventTopic("RootIssued(bytes32,address,uint256)")
+
+    /// The authority's issuance-grant event. BOTH leading args are indexed, so one filtered
+    /// `eth_getLogs` on `(service, signer)` reconstructs the whole history; `allowed` is the one
+    /// NON-indexed argument, so grant and withdrawal arrive on this single topic and are told apart
+    /// by the log's DATA word rather than by which topic matched.
+    ///
+    /// A topic is the full 32-byte keccak, never a 4-byte selector: the shorter value matches no log
+    /// at all, which is indistinguishable from "never granted" and would refuse every credential.
+    /// Pinned by `GrantAtIssuanceTests`, and byte-identical to Kotlin's.
+    static let issuanceCapabilitySetTopic =
+        eventTopic("IssuanceCapabilitySet(address,address,bool)")
+
+    /// Where a mined log sits. Ordered by `(blockNumber, logIndex)`; `logIndex` is BLOCK-SCOPED and so
+    /// comparable ACROSS contracts within one block, which is the only reason a registry grant and a
+    /// clone's issuance landing in the same block can be sequenced against each other at all.
+    ///
+    /// Mirrors Kotlin `RoaxRpc.LogPoint` and Rust `dogtag_standard::verify::LogPoint`.
+    struct LogPoint: Comparable, Equatable {
+        let blockNumber: UInt64
+        let logIndex: UInt64
+        static func < (a: LogPoint, b: LogPoint) -> Bool {
+            a.blockNumber != b.blockNumber
+                ? a.blockNumber < b.blockNumber
+                : a.logIndex < b.logIndex
+        }
+    }
+
+    /// One `IssuerRegistry.whitelistFor`/`delistFor` call, as observed in that registry's own log.
+    struct GrantEvent: Equatable {
+        let at: LogPoint
+        let granted: Bool
+    }
+
+    /// Did the issuing signer hold the capability AT THE MOMENT this root was anchored?
+    ///
+    /// `authorized` and `notAuthorized` are answers ABOUT the credential; `undetermined` says the
+    /// question could not be put. Only the first may contribute to a pass, only the second may refuse,
+    /// and the third must never be rendered as either.
+    enum GrantAtIssuance { case authorized, notAuthorized, undetermined }
+
+    /// Fold one `(recordType, signer)` grant history against the point a root was anchored.
+    ///
+    /// THE definition of the rule for this app, mirroring Rust `grant_in_force_at`, TS `grantInForceAt`
+    /// and Kotlin `RoaxRpc.grantInForceAt`: the state as of the anchoring point is the LAST event at or
+    /// before it.
+    ///
+    /// An EMPTY prior history is `.notAuthorized`, not `.undetermined`: the registry answered and its
+    /// own log records no grant, which is evidence about the credential rather than about our ability
+    /// to check. A log read that FAILED never reaches this function.
+    ///
+    /// The tie is broken EXPLICITLY on `>=`, taking the LAST of any events sharing one `(blockNumber,
+    /// logIndex)`, because that is what Rust's `max_by_key` and the TS sort-then-last do. A conforming
+    /// chain cannot produce such a pair - `logIndex` is unique within a block - so this only ever
+    /// arises from a lying or buggy peer, where either answer is equally arbitrary; the point is that
+    /// one rule mirrored four ways must not quietly be four rules. `max(by:)` would return the FIRST
+    /// maximum, so the divergence would be invisible in every language's own tests.
+    static func grantInForceAt(_ history: [GrantEvent], anchoredAt: LogPoint) -> GrantAtIssuance {
+        let asOf = history
+            .filter { $0.at <= anchoredAt }
+            .reduce(nil as GrantEvent?) { best, e in
+                guard let best else { return e }
+                return e.at >= best.at ? e : best
+            }
+        return asOf?.granted == true ? .authorized : .notAuthorized
+    }
+
+    /// Which generation's vocabulary an authority contract speaks.
+    ///
+
     static func isValid(rpcUrl: String, documentStore: String, root: String) async -> Result {
         guard !documentStore.isEmpty, !root.isEmpty else { return .unknown("missing addr/root") }
         let data = isValidSelector + pad32(root)
