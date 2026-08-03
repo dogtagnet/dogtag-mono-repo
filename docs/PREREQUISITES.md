@@ -107,7 +107,8 @@ never committed** — generate them with `openssl rand -hex 32` (REMOTE/PROD).
 LOCAL sources `contracts/.env` and wires its **governance signer-1** key as the central stack's on-chain
 admin signer (it is also read by `demo-bootstrap.sh`, `demo-prepare-phone.sh`, and the `e2e-*.sh`
 harnesses). Since Governance Phase-2 (executed on-chain 2026-07-05, block 123835) the demo tooling's admin
-authority is **governance signer-1** (`0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`) - Phase-2 removed the
+authority is **the governance signer**, which the deploy ledger records as its `admin` key
+(`bash -c 'source scripts/lib/ledger.sh; ledger_addr admin'`) - Phase-2 removed the
 old deployer EOA `0x119F8c7F…`'s governance/admin authority, so it can no longer grant whitelists or own
 the factory. It is **not role-free**: it still holds the retired owner-revealing `DogTagSBT`'s
 `ISSUER_ROLE` and record-type whitelists (re-verified 2026-07-16), so it can still mint on that retired
@@ -118,8 +119,8 @@ SBT and must never be treated as a neutral custodian. The
 
 | Key | Purpose | How to get it | Secret? |
 |---|---|---|---|
-| `GOVERNANCE_PRIVATE_KEY` | the demo tooling's on-chain admin signer - **governance signer-1** (whitelistFor / SBT mint / factory createIssuer) + PLASMA gas source | signer-1's private key (`0x…`, 64 hex) - must be **FUNDED with PLASMA**; its address must be `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` | **YES - never commit** |
-| `GOVERNANCE_ADDRESS` | the address of `GOVERNANCE_PRIVATE_KEY` (governance signer-1) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` (derive: `cast wallet address --private-key <GOVERNANCE_PRIVATE_KEY>`) | no |
+| `GOVERNANCE_PRIVATE_KEY` | the demo tooling's on-chain admin signer - **governance signer-1** (whitelistFor / SBT mint / factory createIssuer) + PLASMA gas source | signer-1's private key (`0x…`, 64 hex) - must be **FUNDED with PLASMA**; its address must equal the ledger's `admin` key | **YES - never commit** |
+| `GOVERNANCE_ADDRESS` | the address of `GOVERNANCE_PRIVATE_KEY` (the governance signer) | the ledger's `admin` key (`bash -c 'source scripts/lib/ledger.sh; ledger_addr admin'`); confirm the key derives to it with `cast wallet address --private-key <GOVERNANCE_PRIVATE_KEY>` | no |
 | `DEPLOYER_PRIVATE_KEY` | deploying EOA for `forge` contract deploys / the ceremony verifier-swap scripts only - **NOT** admin ops (Phase-2 removed its governance/admin authority; it still holds the retired owner-revealing SBT's `ISSUER_ROLE` + record-type whitelists, so it is not a neutral key) | a funded ROAX EOA private key (`0x…`, 64 hex) | **YES - never commit** |
 | `DEPLOYER_ADDRESS` | the address of `DEPLOYER_PRIVATE_KEY` | derive: `cast wallet address --private-key <DEPLOYER_PRIVATE_KEY>` | no |
 | `ROAX_RPC` | chain RPC | `https://devrpc.roax.net` | no |
@@ -141,7 +142,7 @@ Only if the file is **absent**, create it (run from the repo root; fill in the F
 cat > contracts/.env <<'EOF'
 # Governance signer-1 - the demo tooling's admin authority since Phase-2 (2026-07-05, block 123835).
 GOVERNANCE_PRIVATE_KEY=0x<GOVERNANCE_SIGNER1_PRIVATE_KEY>
-GOVERNANCE_ADDRESS=0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2
+GOVERNANCE_ADDRESS=0x<GOVERNANCE_SIGNER_ADDRESS>   # the ledger's `admin` key - see the note above
 # Deploying EOA - only for `forge` deploys / ceremony scripts (no admin roles after Phase-2).
 DEPLOYER_PRIVATE_KEY=0x<YOUR_FUNDED_ROAX_EOA_PRIVATE_KEY>
 DEPLOYER_ADDRESS=0x<ITS_ADDRESS>
@@ -167,7 +168,8 @@ human number with `cast balance "$GOVERNANCE_ADDRESS" --rpc-url https://devrpc.r
 - **Likely cause:** the signer has no PLASMA, or `GOVERNANCE_ADDRESS` is wrong, or the RPC is unreachable.
 - **Fix:** fund governance signer-1 with PLASMA on ROAX testnet (faucet / transfer) before continuing - a
   zero-balance admin signer cannot whitelist, mint, or run `demo-bootstrap.sh`. Re-check the address with
-  `cast wallet address --private-key "$GOVERNANCE_PRIVATE_KEY"` → must be `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`.
+  `cast wallet address --private-key "$GOVERNANCE_PRIVATE_KEY"` → must equal the ledger's `admin` key
+  (`bash -c 'source scripts/lib/ledger.sh; ledger_addr admin'`).
   Confirm the RPC with `cast chain-id --rpc-url https://devrpc.roax.net` → must print `135`.
 
 ### 2.2 `circuits/build/` — the proving artifacts

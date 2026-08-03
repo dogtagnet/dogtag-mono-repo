@@ -1,6 +1,6 @@
 {
   "_": "Files that still hardcode a deployed contract address, and the retired addresses that must never reappear. Enforced by scripts/check-no-hardcoded-addresses.sh, in BOTH directions: an undeclared file carrying an address fails, and a declared file that no longer carries one fails too, so this list can only shrink.",
-  "_howToClear": "Read the address from configuration - env for a backend or portal, the deploy ledger for tooling, the ProtocolRegistry discovery anchor for the phones - then delete the entry here.",
+  "_howToClear": "Read the address from configuration - env for a backend or portal, the deploy ledger (scripts/lib/ledger.sh) for tooling, the generated bundle for the phones - then delete the entry here, in the SAME change. The three that remain are documentation whose addresses are HISTORICAL RECORDS rather than guidance, and are expected to stay.",
   "retired": [
     "0x0e56Ae2e1ef684d3e90d7699B981C6B76df922bf",
     "0x1456f93f7376789c46408CC4616751eB853edD9A",
@@ -34,12 +34,8 @@
     "0xf5492A671E69b1A13f7Fd123C021830eB1ea8081"
   ],
   "stillHardcoded": {
-    "AGENTS.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "docs/CEREMONY_TRANSCRIPT.consent.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "docs/CEREMONY_TRANSCRIPT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "docs/DEMO_CLICKS.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "docs/PREREQUISITES.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "docs/PRODUCTION_DEPLOYMENT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger",
-    "docs/REMOTE_DEPLOYMENT.md": "documentation; historical records legitimately pin addresses, live guidance must point at the ledger"
+    "AGENTS.md": "STAYS. Mixes deployment provenance (M3/M5 records, the r8 redeploy) with live guidance. Provenance legitimately pins the instance it describes; live guidance points at the ledger. Point new live guidance at the ledger, leave provenance alone.",
+    "docs/CEREMONY_TRANSCRIPT.consent.md": "STAYS. A ceremony transcript attests to the instance it names; one that stopped naming it would stop being a transcript. Historical record, not guidance.",
+    "docs/CEREMONY_TRANSCRIPT.md": "STAYS. A ceremony transcript attests to the instance it names; one that stopped naming it would stop being a transcript. Historical record, not guidance."
   }
 }

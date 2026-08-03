@@ -235,11 +235,15 @@ Run this from the repository root, after `demo-up.sh` has finished.
 kill $(lsof -nP -iTCP:41873 -sTCP:LISTEN -t)     # the vet portal's dev server, by PID
 kill $(lsof -nP -iTCP:43617 -sTCP:LISTEN -t)     # the groomer's
 
+# Addresses come from the deploy ledger, never a literal pasted here: a literal keeps working after
+# a redeploy while naming contracts that decide nothing, which is exactly how this block went stale.
+source scripts/lib/ledger.sh
+
 export VITE_DEMO_MODE=1 \
-  VITE_PROVIDER_REGISTRY_ADDR=0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 \
-  VITE_DOGTAG_ISSUER_FACTORY_V2_ADDR=0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6 \
-  VITE_SERVICE_DOMAIN_RESOLVER_ADDR=0x4AB4a70CFa9CE9415B96dF543C218F90a2619c33 \
-  VITE_PROVIDER_DIRECTORY_ADDR=0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0 \
+  VITE_PROVIDER_REGISTRY_ADDR=$(ledger_addr ProviderRegistry) \
+  VITE_DOGTAG_ISSUER_FACTORY_ADDR=$(ledger_addr DogTagIssuerFactory) \
+  VITE_SERVICE_DOMAIN_RESOLVER_ADDR=$(ledger_addr ServiceDomainResolver) \
+  VITE_PROVIDER_DIRECTORY_ADDR=$(ledger_addr ProviderDirectory) \
   VITE_CONTENT_MIRROR_BASE=http://127.0.0.1:46001 \
   VITE_CONTENT_MIRROR_TOKEN=dogtag-indexer-mirror-ingest-demo-token \
   VITE_PROVIDER_ID=<the provider id from §1.2>
@@ -348,8 +352,9 @@ This is the exact read the provider's Deploy button is gated on, and it **must b
 factory** - `msg.sender` is part of the answer:
 
 ```
-PR=0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9      # ProviderRegistry
-F2=0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6      # DogTagIssuerFactoryV2
+source scripts/lib/ledger.sh
+PR=$(ledger_addr ProviderRegistry)
+F2=$(ledger_addr DogTagIssuerFactory)
 cast call $PR "canCreateService(bytes20,bytes32,address)(bool)" \
   <providerId> $(cast keccak "VACCINATION") <controllerAddr> --from $F2 --rpc-url https://devrpc.roax.net
 ```
@@ -732,7 +737,8 @@ Again a single registrar gate.
 Confirm it yourself if you like - it is one call, and it reads `false`:
 
 ```
-cast call 0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0 "resolverApproved()(bool)" --rpc-url https://devrpc.roax.net
+source scripts/lib/ledger.sh
+cast call "$(ledger_addr ProviderDirectory)" "resolverApproved()(bool)" --rpc-url https://devrpc.roax.net
 ```
 
 Two properties of this flow are worth knowing for when it does open:
@@ -1178,30 +1184,29 @@ wrong chain, every on-chain row reports *could not run* and the verdict is withh
 
 ---
 
-## 8. Reference: the four generation-2 reads
+## 8. Reference: two live reads
 
-Eight generation-2 contracts are deployed on ROAX.
-**Issuance and verification still run entirely on the generation-1 contracts**, deliberately - so a
-generation-1 address in a portal is correct, not stale.
-What changed recently is that the admin registrar (§1.2) is now a real reader of one of them, the
-provider registry.
+Read the live state rather than trusting numbers written here, and resolve every address from the
+deploy ledger rather than from this page - a literal keeps working after a redeploy while naming a
+contract that decides nothing, which is what these commands used to do.
 
-Read the live state rather than trusting numbers written here.
-All four were run on this walk:
+This section used to list FOUR reads. Two of them - `generationCount` on the provenance router and
+`boundCloneCount` on the domain registry - are gone because those contracts are not part of the
+launch set: neither has a source in `contracts/src/` and neither has a ledger key, so there is no
+address to resolve and nothing that would answer. Printing one anyway is the failure this whole
+section is a reference for. `ServiceDomainResolver` is the launch set's domain surface; it is
+deployed and unwired, so it currently answers nothing either.
+
+Both remaining reads were run on this walk:
 
 ```
-cast call 0xf374f4cA5ebBBAFf0dFcE48D8Cda2e47F9D5da01 "generationCount()(uint256)" --rpc-url https://devrpc.roax.net
-cast call 0x25a318a0Bf83a7ea64fB0a7b1cDe8847722C7bC0 "resolverApproved()(bool)"   --rpc-url https://devrpc.roax.net
-cast call 0xD3B121FEaCde93b95288912EAdbB10824550FdBF "boundCloneCount()(uint256)" --rpc-url https://devrpc.roax.net
-cast call 0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9 "providerCount()(uint256)"   --rpc-url https://devrpc.roax.net
+source scripts/lib/ledger.sh
+cast call "$(ledger_addr ProviderDirectory)" "resolverApproved()(bool)" --rpc-url https://devrpc.roax.net
+cast call "$(ledger_addr ProviderRegistry)"  "providerCount()(uint256)" --rpc-url https://devrpc.roax.net
 ```
 
-- **`generationCount`** - how many factory generations the provenance router resolves through.
-  Two or more means generation 2 has been appended. It read **2** on this walk.
 - **`resolverApproved`** - false means the registrar has not approved the typed directory resolver, so
   every directory store stays empty and §2.7 cannot proceed. It read **false** on this walk.
-- **`boundCloneCount`** - zero means no issuing contract has ever bound a domain on the superseded domain
-  registry. It read **zero**.
 - **`providerCount`** - how many providers exist. It read **1** before §1.2 and **2** after.
 
 To see which providers exist, read the registry's own logs.
@@ -1210,10 +1215,10 @@ result from it is weak evidence for a strong claim:
 
 ```
 curl -s -X POST https://devrpc.roax.net -H 'content-type: application/json' --data \
-  '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"0xA4916d75722cf7d39a8E030cFbAee30a411aAEa9","fromBlock":"0x0","toBlock":"latest"}]}'
+  '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"'"$(ledger_addr ProviderRegistry)"'","fromBlock":"0x0","toBlock":"latest"}]}'
 ```
 
-The same query against the generation-2 factory (`0x4CBfF4Cf47c313C9Df9689dd2A47eC71675233c6`) tells you
+The same query against the factory (`ledger_addr DogTagIssuerFactory`) tells you
 whether any provider contract has ever been deployed through it.
 Before this walk it had emitted nothing; §2.4 changed that.
 

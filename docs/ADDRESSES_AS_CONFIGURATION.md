@@ -9,7 +9,53 @@ Read those five first - especially that this is **not** rebuild-avoidance (a mob
 on every full redeploy anyway) but so an app can CHECK a platform's version claim instead of trusting
 it, and that addresses are **operator-configurable, never holder-configurable**.
 
-## What is already done
+## Status: DONE - 62 of 65 cleared, 3 legitimately remain
+
+`bash scripts/check-no-hardcoded-addresses.sh` is the live count and outranks this page.
+
+The three that remain are documentation whose addresses are HISTORICAL RECORDS rather than guidance:
+`docs/CEREMONY_TRANSCRIPT.md`, `docs/CEREMONY_TRANSCRIPT.consent.md` and `AGENTS.md`. A ceremony
+transcript that stopped naming the instance it attests to would stop being a transcript, and
+AGENTS.md mixes deployment provenance with live guidance - so its entry stays while its live-guidance
+addresses have been pointed at the ledger. That is the ceiling, not a shortfall.
+
+**The durable rules now live in `AGENTS.md`, under "Addresses are CONFIGURATION, and
+`make check-addresses` is what keeps that true".** Read that rather than this page: it is the one
+that travels with the code. This file is kept as the record of how the work was scoped and of the
+traps that were paid for on the way.
+
+### What was built
+
+- `scripts/lib/ledger.sh` - `ledger_addr` / `ledger_require` / `ledger_chain_id`, the one way a
+  script reads `contracts/deployments/roax.json`, BY KEY NAME.
+- `scripts/gen-deployment-env.sh <stack>` - projects the ledger onto each stack's variable names.
+- `scripts/gen-mobile-roax-config.sh` (`make gen-mobile-config`) - writes both mobile bundles, which
+  are now GITIGNORED.
+- Every `.env.example` ships addresses BLANK and fallback-free; every consumer's unset value is the
+  empty or zero address, never a literal.
+
+### What is NOT done, deliberately
+
+- **The runtime narrowing of the mobile bundle** (AGENTS.md rule 5's second half). The bundle is
+  generated from the ledger, but the phones still read factory/registry/SBT synchronously rather than
+  resolving them from `getDiscoverySet`. That is a behavioural rewrite across 15 call sites on two
+  platforms, in the credential-verdict path - see the hazard in AGENTS.md.
+- **The signed manifest as a live fetch path.** `DOGTAG_MANIFEST_PUBKEY_HEX` is still `None` and
+  nothing fetches it. Its contract set is now the caller's configuration rather than a library
+  constant, which is what cleared its entry; making it the thing that removes the last bundled
+  address (the anchor itself) remains the named follow-up.
+- **`stacks/admin/api/tests/whitelist.rs` is RED on `origin/main`** and was left alone: it does
+  `forge create src/IssuerRegistry.sol:IssuerRegistry`, a contract deleted with generation 1, so it
+  can never pass. A decision is owed on it - delete, or rewrite onto `ProviderRegistry` - and it was
+  deliberately not taken inside a configuration change. Do NOT "fix" it by widening its
+  `have_foundry()` skip guard: a self-skipping test reports green in exactly the case it exists to
+  catch.
+
+---
+
+## Appendix: the original enumeration and its traps
+
+
 
 - `make check-addresses` (`scripts/check-no-hardcoded-addresses.sh`) is the permanent gate, wired
   into `make test`. It fails on an undeclared file carrying a ledger or retired address, AND on a
