@@ -867,6 +867,62 @@ who admits itself and holds no bit cannot anchor - `test_owning_a_clone_confers_
 still holds. What stays closed independently is record-type relabelling, via `clone.recordType()`
 versus the document's claim.
 
+**THE LIST IS SEEDED WITH THE CREATOR AT `initialize`, and the seed is a VALUE rather than a RULE.**
+Before it, a provider deployed its own clone and was refused by it (`NotLocallyAllowed`), and there
+was no way out: **no surface in this product writes this list** - the provider self-service portal has
+no such affordance, so `grep -rn setIssuanceAllowed packages/ stacks/*/web` is empty - so the only
+party who could fix it had no path to. The captain's ask: *"shouldn't the cloned contract just be able
+to take whoever that send the txn as the owner or the initial whitelist ... Although the modifier will
+still call the authority contract to check for rights"*.
+
+**Seed the list; do NOT make ownership imply the right.** `owner() == msg.sender` appears NOWHERE in
+the issuance path and adding an `|| msg.sender == owner()` arm to `onlyIssuanceCapable` is the wrong
+reading - it makes removal unenforceable and silently disarms the withdrawal lever
+`test_withdrawing_the_grant_stops_issuance_without_stripping_ownership` exists to protect. Three
+properties follow from it being an ordinary entry, each with its own pin:
+
+- **REMOVABLE, at no cost to ownership.** `setIssuanceAllowed(owner(), false)` stops the next anchor
+  and leaves `owner()` where it was; the seed carries no special protection, because a seed a provider
+  could not undo would be exactly the rule it was designed not to be
+  (`test_the_seeded_creator_is_an_ordinary_list_entry_that_removal_costs_no_ownership`).
+- **Grants nothing alone.** Both layers still hold, so a creator the registrar never granted is
+  refused `NotIssuanceCapable`
+  (`test_the_seeded_creator_still_anchors_nothing_without_the_authority_bit`, against the REAL core).
+- **Once, at creation.** A handover seeds nobody and sweeps nobody off
+  (`test_a_handover_does_not_seed_the_new_owner`). Re-seeding on transfer makes ownership imply the
+  right on an ongoing basis and silently re-admits an address a previous owner removed.
+
+It reuses the **same `IssuanceAllowedSet` event**, deliberately: an operator reconstructing the list
+from one log filter would otherwise miss its most likely entry, and a second topic0 leaves every
+existing decoder silently wrong. `setBy` is the FACTORY (the initializing caller) - what actually
+wrote it, and a third value distinguishing a creation seed from an owner's later enrolment.
+
+**STILL OPEN, and the seed narrows this rather than closing it: `setIssuanceAllowed` remains
+unreachable from every portal.** The seed fixes the CREATOR's dead end only. A provider admitting a
+separate STAFF key - the normal case once a clinic stops signing with the key that deployed its
+contract - has no product surface at all and must send the transaction by hand, and so must a
+provider REMOVING a compromised key, which is the incident-response direction and the worse gap of
+the two. So read "no surface writes this list" as still TRUE after this change, not as something the
+seed retired. Closing it is a provider-portal slice: a flow keyed on the clone the provider already
+selected, gated on `owner()` for admit and `owner()`-or-admin for remove, in the shape S-15's four
+flows already use.
+
+**A test helper that admits its own signer must be GUARDED, because `setIssuanceAllowed` refuses a
+no-op.** `_commission` (`DogTagIssuer.t.sol`) and `_onboardIssuingClone` (`LaunchStack.sol`) now test
+`issuanceAllowed(signer)` first, exactly as the `setRights` call beside them already did; a harness
+commissioning the provider key as its own signer otherwise reverts `NoChange` on a write the seed has
+already performed. `ProviderSelfService.t.sol` asserts the seed instead of writing it.
+`scripts/verify-clone-seed-mutations.sh` is the repeatable gate (5 mutations; self-tested for both an
+unapplied and a non-compiling mutation, each reported INERT rather than counted as evidence).
+
+**Deployment cost: NONE beyond the cascade already pending.** The seed moves `DogTagIssuer`'s runtime
+hash, which cascades to the factory (`impl.codehash == keccak256(type(DogTagIssuer).runtimeCode)`,
+with `implementation` immutable) and thence to `VerificationRegistryConsent` (`rootIndex` immutable).
+That cascade was **already** owed by the rights re-keying above and is undeployed - measured, not
+inferred: the ledger's deployed `DogTagIssuerImpl` runtime is `0x1a23d080…` (4023 bytes) while the
+re-keying alone already compiles to `0x68e56f25…`. The seed makes it `0x813d8b9d…`. One redeploy
+discharges both.
+
 **That ordering problem is why the re-keying had to happen.** `approve_application` /
 `delist_application` in `stacks/admin/api` built `whitelistFor` / `delistFor` against a contract no
 launch-set member implements, and had no successor while the grant needed a service. They now call

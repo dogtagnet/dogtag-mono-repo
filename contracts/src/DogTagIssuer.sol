@@ -72,6 +72,16 @@ interface IProviderAuthority {
 /// `test_withdrawing_the_grant_stops_issuance_without_stripping_ownership` and
 /// `test_owning_a_clone_confers_no_issuance_right`.
 ///
+/// **The creation seed does not weaken that, and the distinction is the whole design.** `initialize`
+/// writes ONE ordinary entry into this clone's own list - the creator's - so a provider can use the
+/// contract it just deployed. That is a list entry, not a rule: the owner is removable from it like any
+/// other address and stays `owner()` afterwards, a handover seeds nobody, and the entry grants nothing
+/// on its own because `issue` still asks the authority first. `owner() == msg.sender` appears nowhere in
+/// the issuance path, and putting it there is what would actually break this section. Pinned by
+/// `test_the_seeded_creator_is_an_ordinary_list_entry_that_removal_costs_no_ownership`,
+/// `test_a_handover_does_not_seed_the_new_owner` and
+/// `test_the_seeded_creator_still_anchors_nothing_without_the_authority_bit`.
+///
 /// **The converse is not true, and it is the more surprising half:** ownership is not a capability, yet
 /// the core folds the CONFIRMED owner into both `canIssue` and `canRevoke`. So a completed two-step
 /// handover suspends both until the registrar confirms the new owner on the core — the live owner and the
@@ -146,6 +156,11 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     ///
     /// So the scoping lives HERE, in the contract that already knows which provider it belongs to,
     /// rather than being pushed back into the lookup. Both layers must hold and either one refuses.
+    ///
+    /// **It is SEEDED with the creator at `initialize` and empty otherwise.** A provider that deploys
+    /// its own clone must be able to use it; before the seed it could not, and there was no product
+    /// path to fix that - no portal writes this list. The seed is a value, never a rule: read
+    /// `initialize` for what it does and does not imply.
     mapping(address => bool) public issuanceAllowed;
 
     /// @dev The shape every off-chain decoder — the oversight indexer, the web verifier, both mobile
@@ -207,6 +222,11 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     /// clone. Layer 2 alone would let a provider admit anyone it liked, with no KYC anywhere. Neither
     /// is redundant, and the order is deliberate: the authority answers first so a caller with no
     /// standing at all learns THAT, rather than being told it is merely not on a list.
+    ///
+    /// **There is no third arm, and adding one is the mistake to guard against.** `owner()` is not
+    /// consulted here and must never be: the creation seed makes the creator usable by putting it in
+    /// the LIST, which stays removable, whereas an `|| msg.sender == owner()` here would make removal
+    /// unenforceable and silently disarm the withdrawal lever this contract exists to keep working.
     modifier onlyIssuanceCapable() {
         if (!registry.canIssue(address(this), msg.sender)) revert NotIssuanceCapable();
         if (!issuanceAllowed[msg.sender]) revert NotLocallyAllowed();
@@ -217,6 +237,36 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     /// two-step handover. The factory passes the creating caller, so there is no path by which a freshly
     /// created clone is owned by anyone but its creator.
     /// @dev Takes no name, deliberately — see the contract doc.
+    ///
+    /// # The creation seed
+    ///
+    /// `owner_` is written onto {issuanceAllowed} here, so a provider can anchor through the contract it
+    /// just deployed. Without it a self-service deployment lands in a dead end: the clone refuses its own
+    /// creator with {NotLocallyAllowed}, and no surface in this product writes that list - the provider
+    /// portal has no such affordance - so the contract a provider just paid to deploy is unusable by the
+    /// only party that could fix it.
+    ///
+    /// **It is an ordinary list entry and NOT a rule about ownership.** Three consequences, each of which
+    /// a rule would get wrong, and each pinned by its own test:
+    ///
+    ///   * it is REMOVABLE. `setIssuanceAllowed(owner(), false)` stops the next anchor and leaves
+    ///     `owner()` exactly where it was - control and capability stay separate, which is the property
+    ///     the contract doc argues at length and which an `owner() == msg.sender` check in
+    ///     {onlyIssuanceCapable} would destroy;
+    ///   * it grants NOTHING on its own. `issue` asks the authority first, so a creator the registrar
+    ///     never granted is refused however this list reads; and
+    ///   * it happens ONCE, at creation. A handover seeds nobody - re-seeding on transfer would make
+    ///     ownership imply the right on an ongoing basis, and would silently re-admit an address the
+    ///     previous owner had deliberately removed.
+    ///
+    /// The write is emitted through the same {IssuanceAllowedSet} event as every other, deliberately: an
+    /// operator reconstructing the list from one log filter would otherwise miss its single most likely
+    /// entry, and a second event topic would leave every existing decoder silently wrong. `setBy` is the
+    /// initializing caller - the factory - which is both what actually wrote it and a third value that
+    /// tells a creation seed apart from an owner's later enrolment.
+    ///
+    /// `owner_` is already refused as the zero address above, so the seed can never admit it - the same
+    /// address {setIssuanceAllowed} rejects outright.
     function initialize(bytes32 rt, address reg, address index, address owner_) external initializer {
         require(reg != address(0) && index != address(0), "zero");
         if (owner_ == address(0)) revert OwnerCannotBeZero();
@@ -224,6 +274,8 @@ contract DogTagIssuer is Initializable, Ownable2Step {
         registry = IProviderAuthority(reg);
         rootIndex = IRootIndex(index);
         _transferOwnership(owner_);
+        issuanceAllowed[owner_] = true;
+        emit IssuanceAllowedSet(owner_, true, msg.sender);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -269,6 +321,11 @@ contract DogTagIssuer is Initializable, Ownable2Step {
     /// address the registrar never granted is refused however this list reads. Owning the clone is
     /// likewise still not a capability: an owner who admits itself and holds no bit cannot anchor.
     /// Pinned by `test_owning_a_clone_confers_no_issuance_right`.
+    ///
+    /// The creator arrives already on the list - see {initialize} - so the entry this function most
+    /// often writes ABOUT the creator is a removal. That removal is an ordinary one and is refused by
+    /// nothing here: the seed carries no special protection, because a seed a provider could not undo
+    /// would be exactly the ownership-implies-capability rule the seed was designed not to be.
     ///
     /// # It gates ISSUE only, never REVOKE
     ///
