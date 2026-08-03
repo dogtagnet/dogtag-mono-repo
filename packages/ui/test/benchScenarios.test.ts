@@ -15,6 +15,7 @@ import {
   BENCH_SCENARIOS,
   batchInclusionProof,
   foreignRegistry,
+  CLONE,
   FOREIGN_REGISTRY,
   genuineCredential,
   hostileIssuerContract,
@@ -341,9 +342,9 @@ describe("a client configured with a registry that does not govern the issuer", 
     // `crates/dogtag-standard-rs/src/verify.rs`. Asserted against the readers directly, because a fake
     // that agrees with itself cannot be caught by any assertion about the report.
     const w = foreignRegistry.build();
-    expect(await w.grantHistoryReader.grants(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER)).not.toEqual([]);
+    expect(await w.grantHistoryReader.grants(FOREIGN_REGISTRY, CLONE, SIGNER)).not.toEqual([]);
     expect(
-      await w.grantHistoryReader.grants(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER),
+      await w.grantHistoryReader.grants(SCENARIO_REGISTRY, CLONE, SIGNER),
       "a grant log read against a registry that never recorded it must come back empty",
     ).toEqual([]);
     // The VERIFIER's own reader is keyed the same way and reads the same map, so the gating row and
@@ -351,9 +352,9 @@ describe("a client configured with a registry that does not govern the issuer", 
     // that side too.
     const honest = genuineCredential.build();
     expect(
-      await honest.reader.grantHistory(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER),
+      await honest.reader.grantHistory(SCENARIO_REGISTRY, CLONE, SIGNER),
     ).not.toEqual([]);
-    expect(await honest.reader.grantHistory(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER)).toEqual([]);
+    expect(await honest.reader.grantHistory(FOREIGN_REGISTRY, CLONE, SIGNER)).toEqual([]);
   });
 
   it("does NOT convert this client's own misconfiguration into an accusation", async () => {

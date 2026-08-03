@@ -221,7 +221,7 @@ function genuineChain(doc: WrappedDoc): ChainCfg {
     // registry that GOVERNS the clone, which is the only log an `onlyWhitelisted` issuance can rest on.
     rootIssuedLogs: { [k(CLONE, root)]: ISSUED_AT_LOG },
     grants: {
-      [k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]: [
+      [k3(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)]: [
         { kind: "whitelisted", ...GRANTED_AT_LOG },
       ],
     },
@@ -588,7 +588,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
       ...base,
       issuerRegistries: { [CLONE.toLowerCase()]: FOREIGN_REGISTRY },
       grants: {
-        [k3(FOREIGN_REGISTRY, VACCINATION_KEY, SIGNER)]: [{ kind: "whitelisted", ...GRANTED_AT_LOG }],
+        [k3(FOREIGN_REGISTRY, CLONE, SIGNER)]: [{ kind: "whitelisted", ...GRANTED_AT_LOG }],
       },
     });
     const row = check(r, "whitelisted-at-issuance");
@@ -614,46 +614,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     expect(row.finding).toContain("NO grant");
   });
 
-  // THIS ROW FOLDS THE HISTORY ITSELF, so it needs the generation guard in its own right.
-  //
-  // `runVerificationBench` copies the gating `issuer-whitelisted` row's verdict from the verifier, but
-  // `whitelisted-at-issuance` re-reads the log through a SEPARATE `GrantHistoryReader` and folds it
-  // here. Guarding only the verifier left the accusation intact one row down: gating row "unresolved",
-  // advisory row "recorded NO grant" - which is what a reader takes as the reason the credential is
-  // bad. Two implementations of one rule, and only one of them was fixed.
-  it("does not accuse a generation-2 authority whose grant log it cannot match", async () => {
-    const doc = validDoc();
-    const r = await bench(doc, {
-      ...genuineChain(doc),
-      // `ProviderRegistry` records `IssuanceCapabilitySet(service, signer, allowed)`, so the
-      // `Whitelisted`/`Delisted` filter matches nothing REGARDLESS of whether this signer is
-      // authorised. The empty log is evidence about the query, not about the credential.
-      grants: {},
-      authorityGenerations: { [GENERATION_TWO_REGISTRY.toLowerCase()]: "successor" },
-      issuerRegistries: { [CLONE.toLowerCase()]: GENERATION_TWO_REGISTRY },
-    });
-    const row = check(r, "whitelisted-at-issuance");
-    expect(row.outcome).toBe("could-not-run");
-    expect(row.outcome).not.toBe("fail");
-    expect(row.couldNotRunReason).toContain("IssuanceCapabilitySet");
-    // The probe is in the evidence log: this row's answer turns on it, and a report citing a fold
-    // whose governing premise never appears is not evidence.
-    expect(r.reads.some((x) => x.method === "authorityGeneration")).toBe(true);
-  });
 
-  it("could-not-run - never fail - when the generation probe could not be put", async () => {
-    // Only a REVERT establishes generation 1. A probe that never arrived establishes nothing, and
-    // reading it as generation 1 would hand the empty log straight back to the definite refusal.
-    const doc = validDoc();
-    const r = await bench(doc, {
-      ...genuineChain(doc),
-      grants: {},
-      failing: new Set(["benchAuthorityGeneration"] as const),
-    });
-    const row = check(r, "whitelisted-at-issuance");
-    expect(row.outcome).toBe("could-not-run");
-    expect(row.outcome).not.toBe("fail");
-  });
 
   it("still refuses when the log is non-empty but every grant POSTDATES the anchoring", async () => {
     // The scoping test. A NON-EMPTY history is itself proof the authority speaks generation 1 -
@@ -664,7 +625,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const r = await bench(doc, {
       ...genuineChain(doc),
       grants: {
-        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]: [
+        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)]: [
           { kind: "whitelisted", blockNumber: ISSUED_AT_LOG.blockNumber + 50n, logIndex: 0 },
         ],
       },
@@ -722,7 +683,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const r = await bench(doc, {
       ...cfg,
       grants: {
-        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]: UNPOSITIONED_LOG,
+        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)]: UNPOSITIONED_LOG,
       },
     });
     const row = check(r, "whitelisted-at-issuance");
@@ -772,7 +733,7 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const r = await bench(doc, {
       ...genuineChain(doc),
       grants: {
-        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)]: UNPOSITIONED_LOG,
+        [k3(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)]: UNPOSITIONED_LOG,
       },
     });
     const row = check(r, "issuer-whitelisted");
@@ -824,13 +785,13 @@ describe("the grant history is read from the GOVERNING registry", () => {
     const doc = validDoc();
     const cfg = genuineChain(doc);
     const logs = fakeGrantHistoryReader(cfg);
-    expect(await logs.grants(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)).not.toEqual([]);
-    expect(await logs.grants(FOREIGN_REGISTRY, VACCINATION_KEY, SIGNER)).toEqual([]);
+    expect(await logs.grants(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)).not.toEqual([]);
+    expect(await logs.grants(FOREIGN_REGISTRY, CLONE, SIGNER)).toEqual([]);
     const reader = fakeReader(cfg);
-    expect(await reader.grantHistory(DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER)).not.toEqual(
+    expect(await reader.grantHistory(DEPLOYED_ADDRESSES.IssuerRegistry, CLONE, SIGNER)).not.toEqual(
       [],
     );
-    expect(await reader.grantHistory(FOREIGN_REGISTRY, VACCINATION_KEY, SIGNER)).toEqual([]);
+    expect(await reader.grantHistory(FOREIGN_REGISTRY, CLONE, SIGNER)).toEqual([]);
   });
 });
 

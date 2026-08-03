@@ -31,7 +31,6 @@ const {
   rootIssuedAtLog,
   whitelistGrantHistory,
   sortLogPoints,
-  authorityGenerationOf,
   UNPOSITIONED_LOG,
 } = await import("../src/wallet/contracts");
 const { roaxIssuerChainReader } = await import("../src/wallet/verifyCredential");
@@ -78,26 +77,7 @@ describe("every reader forwards blockNumber to the eth_call", () => {
     });
   }
 
-  it("authorityGenerationOf pins its probe to the block it was given", async () => {
-    // The probe decides whether an EMPTY grant history is a refusal, so it must observe the same
-    // snapshot as the verdict beside it - a generation established at `latest` could disagree with a
-    // history read at a pinned height.
-    await authorityGenerationOf({ registryAddr: ADDR, issuerAddr: ADDR, signer: ADDR, rpcUrl: url(), blockNumber: AT });
-    expect(call.mock.calls.at(-1)?.[0]?.blockNumber).toBe(AT);
-    await authorityGenerationOf({ registryAddr: ADDR, issuerAddr: ADDR, signer: ADDR, rpcUrl: url() });
-    expect(call.mock.calls.at(-1)?.[0]?.blockNumber).toBeUndefined();
-  });
 
-  it("authorityGenerationOf probes through `call`, never `readContract`", async () => {
-    // WHICH method is a correctness question, not a style one: `readContract` routes the failure
-    // through `getContractError`, which folds a -32603 internal error into the same class as a revert
-    // - so the probe would read the node's own error as evidence that the contract is generation 1.
-    readContract.mockClear();
-    call.mockClear();
-    await authorityGenerationOf({ registryAddr: ADDR, issuerAddr: ADDR, signer: ADDR, rpcUrl: url() });
-    expect(call).toHaveBeenCalledTimes(1);
-    expect(readContract).not.toHaveBeenCalled();
-  });
 
 });
 
@@ -124,28 +104,29 @@ describe("the log readers bound their range to the report's block", () => {
     expect("toBlock" in (lastLogCall() ?? {})).toBe(false);
   });
 
-  it("whitelistGrantHistory pins toBlock on BOTH event queries", async () => {
+  it("whitelistGrantHistory pins toBlock on its grant query", async () => {
     await whitelistGrantHistory({
       registryAddr: ADDR,
-      recordTypeKey: ROOT,
+      service: ADDR,
       signer: ADDR,
       rpcUrl: url(),
       toBlock: AT,
     });
-    // Whitelisted and Delisted are two separate `eth_getLogs`; a bound on only one would silently
-    // admit a delisting from beyond the report's own height.
-    expect(getLogs.mock.calls.length).toBe(2);
+    // Grant and withdrawal share one topic (`allowed` is the non-indexed argument), so this is a
+    // SINGLE `eth_getLogs` - an unbounded one would admit a withdrawal from beyond the report's
+    // own height.
+    expect(getLogs.mock.calls.length).toBe(1);
     for (const [call] of getLogs.mock.calls) {
       expect((call as unknown as Record<string, unknown>).toBlock).toBe(AT);
     }
   });
 
-  it("whitelistGrantHistory asks about exactly the (recordType, signer) pair, indexed", async () => {
-    await whitelistGrantHistory({ registryAddr: ADDR, recordTypeKey: ROOT, signer: ADDR, rpcUrl: url() });
+  it("whitelistGrantHistory asks about exactly the (service, signer) pair, indexed", async () => {
+    await whitelistGrantHistory({ registryAddr: ADDR, service: ADDR, signer: ADDR, rpcUrl: url() });
     for (const [call] of getLogs.mock.calls) {
       const c = call as unknown as Record<string, unknown>;
       expect(c.address).toBe(ADDR);
-      expect(c.args).toEqual({ recordType: ROOT, signer: ADDR });
+      expect(c.args).toEqual({ service: ADDR, signer: ADDR });
     }
   });
 });
@@ -165,24 +146,29 @@ describe("a log with no position is reported as such, never placed", () => {
   const pending = { blockNumber: null, logIndex: null };
   beforeEach(() => getLogs.mockClear());
 
-  it("whitelistGrantHistory: an unpositioned WHITELISTED log makes the whole history unorderable", async () => {
-    getLogs.mockResolvedValueOnce([pending]).mockResolvedValueOnce([]);
+  const grant = (allowed: boolean, pos: Record<string, unknown>) => ({
+    ...pos,
+    args: { allowed },
+  });
+
+  it("whitelistGrantHistory: an unpositioned GRANT log makes the whole history unorderable", async () => {
+    getLogs.mockResolvedValueOnce([grant(true, pending)]);
     const h = await whitelistGrantHistory({
       registryAddr: ADDR,
-      recordTypeKey: ROOT,
+      service: ADDR,
       signer: ADDR,
       rpcUrl: url(),
     });
     expect(h).toBe(UNPOSITIONED_LOG);
   });
 
-  it("whitelistGrantHistory: an unpositioned DELISTED log trips it too", async () => {
-    // The two events are separate `eth_getLogs`, so a guard applied to only one leaves the delisting -
-    // the event whose loss flips an answer to authorised - unguarded. Both sets are checked.
-    getLogs.mockResolvedValueOnce([positioned]).mockResolvedValueOnce([pending]);
+  it("whitelistGrantHistory: an unpositioned WITHDRAWAL trips it too", async () => {
+    // Grant and withdrawal arrive on ONE topic, so a guard that only looked at the first log would
+    // leave the withdrawal - the event whose loss flips an answer to authorised - unguarded.
+    getLogs.mockResolvedValueOnce([grant(true, positioned), grant(false, pending)]);
     const h = await whitelistGrantHistory({
       registryAddr: ADDR,
-      recordTypeKey: ROOT,
+      service: ADDR,
       signer: ADDR,
       rpcUrl: url(),
     });
@@ -191,23 +177,23 @@ describe("a log with no position is reported as such, never placed", () => {
 
   it("whitelistGrantHistory: positioned logs still fold, and an empty log is still an empty history", async () => {
     // The control. Without it a reader that returned the sentinel unconditionally would pass above.
-    getLogs.mockResolvedValueOnce([positioned]).mockResolvedValueOnce([]);
+    getLogs.mockResolvedValueOnce([grant(true, positioned)]);
     const granted = await whitelistGrantHistory({
       registryAddr: ADDR,
-      recordTypeKey: ROOT,
+      service: ADDR,
       signer: ADDR,
       rpcUrl: url(),
     });
     expect(granted).toEqual([{ kind: "whitelisted", ...positioned }]);
 
-    getLogs.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    getLogs.mockResolvedValueOnce([]);
     const none = await whitelistGrantHistory({
       registryAddr: ADDR,
-      recordTypeKey: ROOT,
+      service: ADDR,
       signer: ADDR,
       rpcUrl: url(),
     });
-    // An EMPTY history keeps meaning what it meant: the registry answered and recorded no grant.
+    // An EMPTY history keeps meaning what it meant: the authority answered and recorded no grant.
     expect(none).toEqual([]);
   });
 

@@ -168,25 +168,23 @@ const DOGTAG_ISSUER_ABI = [
 ] as const satisfies Abi;
 
 /**
- * `IssuerRegistry`'s two grant-lifecycle events, both indexed on exactly the pair a whitelist question
- * is asked about - so the full grant history for one `(recordType, signer)` is one filtered
- * `eth_getLogs`, with no scan and no per-log decode of irrelevant entries.
+ * The authority's issuance-grant event, indexed on exactly the pair the question is asked about - so
+ * the full history for one `(service, signer)` is ONE filtered `eth_getLogs`, with no scan and no
+ * per-log decode of irrelevant entries.
+ *
+ * Keyed on the SERVICE ADDRESS, not a record-type key. A clone carries exactly one record type, so
+ * filtering by service inherently scopes the history to it; the separate check that the DOCUMENT's
+ * claimed record type matches `recordType()` stays at the caller, where a relabelled credential is
+ * refused. `allowed` is the one NON-indexed argument, so grant and withdrawal arrive on one topic.
  */
-const ISSUER_REGISTRY_EVENT_ABI = [
+const ISSUANCE_CAPABILITY_EVENT_ABI = [
   {
     type: "event",
-    name: "Whitelisted",
+    name: "IssuanceCapabilitySet",
     inputs: [
-      { name: "recordType", type: "bytes32", indexed: true },
+      { name: "service", type: "address", indexed: true },
       { name: "signer", type: "address", indexed: true },
-    ],
-  },
-  {
-    type: "event",
-    name: "Delisted",
-    inputs: [
-      { name: "recordType", type: "bytes32", indexed: true },
-      { name: "signer", type: "address", indexed: true },
+      { name: "allowed", type: "bool", indexed: false },
     ],
   },
 ] as const satisfies Abi;
@@ -536,7 +534,8 @@ function logPoint(l: {
  */
 export async function whitelistGrantHistory(args: {
   registryAddr: string;
-  recordTypeKey: string;
+  /** The clone the grant is about. `IssuanceCapabilitySet` is indexed on it, not on a record type. */
+  service: string;
   signer: string;
   rpcUrl?: string;
   defaultRpcUrl?: string;
@@ -545,29 +544,24 @@ export async function whitelistGrantHistory(args: {
   toBlock?: bigint;
 }): Promise<WhitelistGrantEvent[] | UnpositionedLog> {
   const client = roaxPublicClient(args.rpcUrl, args.defaultRpcUrl);
-  const range = {
+  const logs = await client.getLogs({
     address: args.registryAddr as Address,
     fromBlock: args.fromBlock ?? 0n,
     ...(args.toBlock === undefined ? {} : { toBlock: args.toBlock }),
     args: {
-      recordType: args.recordTypeKey as `0x${string}`,
+      service: args.service as Address,
       signer: args.signer as Address,
     },
-  } as const;
-  const [granted, revoked] = await Promise.all([
-    client.getLogs({ ...range, event: ISSUER_REGISTRY_EVENT_ABI[0] }),
-    client.getLogs({ ...range, event: ISSUER_REGISTRY_EVENT_ABI[1] }),
-  ]);
+    event: ISSUANCE_CAPABILITY_EVENT_ABI[0],
+  });
   const events: WhitelistGrantEvent[] = [];
-  for (const [kind, logs] of [
-    ["whitelisted", granted],
-    ["delisted", revoked],
-  ] as const) {
-    for (const l of logs) {
-      const at = logPoint(l);
-      if (!at) return UNPOSITIONED_LOG;
-      events.push({ kind, ...at });
-    }
+  for (const l of logs) {
+    const at = logPoint(l);
+    if (!at) return UNPOSITIONED_LOG;
+    // A log whose `allowed` word did not decode is a malformed entry, not a fact about the
+    // credential - it cannot be folded, so the whole answer is withheld.
+    if (typeof l.args.allowed !== "boolean") return UNPOSITIONED_LOG;
+    events.push({ kind: l.args.allowed ? "whitelisted" : "delisted", ...at });
   }
   return sortLogPoints(events);
 }
@@ -630,98 +624,9 @@ export function grantInForceAt(
   return asOf?.kind === "whitelisted" ? "authorized" : "notAuthorized";
 }
 
-/**
- * Which generation's vocabulary an authority contract speaks, as established by a probe.
- *
- * THREE outcomes, and the third is not a neighbour of the other two — the same shape the pillar's own
- * verdict has, for the same reason. `"legacy"` is a conclusion ABOUT THE CONTRACT and licenses
- * treating an empty grant history as a definite refusal; `"undetermined"` says the probe could not be
- * put, which licenses nothing.
- */
-export type AuthorityGeneration = "successor" | "legacy" | "undetermined";
 
-/**
- * Did the CONTRACT execute this call and revert, or did the NODE fail on its own account?
- *
- * `ExecutionRevertedError` is viem's revert-SPECIFIC class: `getNodeError` raises it for `code === 3`
- * or a message matching `/execution reverted/`, which is exactly the pair the Rust and mobile ports
- * key on. Everything else the node can say about ITSELF — `-32005` rate limit (`LimitExceededRpcError`),
- * `-32603` internal error (`InternalRpcError`), `-32601`, `-32002` — and every transport failure keeps
- * its own class, so this walk excludes them.
- *
- * DO NOT "align" this with `ContractFunctionRevertedError`, which is what it used to walk for and is
- * NOT revert-specific: viem's `getContractError` folds BOTH `code === 3` AND `InternalRpcError.code`
- * (`-32603`) into that class, so an internal error read as a revert. Verified empirically against the
- * pinned viem rather than inferred — through `readContract` a `-32603` yields
- * `ContractFunctionRevertedError`, while through `call` it yields `InternalRpcError`. That is why the
- * probe below uses `call`: it is also the honest read for a value we discard.
- */
-export function answeredWithExecutionRevert(e: unknown): boolean {
-  if (!(e instanceof BaseError)) return false;
-  return Boolean(e.walk((x) => x instanceof ExecutionRevertedError));
-}
 
-/**
- * What a probe that DID NOT throw establishes, from its returndata alone.
- *
- * A successful `eth_call` is only evidence of the successor if something actually answered. An address
- * with NO CODE returns empty without reverting, which is neither a `ProviderRegistry` answering nor
- * evidence of a generation-1 `IssuerRegistry` — the same case `readContract` used to surface as
- * `ContractFunctionZeroDataError`. Reading it as `"successor"` would silently suppress the definite
- * refusal for every never-granted signer whose configured authority address points at nothing.
- *
- * Split out from the I/O so it is pinned rather than inferred, mirroring how the Rust port keeps
- * `generation_from_probe` beside its call.
- */
-export function generationFromProbeData(data: string | undefined): AuthorityGeneration {
-  return data && data !== "0x" ? "successor" : "undetermined";
-}
 
-/**
- * Probe an authority contract for the successor's surface, to decide whether an EMPTY grant history
- * is an answer or a vocabulary mismatch.
- *
- * Scoped by its caller to the empty-history case ONLY, and that scoping is load-bearing: a NON-EMPTY
- * history is itself proof this authority speaks generation 1, because those events came out of it.
- * Only the empty case is ambiguous between "generation 1, never granted" and "generation 2, wrong
- * vocabulary". So this costs one `eth_call` on the refusal path alone and cannot perturb any answer
- * the forward-only rule already establishes.
- *
- * The probe's BOOLEAN is discarded — see {@link PROVIDER_AUTHORITY_ABI}. It identifies the GENERATION
- * and nothing else. Answering the historical question against a generation-2 authority needs its
- * `IssuanceCapabilitySet` log, which is a separate change (`docs/ISSUER_V2_OWNERSHIP.md` §8).
- *
- * Never throws: a probe that could not be put is `"undetermined"`, which the caller renders as an
- * unresolved pillar rather than as a pass or an accusation.
- */
-export async function authorityGenerationOf(args: {
-  registryAddr: string;
-  issuerAddr: string;
-  signer: string;
-  rpcUrl?: string;
-  defaultRpcUrl?: string;
-  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
-  blockNumber?: bigint;
-}): Promise<AuthorityGeneration> {
-  try {
-    // A raw `call` rather than `readContract`, for two reasons that point the same way. The value is
-    // DISCARDED, so decoding it would be work done only to throw the result away; and `readContract`
-    // routes the failure through `getContractError`, which collapses an internal error into the same
-    // class as a revert - see {@link answeredWithExecutionRevert}.
-    const { data } = await roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).call({
-      to: args.registryAddr as Address,
-      data: encodeFunctionData({
-        abi: PROVIDER_AUTHORITY_ABI,
-        functionName: "isRecognizedIssuer",
-        args: [args.issuerAddr as Address, args.signer as Address],
-      }),
-      blockNumber: args.blockNumber,
-    });
-    return generationFromProbeData(data);
-  } catch (e) {
-    return answeredWithExecutionRevert(e) ? "legacy" : "undetermined";
-  }
-}
 
 /**
  * Where this root was anchored, as a `(blockNumber, logIndex)` point - or `null` when this clone

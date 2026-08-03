@@ -60,6 +60,8 @@ function tamperIntegrity(doc: WrappedDoc): WrappedDoc {
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
 const VACCINATION_KEY = recordTypeKey("VACCINATION");
+/** The clone the factory resolves for these fixtures - what the grant log is indexed on. */
+const CLONE = "0x0000000000000000000000000000000000000001";
 
 interface ReaderCfg {
   /** `rootIssuer(root)`; the zero address models a root no factory clone ever issued. */
@@ -219,7 +221,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       issuedAt: 1_699_000_000n,
       isValid: true,
       isRevoked: false,
-      // The governing registry's log records no grant to this signer for this record type, ever.
+      // The governing authority's log records no grant to this signer on this clone, ever.
       grantHistory: [],
     });
     const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
@@ -228,10 +230,10 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(r.verdict).toBe(false); // …but an unauthorised issuer signer fails the verdict.
     expect(r.signerAddr).toBe(SIGNER);
     expect(r.fragments.issuerWhitelisted).toBe(false);
-    // The grant history is read from the GOVERNING registry - the one the CLONE names - with the
-    // record-type key the CHAIN reported and the CHAIN-resolved signer. Never anything supplied by
-    // the caller or the document, and never this client's own configured registry.
-    expect(calls.grantHistory).toEqual([[GOVERNING_REGISTRY, VACCINATION_KEY, SIGNER]]);
+    // The grant history is read from the GOVERNING authority - the one the CLONE names - about the
+    // CHAIN-resolved clone and the CHAIN-resolved signer. Never anything supplied by the caller or
+    // the document, and never this client's own configured registry.
+    expect(calls.grantHistory).toEqual([[GOVERNING_REGISTRY, CLONE, SIGNER]]);
     expect(calls.grantHistory[0][0]).not.toBe(DEPLOYED_ADDRESSES.IssuerRegistry);
   });
 
@@ -272,49 +274,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(before.verdict).toBe(false);
   });
 
-  it("a generation-2 authority is undetermined, never a forgery verdict", async () => {
-    // `Whitelisted(bytes32 indexed recordType, address indexed signer)` puts the record-type key in
-    // `topic1`, so the grant-history read is a RECORD-TYPE caller via logs. Against a
-    // `ProviderRegistry` - which records `IssuanceCapabilitySet(service, signer, allowed)` under a
-    // different `topic0` - that filter matches nothing, so a genuine generation-2 credential comes
-    // back with an empty history. Unguarded, `grantInForceAt` folds that to a definite refusal.
-    const doc = validDoc();
-    const { reader, calls } = fakeReader({
-      issuedAt: 1_699_000_000n,
-      isValid: true,
-      grantHistory: [],
-      authorityGeneration: "successor",
-    });
-    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
 
-    expect(r.fragments.issuerWhitelisted).toBeNull();
-    expect(r.fragments.issuerWhitelisted).not.toBe(false);
-    // Unresolved has never permitted a pass, and this guard must not have loosened that.
-    expect(r.verdict).toBe(false);
-    // Probed against the GOVERNING authority, with the chain-resolved clone and signer.
-    expect(calls.authorityGeneration).toEqual([
-      [GOVERNING_REGISTRY, ISSUER.documentStore, SIGNER],
-    ]);
-  });
-
-  it("a probe that could not be put is undetermined too, never generation 1", async () => {
-    // The probe has THREE outcomes, and only "the node executed it and the contract refused it"
-    // licenses treating an empty history as an answer. A timeout or a dropped connection establishes
-    // nothing - reading it as generation 1 would turn one transient into a forgery verdict.
-    const doc = validDoc();
-    const r = await verifyCredentialOnchain({
-      wrappedDoc: asRecord(doc),
-      now: NOW,
-      reader: fakeReader({
-        issuedAt: 1_699_000_000n,
-        isValid: true,
-        grantHistory: [],
-        authorityGeneration: "undetermined",
-      }).reader,
-    });
-    expect(r.fragments.issuerWhitelisted).toBeNull();
-    expect(r.verdict).toBe(false);
-  });
 
   it("the guard does not soften generation 1, and does not run on a non-empty history", async () => {
     // Without this, the guard could return undetermined for EVERY empty history and the two cases

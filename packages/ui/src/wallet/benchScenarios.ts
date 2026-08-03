@@ -6,7 +6,7 @@ import { wrapDocument } from "@dogtag/standard/wrap";
 // browser-safe on the same terms as `wrap`.
 import { TypeTag, type IssuerMeta, type WrappedDoc } from "@dogtag/standard/types";
 import { DEPLOYED_ADDRESSES, recordTypeKey, sortLogPoints, ZERO_ADDRESS } from "./contracts";
-import type { AuthorityGeneration, LogPoint, WhitelistGrantEvent } from "./contracts";
+import type { LogPoint, WhitelistGrantEvent } from "./contracts";
 import type { IssuerChainReader } from "./verifyCredential";
 import {
   runVerificationBench,
@@ -79,7 +79,8 @@ export const SCENARIO_REGISTRY = DEPLOYED_ADDRESSES.IssuerRegistry;
 export const SCENARIO_FACTORY = DEPLOYED_ADDRESSES.DogTagIssuerFactory;
 
 /** The clone the factory names for an honest root. */
-const CLONE = "0x00000000000000000000000000000000c10e0001";
+/** The clone every scenario anchors through - and the key its grant history is indexed on. */
+export const CLONE = "0x00000000000000000000000000000000c10e0001";
 /** A contract the factory never deployed, run by whoever forged the document. */
 const HOSTILE = "0x000000000000000000000000000000000000ba0b";
 /** A second, unrelated `IssuerRegistry` instance - the misconfiguration case. */
@@ -156,17 +157,6 @@ interface ChainScript {
   rootIssuedLogs?: Record<string, LogPoint>;
   /** `(registry, recordTypeKey, signer)` -> that REGISTRY's own grant log, oldest first. */
   grants?: Record<string, WhitelistGrantEvent[]>;
-  /**
-   * registry -> which generation's vocabulary that authority speaks, as the successor probe would
-   * establish it.
-   *
-   * ABSENT MEANS `"legacy"`, and that default is stated here rather than left to fall through: every
-   * scenario in this catalogue models a generation-1 chain, so an authority whose grant log is empty
-   * really has answered, and its emptiness really is evidence about the credential. Making the
-   * default "undetermined" instead would silently convert every scripted refusal into an unresolved
-   * pillar - the catalogue would still be green while asserting nothing.
-   */
-  authorityGenerations?: Record<string, AuthorityGeneration>;
   /** Every read throws with this message - the wrong-chain / unreachable-endpoint case. */
   allReadsFail?: string;
 }
@@ -191,7 +181,7 @@ function honestChain(root: string): ChainScript {
     // configured with. `issue()` is `onlyWhitelisted` against the clone's own `registry` slot, so an
     // honest anchoring implies the grant is in THAT registry's log and nowhere else.
     grants: {
-      [k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [{ kind: "whitelisted", ...GRANTED }],
+      [k3(SCENARIO_REGISTRY, CLONE, SIGNER)]: [{ kind: "whitelisted", ...GRANTED }],
     },
   };
 }
@@ -264,10 +254,6 @@ function readersFor(script: ChainScript): ScenarioReaders {
       // this. `allReadsFail` is still honoured, because the wrong-chain scenario's whole point is
       // that NO address-bound read reaches a peer reporting the wrong chain: that must show up as an
       // unestablished generation, not as a scripted `"legacy"` the fake invented.
-      async authorityGeneration(registryAddr) {
-        if (script.allReadsFail) return "undetermined";
-        return script.authorityGenerations?.[registryAddr.toLowerCase()] ?? "legacy";
-      },
     },
     authorityReader: {
       async registryOf(cloneAddr) {
@@ -292,10 +278,6 @@ function readersFor(script: ChainScript): ScenarioReaders {
       // Reads the SAME script map the verifier's reader above does, so the gating row and this
       // advisory one cannot be shown different chains. Keyed on the registry for the same reason
       // `grants` is: this is a property of one authority instance.
-      async authorityGeneration(registryAddr) {
-        if (script.allReadsFail) return "undetermined";
-        return script.authorityGenerations?.[registryAddr.toLowerCase()] ?? "legacy";
-      },
     },
   };
 }
@@ -570,7 +552,7 @@ export const signerDelistedBeforeIssuance: BenchScenario = {
     return world(asRecord(doc), {
       ...base,
       grants: {
-        [k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [
+        [k3(SCENARIO_REGISTRY, CLONE, SIGNER)]: [
           { kind: "whitelisted", ...GRANTED },
           { kind: "delisted", ...DELISTED_BEFORE },
         ],
@@ -623,7 +605,7 @@ export const signerDelistedAfterIssuance: BenchScenario = {
       // Granted long before the anchoring, delisted long after it - in the registry that governs the
       // clone, which is the only log an honest `onlyWhitelisted` issuance could rest on.
       grants: {
-        [k3(SCENARIO_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [
+        [k3(SCENARIO_REGISTRY, CLONE, SIGNER)]: [
           { kind: "whitelisted", ...GRANTED },
           { kind: "delisted", ...DELISTED_AFTER },
         ],
@@ -732,7 +714,7 @@ export const foreignRegistry: BenchScenario = {
       // the grant only in SCENARIO_REGISTRY would be a chain state the protocol cannot produce, and it
       // is the emptiness of the CONFIGURED registry's log that makes this scenario the catcher.
       grants: {
-        [k3(FOREIGN_REGISTRY, RECORD_TYPE_KEY, SIGNER)]: [{ kind: "whitelisted", ...GRANTED }],
+        [k3(FOREIGN_REGISTRY, CLONE, SIGNER)]: [{ kind: "whitelisted", ...GRANTED }],
       },
     });
   },

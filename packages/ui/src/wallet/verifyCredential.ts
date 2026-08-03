@@ -6,7 +6,6 @@ import { toHex32 } from "@dogtag/standard/field";
 import type { WrappedDoc } from "@dogtag/standard/types";
 import type { VerifyCredentialResp } from "../api/types";
 import {
-  authorityGenerationOf,
   DEPLOYED_ADDRESSES,
   grantInForceAt,
   isRootRevoked,
@@ -22,7 +21,6 @@ import {
   whitelistGrantHistory,
   ZERO_ADDRESS,
   ZERO_BYTES32,
-  type AuthorityGeneration,
   type LogPoint,
   type UnpositionedLog,
   type WhitelistGrantEvent,
@@ -88,30 +86,17 @@ export interface IssuerChainReader {
     root: string,
   ): Promise<LogPoint | null | UnpositionedLog>;
   /**
-   * IssuerRegistry.Whitelisted/Delisted(recordTypeKey, signer) - the full grant history for one pair,
-   * oldest first. An empty array is a real answer ("no grant was ever recorded"); a read that FAILS
-   * rejects, so the caller keeps that apart from "the log could not be reached"; and
-   * {@link UNPOSITIONED_LOG} is the third, when some grant carried no position and so cannot be
-   * sequenced against the anchoring point.
+   * `IssuanceCapabilitySet(service, signer, allowed)` - the full grant history for one pair, oldest
+   * first. An empty array is a real answer ("no grant was ever recorded"); a read that FAILS rejects,
+   * so the caller keeps that apart from "the log could not be reached"; and {@link UNPOSITIONED_LOG}
+   * is the third, when some grant carried no position and so cannot be sequenced against the
+   * anchoring point.
    */
   grantHistory(
     registryAddr: string,
-    recordTypeKey: string,
+    service: string,
     signer: string,
   ): Promise<WhitelistGrantEvent[] | UnpositionedLog>;
-  /**
-   * Which generation's vocabulary this authority speaks, established by probing the successor's
-   * `isRecognizedIssuer` - the one selector a generation-1 `IssuerRegistry` provably lacks.
-   *
-   * Consulted ONLY when the grant history came back empty, because a non-empty history is itself
-   * proof the authority speaks generation 1. Never throws: a probe that could not be put is
-   * `"undetermined"`. See {@link authorityGenerationOf}.
-   */
-  authorityGeneration(
-    registryAddr: string,
-    issuerAddr: string,
-    signer: string,
-  ): Promise<AuthorityGeneration>;
 }
 
 /**
@@ -148,25 +133,14 @@ export function roaxIssuerChainReader(
     // landing mid-verification cannot change a verdict printed under an earlier block.
     rootIssuedAt: (issuerAddr, root) =>
       rootIssuedAtLog({ issuerAddr, root, rpcUrl, defaultRpcUrl, toBlock: blockNumber }),
-    grantHistory: (registryAddr, key, signer) =>
+    grantHistory: (registryAddr, service, signer) =>
       whitelistGrantHistory({
         registryAddr,
-        recordTypeKey: key,
+        service,
         signer,
         rpcUrl,
         defaultRpcUrl,
         toBlock: blockNumber,
-      }),
-    // Pinned to the same block as everything else, so the generation the guard establishes is the
-    // one that held at the height the verdict claims.
-    authorityGeneration: (registryAddr, issuerAddr, signer) =>
-      authorityGenerationOf({
-        registryAddr,
-        issuerAddr,
-        signer,
-        rpcUrl,
-        defaultRpcUrl,
-        blockNumber,
       }),
   };
 }
@@ -358,7 +332,7 @@ export async function verifyCredentialOnchain(
         if (anchoredAt && anchoredAt !== UNPOSITIONED_LOG) {
           const history = await reader.grantHistory(
             governing,
-            chainRecordTypeKey,
+            resolvedClone,
             resolvedSigner,
           );
           // A grant the node gave no position cannot be sequenced against the anchoring point, so the
@@ -366,32 +340,11 @@ export async function verifyCredentialOnchain(
           // is a wrong answer rather than a rough one. Undetermined, exactly as the Rust, Kotlin and
           // Swift ports answer for the same log.
           if (history !== UNPOSITIONED_LOG) {
-            // An EMPTY history is a definite refusal ONLY if this authority actually speaks this
-            // vocabulary. The query above is RECORD-TYPE-KEYED - `Whitelisted(bytes32 indexed
-            // recordType, address indexed signer)` puts the key in `topic1` - so it fails against
-            // the generation-2 successor the same way the legacy getter does, only far more
-            // quietly: `ProviderRegistry` records grants as `IssuanceCapabilitySet(service, signer,
-            // allowed)`, so this filter matches NOTHING there and `grantInForceAt` would fold that
-            // to a confident forgery verdict against a genuine credential.
-            //
-            // Scoped to the empty case because a NON-EMPTY history is itself proof the authority
-            // speaks generation 1 - those events came out of it. So the probe costs one `eth_call`
-            // on the refusal path only, and cannot perturb any answer the forward-only rule
-            // established. Its BOOLEAN is discarded: it identifies the GENERATION and nothing else.
-            const established =
-              history.length > 0
-                ? "legacy"
-                : await reader.authorityGeneration(
-                    governing,
-                    resolvedClone,
-                    resolvedSigner,
-                  );
-            if (established === "legacy") {
-              issuerWhitelisted = grantInForceAt(history, anchoredAt) === "authorized";
-            }
-            // else: a generation-2 authority (whose grants this build cannot read), or a probe that
-            // could not be put at all. Both leave `issuerWhitelisted` null - never a pass, and never
-            // an accusation drawn from a question we could not answer.
+            // An EMPTY history is a DEFINITE refusal, and that is evidence about the credential
+            // rather than about us: `issue()` is `onlyIssuanceCapable`, so an honest clone cannot
+            // have anchored this root without the authority having granted this signer the
+            // capability. A read that FAILED rejected above and never arrives here as an empty one.
+            issuerWhitelisted = grantInForceAt(history, anchoredAt) === "authorized";
           }
         }
         // else: no authority to ask, no anchoring event to sequence against, or an anchoring log whose
