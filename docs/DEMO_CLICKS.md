@@ -23,7 +23,7 @@ The order below is the order to read it in. Each role picks up the state the pre
 | 0 | - | **Cold start: from an empty machine to a running stack** |
 | 1 | **Admin** | Register a provider, and finish it off |
 | 2 | **The provider** | Deploy their own contract and select it |
-| 3 | **The vet** | Register a pet, issue a credential, anchor it |
+| 3 | **The vet** | Admit their own signing key, register a pet, issue a credential, anchor it |
 | 4 | **The groomer** | Clients, pets, the diary, and checking a credential it did not write |
 | 5 | **Government** | Verify somebody else's credential; issue their own |
 | 6 | **The owner** | Receive a credential and read it |
@@ -752,49 +752,72 @@ yet.
 
 Vet portal, http://localhost:41873. Custody must be unlocked (§0.10).
 
-### 3.0 Before the vet can anchor anything: issuance takes TWO checks
+### 3.0 Before the vet can anchor anything: issuance takes TWO permissions - **Signing keys** in the nav
 
-This is the step most likely to stop you, it is not on any screen, and it is the reason a correctly
-registered provider with a correctly attached contract can still fail to issue.
+This is the step most likely to stop you, and it is the reason a correctly registered provider with a
+correctly attached contract can still fail to issue.
+It **is** on a screen now; a previous revision of this guide sent you to a terminal here, because
+there was no screen to send you to.
 
 `DogTagIssuer.issue` requires **both**:
 
 ```
-registry.canIssue(address(this), msg.sender)   // the authority's scope-free grant + lifecycle
-&& issuanceAllowed[msg.sender]                 // THIS clone's own list
+registry.canIssue(address(this), msg.sender)   // 1. the authority's grant + lifecycle
+&& issuanceAllowed[msg.sender]                 // 2. THIS contract's own list
 ```
 
-Layer 1 is the registrar's **Issuance capability** (§1.3.3). Layer 2 is `setIssuanceAllowed` on the
-clone, callable by the clone's `owner()` alone.
+Layer 1 is the registrar's, granted in the ADMIN portal (§1.3.3).
+Layer 2 is the PROVIDER's, and lives on the vet/groomer portal's **Signing keys** page (`/signers`).
+They are on different portals because they belong to different people, which is the whole design:
+`setIssuanceAllowed` admits only from the contract's `owner()` and deliberately excludes the protocol
+admin, because the admin also writes layer 1 and one key holding both is the cross-provider issuance
+layer 2 exists to prevent.
 
-**There is no product surface for layer 2.** Walked, and confirmed by grep: `setIssuanceAllowed` appears
-in no portal and no backend route. A clone seeds its own list with its **deployer** (#144), so a provider
-signing with the key that deployed the contract is already admitted - but the vet backend signs with its
-**own custody signer**, which is a different key. That key has to be admitted by hand:
+**Why this bites even when you have done everything right.** A contract seeds its own list with its
+**deployer** (#144), so the provider that clicked Deploy in §2 is already admitted.
+But the vet backend signs with its **own custody signer**, derived at genesis, which is a different
+address - and nothing in §1 or §2 puts it on any list.
 
-```bash
-# From the clone OWNER's key. There is no button for this.
-cast send <clone> 'setIssuanceAllowed(address,bool)' <vetCustodySigner> true \
-  --private-key <cloneOwnerKey> --rpc-url https://devrpc.roax.net --legacy
-```
+**The click-through.** Open **Signing keys** in the vet portal nav. The page reads both contracts'
+lists live from the chain and leads with the diagnosis:
 
-Find the vet's signer from its own operator-gated route:
+> This shop signs with `0x7e3a6603…436d`, and this contract's issuance list does not admit it - so
+> every attempt to issue through this contract will be refused, however the DogTag admin has set the
+> authority's issue right. Admit it below.
 
-```bash
-curl -s http://127.0.0.1:41874/issuer/signers -H "Authorization: Bearer <vet.opToken from localStorage>"
-```
+Each row carries a WORD, not just a colour - **Can issue**, **Withdrawn**, or **Not admitted** - so a
+screenshot or a text dump keeps them apart. Your own signing key's row is labelled *this shop's
+signing key*.
 
-Walked: `{"activeSigner":"0x7e3a…436d", …}`. Then grant layer 1 in the admin portal (§1.3.3) and send
-layer 2 as above. Verify both before trying to issue - a definite `false` on either refuses:
+1. Connect the wallet that **owns the contract** (top right). Until you do, Admit is disabled and
+   says so; connect a different wallet and it names the owner you need instead.
+2. Click **Use this shop's signing key** under the contract you want - it fills the address for you.
+3. Click **Admit**, and confirm in your wallet.
+
+The page reports the transaction as *submitted, outcome not yet known* and only redraws the list once
+a receipt reports success - so a pending grant is never shown as a completed one. When it lands the
+row flips to **Can issue** and the heading changes.
+
+**Do the same for the `DOG_PROFILE` contract**, which the dog-tag bind in §3.1 anchors through. It is
+the half most easily forgotten, because completing a bind needs the phone app and so is rarely walked
+on a desktop.
+
+Removing is the same page: the **Remove** button on any row. The chain also lets the protocol admin
+remove (removal only ever narrows), but it does that from its own console.
+
+If you want to confirm from outside the product - a definite `false` on either layer refuses:
 
 ```bash
 cast call "$(ledger_addr ProviderRegistry)" 'canIssue(address,address)(bool)' <clone> <signer> --rpc-url $RPC
 cast call <clone> 'issuanceAllowed(address)(bool)' <signer> --rpc-url $RPC
 ```
 
-**`scripts/demo-bootstrap.sh` does NOT do this for you.** Its own header says it is stale against the
-launch set: it grants through `whitelistFor`, which `ProviderRegistry` does not implement on the issuance
-axis. Do not run it and conclude the grant is in place.
+**`scripts/demo-bootstrap.sh` grants layer 1 only, and now says so.** It funds the signer, grants
+`setRights(signer, RIGHT_ISSUE)` and the VERIFY capabilities, then **checks layer 2 and exits
+non-zero** naming this page - it signs with the governance key, which is exactly the key the contract
+refuses to let admit. It used to grant through `whitelistFor` and preflight
+`VerificationRegistryConsent.issuerRegistry()`, neither of which the launch set implements; it failed
+loudly, but with a false diagnosis about mis-wiring.
 
 ### 3.1 Register the pet - **Register pet** in the nav (`/issue-dog-tag`)
 
@@ -1273,6 +1296,40 @@ Walked on **2026-08-04**, against commit **`3d3632f`** plus this branch's two fi
 ROAX chainId 135, booted from `scripts/demo-up.sh`.
 Every result quoted above as walked was observed in a browser or over `curl`/`cast` on that date.
 
+**§3.0 was re-walked on 2026-08-04 against `d0f8cd8` plus the Signing keys page**, on the same live
+ROAX set, because that section previously sent the reader to a terminal. The loop below was driven
+entirely from the browser - **no terminal was used for any of it** - and each step was then confirmed
+independently with `cast`:
+
+| what | from | transaction | block |
+|---|---|---|---|
+| **Remove** the vet's signing key | Signing keys page | `0xe31c29c7…c20ab86c` | 340437 |
+| Issue a record, which is then **refused on chain** | Issue a record page | reverted `0xa649bcb3` | - |
+| **Admit** it again | Signing keys page | `0xd144be4a…d0192c25` | 340452 |
+| Issue the same record, which **anchors** | Issue a record page | `0xcaaa6cfd…d9397e41` | 340456 |
+
+The refusal is the load-bearing half: between blocks 340437 and 340452 the authority answered
+`canIssue == true` while the contract's own list answered `false`, and `cast sig NotLocallyAllowed()`
+is `0xa649bcb3` - so the page's warning that "every attempt to issue through this contract will be
+refused" was a true statement about what the chain would do, not a guess. The credential that landed
+afterwards reads back `rootIssuer(root)` = the VACCINATION contract, `isValid(root)` = true, and
+`issuedBy(root)` = the vet's own custody signer.
+
+The groomer portal's copy of the page was walked too: it shows that shop's own signing key
+(`0xc01e…cf83`), reports it **Not admitted** on both contracts, and disables Admit with "Connect your
+wallet first" - the honest state for a portal with no wallet connected.
+
+`scripts/demo-bootstrap.sh` was run against that groomer signer: it granted layer 1 through
+`setRights` and the three VERIFY purposes through `setVerifierCapability` (each read back `canVerify
+== true`), then **exited 1** naming the Signing keys page because layer 2 was missing. Run a second
+time it skipped every write and still exited 1 - idempotent, and still refusing to claim success.
+
+**The wallet was a scripted EIP-6963 provider signing with the well-known PUBLIC anvil test key**, the
+one the deploy ledger records as this provider's controller precisely so anyone can act as it on a
+disposable testnet. The product code exercised is identical - the same connect path, the same
+preflights, the same transactions - but no real wallet's own UI was driven, so a wallet-specific
+problem would not have shown up. The shim lived in `index.html` for the walk and was reverted.
+
 **Walked end to end:**
 
 - **§0** - the boot, including the chain preflight; `/health` on all six backends and all five portals;
@@ -1298,8 +1355,9 @@ Every result quoted above as walked was observed in a browser or over `curl`/`ca
   `recordType()`, `isClone` and the #144 creator-seed all verified independently; flow 2 checked to
   **Ready** with five passing checks and `repointService` mined, taking `canIssue` from false to true.
   Flows 3 and 4 were **not** completed - see §9.
-- **§3** - the two-layer issuance requirement established by chain reads and by grepping for a surface
-  that does not exist; `setIssuanceAllowed` sent by hand from the clone owner; register-pet through to
+- **§3** - the two-layer issuance requirement established by chain reads and, at the time, by grepping
+  for a surface that did not exist; `setIssuanceAllowed` sent by hand from the clone owner (**that is
+  the step the Signing keys page replaced** - see the re-walk above); register-pet through to
   the minted QR with the `/p/` endpoint resolved; a record issued to **Verified on-chain**, then verified
   independently (`rootIssuer`, `isValid`, `issuedBy`, `recordType`).
 - **§4** - the whole groomer role: the nav enumerated; a client and pet created; the pet opened; DogTag

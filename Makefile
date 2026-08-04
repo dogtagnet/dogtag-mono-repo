@@ -50,11 +50,11 @@ sdk-rs: ## build the Rust standard crate
 test-ts: ## TS SDK + shared-UI tests (incl. shared testvectors.json)
 	pnpm --filter @dogtag/standard test
 	# `@dogtag/ui` carries the decision layer behind every portal — verdict folds, action-availability
-	# reasons, the provider engine, and now the issuance-list page — and it was NOT in this gate, so
-	# those suites only ever ran when somebody remembered to. That is the same "a check that did not
-	# run counted as a check that passed" shape this repo has closed elsewhere. Named explicitly
-	# rather than broadened to `pnpm -r test`, which would sweep in Playwright specs that drive live
-	# portals and anchor real records on chain.
+	# reasons, the provider engine, and now the issuance-list page. It IS in `.no-mistakes.yaml`'s
+	# `commands.test`, but that gate is PAUSED fleet-wide, so in practice its ~877 tests only ran when
+	# somebody remembered to — while `make test`, the thing people actually run, reported 779 and said
+	# nothing about them. Named explicitly rather than broadened to `pnpm -r test`, which would sweep
+	# in Playwright specs that drive live portals and anchor real records on chain.
 	pnpm --filter @dogtag/ui test
 
 test-rs: ## Rust SDK tests (incl. shared testvectors.json)

@@ -909,15 +909,48 @@ from one log filter would otherwise miss its most likely entry, and a second top
 existing decoder silently wrong. `setBy` is the FACTORY (the initializing caller) - what actually
 wrote it, and a third value distinguishing a creation seed from an owner's later enrolment.
 
-**STILL OPEN, and the seed narrows this rather than closing it: `setIssuanceAllowed` remains
-unreachable from every portal.** The seed fixes the CREATOR's dead end only. A provider admitting a
-separate STAFF key - the normal case once a clinic stops signing with the key that deployed its
-contract - has no product surface at all and must send the transaction by hand, and so must a
-provider REMOVING a compromised key, which is the incident-response direction and the worse gap of
-the two. So read "no surface writes this list" as still TRUE after this change, not as something the
-seed retired. Closing it is a provider-portal slice: a flow keyed on the clone the provider already
-selected, gated on `owner()` for admit and `owner()`-or-admin for remove, in the shape S-15's four
-flows already use.
+**CLOSED. `setIssuanceAllowed` now has a product surface: the vet/groomer portals' "Signing keys"
+page (`/signers`).** Read the two paragraphs above as history - "no surface in this product writes
+this list" was true when the seed landed and is not true now.
+
+The seed had fixed only the CREATOR's dead end. The normal case - a clinic admitting a separate STAFF
+key once it stops signing with the key that deployed its contract - still had no surface, and neither
+did REMOVING a compromised key, which is the incident-response direction and was the worse gap of the
+two. **The vet backend's own custody signer is exactly that separate key**, so every deployment hit
+this, and `docs/DEMO_CLICKS.md` had to send the reader to `cast send` to get past its own step 3.
+
+Four things about how it is closed are load-bearing:
+
+- **The WRITE is a wallet transaction, and there is deliberately NO backend route that admits.** The
+  backend is not any clone's owner - its custody signer is the address that needs ADMITTING - and it
+  cannot authenticate one either: an operator session proves "staff of this shop", never "owner of
+  this contract", and no signature-recovery path over an arbitrary address survives in vet-api. A
+  backend that could admit would need owner authority, which is layer 2 collapsing back into layer 1.
+  `there_is_no_backend_route_that_writes_the_list` asserts that through the ROUTER, so adding one
+  later goes red rather than passing a comment.
+- **The backend READS**, at `GET /issuer/issuance-allowed` (`crate::issuance_allowed`), and **the log
+  is the INDEX while storage is the VALUE**. `issuanceAllowed` has no enumeration, so the
+  `IssuanceAllowedSet` log is the only way to learn WHICH addresses to ask about - and it is complete
+  because `initialize` emits the creation seed through that same event. But the log's own `allowed`
+  word is never rendered: every value is a fresh `issuanceAllowed(address)` read. So a pending write
+  cannot read as a completed grant, and no `(blockNumber, logIndex)` sequencing is needed at all.
+- **`everNamed` carries WITHDRAWN apart from NEVER-ADMITTED**, as data rather than as styling. A bare
+  `allowed: false` spells them identically, and the admin page's version of this distinction - which
+  is carried by a strikethrough alone - was misread from a flattened text dump during the 2026-08-04
+  walk. Each row renders a word (`Can issue` / `Withdrawn` / `Not admitted`).
+- **It covers `PROFILE_ISSUER_ADDR` too**, not only the record-type clones. The dog-tag bind anchors
+  through that contract and needs layer 2 exactly as they do; it is the half most easily forgotten,
+  because completing a bind needs the phone app and so is rarely walked on a desktop.
+
+Removal is offered on the same page, gated on the owner. The chain also admits the protocol admin
+there (removal only ever narrows) and the page's copy says so rather than implying removal is
+impossible when an owner key is lost - but this page is the OWNER's surface, and the admin's copy of
+that lever is its own console.
+
+`scripts/demo-bootstrap.sh` moved with it: it grants layer 1 through `setRights` and the verify axis
+through `setVerifierCapability` (both of which the launch set actually implements, unlike the
+`whitelistFor` it used to call), then CHECKS layer 2 and **exits non-zero naming this page**, because
+the governance key it signs with is precisely the key the contract refuses to let admit.
 
 **A test helper that admits its own signer must be GUARDED, because `setIssuanceAllowed` refuses a
 no-op.** `_commission` (`DogTagIssuer.t.sol`) and `_onboardIssuingClone` (`LaunchStack.sol`) now test
