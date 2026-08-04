@@ -172,9 +172,8 @@ mutate_rust "a failed read renders as an empty list" \
 
 mutate_rust "a locked backend answers false about a signer it cannot derive" \
   stacks/vet/api/src/routes.rs \
-  "                let active_signer_allowed = active
-                    .as_deref()" \
-  "                let active_signer_allowed = Some(active.as_deref().unwrap_or(\"\"))" \
+  "                let answered = active.as_deref().and_then(|a| read.allowed(a));" \
+  "                let answered = Some(active.as_deref().and_then(|a| read.allowed(a)).unwrap_or(false));" \
   test "issuance_allowed_route" "locked_custody"
 
 mutate_rust "the dog-tag profile clone is dropped from the surface" \

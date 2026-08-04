@@ -130,8 +130,18 @@ same "$PROFILE_KEY" "$(cast keccak DOG_PROFILE)" \
 same "$VACCINATION_KEY" "$(cast keccak VACCINATION)" \
   || fail "VACCINATION_ISSUER_ADDR is not a VACCINATION issuer clone"
 
-echo "Funding $SIGNER with 0.5 PLASMA for gas…"
-cast send "$SIGNER" --value 0.5ether --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
+# Funding is read-before-write like every grant below. It was the ONE unconditional write here, so
+# re-running the script topped the signer up again every time - and this script's whole selling point
+# is that it is idempotent, which made that a false claim about its own behaviour rather than merely
+# a wasted transfer.
+GAS_FLOOR_WEI=100000000000000000   # 0.1 PLASMA — enough for the handful of writes a demo signer makes
+BALANCE="$(cast balance "$SIGNER" --rpc-url "$RPC")"
+if [ "$(python3 -c "print(int('$BALANCE') >= $GAS_FLOOR_WEI)")" = "True" ]; then
+  echo "Funding $SIGNER: already holds $(cast from-wei "$BALANCE") PLASMA — skipping"
+else
+  echo "Funding $SIGNER with 0.5 PLASMA for gas…"
+  cast send "$SIGNER" --value 0.5ether --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
+fi
 
 # --- LAYER 1: the authority's issue right -----------------------------------------------------
 # ONE grant, on the ADDRESS. #143 re-keyed the issuance grant off `(service, recordType)` and onto

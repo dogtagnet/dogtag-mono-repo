@@ -1319,10 +1319,30 @@ The groomer portal's copy of the page was walked too: it shows that shop's own s
 (`0xc01e…cf83`), reports it **Not admitted** on both contracts, and disables Admit with "Connect your
 wallet first" - the honest state for a portal with no wallet connected.
 
-`scripts/demo-bootstrap.sh` was run against that groomer signer: it granted layer 1 through
-`setRights` and the three VERIFY purposes through `setVerifierCapability` (each read back `canVerify
-== true`), then **exited 1** naming the Signing keys page because layer 2 was missing. Run a second
-time it skipped every write and still exited 1 - idempotent, and still refusing to claim success.
+`scripts/demo-bootstrap.sh` was run against that groomer signer `0xc01e…cf83`. It granted layer 1
+through `setRights` and the three VERIFY purposes through `setVerifierCapability` (each read back
+`canVerify == true`), granted the SBT `ISSUER_ROLE`, then **exited 1** naming the Signing keys page
+because layer 2 was missing. These are live governance writes on the shared set, so they are recorded
+rather than described:
+
+| what | transaction | block |
+|---|---|---|
+| fund the signer (0.5 PLASMA) | `0x1cf82caa…92db27f2` | 340470 |
+| `setRights(signer, RIGHT_ISSUE)` | `0xe63e5171…16cb6c09` | 340471 |
+| `grantRole(ISSUER_ROLE, signer)` on the SBT | `0x8ac9df6e…62483f56` | 340472 |
+| `setVerifierCapability(grooming_intake, …)` | `0x616cdd61…36e8ba1` | 340473 |
+| `setVerifierCapability(boarding_intake, …)` | `0xf0f2f059…7c85bd24` | 340474 |
+| `setVerifierCapability(daycare_access, …)` | `0xb5f445b0…35d5b0ae` | 340475 |
+| fund again - the second run's ONE non-idempotent write | `0x154db47d…6805b519` | 340477 |
+
+Run a second time it skipped every GRANT and still exited 1. That last row is why the funding is now
+read-before-write too: it was the one unconditional write in a script whose selling point is that it
+is idempotent, which made the balance climb on every re-run - a false claim about its own behaviour
+rather than merely a wasted transfer. Re-running it now reports *already holds … PLASMA - skipping*.
+
+None of that is a capability escape: layer 1 is the scope-free `RIGHT_ISSUE`, and layer 2 is exactly
+what stops it becoming issuance on somebody else's contract - which is the whole point of there being
+two.
 
 **The wallet was a scripted EIP-6963 provider signing with the well-known PUBLIC anvil test key**, the
 one the deploy ledger records as this provider's controller precisely so anyone can act as it on a

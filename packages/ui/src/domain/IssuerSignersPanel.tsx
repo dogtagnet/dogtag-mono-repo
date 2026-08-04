@@ -57,6 +57,7 @@ import {
   signerStanding,
   signerStandingDetail,
   signerStandingLabel,
+  signerStandingTone,
   type IssuanceAllowedResponse,
   type IssuerContract,
   type RosterEntry,
@@ -522,9 +523,12 @@ function SignerRow({
         <CopyButton value={entry.address} label="signer address" />
         {/* The WORD is the carrier. `Badge` styles it; it never replaces it, so the distinction
             survives a screen reader and a flattened text dump of this page. */}
+        {/* The variant comes from `signerStandingTone`, not an inline ternary: a second copy of the
+            rule here would leave that function's tests pinning nothing that ships. Tone is applied
+            ON TOP of the word, never instead of it. */}
         <Badge
           data-testid="roster-standing"
-          variant={standing === "admitted" ? "success" : "neutral"}
+          variant={signerStandingTone(standing) === "ok" ? "success" : "neutral"}
           className={standing === "withdrawn" ? "line-through" : undefined}
         >
           {signerStandingLabel(standing)}

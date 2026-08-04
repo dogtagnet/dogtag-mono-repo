@@ -1079,24 +1079,24 @@ async fn issuance_allowed_roster(State(st): State<AppState>, headers: HeaderMap)
             .await
         {
             Ok(roster) => {
-                // Derived from the SAME storage reads as the rows beside it, so the headline and the
-                // row it points at cannot disagree.
-                let active_signer_allowed = active
-                    .as_deref()
-                    .map(|a| crate::issuance_allowed::normalize_addr(a))
-                    .map(|a| {
-                        roster
-                            .entries
-                            .iter()
-                            .find(|e| e.address == a)
-                            .map(|e| e.allowed)
-                            .unwrap_or(false)
-                    });
-                RosterRead::Resolved {
+                // Built FIRST, then asked - so the headline goes through `RosterRead::allowed`, the
+                // same accessor a consumer would use, rather than a second inline copy of the fold.
+                // Two implementations of one rule is what lets them drift, and it also leaves the
+                // accessor's own tests pinning nothing that ships.
+                let mut read = RosterRead::Resolved {
                     owner: crate::issuance_allowed::normalize_addr(&roster.owner),
                     entries: roster.entries,
+                    active_signer_allowed: None,
+                };
+                let answered = active.as_deref().and_then(|a| read.allowed(a));
+                if let RosterRead::Resolved {
                     active_signer_allowed,
+                    ..
+                } = &mut read
+                {
+                    *active_signer_allowed = answered;
                 }
+                read
             }
             // A read that failed is NOT an empty list. `Unavailable` carries no entries field at all,
             // so no consumer can spread it into one.
