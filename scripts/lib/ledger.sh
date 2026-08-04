@@ -19,6 +19,15 @@
 # recorded in AGENTS.md for exactly this class of helper. Every caller here is a `#!/usr/bin/env bash`
 # script, and nothing below relies on splitting.
 #
+# BUT IT IS ALSO SOURCED BY A HUMAN, AT A ZSH PROMPT, AND THAT USED TO ANSWER EMPTY FOR EVERY KEY.
+#
+# `docs/DEMO_CLICKS.md` tells a reader to `source scripts/lib/ledger.sh` and then resolve addresses
+# with `$(ledger_addr …)`. `BASH_SOURCE` is a bash-only array, so under zsh it is unset,
+# `_dogtag_ledger_path` resolved a path two directories above the caller's cwd, and `sed` failed into
+# its own `2>/dev/null`. Every key answered empty. What a reader saw was not a diagnosis but
+# `cast`'s own `invalid value '' for '[TO]': invalid string length` - measured, not assumed - with
+# nothing anywhere naming the ledger. Hence the fallback below.
+#
 # WHY NOT jq
 #
 # `jq` is not a declared dependency of this repo and several of these scripts run in environments
@@ -36,9 +45,30 @@ _dogtag_ledger_path() {
     printf '%s\n' "${DOGTAG_LEDGER}"
     return
   fi
-  # The repo root, derived from this file rather than from the caller's $0, so a script that lives in
-  # a subdirectory resolves the same ledger.
-  printf '%s\n' "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/contracts/deployments/roax.json"
+  # PREFERRED: the repo root derived from THIS FILE rather than from the caller's $0, so a script that
+  # lives in a subdirectory resolves the same ledger wherever it is run from.
+  local self="${BASH_SOURCE[0]:-}"
+  if [ -n "$self" ]; then
+    printf '%s\n' "$(cd "$(dirname "$self")/../.." && pwd)/contracts/deployments/roax.json"
+    return
+  fi
+  # FALLBACK, for a shell with no BASH_SOURCE (zsh at a human prompt): walk up from the caller's cwd.
+  # This is deliberately SECOND. A cwd walk that ran first would resolve whichever checkout the caller
+  # happens to be standing in - and this monorepo is checked out many times over - so a script would
+  # silently read another worktree's ledger. Reached only when the file-relative answer is unavailable,
+  # where the caller's own checkout is the only sensible meaning of "the ledger".
+  local d="$PWD"
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    if [ -f "$d/contracts/deployments/roax.json" ]; then
+      printf '%s\n' "$d/contracts/deployments/roax.json"
+      return
+    fi
+    d="$(dirname "$d")"
+  done
+  # Nothing found. Print a path that cannot exist rather than an empty string, so `ledger_require`
+  # reports the missing KEY and `ledger_addr` answers empty exactly as it does for an absent key -
+  # never a silently different failure mode depending on which shell sourced this file.
+  printf '%s\n' "/nonexistent/contracts/deployments/roax.json"
 }
 
 # ledger_addr <Key> -> the address, or empty when the key is absent.
