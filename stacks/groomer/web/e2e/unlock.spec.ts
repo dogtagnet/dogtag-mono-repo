@@ -37,8 +37,10 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   VITE_DEMO_MODE=1 pnpm --filter @dogtag/groomer-web dev   # one shell (port 43617)
  *   pnpm --filter @dogtag/groomer-web test:e2e              # another (GROOMER_URL overrides the base)
  *
- * `VITE_DEMO_MODE=1` is required: the Issue form's every schema field is mandatory, so the suite
- * populates it with the demo-only "Fill demo data" button rather than typing a rabies certificate.
+ * `VITE_DEMO_MODE=1` is required by the sibling specs in this directory, and `scripts/e2e-web.sh`
+ * serves the portal with it. This suite does not depend on the demo button: it drives the purpose
+ * Select directly, because the demo preset selects `purposes[0]` - which is also the Select's default,
+ * so asserting it survived an unlock would pass on a form that had been discarded and remounted.
  */
 
 const OP_TOKEN_KEY = "groomer.opToken";
@@ -145,11 +147,33 @@ test.beforeEach(async ({ page }) => {
 // only because `getByPlaceholder` is not a role query either.
 const purposeField = (page: Page) => page.locator('[role="combobox"]').first();
 
-/** Put the form in the state the operator would, returning the selection that must survive. */
+/**
+ * Put the form in the state the operator would, returning the selection that must survive.
+ *
+ * IT MUST NOT BE THE DEFAULT, and using the demo button here made the whole assertion VACUOUS.
+ * `VerifyFlow` initialises `useState(purposes[0]?.value)` and its demo handler picks `purposes[0]` -
+ * the same value - so "the selection survived" and "the form was discarded and remounted at its
+ * default" render identically, and the one property this suite exists for could not fail. The vet
+ * twin escapes this only because it types a dog-tag id no default can produce.
+ *
+ * So this drives the Select to a purpose that is deliberately NOT `purposes[0]`. A remount now shows
+ * "Grooming intake" where the test demands "Daycare access", and the assertion bites.
+ */
 async function fillVerifyForm(page: Page): Promise<string> {
-  // The demo button selects a purpose, which is exactly what a non-technical operator does here.
-  await page.getByRole("button", { name: /Fill demo data/i }).click();
-  return (await purposeField(page).textContent())?.trim() ?? "";
+  await purposeField(page).click();
+  // Both labels are read BEFORE anything is clicked - selecting closes the listbox, so a check made
+  // afterwards would find no options and quietly pass.
+  const labels = (await page.getByRole("option").allTextContents()).map((t) => t.trim());
+  // Guard the guard: if the portal ever ships a single purpose, the choice IS the default and this
+  // helper goes back to proving nothing. Fail loudly rather than pass vacuously.
+  expect(
+    labels.length,
+    "the purpose list must offer a NON-DEFAULT option or the preserved-state assertion is vacuous",
+  ).toBeGreaterThan(1);
+  const chosen = labels[labels.length - 1];
+  await page.getByRole("option", { name: chosen, exact: true }).click();
+  await expect(purposeField(page)).toHaveText(chosen);
+  return chosen;
 }
 
 const submitVerify = (page: Page) =>
@@ -248,7 +272,7 @@ test.describe("point-of-need unlock", () => {
     await mockBackend(page, custody);
 
     await page.goto("/verify");
-    await fillVerifyForm(page);
+    const purpose = await fillVerifyForm(page);
     await submitVerify(page);
     await expect(page.getByRole("dialog")).toBeVisible();
 
@@ -257,7 +281,10 @@ test.describe("point-of-need unlock", () => {
     // The refusal reaches the page it came from, and the form is still there to retry from.
     await expect(page.getByText(/not unlocked/i).first()).toBeVisible();
     await expect(page).toHaveURL(/\/verify$/);
-    await expect(purposeField(page)).not.toHaveText("");
+    // The CHOSEN purpose, not merely "something is selected": the Select's default is `purposes[0]`,
+    // so a non-empty assertion passes on a form that was discarded and remounted - the exact state
+    // this test rules out.
+    await expect(purposeField(page)).toHaveText(purpose);
     expect(custody.exports).toBe(0);
     // Still locked, so the banner takes over as the standing way back in.
     await expect(page.getByText(/Custody is locked/)).toBeVisible();

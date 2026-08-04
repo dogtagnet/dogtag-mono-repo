@@ -23,6 +23,11 @@ make e2e                  # all three
 
 **78 prints an unmissable banner, names the specific missing prerequisite, and is never 0.**
 
+Those are the **scripts'** exit codes.
+`make` always exits **2** when a recipe fails, so it collapses `1` and `78` into one number - the banner
+still prints and is fine to read, but anything that BRANCHES on the outcome (CI, a wrapper) must call
+`bash scripts/e2e-web.sh` / `-ios.sh` / `-android.sh` directly.
+
 That third outcome is the whole reason these runners exist.
 A skipped suite reporting success is the defect this fleet keeps finding: most recently both mobile unit modules failed to COMPILE and read as "no failures", because a module that does not run reports nothing, and nothing is indistinguishable from success.
 
@@ -171,6 +176,27 @@ it would make the guard silently do nothing on the platform this repo is develop
 
 Those artifacts are all gitignored, so a fresh checkout has none of them and the refusal path is the normal first experience.
 A build failure *after* the preflight is reported as a **code finding** (exit 1), because every prerequisite was established before that point.
+
+## The library's own guarantees are pinned
+
+`make test-e2e-lib` (`scripts/test-e2e-lib.sh`) covers the two paths a green run never touches, and so
+would otherwise be assumptions:
+
+- the **watchdog** stops a hang, reports it as a hang (124), and leaves no child behind;
+- the **harness classifier** recognises a driver that never started *and refuses to call a plain failed
+  assertion environmental* - the second direction matters more, because stamping a real break
+  "environment" teaches a reader to wave the next one through.
+
+Its Maestro fixtures are transcribed from real captured output, not invented: a fixture written to
+match the implementation proves only that the implementation matches itself.
+
+## The other hermetic e2e: `scripts/e2e-roles.sh`
+
+The government role's ISSUE → VERIFY loop on a simulated chain, with no dependencies.
+It was **broken on `main`** for the same reason as the specs above: the issuer pillar became
+factory-anchored and this script's `issuerWhitelisted == true` expectation was never moved with it, so
+it asserted a pillar that answered `unavailableNoFactoryConfigured`.
+It now takes the factory and the authority from the deploy ledger, and passes.
 
 ## Adding a spec
 

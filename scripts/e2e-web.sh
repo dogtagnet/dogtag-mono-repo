@@ -152,12 +152,28 @@ PW="$ROOT_DIR/stacks/vet/web/node_modules/.bin/playwright"
 
 # A browser binary is a separate download from the npm package, and its absence is the single most
 # common reason this suite has not run. Probe it rather than discovering it inside the first spec.
-if ! "$PW" install --dry-run chromium >/dev/null 2>&1; then
-  could_not_run "the Playwright chromium browser build" "Run \`$PW install chromium\` (a few hundred MB, once per machine)."
+#
+# ASK PLAYWRIGHT WHERE ITS BROWSER IS rather than guessing a cache path. The first cut globbed
+# `$HOME/Library/Caches/ms-playwright`, which is macOS-only - on Linux the default is
+# `~/.cache/ms-playwright`, so a machine with browsers correctly installed would have been told the
+# suite could not run. A FALSE could-not-run is the inverse of the failure this runner exists to
+# prevent, and just as costly: it makes a working suite unrunnable and teaches a reader that the
+# banner is noise.
+#
+# `playwright install --dry-run` is NOT a presence check - it prints what WOULD be installed and exits
+# 0 either way - so it was dropped rather than kept as reassurance.
+if ! BROWSER_PATH="$(cd "$ROOT_DIR/stacks/vet/web" && node -e '
+try {
+  const { chromium } = require("@playwright/test");
+  const p = chromium.executablePath();
+  process.stdout.write(require("fs").existsSync(p) ? p : "");
+} catch { process.stdout.write(""); }
+' 2>/dev/null)" || [[ -z "$BROWSER_PATH" ]]; then
+  could_not_run \
+    "the Playwright chromium browser build (the npm package is installed; the browser binary is a separate download)" \
+    "Run \`$PW install chromium\` - a few hundred MB, once per machine."
 fi
-if ! ls "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}"/chromium-* >/dev/null 2>&1; then
-  could_not_run "the Playwright chromium browser build" "Run \`$PW install chromium\` (a few hundred MB, once per machine)."
-fi
+info "chromium at $BROWSER_PATH"
 
 require_free_port "$PORT_SINK" "the closed-port sink that keeps mocked portals off any real backend"
 wants vet        && require_free_port "$PORT_VET_WEB"     "the vet portal"
