@@ -1,27 +1,20 @@
 # DogTag iOS — Nearby discloses its server request before permission and never exposes the
 # retired chosen-location/map flow.
 #
-# Prerequisites: DEBUG app installed, a reachable indexer with the paged provider endpoints, and a
-# simulator location set immediately before the run:
-#   xcrun simctl location <udid> set 1.2931,103.8520
-#   maestro test apps/ios/maestro/nearby_scope_separation.yaml
+# Prerequisites: a DEBUG app installed. NOTHING ELSE - every assertion here is reached before any
+# directory read, so this flow runs and PASSES on a plain dev machine:
+#   scripts/e2e-ios.sh --flow apps/ios/maestro/nearby_scope_separation.yaml
 #
-# ONLY THE FIRST HALF OF THIS FLOW RUNS ON A DEV MACHINE. Read a local failure accordingly rather
-# than as a product regression, and never as a silent pass:
+# THE DEPLOYMENT-DEPENDENT HALF WAS SPLIT OUT into `nearby_result_rows.yaml`. It used to live below a
+# divider in this file, and the consequence was that a local run of the half that CAN run always went
+# red on the half that cannot - a "could not run" wearing the costume of a failure. A red nobody can
+# act on is a red everybody learns to ignore, which costs the runnable assertions here their value.
 #
-#   Runs locally (needs no directory read): everything up to and including the "Directions" absence -
-#   the "How your location is used" card, the disclosure sentence, the approximation/rounding
-#   absences, and the retired chosen-location surfaces.
-#
-#   Requires a reachable deployment at `AppConfig.centralApi` (`https://api.dogtag.io`): everything
-#   below the divider. The app's directory host is a fixed production constant with no debug
-#   override - deliberately, since it is the one service the owner cannot swap - so a dev machine
-#   cannot reach a live directory, every read fails closed, and no result row is ever rendered. Those
-#   assertions are still the specification; count them as deployment/manual-QA coverage, and never as
-#   coverage a local run delivered.
-#   Note the three trailing absence assertions are VACUOUS without a deployment too: an absence
-#   passes just as happily when the contacts list rendered nothing at all, and its disclaimer line is
-#   emitted only in the `.providersFound` case (`NearbyScreen.swift`).
+# What that file covers, and why it needs a real deployment: the rendered result rows, their distance
+# labels, and the absence of those labels in the position-free contacts search. The directory host is
+# the fixed production constant `AppConfig.centralApi` with no debug override, so a dev machine
+# cannot reach it. Those assertions are still the specification - count them as deployment/manual-QA
+# coverage, and never as coverage a local run delivered.
 appId: io.liberalize.dogtag
 ---
 - launchApp:
@@ -45,32 +38,8 @@ appId: io.liberalize.dogtag
 - assertNotVisible: "Chosen location"
 - assertNotVisible: "Latitude"
 - assertNotVisible: "Longitude"
-# Directions is a per-ROW affordance, so it is absent until a provider row exists. It is asserted
-# PRESENT on a nearby row below. This is not the retired map flow: it hands the provider's public
-# destination to another app and never the owner's origin.
+# Directions is a per-ROW affordance, so it is absent until a provider row exists. That it is
+# PRESENT on a ranked row is asserted in `nearby_result_rows.yaml`, which needs a deployment - so
+# read this absence as "no row has rendered yet", never as "the handoff is gone". It is not the
+# retired map flow: it hands the provider's public destination to another app, never the owner's origin.
 - assertNotVisible: "Directions"
-
-# ---- everything below here needs a reachable directory at AppConfig.centralApi (see the header) ----
-- tapOn: "Use my current location"
-- extendedWaitUntil:
-    visible:
-      text: ".*[~<] ?[0-9.]+ ?(km|m|mi|ft).*"
-    timeout: 30000
-
-# A ranked row offers the maps handoff. Unlike the absence assertions, this one cannot pass
-# vacuously: it is reached only after a row carrying a server distance has rendered.
-- assertVisible: "Directions"
-
-# Server distance is visible only in Nearby. The position-free contact/name request cannot inherit it.
-- tapOn: "Provider contacts"
-- extendedWaitUntil:
-    visible: ".*This list sends no position and shows no map.*"
-    timeout: 15000
-- assertNotVisible:
-    text: ".*[~<] ?[0-9.]+ ?(km|m|mi|ft).*"
-# Scope separation, not a global absence. The handoff is offered on nearby rows and on OFFLINE
-# STORED rows (captain's ruling, 2026-07-30), but NOT on this live contacts search, whose own copy
-# promises it sends no position and shows no map. The stored case shares this row component and is
-# told apart by `storedRecord`; it is unreachable from a dev machine, so it is manual-QA coverage.
-- assertNotVisible: "Directions"
-- assertNotVisible: "Chosen location"

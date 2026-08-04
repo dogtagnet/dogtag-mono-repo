@@ -39,10 +39,58 @@
 # A one-way check ("no undeclared file carries an address") lets the debt list rot: an entry stays
 # after its file is cleaned, and the list stops describing the tree. So a declared file that no longer
 # carries an address is ALSO an error, naming the entry to delete. The list can then only shrink.
+#
+# WHY THE RETIRED SET IS DERIVED FROM THE LEDGER'S OWN GIT HISTORY
+#
+# `retired` was hand-curated, and that inverted the guarantee this gate exists to provide: it was
+# STRONGEST while a pasted address was still correct, and went BLIND at the exact moment it became
+# wrong. A redeploy REPLACES addresses in the ledger in place, so on the next commit every superseded
+# address silently drops out of the pattern - and unless a human remembered to move each one into
+# `retired` in the same change, every consumer still carrying it stopped being checked. That is the
+# same "decays SILENTLY ... right up until the next redeploy" failure named at the top of this file,
+# reproduced inside the guard built to prevent it.
+#
+# Measured on this repo, not reasoned about: 10 addresses the ledger really had published were
+# invisible, and three UNDECLARED files were carrying one - two of them shipped source
+# (`packages/ui/src/schema/demoData.ts`, `stacks/admin/web/src/lib/governance.ts`), not documentation.
+#
+# The ledger is version-controlled, so the superseded set is recoverable rather than remembered: every
+# revision of the ledger is read and its addresses folded into the pattern. The list stops depending
+# on anybody's diligence at redeploy time.
+#
+# WHY THAT HISTORY IS FILTERED BY chainId, AND WHY AN ABSENT chainId IS INCLUDED
+#
+# The earliest ledger revision is a LOCAL ANVIL one (`chainId: 31337`) carrying placeholder and
+# deterministic-anvil values - among them `0x000...00A1`, which 16 files legitimately use as a
+# synthetic test constant. Folding it in would redden all 16 for addresses that were never deployed
+# anywhere real, and a gate that cries wolf gets switched off. So a revision is used only when its
+# chain is the chain the CURRENT ledger describes.
+#
+# A revision with NO `chainId` is INCLUDED, deliberately. Skipping narrows the pattern silently, which
+# is the failure mode above; including can only ever over-report, which is loud and correctable. No
+# revision in this repo lacks one, so the rule is defensive - state it rather than discover it.
+#
+# WHAT `retired` IS FOR NOW - it is NOT redundant
+#
+# It is the addresses the ledger NEVER published: contracts provisioned out of band (a per-record-type
+# clone deployed by `scripts/demo-provision-government.sh`, say) which no revision of the ledger can
+# testify to. Five of its entries are exactly that. The rest are recoverable from history and are kept
+# anyway: it costs nothing, and it means a history problem degrades to the old behaviour rather than
+# to no behaviour at all.
+#
+# WHAT THIS GATE STILL CANNOT SEE - a real limit, named rather than left implicit
+#
+# It can only recognise an address the LEDGER has published. Addresses the chain produced some other
+# way - a clone a provider deployed through the self-service portal, a provider id, an EOA from a live
+# walk - are outside it, and no ledger-derived pattern can reach them: they are indistinguishable from
+# a synthetic fixture by inspection, so catching them would need a chain oracle rather than a grep.
+# `docs/DEMO_CLICKS.md` carries nine such addresses. The success line below therefore states the claim
+# actually checked, so an "OK" is not read as broader than what ran.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LEDGER="$ROOT_DIR/contracts/deployments/roax.json"
+LEDGER_REL="contracts/deployments/roax.json"
+LEDGER="$ROOT_DIR/$LEDGER_REL"
 DEBT="$ROOT_DIR/scripts/address-debt.json"
 
 [[ -f "$LEDGER" ]] || { echo "::error:: ledger not found: $LEDGER"; exit 1; }
@@ -104,9 +152,82 @@ if [[ ${#LIVE[@]} -eq 0 ]]; then
   exit 1
 fi
 
+# A SHALLOW CLONE TRUNCATES `git log`, so the history read below would return a NARROWER pattern with
+# no error - a check that passes by not running, which is the one outcome this file exists to prevent.
+# Refuse instead of quietly checking less than advertised.
+if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null || echo unknown)" != "false" ]]; then
+  echo "::error:: this is a shallow (or unreadable) git repository, so the ledger's history cannot be read."
+  echo "          The retired-address set is derived from that history; without it this gate would"
+  echo "          silently check LESS than it claims. Run \`git fetch --unshallow\` and retry."
+  exit 1
+fi
+
+# EVERY ADDRESS THE LEDGER HAS EVER PUBLISHED ON THIS CHAIN. See the header for why this is derived
+# rather than hand-listed, why it is filtered by chainId, and why an absent chainId is included.
+HISTORICAL_RAW="$(python3 - "$LEDGER_REL" <<'PY'
+import json, re, subprocess, sys
+
+path = sys.argv[1]
+ADDR = re.compile(r'0x[0-9a-fA-F]{40}\Z')
+
+def addresses(doc):
+    for k, v in doc.items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, str) and ADDR.match(v):
+            yield v.lower()
+
+current = json.load(open(path))
+chain = current.get("chainId")
+
+revs = subprocess.run(["git", "log", "--format=%H", "--", path],
+                      capture_output=True, text=True).stdout.split()
+
+found, parsed = set(), 0
+for rev in revs:
+    blob = subprocess.run(["git", "show", f"{rev}:{path}"], capture_output=True, text=True)
+    if blob.returncode != 0:
+        continue
+    try:
+        doc = json.loads(blob.stdout)
+    except json.JSONDecodeError:
+        continue          # a revision mid-edit; the live ledger is parsed separately and guarded
+    parsed += 1
+    # Absent chainId is INCLUDED: narrowing silently is the failure, over-reporting is loud.
+    if "chainId" in doc and doc["chainId"] != chain:
+        continue
+    found.update(addresses(doc))
+
+# Zero parsed revisions means the history read produced nothing usable. Mirrors the LIVE guard above:
+# carrying on would check less than claimed while reporting success.
+if parsed == 0:
+    sys.stderr.write("::error:: no parseable revision of %s found in git history.\n" % path)
+    sys.stderr.write("          The retired-address set is derived from it; refusing to check less than claimed.\n")
+    sys.exit(1)
+
+for a in sorted(found):
+    print(a)
+PY
+)"
+
+# `set -e` aborts the assignment above if python exited non-zero, so reaching here means it ran. An
+# EMPTY result would still be dangerous rather than merely useless: an empty array element becomes an
+# empty ERE alternative, which matches every tracked file (see the LIVE guard's note). Refuse it.
+HISTORICAL=()
+if [[ -n "$HISTORICAL_RAW" ]]; then read_lines HISTORICAL <<< "$HISTORICAL_RAW"; fi
+if [[ ${#HISTORICAL[@]} -eq 0 ]]; then
+  echo "::error:: the ledger's git history yielded no addresses for chain id $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("chainId"))' "$LEDGER")."
+  echo "          At least the committed live set was expected. Refusing to check less than claimed."
+  exit 1
+fi
+
 # RETIRED may legitimately be empty - that is the goal state, every retired address cleared out of the
 # tree. `${A[@]+"${A[@]}"}` expands to NOTHING when empty; the `:-` form would inject an empty string.
-PATTERN="$(printf '%s\n' "${LIVE[@]}" ${RETIRED[@]+"${RETIRED[@]}"} | paste -sd'|' -)"
+# The `grep -v '^$'` is not decoration: one empty element becomes an empty ERE alternative, which
+# matches EVERY tracked file, so the run would blame the whole repo instead of naming the fault.
+PATTERN="$(printf '%s\n' "${LIVE[@]}" "${HISTORICAL[@]}" ${RETIRED[@]+"${RETIRED[@]}"} \
+  | tr 'A-F' 'a-f' | grep -v '^$' | sort -u | paste -sd'|' -)"
+ADDR_COUNT="$(printf '%s' "$PATTERN" | tr '|' '\n' | grep -c .)"
 
 # Tracked files only, and never the ledger itself - it is where addresses belong.
 read_lines OFFENDERS < <(
@@ -156,4 +277,11 @@ if [[ $fail -ne 0 ]]; then
   exit 1
 fi
 
-echo "no-hardcoded-addresses: OK (${#DECLARED[@]} file(s) still declared as debt)"
+# State the claim that was actually checked. "OK (3 declared)" read far broader than what ran, which
+# is how a reader comes to believe the tree carries no stale address at all - see the header's note on
+# what a ledger-derived pattern structurally cannot see.
+CHAIN_ID="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("chainId"))' "$LEDGER")"
+echo "no-hardcoded-addresses: OK - no undeclared tracked file carries any of the ${ADDR_COUNT} addresses"
+echo "  the deploy ledger has published on chain ${CHAIN_ID} (${#LIVE[@]} live, ${#HISTORICAL[@]} from its git"
+echo "  history, ${#RETIRED[@]} hand-listed as never-published); ${#DECLARED[@]} file(s) declared as debt."
+echo "  NOT checked: addresses the ledger never published (provider-deployed clones, walk EOAs)."

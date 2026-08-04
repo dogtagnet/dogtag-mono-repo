@@ -50,9 +50,33 @@ const SEL = {
  */
 const TOPIC = {
   rootIssued: "0xf8cd30a628b432a1200caf81085096c82a5f570da14360572b72d4e0ba57e6d7",
-  whitelisted: "0x0ed68b47399672cf072b19a599fa9f99cdc79a286bf59bc301ca44b94f589bce",
-  delisted: "0xf3af84db5dbf726f68c33f3ded733403e15667370ab38e8cb37fdc874835b00e",
+  /**
+   * `ProviderRegistry.RightsSet(address indexed account, uint256 rights)`.
+   *
+   * This REPLACED the record-type-keyed `Whitelisted`/`Delisted` pair when rights became a bitmask on
+   * an address. Three things about the new shape matter to the mock below, and each is a way to model
+   * it wrongly while looking right:
+   *
+   *   - it is indexed on the ACCOUNT alone, so topic1 is the signer and there is no record type to
+   *     narrow by (the reader passes `service` and deliberately ignores it in the filter);
+   *   - grant and withdrawal are the SAME event, told apart by the bits in `rights` rather than by
+   *     two topics - so a withdrawal is `rights` with bit 0 CLEAR, not a second event name;
+   *   - `rights` is the account's COMPLETE mask after the write, never a delta, which is what lets
+   *     the fold take the last event at or before the anchoring and need no prior state.
+   */
+  rightsSet: "0xbc9c679fe541a4f3fcf5f2887c4adcd6e7703f7ea9d0933b8862662f8290af7f",
 } as const;
+
+/**
+ * `ProviderRegistry.RIGHT_ISSUE` - bit 0, the only bit that decides the issuance axis.
+ *
+ * Mirrors `packages/ui/src/wallet/contracts.ts`'s constant of the same name. It is a WIRE FORMAT
+ * position, so the fixtures below set it as a BIT rather than comparing the word: bit 0 is the only
+ * settable bit today, so "the word equals 1" and "bit 0 is set" agree on every mask the contract can
+ * currently emit - and that coincidence is exactly what would let a whole-word comparison survive
+ * review until a second right is allocated. `rightsWithAnUnrelatedBit` below exists to break the tie.
+ */
+const RIGHT_ISSUE = 1n;
 
 const ISSUER: IssuerMeta = {
   name: "Seaport Animal Hospital",
@@ -107,10 +131,23 @@ interface LogPoint {
   logIndex: number;
 }
 
-/** One `whitelistFor`/`delistFor` call, as the governing registry's own log records it. */
+/**
+ * One `setRights` call, as the governing authority's own `RightsSet` log records it.
+ *
+ * `kind` is kept as the READABLE name for what the call did, because every scenario below reads as
+ * "granted before / delisted after" and that vocabulary is the point being tested. What changed with
+ * the bitmask is only the ENCODING: both are the same event, and the difference is whether bit 0 is
+ * set in the mask this call left behind. `rights` overrides that default so a fixture can carry a
+ * mask with other bits set - see `rightsOf`.
+ */
 interface GrantEvent extends LogPoint {
   kind: "whitelisted" | "delisted";
+  /** The COMPLETE mask after this write. Defaults to just `RIGHT_ISSUE`, or 0 for a withdrawal. */
+  rights?: bigint;
 }
+
+const rightsOf = (g: GrantEvent): bigint =>
+  g.rights ?? (g.kind === "whitelisted" ? RIGHT_ISSUE : 0n);
 
 interface ChainState {
   /** DogTagIssuerFactory.rootIssuer(root) - the clone every other read below is made against. */
@@ -224,13 +261,20 @@ async function mockRoaxRpc(page: Page, state: ChainState): Promise<string[]> {
           ),
         ]);
       }
-      if (t0 === TOPIC.whitelisted || t0 === TOPIC.delisted) {
+      if (t0 === TOPIC.rightsSet) {
+        // Served ONLY at the governing registry - the address the pillar read off the clone's own
+        // `registry()`. A regression that asked this client's CONFIGURED registry instead would find
+        // an empty log here and refuse a genuine credential, which is the shape this spec must be
+        // able to catch rather than merely avoid.
         if (addr !== state.registry.toLowerCase()) return answer(msg.id, []);
-        const kind = t0 === TOPIC.whitelisted ? "whitelisted" : "delisted";
-        const topics = [t0, echoed(1, state.recordType), echoed(2, addressWord(state.issuedBy))];
+        // ONE event for both directions now, so there is no `kind` to filter on: the whole history for
+        // this account is returned in log order and the fold takes the last at or before the
+        // anchoring. Filtering here would move the fold's own rule into the fake, where a regression
+        // in it could not be observed.
+        const topics = [t0, echoed(1, addressWord(state.issuedBy))];
         return answer(
           msg.id,
-          state.grants.filter((g) => g.kind === kind).map((g) => logRow(addr, topics, g)),
+          state.grants.map((g) => logRow(addr, topics, g, uintWord(rightsOf(g)))),
         );
       }
       // Same rule, same reason, for the log shape. An unmodelled topic answered with `[]` reads as
@@ -417,6 +461,43 @@ test("whitelist pillar gates the verdict: valid on-chain but unauthorised issuer
 
   assertNoOperatorRelay(urls);
   await panelCard(page).screenshot({ path: "e2e-artifacts/verify-whitelist-fail.png" });
+});
+
+test("the ISSUE BIT is read out of the mask, not the whole word", async ({ page }) => {
+  // Bit 0 is the only settable bit today, so "the word equals 1" and "bit 0 is set" agree on every
+  // mask the contract can currently emit - which is exactly what would let a whole-word comparison
+  // survive review until a second right is allocated. At that point a mask of 0b11 decodes as
+  // malformed and refuses every credential its holder ever issued, fleet-wide, on a rendered verdict.
+  //
+  // AGENTS.md requires a case with higher bits set in all four language ports for this reason; this is
+  // the web one. The credential is otherwise the passing fixture, so a failure here can only be the
+  // mask decode.
+  const urls = await mockRoaxRpc(
+    page,
+    anchoredChain({
+      grants: [{ ...GRANTED_BEFORE, rights: RIGHT_ISSUE | (1n << 7n) }],
+    }),
+  );
+  await openVerifyAndSubmit(page, validDoc());
+
+  await expect(page.getByText("Verdict: pass")).toBeVisible();
+  await expect(pillar(page, "Issuer authorised at issuance")).toHaveText(/Yes$/);
+  assertNoOperatorRelay(urls);
+});
+
+test("a mask with OTHER bits but not the issue bit is a definite refusal", async ({ page }) => {
+  // The other half of the pair, and the one that keeps the case above from passing vacuously: an
+  // account holding some future right but NOT `RIGHT_ISSUE` was never authorised to issue, so this
+  // must refuse. A reader that merely tested the mask for non-zero would pass both.
+  const urls = await mockRoaxRpc(
+    page,
+    anchoredChain({ grants: [{ ...GRANTED_BEFORE, rights: 1n << 7n }] }),
+  );
+  await openVerifyAndSubmit(page, validDoc());
+
+  await expect(page.getByText("Verdict: fail")).toBeVisible();
+  await expect(pillar(page, "Issuer authorised at issuance")).toHaveText(/No$/);
+  assertNoOperatorRelay(urls);
 });
 
 test("delisting is forward-only: a signer delisted AFTER the anchoring still verifies", async ({

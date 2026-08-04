@@ -46,7 +46,10 @@ test("starts only the owner-hidden verification flow and sends no mode", async (
   await mockBackend(page, state);
 
   await page.goto("/verify");
-  await expect(page.getByText("Ad-hoc verification")).toBeVisible();
+  // The PAGE TITLE, not "any element with this text". "Ad-hoc verification" is also the nav link and
+  // the card heading, so a bare getByText resolves to three elements and fails strict mode - which
+  // reads like the page not rendering rather than like an ambiguous locator.
+  await expect(page.getByRole("heading", { level: 1, name: "Ad-hoc verification" })).toBeVisible();
   // There is ONE owner-hidden flow: the operator is never offered a mode/disclosure choice.
   await expect(page.getByText("Mode", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Normal", { exact: true })).toHaveCount(0);
