@@ -41,3 +41,12 @@ CLAUDE.md
 # scripts/rehearse-cutover.sh started. Re-verified before any kill, so a recycled pid is refused
 # rather than signalled. Stop a stranded fork with `scripts/rehearse-cutover.sh --stop`.
 .anvil-rehearsal.pid
+
+# Ledger of servers scripts/e2e-web.sh started, so `--cleanup` can stop exactly those by PID.
+.e2e-web.pids
+
+# Playwright run artifacts: screenshots the specs write and traces the reporter keeps on failure.
+# Outputs of a run, not inputs to one - and they are large binaries that would land in every diff.
+e2e-artifacts/
+test-results/
+playwright-report/

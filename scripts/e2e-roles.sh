@@ -73,8 +73,25 @@ if [ "$MODE" = demo ]; then
   # GOV_CHAIN_BACKEND=mem is REQUIRED and explicit: GOV_DEMO_MODE no longer selects the simulated
   # chain (it only picks the ephemeral store), precisely so no deployment gets a simulated chain by
   # accident. This offline self-test genuinely wants the emulation, so it opts in.
+  # THE FACTORY AND THE AUTHORITY ARE REQUIRED, and their absence is why step 2 below could not pass.
+  #
+  # The mandatory issuer-whitelist pillar resolves the issuing clone through
+  # `DogTagIssuerFactory.rootIssuer(R)` and folds the grant log of the authority that clone NAMES. With
+  # neither configured the pillar answers `unavailableNoFactoryConfigured` - not a refusal, but not a
+  # pass either - so `issuerWhitelisted` is null and the assertion below fails. It had been failing
+  # for exactly this reason: the pillar became factory-anchored and this script's expectation was
+  # never moved with it, and nothing noticed because no CI runs it.
+  #
+  # Both come from the deploy ledger rather than a literal. Nothing is dialled - the chain is `mem` -
+  # so these configure map keys in the emulation, not a network target.
+  GOV_FACTORY="$(bash "$ROOT/scripts/gen-deployment-env.sh" vet | sed -n 's/^FACTORY_ADDR=//p' | head -1)"
+  GOV_REGISTRY="$(bash "$ROOT/scripts/gen-deployment-env.sh" vet-web \
+    | sed -n 's/^VITE_PROVIDER_REGISTRY_ADDR=//p' | head -1)"
+  [ -n "$GOV_FACTORY" ] && [ -n "$GOV_REGISTRY" ] \
+    || fail "the deploy ledger published no DogTagIssuerFactory / ProviderRegistry"
   GOV_DEMO_MODE=1 GOV_CHAIN_BACKEND=mem PORT=$PORT \
     TRAVEL_CLEARANCE_ISSUER_ADDR=0x1111111111111111111111111111111111111111 \
+    FACTORY_ADDR="$GOV_FACTORY" ISSUER_REGISTRY_ADDR="$GOV_REGISTRY" \
     "$ROOT/target/debug/government-api" >/tmp/e2e-roles-gov.log 2>&1 &
   GOVPID=$!
   trap 'kill "$GOVPID" 2>/dev/null || true' EXIT

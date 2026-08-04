@@ -132,6 +132,21 @@ make vendor-mobile-artifacts  # copy the consent zkey+graph into both app bundle
                               # either mobile app can prove — see docs/MOBILE_BUILD.md §4)
 ```
 
+**End-to-end — one command per surface, from a fresh worktree, nothing served first:**
+```bash
+make e2e-web              # every portal: starts them + a hermetic government backend, then tears down
+make e2e-web ONLY=vet     # one portal
+make e2e-ios              # builds the app, boots a simulator, runs the Maestro flows
+make e2e-android          # builds the apk, installs on a connected arm64 device, runs Maestro
+make e2e                  # all three
+```
+Each exits **0** passed, **1** failed, and **78** when a prerequisite is genuinely missing — a loud
+"THE SUITE DID NOT RUN" naming the specific thing, never a silent skip and never a green.
+A suite that executed zero tests, or skipped any, is treated as a FAILURE.
+Full rationale, and what each surface refuses on: **[`docs/E2E_TESTING.md`](docs/E2E_TESTING.md)**.
+
+These are deliberately NOT in `make test`: they serve portals and need a device.
+
 **Per stack:**
 ```bash
 # Rust business backend (vet + groomer share this crate):

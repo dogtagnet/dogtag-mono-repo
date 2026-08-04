@@ -126,7 +126,36 @@ async fn main() {
     };
 
     let chain: Arc<dyn ChainClient> = if use_mem {
-        let mem = MemChain::new();
+        // Register issuances under the CONFIGURED factory, mirroring the `registerRoot` every real
+        // `issue()` performs. Without it `self.factory` stays empty, `issue` indexes nothing, and
+        // `rootIssuer(root)` resolves to nothing for every credential this stack anchors - so the
+        // MANDATORY issuer-whitelist pillar is permanently indeterminate and renders "n/a". The rest
+        // of the demo wiring below (record types, the pre-whitelisted signer) exists precisely to
+        // demonstrate that pillar end-to-end, and could not: `government.spec.ts` asserts all three
+        // pillars green on a simulated serve and failed on this one alone.
+        //
+        // Conditional, and the condition is the honest part: an unset or zero factory means no factory
+        // is configured, and indexing under it would let the fake resolve a clone for a deployment
+        // that named none - the "issued, but the factory has no record of it" state `with_factory`'s
+        // own doc keeps modellable.
+        let factory = cfg.factory_addr.trim();
+        let zero = "0x0000000000000000000000000000000000000000";
+        let mem = if factory.is_empty() || factory.eq_ignore_ascii_case(zero) {
+            MemChain::new()
+        } else {
+            MemChain::new().with_factory(factory)
+        };
+        // ...and let every clone NAME its governing authority, which a real clone always does through
+        // its immutable `registry()`. The pillar resolves the grant log off THAT address rather than
+        // off this stack's configuration, so a fake with no authority to name degrades the answer to
+        // `unresolved` - a different claim from "the log recorded no grant", and the one this demo was
+        // stuck on. `flow_memchain.rs`'s own comment records the same requirement for the same reason.
+        let registry = cfg.issuer_registry_addr.trim();
+        let mem = if registry.is_empty() || registry.eq_ignore_ascii_case(zero) {
+            mem
+        } else {
+            mem.with_registry(registry)
+        };
         // Declare each configured clone's `recordType()`, mirroring what `createIssuer` fixes on a real
         // clone. The issuer pillar reads the record type from the RESOLVED clone rather than from the
         // document, so an undeclared clone would leave it indeterminate for the whole demo.
@@ -145,11 +174,21 @@ async fn main() {
                 government_api::app::TRAVEL_CLEARANCE,
                 government_api::app::EU_HEALTH_CERT,
             ] {
-                mem.whitelist(
-                    &cfg.issuer_registry_addr,
-                    &government_api::app::record_type_key(rt),
-                    &signer,
-                );
+                // `set_issuance_capability`, NOT `whitelist`. The two are different AXES and only one
+                // of them records history: `whitelist` is the VERIFY-axis grant and writes a plain
+                // current-state entry with NO positioned event, because nothing asks a historical
+                // question there. The issuance pillar asks exactly that historical question, so
+                // granting it through the verify helper left the grant log EMPTY - and an empty log is
+                // a DEFINITE refusal, so every credential this demo issued verified as a forgery.
+                //
+                // The two shared a shape until rights became a bitmask on an address; this call site
+                // was not moved with the rest, and nothing noticed because no CI runs the e2e that
+                // asserts the three pillars. The `service` argument no longer selects which grant is
+                // written - rights are on the address - but it still seeds the per-service
+                // current-state map, so it is the clone rather than the record-type key.
+                if let Some(service) = cfg.issuer_addr_for(rt) {
+                    mem.set_issuance_capability(&cfg.issuer_registry_addr, &service, &signer, true);
+                }
             }
             // ...and for the VERIFY: purposes the portal offers, so the owner-hidden QR flow is
             // demoable too. `VERIFY:` is a namespace SEPARATE from the issuer record types above: on a

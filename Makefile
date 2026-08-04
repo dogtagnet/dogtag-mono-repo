@@ -1,6 +1,6 @@
 # DogTag monorepo — root task runner (just is unavailable; GNU Make 3.81)
 .DEFAULT_GOAL := help
-.PHONY: help dev build test check-addresses parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer test-consent-parity vendor-mobile-artifacts verify-provider-selfservice-mutations verify-content-mirror-mutations
+.PHONY: help dev build test check-addresses test-address-gate test-e2e-lib e2e e2e-web e2e-ios e2e-android parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer test-consent-parity vendor-mobile-artifacts verify-provider-selfservice-mutations verify-content-mirror-mutations
 
 help: ## list targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -8,10 +8,35 @@ help: ## list targets
 ## ---- build / test ----
 build: sdk-ts sdk-rs contracts ## build everything buildable
 
-test: check-addresses parity test-ts test-rs test-contracts ## run all test suites
+test: check-addresses test-address-gate test-e2e-lib parity test-ts test-rs test-contracts ## run all test suites
 
 check-addresses: ## assert no consumer hardcodes a deployed address (hermetic) - runs in `test`
 	bash scripts/check-no-hardcoded-addresses.sh
+
+test-address-gate: ## prove the address gate actually guards (3.6s, hermetic temp repos) - runs in `test`
+	bash scripts/test-address-gate.sh
+
+test-e2e-lib: ## pin the e2e runners' watchdog + could-not-run classifier (hermetic) - runs in `test`
+	bash scripts/test-e2e-lib.sh
+
+## ---- end-to-end (NOT in `test`: they serve portals / need a device) ----
+# Each SCRIPT exits 0 pass, 1 fail, and 78 "DID NOT RUN" when a prerequisite is genuinely absent. A
+# skipped suite is treated as a FAILURE, never as a pass - see the header of scripts/lib/e2e.sh.
+#
+# CALL THE SCRIPT, NOT `make`, WHEN THE EXIT CODE MATTERS. GNU make always exits 2 when a recipe
+# fails, so it collapses 1 and 78 into one number and the whole three-outcome contract disappears at
+# the entry point that documents it. The banner still prints, so `make` is fine to read; anything
+# that BRANCHES on the outcome must run `bash scripts/e2e-<surface>.sh` directly.
+e2e: e2e-web e2e-ios e2e-android ## every e2e surface (web + both mobile platforms)
+
+e2e-web: ## browser e2e: starts the portals + a hermetic government backend, runs Playwright, tears down
+	bash scripts/e2e-web.sh $(if $(ONLY),--only $(ONLY),)
+
+e2e-ios: ## iOS e2e: builds the app, boots a simulator, runs the Maestro flows
+	bash scripts/e2e-ios.sh
+
+e2e-android: ## Android e2e: builds the apk, installs on a connected arm64 device/emulator, runs Maestro
+	bash scripts/e2e-android.sh
 
 parity: ## NORMATIVE Poseidon 4-language anchor gate (t=2/3/6/7) — BLOCKS downstream
 	cd circuits && pnpm run parity
