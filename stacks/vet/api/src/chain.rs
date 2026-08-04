@@ -13,6 +13,9 @@ use alloy::sol;
 use alloy::sol_types::SolEvent;
 use async_trait::async_trait;
 
+// LAYER 2 of the two-layer issuance requirement. The shaping and the honesty rules live there; this
+// file only gathers the reads.
+use crate::issuance_allowed::{build_roster, normalize_addr, IssuanceRoster};
 // Owner-hidden consent public-signal indices.
 use dogtag_standard::public_signals::level_b as PB;
 // The issuer-whitelist pillar's historical question and its ordering/fold rule live in the SDK, so
@@ -50,6 +53,19 @@ sol! {
         /// factory-resolved clone this is unforgeable, and it is the only authority whose grant log
         /// can answer for this contract's issuances.
         function registry() external view returns (address);
+
+        /// LAYER 2 of the two-layer issuance requirement — this contract's OWN list.
+        ///
+        /// The event is how you learn WHICH addresses the list has an opinion about (there is no
+        /// enumeration), and the getter is how you learn what that opinion currently IS. Never read
+        /// the event's `allowed` word as the answer — see `crate::issuance_allowed`.
+        ///
+        /// `initialize` emits this same event for the creation seed rather than a second topic
+        /// (`DogTagIssuer.sol:262-269`), deliberately, so ONE filter reconstructs the whole set.
+        event IssuanceAllowedSet(address indexed signer, bool allowed, address indexed setBy);
+        function issuanceAllowed(address signer) external view returns (bool);
+        /// The only address that may ADMIT to the list above.
+        function owner() external view returns (address);
     }
 
     /// The clone factory. Its write-once `rootIssuer[R]` index (`DogTagIssuerFactory.sol:19`, written
@@ -294,6 +310,25 @@ pub trait ChainClient: Send + Sync {
         signer: &str,
         root: &str,
     ) -> Result<GrantAtIssuance, ChainError>;
+    /// LAYER 2 as a roster: this clone's `owner()` plus every address its own issuance list has an
+    /// opinion about, each carrying its CURRENT storage value.
+    ///
+    /// `also` is an extra address to include even when the log never named it — this deployment's own
+    /// custody signer, so the address the provider needs admitted always has a row rather than being
+    /// invisible in exactly the state they are trying to diagnose.
+    ///
+    /// The log supplies only WHICH addresses to ask about; every value is a fresh
+    /// `issuanceAllowed(address)` read, so a pending write can never read as a completed grant and no
+    /// sequencing is required. See `crate::issuance_allowed` for why that inversion is the whole
+    /// point.
+    ///
+    /// Reads THROW rather than answering an empty roster: "this contract admits nobody" and "we could
+    /// not ask" are different claims, and only the caller can render them apart.
+    async fn issuance_allowed_roster(
+        &self,
+        issuer_addr: &str,
+        also: Option<&str>,
+    ) -> Result<IssuanceRoster, ChainError>;
     /// Sign+broadcast a tx FROM the backend signer at `account_index` to `to` with `calldata`.
     /// Returns the tx hash. EIP-1559 with legacy fallback.
     async fn sign_and_send(
@@ -561,6 +596,24 @@ struct MemChainInner {
     /// The node executed the call; what it established is that this build knows none of the
     /// contract's language.
     unanswerable_registries: HashSet<String>,
+    /// clone_addr -> `owner()`. The only address a real clone lets ADMIT to the list below.
+    clone_owners: HashMap<String, String>,
+    /// (clone_addr, signer) -> `issuanceAllowed(signer)` NOW — LAYER 2's storage.
+    issuance_allowed: HashMap<(String, String), bool>,
+    /// clone_addr -> every address an `IssuanceAllowedSet` has named on that clone, oldest first.
+    ///
+    /// Kept SEPARATE from the storage map above, exactly as the chain keeps the log separate from the
+    /// mapping, so a withdrawn address stays named by the log after its storage has gone back to
+    /// `false` — which is the whole distinction between "withdrawn" and "never admitted".
+    issuance_allowed_named: HashMap<String, Vec<String>>,
+    /// Fault injection for the LOG read alone.
+    ///
+    /// Its own switch rather than a shared one, following `set_failing_approval_log_reads` beside
+    /// `set_failing_provider_reads`: the realistic failure is a range-capping or rate-limiting peer
+    /// refusing `eth_getLogs` while every `eth_call` beside it answers, and a shared switch would
+    /// fail the owner read first and collapse the route into a 502 — so the `unavailable` arm this
+    /// surface exists to render would never be built and the headline claim would go unpinned.
+    failing_issuance_allowed_log_reads: bool,
     /// Monotone synthetic log position. Every emulated event — a registry grant, an anchoring — takes
     /// the next one, so CALL ORDER IS LOG ORDER: a test expresses "delisted after issuance" by
     /// delisting after it issued, and "before" by delisting before. Without an ordering this fake
@@ -654,6 +707,43 @@ impl MemChain {
                 record_type: record_type_key.to_lowercase(),
             },
         );
+    }
+    /// Declare a clone's `owner()` — the only address a real clone lets ADMIT to its issuance list.
+    ///
+    /// Left UNSET by default: a clone whose owner this fake was never told about answers the zero
+    /// address, which is what a real `owner()` on an uninitialized contract would give and is a state
+    /// the page must render rather than crash on.
+    pub fn set_clone_owner(&self, clone_addr: &str, owner: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .clone_owners
+            .insert(clone_addr.to_lowercase(), owner.to_lowercase());
+    }
+    /// Mirror `DogTagIssuer.setIssuanceAllowed` — write the storage AND name the address in the log,
+    /// because the real function does both in one call and a fake that wrote only the storage could
+    /// not produce a withdrawn entry at all.
+    ///
+    /// Deliberately NOT gated on `owner()`: this is a seeder for tests, and the authority asymmetry it
+    /// would be modelling is pinned where it is enforced — on the contract, in
+    /// `CustodialIssuance.t.sol::test_the_clones_own_list_is_what_admits_a_signer_and_only_its_owner_writes_it`.
+    /// Emulating the gate here would be a second implementation of a rule this backend never applies,
+    /// since it never sends this transaction.
+    pub fn set_issuance_allowed(&self, clone_addr: &str, signer: &str, allowed: bool) {
+        let mut g = self.inner.lock().unwrap();
+        let clone = clone_addr.to_lowercase();
+        let who = signer.to_lowercase();
+        g.issuance_allowed
+            .insert((clone.clone(), who.clone()), allowed);
+        g.issuance_allowed_named.entry(clone).or_default().push(who);
+    }
+    /// Make the `IssuanceAllowedSet` log read fail while every `eth_call` beside it still answers.
+    /// Default off. See `failing_issuance_allowed_log_reads` for why it is its own switch.
+    pub fn set_failing_issuance_allowed_log_reads(&self, failing: bool) {
+        self.inner
+            .lock()
+            .unwrap()
+            .failing_issuance_allowed_log_reads = failing;
     }
     /// Register a backend signer address for an account index (test harness wires this from custody).
     pub fn set_signer(&self, index: u32, address: &str) {
@@ -987,6 +1077,40 @@ impl ChainClient for MemChain {
         // `onlyIssuanceCapable`, so an honest clone cannot have anchored without a grant. A read
         // that FAILED returned above rather than arriving as an empty one.
         Ok(grant_in_force_at(history, anchored_at))
+    }
+    async fn issuance_allowed_roster(
+        &self,
+        issuer_addr: &str,
+        also: Option<&str>,
+    ) -> Result<IssuanceRoster, ChainError> {
+        let g = self.inner.lock().unwrap();
+        let clone = issuer_addr.to_lowercase();
+        // The LOG read, and only it, is what the switch fails — the owner `eth_call` below still
+        // answers, which is the asymmetry a real range-capping peer produces.
+        if g.failing_issuance_allowed_log_reads {
+            return Err(ChainError::Rpc("issuance-allowed log read failed".into()));
+        }
+        let owner = g.clone_owners.get(&clone).cloned().unwrap_or_default();
+        let named = g
+            .issuance_allowed_named
+            .get(&clone)
+            .cloned()
+            .unwrap_or_default();
+        // STORAGE supplies every value, exactly as the live implementation does. Built for the union
+        // of log-named addresses and `also`, so the roster shaper never has to invent one.
+        let mut values = std::collections::BTreeMap::new();
+        for who in named.iter().cloned().chain(also.map(normalize_addr)) {
+            let v = g
+                .issuance_allowed
+                .get(&(clone.clone(), who.clone()))
+                .copied()
+                .unwrap_or(false);
+            values.insert(who, v);
+        }
+        Ok(IssuanceRoster {
+            owner,
+            entries: build_roster(&named, also, &values),
+        })
     }
     async fn sign_and_send(
         &self,
@@ -1492,6 +1616,86 @@ impl ChainClient for AlloyChain {
         // repoint or suspension into a forgery verdict against credentials that were genuinely
         // issued — the current-state-getter mistake this pillar exists to avoid.
         Ok(grant_in_force_at(&history, anchored_at))
+    }
+    async fn issuance_allowed_roster(
+        &self,
+        issuer_addr: &str,
+        also: Option<&str>,
+    ) -> Result<IssuanceRoster, ChainError> {
+        use alloy::providers::{Provider, ProviderBuilder};
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let clone = parse_addr(issuer_addr);
+        let issuer = IDogTagIssuer::new(clone, provider.clone());
+
+        // (1) WHO may admit. `Ownable2Step`, so this is the accepted owner rather than a pending one.
+        let owner = issuer
+            .owner()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?
+            ._0;
+
+        // (2) WHICH addresses this list has an opinion about. `signer` is indexed, so one filtered
+        // `eth_getLogs` names the whole set — including the creation seed, which `initialize` emits
+        // through this same event rather than a second topic.
+        let logs = provider
+            .get_logs(
+                &Filter::new()
+                    .address(clone)
+                    .event_signature(IDogTagIssuer::IssuanceAllowedSet::SIGNATURE_HASH)
+                    .from_block(0u64),
+            )
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let mut named: Vec<String> = Vec::with_capacity(logs.len());
+        for l in &logs {
+            // A log carrying no position is a log the node has not mined. Nothing here SEQUENCES, so
+            // it could be tolerated — the value comes from storage either way, and a pending write
+            // would correctly still read `false`. It is refused anyway, for one reason that is about
+            // honesty rather than safety: `ever_named` is what separates "withdrawn" from "never
+            // admitted", and an unmined log would report a merely-pending admit as a withdrawal.
+            // Refusing keeps this reader's posture identical to every other log reader in the repo
+            // rather than making it the one that reasons about positions differently.
+            if log_point(l).is_none() {
+                return Err(ChainError::Rpc(
+                    "an IssuanceAllowedSet log carried no block position".into(),
+                ));
+            }
+            // ONLY the indexed address is taken. The event's own `allowed` word is deliberately never
+            // read — see step 3.
+            let Some(topic) = l.topics().get(1) else {
+                return Err(ChainError::Rpc(
+                    "an IssuanceAllowedSet log carried no signer topic".into(),
+                ));
+            };
+            named.push(format!("{:#x}", Address::from_word(*topic)));
+        }
+
+        // (3) WHAT each of them may do NOW, from STORAGE. This is the inversion the whole module is
+        // built on: the log is an index of addresses to ask about, never a source of answers. A
+        // pending write therefore cannot read as a completed grant, and no ordering is needed because
+        // the chain has already folded the history into this mapping.
+        let mut values = std::collections::BTreeMap::new();
+        for who in named.iter().cloned().chain(also.map(normalize_addr)) {
+            if values.contains_key(&who) {
+                continue;
+            }
+            let allowed = issuer
+                .issuanceAllowed(parse_addr(&who))
+                .call()
+                .await
+                .map_err(|e| ChainError::Rpc(e.to_string()))?
+                ._0;
+            values.insert(who, allowed);
+        }
+
+        Ok(IssuanceRoster {
+            owner: format!("{owner:#x}"),
+            entries: build_roster(&named, also, &values),
+        })
     }
     async fn sign_and_send(
         &self,

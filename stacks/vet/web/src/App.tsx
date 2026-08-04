@@ -11,6 +11,7 @@ import { Traceability } from "./pages/Traceability";
 import { ImportFromUser } from "./pages/ImportFromUser";
 import { Verify } from "./pages/Verify";
 import ProviderSelfService from "./pages/ProviderSelfService";
+import { Signers } from "./pages/Signers";
 import { Settings } from "./pages/Settings";
 
 export function App() {
@@ -36,6 +37,10 @@ export function App() {
       <Route
         path="/provider"
         element={<Layout title="Provider self-service"><ProviderSelfService /></Layout>}
+      />
+      <Route
+        path="/signers"
+        element={<Layout title="Who may sign in your name"><Signers /></Layout>}
       />
       <Route path="/settings" element={<Layout title="Settings"><Settings /></Layout>} />
       <Route path="*" element={<Navigate to="/issue" replace />} />

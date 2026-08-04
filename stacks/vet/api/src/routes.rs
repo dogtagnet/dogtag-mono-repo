@@ -41,7 +41,9 @@ use serde_json::{json, Value};
 use crate::app::{self, AppState};
 use crate::auth::{self, ShareClaims};
 use crate::chain::{GrantAtIssuance, IssuanceCapability};
+use crate::issuance_allowed::RosterRead;
 use crate::microchip::{MicrochipCheck, NotComparable as MicrochipNotComparable};
+use crate::verify::valid_contract_addr;
 use crate::store::{ApptReplica, Record, RecordStatus, VerifySession};
 
 type Resp = (StatusCode, Json<Value>);
@@ -1012,6 +1014,107 @@ async fn issuer_signers(State(st): State<AppState>, headers: HeaderMap) -> Resp 
         matrix.push(json!({ "recordType": rt, "address": active, "whitelisted": wl }));
     }
     ok(json!({ "activeSigner": active, "matrix": matrix }))
+}
+
+// --------------------------------------------------------------------------------------------
+// issuance-allowed roster — LAYER 2 of the two-layer issuance requirement
+// --------------------------------------------------------------------------------------------
+
+/// `GET /issuer/issuance-allowed` — for each contract this deployment issues through: who owns it,
+/// which addresses its own issuance list has an opinion about, and whether OUR custody signer is
+/// among them.
+///
+/// # Why this is a READ route and there is deliberately no write one
+///
+/// `DogTagIssuer.setIssuanceAllowed` admits only from the clone's `owner()`, and this backend is not
+/// it — its custody signer is the address that needs admitting, which is the entire gap. Nor could a
+/// route stand in for the owner: an operator session proves "staff of this shop", never "owner of
+/// this contract", and this crate carries no signature-recovery path over an arbitrary address. A
+/// backend that could admit would have to hold owner authority, which is precisely the second layer
+/// collapsing back into the first. The write is a wallet transaction from the owner's own key.
+///
+/// # The one field that answers the question providers actually ask
+///
+/// `activeSignerAllowed`. Layer 1 has a screen and layer 2 had none, so "I am approved, I deployed my
+/// contract, and issuing still fails" had no diagnosis anywhere in the product. This says which of
+/// the two is missing, per contract.
+///
+/// Operator-gated and read-only, like `issuer/signers` beside it; nothing gates on it.
+async fn issuance_allowed_roster(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    // Locked custody has no active address. That is `None`, never a zero address and never an
+    // omitted key — "we do not know which signer this deployment uses" and "this signer may not
+    // issue" are different sentences, and the page prints them differently.
+    let active = st.custody.active_address().ok();
+
+    // EVERY contract this deployment anchors through, both kinds. `PROFILE_ISSUER_ADDR` is a real
+    // `DogTagIssuer` clone reached by `POST /profiles/issue/custodial-bind`, so it needs layer 2
+    // exactly as the record-type clones do — and it is the half most likely to be forgotten, because
+    // completing a dog-tag bind needs the phone app and so is rarely walked on a desktop.
+    let mut configured: Vec<(String, String)> = st
+        .cfg
+        .issuer_addrs
+        .iter()
+        .map(|(rt, a)| (rt.clone(), a.clone()))
+        .collect();
+    if !st.cfg.profile_issuer_addr.is_empty() {
+        configured.push(("DOG_PROFILE".to_string(), st.cfg.profile_issuer_addr.clone()));
+    }
+    // Deterministic order so two loads render the same list.
+    configured.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut contracts = Vec::new();
+    for (record_type, issuer_addr) in configured {
+        // An unset address is the ZERO address here (see `main.rs`), and reading a contract that does
+        // not exist would report a configuration hole as a chain fault. Omit it: this route describes
+        // the contracts this deployment issues through, and an unconfigured one is not among them.
+        if !valid_contract_addr(&issuer_addr) {
+            continue;
+        }
+        let read = match st
+            .chain
+            .issuance_allowed_roster(&issuer_addr, active.as_deref())
+            .await
+        {
+            Ok(roster) => {
+                // Built FIRST, then asked - so the headline goes through `RosterRead::allowed`, the
+                // same accessor a consumer would use, rather than a second inline copy of the fold.
+                // Two implementations of one rule is what lets them drift, and it also leaves the
+                // accessor's own tests pinning nothing that ships.
+                let mut read = RosterRead::Resolved {
+                    owner: crate::issuance_allowed::normalize_addr(&roster.owner),
+                    entries: roster.entries,
+                    active_signer_allowed: None,
+                };
+                let answered = active.as_deref().and_then(|a| read.allowed(a));
+                if let RosterRead::Resolved {
+                    active_signer_allowed,
+                    ..
+                } = &mut read
+                {
+                    *active_signer_allowed = answered;
+                }
+                read
+            }
+            // A read that failed is NOT an empty list. `Unavailable` carries no entries field at all,
+            // so no consumer can spread it into one.
+            Err(e) => RosterRead::Unavailable {
+                reason: e.to_string(),
+            },
+        };
+        contracts.push(json!({
+            "recordType": record_type,
+            "issuerAddr": issuer_addr,
+            "read": read,
+        }));
+    }
+
+    ok(json!({
+        "activeSigner": active,
+        "contracts": contracts,
+    }))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -3173,6 +3276,11 @@ pub fn public_router(state: AppState) -> Router {
         .route("/protocol/manifest", get(crate::protocol::get_manifest))
         // issuer signers
         .route("/issuer/signers", get(issuer_signers))
+        // LAYER 2 of the two-layer issuance requirement — the clone's OWN list. Mounted in the
+        // PUBLIC router rather than the issuance one, deliberately: a groomer is configured with the
+        // same clones and REMOVAL is the safety direction, so a role that does not issue must still
+        // be able to see who may sign in its name and withdraw a compromised key.
+        .route("/issuer/issuance-allowed", get(issuance_allowed_roster))
         // import
         .route("/import/pull", post(import_pull))
         // traceability portal (govarch PR-5): this operator's own on-chain activity joined to its DB

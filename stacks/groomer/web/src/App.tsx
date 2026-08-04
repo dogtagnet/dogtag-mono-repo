@@ -21,6 +21,7 @@ import { VerificationDetail } from "./pages/VerificationDetail";
 import { Verify } from "./pages/Verify";
 import { Setup } from "./pages/Setup";
 import ProviderSelfService from "./pages/ProviderSelfService";
+import { Signers } from "./pages/Signers";
 import { Settings } from "./pages/Settings";
 import { Unlock } from "./pages/Unlock";
 
@@ -71,6 +72,10 @@ export function App() {
       <Route
         path="/provider"
         element={<Layout title="Provider self-service"><ProviderSelfService /></Layout>}
+      />
+      <Route
+        path="/signers"
+        element={<Layout title="Who may sign in your name"><Signers /></Layout>}
       />
       <Route path="/settings" element={<Layout title="Settings"><Settings /></Layout>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
