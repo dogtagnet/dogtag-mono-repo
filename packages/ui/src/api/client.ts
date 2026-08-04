@@ -59,6 +59,9 @@ import type {
   VerifySessionStatusResp,
 } from "./types";
 import { isCustodyLockedError, isWrongPassphraseError } from "../custody/lock";
+// The wire shape of the clone's own issuance list. Declared in `signers/roster.ts` beside the rules
+// that decide what each row may CLAIM, so a consumer cannot get the type without the decisions.
+import type { IssuanceAllowedResponse } from "../signers/roster";
 
 export interface ApiClientOptions {
   /** vet backend base URL (e.g. "/api" with a Vite proxy, or an absolute origin) */
@@ -231,6 +234,20 @@ export function createApiClient(opts: ApiClientOptions) {
       request<TraceActivityResp>("GET", `/trace/activity${traceQs(q)}`),
     /** GET /trace/stats — this operator's in-scope on-chain counters + own record counts. */
     traceStats: () => request<TraceStatsResp>("GET", "/trace/stats"),
+
+    // ---- the clone's own issuance list (LAYER 2 of the two-layer issuance requirement) ----
+    /**
+     * GET /issuer/issuance-allowed — for each contract this deployment anchors through: who owns
+     * it, which addresses its own issuance list has an opinion about, and whether THIS shop's
+     * custody signer is among them. Operator-gated, read-only.
+     *
+     * There is deliberately no write counterpart. `setIssuanceAllowed` admits only from the
+     * contract's `owner()`, which this backend is not — its custody signer is the address that
+     * needs admitting — and an operator session proves "staff of this shop", never "owner of this
+     * contract". The write is a wallet transaction; see `IssuerSignersPanel`.
+     */
+    issuanceAllowed: () =>
+      request<IssuanceAllowedResponse>("GET", "/issuer/issuance-allowed"),
 
     // ---- records ----
     /** GET /records — list every record from the backend's OWN DB (operator-gated, most-recent first). */

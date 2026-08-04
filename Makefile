@@ -47,8 +47,15 @@ sdk-ts: ## build the TS standard SDK
 sdk-rs: ## build the Rust standard crate
 	cargo build -p dogtag-standard-rs
 
-test-ts: ## TS SDK tests (incl. shared testvectors.json)
+test-ts: ## TS SDK + shared-UI tests (incl. shared testvectors.json)
 	pnpm --filter @dogtag/standard test
+	# `@dogtag/ui` carries the decision layer behind every portal — verdict folds, action-availability
+	# reasons, the provider engine, and now the issuance-list page — and it was NOT in this gate, so
+	# those suites only ever ran when somebody remembered to. That is the same "a check that did not
+	# run counted as a check that passed" shape this repo has closed elsewhere. Named explicitly
+	# rather than broadened to `pnpm -r test`, which would sweep in Playwright specs that drive live
+	# portals and anchor real records on chain.
+	pnpm --filter @dogtag/ui test
 
 test-rs: ## Rust SDK tests (incl. shared testvectors.json)
 	cargo test -p dogtag-standard-rs
@@ -70,6 +77,9 @@ test-contracts: ## Foundry tests
 
 verify-provider-selfservice-mutations: ## S-15 mutation gate for the provider engine (slow; not in `test`)
 	bash scripts/verify-provider-selfservice-mutations.sh
+
+verify-signer-roster-mutations: ## mutation gate for the issuance-list surface (slow; not in `test`)
+	bash scripts/verify-signer-roster-mutations.sh
 
 verify-address-config-mutations: ## mutation gate for addresses-as-configuration (slow; not in `test`)
 	bash scripts/verify-address-config-mutations.sh

@@ -14,6 +14,7 @@ import {
   Building2,
   Dog,
   FilePlus2,
+  KeyRound,
   ListChecks,
   LogOut,
   Settings as SettingsIcon,
@@ -40,6 +41,10 @@ const NAV: NavItem[] = [
   { key: "import", href: "/import", label: "Import from user", icon: Download },
   { key: "verify", href: "/verify", label: "Verification", icon: ShieldCheck },
   { key: "provider", href: "/provider", label: "Provider self-service", icon: Building2 },
+  // LAYER 2 of the two-layer issuance requirement. Listed next to the provider page because it is
+  // the other half of "your contract": that one deploys and selects it, this one decides which keys
+  // may sign through it.
+  { key: "signers", href: "/signers", label: "Signing keys", icon: KeyRound },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

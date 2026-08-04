@@ -447,6 +447,32 @@ export {
   type DemoWhitelistApply,
 } from "./schema/demoData";
 
+// LAYER 2 of the two-layer issuance requirement — the provider's own contract deciding which keys
+// may sign in its name. The write is a wallet transaction from the contract's owner; the backend
+// only reads, because it is not the owner and cannot authenticate one.
+export {
+  IssuerSignersPanel,
+  type IssuerSignersPanelProps,
+} from "./domain/IssuerSignersPanel";
+export {
+  admitBlock,
+  backendSignerTone,
+  backendSignerVerdict,
+  describeBackendSignerVerdict,
+  removeBlock,
+  signerStanding,
+  signerStandingDetail,
+  signerStandingLabel,
+  signerStandingTone,
+  validateSignerInput,
+  type BackendSignerVerdict,
+  type IssuanceAllowedResponse,
+  type IssuerContract,
+  type RosterEntry,
+  type RosterRead,
+  type SignerStanding,
+} from "./signers";
+
 // provider self-service (registry-plan S-15)
 export {
   ProviderSelfServiceFlows,

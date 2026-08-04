@@ -23,6 +23,7 @@ import { Badge } from "../components/Badge";
 import { PROVIDER_CONTACT_CHANNELS } from "../directory/channels";
 import { cn } from "../lib/cn";
 import { ProviderLogo, type ProfileResolution } from "../mirror";
+import type { SurfaceFault } from "../wallet/walletError";
 import type {
   CheckOutcome,
   CloneAssessment,
@@ -478,5 +479,60 @@ export function PublishedListingCard({
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * A fault in the wallet or in this page, rendered so it can never be read as a verdict.
+ *
+ * THE DEFECT: a bare wallet string was rendered unlabelled in red inside the card headed "Your
+ * provider record", directly beneath the provider id, the record type and the caller address. When
+ * a wallet answered `4100 Unauthorized`, that put the words "not been authorized" exactly where an
+ * answer about the provider's authorization belongs - and a captain read it that way while the
+ * chain said his provider was ACTIVE and approved. The most misleading sentence a wallet could
+ * return, in the worst possible position.
+ *
+ * Three things fix it, and all three are load-bearing:
+ *
+ *   * **It is labelled**, so the layer at fault is named before the message is read.
+ *   * **It states what was NOT established.** Silence about the provider, next to a wallet's
+ *     refusal, is read as an answer about the provider; saying so explicitly is the only thing that
+ *     stops it. This is the codebase's could-not-run rule - a question nobody could answer is not a
+ *     failed check - applied to a thrown error.
+ *   * **It sits outside the provider-record card**, so position cannot imply what the words deny.
+ *
+ * Amber rather than red, deliberately. Red is this page's colour for a failed CHECK, and a fault
+ * that establishes nothing must not borrow the styling of an answer.
+ *
+ * SHARED, so the two surfaces that catch a wallet fault cannot drift on what they deny: the S-15
+ * flows and the issuance-list page both render this one.
+ */
+export function WalletFaultNotice({ fault }: { fault: SurfaceFault | null }): ReactNode {
+  if (!fault) return null;
+  return (
+    <div
+      className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-300"
+      data-testid="wallet-fault"
+      data-fault={fault.kind}
+    >
+      <p className="font-semibold">
+        {fault.kind === "walletRejected"
+          ? "You cancelled this in your wallet"
+          : fault.kind === "surfaceFault"
+            ? "This page hit a problem"
+            : "Your wallet could not complete this"}
+      </p>
+      {/* The denial comes BEFORE the wallet's own words, so the qualification is read first rather
+          than as an afterthought to a sentence that has already landed. */}
+      <p className="mt-1" data-testid="wallet-fault-established">
+        {fault.established}
+      </p>
+      <p className="mt-1" data-testid="wallet-fault-next">
+        {fault.nextStep}
+      </p>
+      <p className="mt-2 break-words text-xs opacity-80">
+        Your wallet said: <span className="font-mono">{fault.detail}</span>
+      </p>
+    </div>
   );
 }

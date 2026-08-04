@@ -26,6 +26,7 @@ import {
   Users,
   Wand2,
   Building2,
+  KeyRound,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -53,6 +54,11 @@ const NAV: NavItem[] = [
   { key: "verify", href: "/verify", label: "Ad-hoc verification", icon: ShieldCheck },
   { key: "setup", href: "/setup", label: "Setup", icon: Wand2 },
   { key: "provider", href: "/provider", label: "Provider self-service", icon: Building2 },
+  // LAYER 2 of the two-layer issuance requirement. Present on the groomer even though a groomer does
+  // not issue: this deployment is configured with the same contracts, and REMOVAL is the safety
+  // direction - a shop must be able to see who may sign in its name and withdraw a key it no longer
+  // trusts, whether or not it issues itself.
+  { key: "signers", href: "/signers", label: "Signing keys", icon: KeyRound },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
