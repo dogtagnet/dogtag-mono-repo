@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# DOES NOT WORK AGAINST THE LAUNCH CONTRACT SET, in three independent ways: it calls
+# IssuerRegistry.whitelistFor (ProviderRegistry does not implement it on the issuance axis), a
+# three-argument createIssuer (the factory takes bytes20,bytes32,uint96), and the factory's owner()
+# (the launch factory has none, so the call reverts). Walk docs/DEMO_CLICKS.md section 7.2 instead,
+# which does the same job through the product.
 # Provision the GOVERNMENT authority to issue TRAVEL_CLEARANCE on LIVE ROAX (chainId 135).
 #
 # The government stack can always READ the live chain, but anchoring a credential needs three things
