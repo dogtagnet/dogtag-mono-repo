@@ -1,182 +1,78 @@
-# DogTag - from an empty machine to every use case
+# DogTag - boot it role by role, from nothing
 
-## Start here. This is the one file.
+This is the one file. It takes a machine with nothing installed to every use case the product
+supports, **one role at a time**: you bring up a role, use it, and move on to the next.
 
-**What this is:** the single walk-through from a machine with nothing installed, through deploying and
-booting the system, to every use case the product supports - vet, groomer, government, admin, the
-pet-owner phone app, and the on-chain consent proof.
+Every step below is three things and nothing else:
 
-**Who it is for:** anyone who wants to see DogTag work, from scratch, without already knowing the
-codebase. An AI agent can run the fenced blocks top to bottom; a human follows the same steps.
+- **who** is acting - the section heading names the hat,
+- **do** - the command or the click,
+- **means** - what just happened, in a sentence or two.
 
-**You will play four different people.** Operator, admin, provider, holder - and on one laptop you play
-all of them, which is exactly how a reader comes away believing one admin deploys everything. That is
-the opposite of the design: **each provider deploys and owns its own issuing contract**, and DogTag
-cannot do it for them. Every section says whose hands are on the keyboard; the table at the top of §0
-says who they really are in production. If you read one thing before starting, read that table.
+## The one rule this product is built on
 
-Every heading in §0 is also tagged **DO** (something to run) or **KNOW** (background, nothing to run),
-so you are never hunting for a command in a section that has none.
+**Each provider deploys and owns its own issuing contract. DogTag cannot do it for them.**
+The registrar admits a provider and authorises it; the provider deploys. Neither can issue alone.
 
-**You do not need to read any other document to get through this one.** Where another doc is genuinely
-the right place for a detail, this guide links to it at the moment you need it. `docs/` holds a dozen
-files and you should not have to browse them and guess - so here is the whole map, once:
+That is why the walk below goes ADMIN → PROVIDER → ADMIN → PROVIDER before a single credential
+exists. It is a handshake between two parties, not a checklist for one.
 
-| If you want | Read | Why not this guide |
-|---|---|---|
-| **to see the product work, end to end** | **this file** | - |
-| to install the toolchain (Rust, Foundry, Node, Docker, circom) | [PREREQUISITES.md](./PREREQUISITES.md) | it **owns** the install matrix; §0.1 here links into it rather than duplicating it |
-| everything on one Mac, in depth | [LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md) | Tier 1 reference: every service, every port, every flag |
-| your own server, real domains, TLS, persistent Mongo | [REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md) | Tier 2 reference: hosting, Caddy, custody per business |
-| to build and install the phone apps | [MOBILE_BUILD.md](./MOBILE_BUILD.md) | signing, xcframework, vendored proving artifacts |
-| a short prose overview of the demo flow | [DEMO.md](./DEMO.md) | **narrative, not walked** - see the note below |
+| Role | Who this really is | What they do | §  |
+|---|---|---|---|
+| **OPERATOR** | DogTag, once | Installs the toolchain, confirms the contracts, boots each role | 0 |
+| **ADMIN / REGISTRAR** | DogTag's governance key | Registers a provider, approves it, attaches its contract, grants rights | 1, 3 |
+| **PROVIDER** | the vet / groomer / government business, on **their own** machine and wallet | **Deploys and owns its own issuing contract**, selects it, admits its own signing keys | 2, 4 |
+| **VET / GROOMER / GOVERNMENT** | the same businesses, doing their day job | Issue credentials, check them | 5, 6, 7 |
+| **HOLDER** | the pet owner | Receives credentials, consents to verification | 8 |
 
-**About `DEMO.md`.** It describes roughly the same flow as this guide, in prose, and it is still
-referenced by `scripts/demo-up.sh` and `scripts/e2e-roles.sh` as the narrative companion to the e2e
-scripts. It is **not** a click-through and is **not** maintained as one. If you are trying to *do* the
-thing rather than *read about* it, you are in the right file already - stay here.
+On one laptop you play all of them. In production they are different organisations on different
+machines holding different keys.
 
----
+## Where else to look
 
-This guide was written by **performing every step on a live stack against ROAX (chainId 135)**, not by
-reading the source and reasoning about it.
-Every step marked as walked was performed, and what is written is what appeared on the screen.
-Where a step could **not** be walked, it says so in that step, with the reason and with whatever you
-would need in order to walk it yourself.
-
-Read that promise precisely, because it is the whole value of this document: an honestly-marked
-unwalked step is fine, and an unwalked step written as though it were walked is the defect this guide
-exists to avoid.
-§10 records exactly what was and was not covered, and when.
+| If you want | Read |
+|---|---|
+| **to see the product work** | **this file** |
+| to install the toolchain | [PREREQUISITES.md](./PREREQUISITES.md) |
+| every service, port and flag | [LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md) |
+| your own server, domains, TLS | [REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md) |
+| to build the phone apps | [MOBILE_BUILD.md](./MOBILE_BUILD.md) |
+| to deploy your own contract set | [DEPLOY.md](./DEPLOY.md) |
 
 **No contract address is written into this guide.** Every one is resolved from
-`contracts/deployments/roax.json`, which the deploy writes. A literal pasted into a page like this one
-keeps working after a redeploy while naming a contract that decides nothing - which is exactly how the
-previous revision came to carry nine dead addresses.
+`contracts/deployments/roax.json`, which the deploy writes.
 
-The order below is the order to read it in. Each role picks up the state the previous one left.
-
-| § | Role | What they do |
-|---|---|---|
-| 0 | - | **Cold start: from an empty machine to a running stack** |
-| 1 | **Admin** | Register a provider, and finish it off |
-| 2 | **The provider** | Deploy their own contract and select it |
-| 3 | **The vet** | Admit their own signing key, register a pet, issue a credential, anchor it |
-| 4 | **The groomer** | Clients, pets, the diary, and checking a credential it did not write |
-| 5 | **Government** | Verify somebody else's credential; issue their own |
-| 6 | **The owner** | Receive a credential and read it |
-| 7 | **Anyone verifying** | The bench, and eleven attempts to defeat it |
-| 8 | - | Reference: live reads |
-| 9 | - | What this guide does not cover |
-| 10 | - | Evidence: what was walked, when, against which commit |
+§12 records what was walked, when, and against which commit. A step marked unwalked says so with its
+reason - could-not-check is never reported as pass.
 
 ---
 
-## 0. Cold start  ·  hat: **OPERATOR**
+# 0. OPERATOR - prepare the machine
 
-### Who is acting, and why it matters
+## 0.1 Get the code and the toolchain
 
-**This guide has you play four different people.** On one laptop that is convenient; in production they
-are different organisations on different machines holding different keys. Where this walk has you switch
-hats, it says so - because the role split is the architecture, not presentation.
+**Do:** install these, then clone the repo. Every command in this guide runs from its root.
 
-| Role | Who this really is | What they do | Where |
-|---|---|---|---|
-| **OPERATOR** | DogTag, once | Installs the toolchain, deploys the ten protocol contracts, boots the stack | **§0** |
-| **ADMIN / REGISTRAR** | DogTag's governance key | Registers a provider, approves it, attaches its service, grants rights | §1 |
-| **PROVIDER** | the vet / groomer / government business, on **their own** machine and wallet | **Deploys and owns its own issuing contract**, selects it, admits its own signing keys | §2, §3, §4, §5 |
-| **HOLDER** | the pet owner, on a phone | Receives credentials, consents to verification | §6, §7 |
-
-**The single most important thing to take from this guide: the ADMIN does not deploy a provider's
-contract, and cannot.** Each provider deploys its own clone from DogTag's factory and owns it. That is
-not a demo shortcut - it is enforced in the contracts, and the factory's own source says why an
-operator-deploys-on-behalf path was rejected:
-
-> An "operator creates on behalf of a provider" variant was considered and rejected, because a
-> create-on-behalf-of path is how a clone's recorded business comes to be the operator who pressed the
-> button rather than the organisation it was for.
-> — `contracts/src/DogTagIssuerFactory.sol`
-
-Two more places the boundary is enforced, so you can see it is real rather than a convention:
-
-- **`createIssuer` takes no owner argument.** The owner is always `msg.sender`, so whoever deploys it
-  owns it (`DogTagIssuerFactory.sol:333`).
-- **Only a clone's owner may admit a signing key to it. The protocol admin is excluded by design** and
-  may only *remove* one: *"Only a REMOVAL may come from the protocol admin; admitting is the owner's
-  alone"* (`DogTagIssuer.sol:340`). Issuing needs BOTH the registrar's grant AND the provider's own
-  list, precisely so neither party can issue alone.
-
-If you come away from this guide thinking one admin stands everything up, the guide has taught you the
-opposite of what was built.
-
-### DO or KNOW - every step below is labelled
-
-Section 0 mixes things you **run** with things you **need to understand**, and hunting for a command in
-a section that has none wastes your time. So each heading is tagged:
-
-- **DO** - there is something to run or click here.
-- **KNOW** - background. Nothing to run. Read it and move on.
-
-### THE COLD-START LOOP - read this before you boot
-
-**A genuinely cold start cannot boot in one pass, and nothing in the tooling warns you.** Here is the
-loop, up front, because a first-time reader cannot see it coming:
-
-`scripts/demo-up.sh` hard-requires two addresses and exits without them. Its own error names the
-problem exactly:
-
-```
-set PROFILE_ISSUER_ADDR to a factory clone this provider deployed
-set VACCINATION_ISSUER_ADDR to a factory clone this provider deployed
-```
-
-Those are **provider-deployed clones** (see the role table above). `Deploy.s.sol` does not create them,
-the ledger holds no key for them, and **a freshly deployed set has none**. But §1 and §2 - where a
-provider deploys one - need a running stack to click through. That is the loop.
-
-**The way out, and the order this walk used:**
-
-1. **OPERATOR** - §0.1 → §0.7, pointing `PROFILE_ISSUER_ADDR` / `VACCINATION_ISSUER_ADDR` at **any**
-   existing clone as a placeholder. `demo-up.sh` checks only that they are non-empty, not that the
-   record type is right, so the stack comes up.
-2. **ADMIN**, then **PROVIDER** - walk §1 and §2. The provider deploys its real clone and the registrar
-   attaches it.
-3. **OPERATOR** - put the real clone addresses into `contracts/.env` (§0.5) and re-run `demo-up.sh`.
-
-If the ledger's `_provisioning` note already records clones from a previous walk, you can use those as
-the placeholder in step 1 and skip straight to a real boot. Confirm any clone before trusting it:
+| | Checked with |
+|---|---|
+| Rust | `cargo --version` |
+| Node 22 + pnpm 10 | `node --version && pnpm --version` |
+| Foundry (`forge`/`cast`) | `forge --version` |
 
 ```bash
-cast call <clone> 'recordType()(bytes32)' --rpc-url https://devrpc.roax.net
-cast keccak VACCINATION      # must match
-```
-
----
-
-**Read §0.1 before anything else.** Two of the steps below fail in ways that look like something else,
-and one of them silently starts only a single portal out of five.
-
-### 0.1 DO (operator) - What you need on the machine
-
-| | | Checked with |
-|---|---|---|
-| Rust toolchain | builds six backends | `cargo --version` |
-| Node 22 + pnpm 10 | builds and serves five portals | `node --version && pnpm --version` |
-| Foundry (`forge`/`cast`/`anvil`) | contract reads, and the deploy | `forge --version` |
-| A funded key on ROAX | only if you deploy or drive registrar actions | §0.5 |
-
-The Foundry submodules are **git submodules and a fresh worktree has them empty**, so the first
-`forge` command fails on the remappings rather than on anything in the branch:
-
-```
+git clone <this repo> dogtag-mono-repo && cd dogtag-mono-repo
 git submodule update --init --recursive contracts/lib/forge-std contracts/lib/openzeppelin-contracts
 pnpm install --frozen-lockfile
 ```
 
-### 0.2 DO (operator) - The contracts are ALREADY deployed: confirm, do not redeploy
+**Means:** you have the source and its dependencies. The Foundry libraries are git submodules and a
+fresh clone has them empty, so the first `forge` or `cast` command fails on the remappings until you
+run that line. [PREREQUISITES.md](./PREREQUISITES.md) owns the install matrix if any of the three is
+missing.
 
-`contracts/deployments/roax.json` is the ledger, and it is the only place an address lives. The whole
-set is live on ROAX. Confirm it rather than trusting this page:
+## 0.2 Confirm the contracts are already deployed
+
+**Do:**
 
 ```bash
 source scripts/lib/ledger.sh
@@ -187,1248 +83,563 @@ for k in ProviderRegistry DogTagIssuerImpl DogTagIssuerFactory DogTagSBTConsent 
   a=$(ledger_addr $k); c=$(cast code $a --rpc-url $RPC)
   printf '%-30s %s %6d bytes\n' "$k" "$a" $(( (${#c} - 2) / 2 ))
 done
-```
-
-Walked: all nine answer with code - `ProviderRegistry` 21187 bytes, `DogTagIssuerImpl` 4739,
-`Groth16VerifierConsent` 1933. Those three numbers are the ones worth reading, because the ledger
-states them as the reason the whole set moved: PRs #143 and #144 changed the issuer and the registry,
-and every `immutable` that pins either one had to move with them.
-
-**`source scripts/lib/ledger.sh` used to answer EMPTY for every key at a zsh prompt.** `BASH_SOURCE`
-is a bash-only array, so under zsh - this repo's default shell - the helper resolved the wrong path
-and `sed` failed into its own `2>/dev/null`. What you saw was not a diagnosis but `cast`'s
-`invalid value '' for '[TO]': invalid string length`, with nothing anywhere naming the ledger. Fixed
-in this branch; if you are on an older checkout, run these commands under `bash`.
-
-And confirm the protocol version is published, because everything the phones resolve hangs off it:
-
-```bash
 cast call "$(ledger_addr ProtocolRegistry)" "getDiscoverySet(bytes32)" \
-  "$(cast keccak 'dogtag-levelb/1')" --rpc-url https://devrpc.roax.net
+  "$(cast keccak 'dogtag-levelb/1')" --rpc-url $RPC
 ```
 
-Walked: a nine-word record whose last word is `1` (active), carrying the same factory, verification
-registry, SBT, verifier and provider registry the ledger names.
-**The getter is `getDiscoverySet`.** `getContractSet` belongs to an earlier record shape; calling it
-reverts at the dispatcher with EMPTY returndata, which reads identically to an unpublished version.
+**Means:** all nine protocol contracts answer with code, and the protocol version is published and
+active - the last word of that nine-word record is `1`. You are not deploying anything; the set is
+live on ROAX and this only confirms it.
 
-### 0.3 KNOW - Deploying a set of your own (skip unless you are deploying)
+## 0.3 Write `contracts/.env`
 
-Skip this section entirely if you are using the deployed set, which is the normal case.
-
-**`Deploy.s.sol`'s `run()` REWRITES `contracts/deployments/roax.json`** with whatever it just deployed,
-including against a local chain. That is not a hypothetical: it was reproduced on this walk, and it
-changed twelve lines. So back the ledger up, and check it afterwards rather than remembering to.
-
-```bash
-cp contracts/deployments/roax.json /tmp/roax.json.backup
-anvil --fork-url https://devrpc.roax.net --port 8777 --silent &
-echo $! > /tmp/anvil.pid                       # kill by THIS pid, never by name
-
-cd contracts
-export ADMIN=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266      # anvil account 0
-export CUSTODIAN=0xa0Ee7A142d267C1f36714E4a8F75612F20a79720  # anvil account 9
-export PUBLISHER=$ADMIN TESTNET_DEPLOY=true PUBLISH_TIMELOCK_SECS=0
-forge script script/Deploy.s.sol --sig "run()" --rpc-url http://127.0.0.1:8777 \
-  --broadcast --legacy --private-key <anvil account 0 key>
-```
-
-Walked: `ONCHAIN EXECUTION COMPLETE & SUCCESSFUL`, **12 transactions - 9 CREATEs then 3 `onlyOwner`
-registrar-wiring calls on `ProviderRegistry`**, which is exactly the shape the ledger records for the
-live deploy.
-
-**`ADMIN` must BE the broadcasting key**, because those three wiring calls are `onlyOwner` on a core the
-script has just handed to that address. On a fresh chain that means a rehearsal needs no key from this
-repo - any funded account works, and anvil's own are fine. **On live ROAX it means the opposite**: the
-deploy must be broadcast by the ledger's `admin` key, and no other. `CUSTODIAN` must not equal `ADMIN` -
-the script refuses, because `ownerOf` would then return a key that signs.
-
-**`TESTNET_DEPLOY=true` is a loud opt-in and it is the only way to get a non-default timelock.**
-`Deploy.validatePublishTimelock` refuses anything but `DEFAULT_PUBLISH_TIMELOCK` (2 days) without it.
-Production is that default plus the absence of the opt-in, and is **never** sniffed from
-`block.chainid` - ROAX 135 is itself a live chain, so a `require(block.chainid == 135)` guard once
-passed on precisely the deployment it claimed to refuse.
-
-Then publish, in two phases against the registry you just deployed. The four artifact pins are
-computed from the committed files rather than pasted:
-
-```bash
-R=<repo root>
-export PUBLISH_PROTOCOL_REGISTRY=<the ProtocolRegistry the deploy printed>
-export PUBLISH_FACTORY=…  PUBLISH_VERIFICATION_REGISTRY=…  PUBLISH_SBT=…
-export PUBLISH_VERIFIER=…  PUBLISH_PROVIDER_REGISTRY=…
-export PUBLISH_ZKEY_SHA256=0x$(shasum -a 256 $R/circuits/build/consent_final.zkey     | cut -d' ' -f1)
-export PUBLISH_WITNESS_MOBILE_SHA256=0x$(shasum -a 256 $R/circuits/build/consent.graph | cut -d' ' -f1)
-export PUBLISH_R1CS_SHA256=0x$(shasum -a 256 $R/circuits/build/consent.r1cs           | cut -d' ' -f1)
-export PUBLISH_WASM_SHA256=0x$(shasum -a 256 $R/circuits/build/consent_js/consent.wasm | cut -d' ' -f1)
-export PUBLISH_ARTIFACTS_URL=https://artifacts.dogtag.io/levelb1
-export PUBLISH_MIN_APP_VERSION=1.4.0
-
-forge script script/PublishProtocolVersions.s.sol:PublishProtocolVersionsPropose --sig "run()" …
-forge script script/PublishProtocolVersions.s.sol:PublishProtocolVersionsExecute --sig "run()" …
-```
-
-Walked: both phases exit 0, three transactions each, and `getDiscoverySet` then returns the nine-word
-record with `active = 1` and the fork's own addresses.
-**The wait is zero on testnet and two days in production**, so on a testnet registry the two phases run
-back to back; phase 2 needs the SAME environment phase 1 had, not just the registry address.
-
-Two things worth knowing rather than discovering:
-
-- **The four pins agree three ways** - `shasum` of the committed artifacts, the `LEVEL_B_V1` descriptor
-  in `crates/dogtag-prover-rs/src/artifact.rs`, and the record on chain. Walked: all three identical.
-  That is why they are computed here and never transcribed.
-- **This script is the FIRST-ROLLOUT shape and sends six transactions.** Do not reach for it to rotate
-  one axis: four of the six would re-publish a discovery set nobody asked to move, restamping its
-  `publishedAt`. `contracts/script/PinConsentWitnessGraph.s.sol` is the narrow two-transaction shape.
-
-Finally, put the ledger back and **check** rather than trust:
-
-```bash
-kill $(cat /tmp/anvil.pid)
-cp /tmp/roax.json.backup contracts/deployments/roax.json
-git diff --stat contracts/deployments/roax.json      # MUST be empty
-```
-
-### 0.4 KNOW - Addresses are configuration, and the deploy writes it
-
-You never paste a contract address into a stack. Two generators read the deploy ledger
-(`contracts/deployments/roax.json`) and produce the configuration for you.
-
-**First, the two words this section uses.**
-
-A **stack** is one of the six services under `stacks/`. Each is a product surface, and each has a
-backend (`api/`), a web front end (`web/`), or both:
-
-```
-stacks/admin  stacks/government  stacks/groomer  stacks/indexer  stacks/owner  stacks/vet
-```
-
-A **`<target>`** is *not* a stack name. It is one of the ten names the generator accepts, and you get
-the list by asking it:
-
-```console
-$ scripts/gen-deployment-env.sh --list
-admin vet groomer government indexer admin-web vet-web groomer-web owner-web mobile
-```
-
-**Six stacks, ten targets — and the two lists deliberately do not match.** That mismatch is the whole
-reason this is confusing, so here it is stated outright:
-
-| target | what it configures |
-|---|---|
-| `admin` `vet` `groomer` `government` `indexer` | the **backend** of that stack (`FACTORY_ADDR=…`) |
-| `admin-web` `vet-web` `groomer-web` `owner-web` | the **web front end** of that stack (`VITE_…=…`) |
-| `mobile` | the two phone apps — not a `stacks/` directory at all |
-
-A stack's backend and its web half need *different variable names* for the same address, which is why
-each gets its own target. Two consequences that look like mistakes and are not: there is **no bare
-`owner` target**, because `stacks/owner` is web-only and has no backend to configure; and **`mobile`
-appears in the target list while `stacks/mobile` does not exist**, because the phone apps live under
-`apps/`.
-
-**Now walk one.** Ask for the vet backend's addresses:
-
-```console
-$ scripts/gen-deployment-env.sh vet
-# Generated by scripts/gen-deployment-env.sh from contracts/deployments/roax.json.
-# Do not hand-edit: re-run after every deploy. chainId 135.
-CHAIN_ID=135
-FACTORY_ADDR=0xA248E730a4940dE62F426C982aB6394271D9113f
-VERIFICATION_REGISTRY_CONSENT_ADDR=0x76b8FFB638C0D811150fe9864F54eb522EFf8785
-SBT_CONSENT_ADDR=0xFc33A3e702b7d6F59a5A61A95217830fe023D6b9
-GROTH16_VERIFIER_CONSENT_ADDR=0x12AE7B62AEf5257e2600F7Acb7856D14c97095BC
-```
-
-Same stack, web half, same addresses under the names vite needs:
-
-```console
-$ scripts/gen-deployment-env.sh vet-web
-VITE_PROVIDER_REGISTRY_ADDR=0x1ff6FdCeFf15AC90359e9dA0c841a83d7e29461f
-VITE_DOGTAG_ISSUER_FACTORY_ADDR=0xA248E730a4940dE62F426C982aB6394271D9113f
-…
-```
-
-**Where the output goes.** The generator prints to stdout and writes nothing — deliberately, so you
-can diff it against what a stack is already running before committing to it. *You* redirect it:
-
-```console
-$ scripts/gen-deployment-env.sh vet      >  stacks/vet/.env.addresses
-$ scripts/gen-deployment-env.sh vet-web  >> stacks/vet/web/.env
-```
-
-Note `>` for the backend (its own file, replaced each time) and `>>` for the web half (appended to an
-existing `.env` that also holds non-address settings). Check before you append twice.
-
-**The phones are the exception: `gen-mobile-roax-config.sh` WRITES its files** rather than printing,
-because their destination is fixed (`apps/ios/DogTag/roax.json` and the Android equivalent, both
-gitignored). Run it with no arguments — the `mobile` target above is for reading the same values.
-
-The standing sequence after any redeploy is: run `Deploy.s.sol`, re-run those generators, restart -
-and for the phones, **rebuild AND reinstall**, because `apps/*/roax.json` is compile-time. The four web
-portals are compile-time in the same way: vite inlines every `VITE_*` at build time, so a served portal
-keeps its old addresses until it is rebuilt.
-
-`make check-addresses` is what keeps this true rather than a promise that decays. It is bidirectional -
-an undeclared file carrying a ledger or retired address fails, and a declared file that no longer
-carries one fails too.
-
-### 0.5 DO (operator) - `contracts/.env`: what belongs in it, and what must NOT
-
-`scripts/demo-up.sh` sources this file with `set -a`, so **every variable in it overrides the ledger.**
-That is the trap: a `contracts/.env` written before the redeploy carries `ISSUER_REGISTRY_ADDR`,
-`VERIFICATION_REGISTRY_CONSENT_ADDR` and `SBT_CONSENT_ADDR` from a superseded set, and those beat the
-ledger silently. The preflight then dies at the factory↔registry comparison, which reads like a chain
-problem and is a stale-file problem.
-
-**Delete every protocol address from it.** What it should carry is only what the ledger cannot answer:
+**Do:** create `contracts/.env` with exactly this:
 
 ```
 ROAX_RPC=https://devrpc.roax.net
 DEMO_MODE=1
-GOVERNANCE_PRIVATE_KEY=…            # the key for the ledger's `admin`; never commit or echo it
-PROFILE_ISSUER_ADDR=…               # a DOG_PROFILE clone - see §0.6
-VACCINATION_ISSUER_ADDR=…           # a VACCINATION clone
-TRAVEL_CLEARANCE_ISSUER_ADDR=…      # optional, for §5.2
-GOV_SIGNER_KEY=…                    # optional, for §5.2
+GOVERNANCE_PRIVATE_KEY=<the registrar key - see below>
 ```
 
-`DEMO_MODE=1` is not cosmetic: without it the backends refuse to boot on the dev secrets, with
-`FATAL: refusing to boot in production mode: CENTRAL_HMAC_SECRET is set to the insecure dev default`.
+**Means:** the boot script sources this file, so it is where the two things the ledger cannot answer
+live - which chain to talk to, and the registrar's key. `DEMO_MODE=1` is not cosmetic: without it
+the backends refuse to boot on the dev passwords.
 
-### 0.6 KNOW - The two clone addresses are the PROVIDER's, not yours
-
-**Nothing to run here.** This explains where two addresses come from - and, more usefully, **whose job
-it is to create them, which is not yours.**
-
-`PROFILE_ISSUER_ADDR` and `VACCINATION_ISSUER_ADDR` are **hard-required** by `demo-up.sh` - it exits
-naming them. They are per-provider `DogTagIssuer` clones. **A PROVIDER deploys them from DogTag's
-factory and owns them** (§2.4); `Deploy.s.sol` does not create them and the ledger holds no key for
-them, because they are not protocol contracts - they belong to the business.
-
-That is why you, wearing the OPERATOR hat, cannot simply produce one. **The way through this is the
-cold-start loop at the top of §0** - boot on a placeholder, walk §1 and §2 so a provider deploys a real
-clone, then put its address here and restart.
-
-Confirm any clone before trusting it, whether it came from the ledger's `_provisioning` note or from a
-provider you just walked:
+**`GOVERNANCE_PRIVATE_KEY` is the key that holds the registrar authorities on the deployed set.** It
+is not in this repository and never will be - it is held by whoever operates DogTag, and
+`contracts/deployments/roax.json` records only its address, under `admin`. Confirm you have the right
+one:
 
 ```bash
-cast call <clone> 'recordType()(bytes32)' --rpc-url https://devrpc.roax.net
-cast keccak VACCINATION      # must match
+source contracts/.env                # the file you just wrote
+source scripts/lib/ledger.sh
+cast wallet address --private-key "$GOVERNANCE_PRIVATE_KEY"   # must equal:
+ledger_addr admin
 ```
 
-Walked on this stack: the deployed set carried a VACCINATION clone and a TRAVEL_CLEARANCE clone and
-**no DOG_PROFILE clone at all**, so §3.1 had nothing to anchor into until one was created. Creating it
-is §1.2 → §2.4 → §1.3 → §2.5 - note that the two `§2` steps are the **provider** acting, not the admin.
+**Without it you cannot do §1 or §3** - the admin role refuses to boot rather than start a portal
+whose every action would silently produce unsigned calldata instead of a transaction. Everything that
+does not need the registrar still works: §5 onwards if a provider is already set up, and §6 to §9 in
+full.
 
-### 0.7 DO (operator) - Decide now whether your data should survive a restart
+> Put **no contract address in this file**. Every protocol address is resolved from the ledger by
+> name, and an address here silently overrides it - which is how a stale one survives a redeploy while
+> naming a contract that decides nothing. Two more variables get added later, in §4.4, and they are
+> the only two that ever belong here.
 
-Out of the box every backend uses an in-memory store: clients, pets, appointments, records and sessions
-all vanish when a backend restarts. For one sitting that is fine.
+## 0.4 How you boot a role
 
-Two things are required for persistence and each fails its own way:
+**Do:** nothing yet - this is the shape every boot below takes.
 
-**(a) The binaries must be built WITH the `mongo` cargo feature.** It is not a default, and a binary
-built without it does not fall back - it refuses to start:
-
-```
-ERROR vet_api: MONGO_URI is set but this binary was built WITHOUT the `mongo` feature;
-rebuild with --features mongo or unset MONGO_URI. Refusing to start.
-```
-
-`demo-up.sh` adds `--features mongo` itself when `MONGO_URI` is set.
-
-**(b) Each backend needs its OWN database.** The vet and the groomer are the *same binary* with a
-different `BUSINESS_TYPE`; point both at one database and the second to boot adopts the first's custody
-blob, so two businesses share one signing identity with nothing on any screen saying so. `demo-up.sh`
-gives each a distinct database (`dogtag`, `dogtag_vet`, `dogtag_groomer`, `dogtag_government`),
-overridable per service with `MONGO_DB_ADMIN` / `MONGO_DB_VET` / `MONGO_DB_GROOMER` /
-`MONGO_DB_GOVERNMENT`.
-
-```
-MONGO_URI=mongodb://127.0.0.1:27018 scripts/demo-up.sh
+```bash
+LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh <role>     # macOS; use your own LAN address
+scripts/demo-down.sh <role>                                    # stop just that one
+scripts/demo-down.sh                                           # stop everything
 ```
 
-Verify off the running process rather than assuming - this is the check that cannot lie:
+Roles: `admin` `vet` `groomer` `government` `owner` `prover` `indexer`. No argument boots all of
+them, which is fine once you know the product and is the wrong way to meet it.
 
-```
-ps eww $(lsof -nP -iTCP:41874 -sTCP:LISTEN -t) | tr ' ' '\n' | grep '^MONGO_'
-```
+**Means:** each role starts and stops on its own, records its own process ids, and refuses to start
+on a port something already holds. Booting one role never disturbs another.
 
-### 0.8 DO (operator) - Boot
-
-```
-LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh      # macOS; use your own LAN address
-```
-
-**Set `LAN_IP`.** It defaults to a hardcoded address that is almost certainly not yours - walked, the
-default is `172.24.230.152` while this machine was `192.168.16.45`, and the default was unreachable.
-It is stamped into every QR the stack mints and into government's `deploymentUrl`, so a wrong value
-produces QR codes no phone can resolve, with nothing reporting it.
-
-Walked preflight:
-
-```
-Preflight (chainId 135, https://devrpc.roax.net):
-  chainId               135  ok
-  factory               0xA248…113f -> registry 0x1ff6…461f  ok
-  admin signer          0x8E27…F4A2 holds WHITELIST_ADMIN  ok
-  government            LIVE chain, NO signer -> /issue can only dry_run (no on-chain anchor).
-```
-
-That last line is not an error; §5.2 explains it.
-
-| Portal | | Backend | |
-|---|---|---|---|
-| admin | http://localhost:39741 | admin-api | :39742 |
-| vet | http://localhost:41873 | vet-api | :41874 |
-| groomer | http://localhost:43617 | groomer-api | :43618 |
-| government | http://localhost:44831 | government-api | :44832 |
-| owner wallet | http://localhost:45931 | *(no backend, by design)* | |
-| | | prover | :41875 |
-| | | indexer | :46001 |
-
-It ends by printing `UP.` and those URLs. **If it prints only `admin-web` and then hangs, you are on a
-checkout from before this branch**: three of the five portal invocations carried a stray blank line
-after a trailing `\`, so the continuation died there, `env` ran with no command, and the leftover
-`pnpm … dev` ran in the *foreground* and blocked the script forever. Introduced in #141, fixed here.
-The tell is `.demo/admin-web.log` containing an environment dump rather than vite output.
-
-**Stopping it: `scripts/demo-down.sh`**, which kills the PIDs the script recorded. Never
-`pkill -f target/release/vet-api` or anything of that shape - this monorepo is checked out many times
-over and every checkout builds to the same relative path, so a pattern kill reaches whichever instance
-it happens to hit, including one somebody else is using.
-
-### 0.9 DO (operator) - Check it is actually up
-
-```
-for p in 39742 41874 43618 44832 41875 46001; do printf "%-6s " $p; curl -s http://127.0.0.1:$p/health; echo; done
-for p in 39741 41873 43617 44831 45931; do printf "%-6s %s\n" $p "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$p/)"; done
-```
-
-Walked: `{"status":"ok"}` from admin, vet, groomer and prover; `200` from all five portals; and from
-the indexer `{"backend":"simulated","chainId":null,"ok":true,"simulated":true}`.
-
-**Use `localhost`, not `127.0.0.1`, for the portals** - vite dev servers bind IPv6 only, so a
-`127.0.0.1` probe reports a perfectly healthy server as dead.
-
-**`simulated: true` on the indexer is correct for a `demo-up.sh` stack.** It serves a scripted event
-history with placeholder transaction hashes; those rows are correctly labelled "not chain-addressable"
-and are not offered as explorer links. A live indexer reports `simulated: false`, and with an empty
-scope registry answers every oversight query 401 by design. Check `/health` before reporting either as
-a bug.
-
-Government's `/health` is the richest and is worth reading in full - walked, it reported
-`"backend":"live"`, `"chainId":135`, `"simulated":false`, `"canSign":false` and
-`"issuers":{"EU_HEALTH_CERT":null,"TRAVEL_CLEARANCE":null}` on a stock boot. See §5.2.
-
-### 0.10 DO (operator) - Unlock custody on the vet and the groomer
-
-**Custody re-locks on every restart of those two backends.** The sealed key survives; the decrypted
-seed does not. Nothing signs or issues until you unlock.
-
-Sign in at the vet portal - the operator password is prefilled in demo mode, so just click **Sign in** -
-then click **Unlock** in the banner across the top. Both fields in the dialog are prefilled; click
-**Unlock and continue**.
-
-Walked: the dialog is titled *"Custody is locked"* and reads *"This action needs the backend signer.
-Enter the passphrase to unlock and continue - nothing you have entered is lost."* That last clause is
-literal - the prompt appears in place over whatever page you were on, so a half-filled form survives.
-Repeat for the groomer portal.
-
-**There is no §0 step for pointing the portals at the contracts any more.** `demo-up.sh` passes every
-`VITE_*` address - the provider registry, the factory, both typed resolvers and the content mirror - to
-all five portals. A previous revision of this guide told you to kill the dev servers and restart them
-by hand with exports; that is obsolete, and doing it now would only re-supply what the script already
-supplied.
+> **Set `LAN_IP`.** It is stamped into every QR the stack mints, and a phone cannot reach
+> `localhost` - that is the phone itself. Its default is a hardcoded address that is almost
+> certainly not yours.
 
 ---
 
-## 1. Admin  ·  hat: **ADMIN / REGISTRAR**
+# 1. ADMIN - register a provider
 
-> **Switch hats.** You are now DogTag's registrar, not the machine operator. In production this is a
-> different organisation holding the governance key. The registrar **admits providers to the protocol**
-> - it registers them, approves what they may create, attaches the contract they deployed and grants
-> issuing rights. It **does not deploy their contract** (that is §2) and it cannot admit a signing key
-> to one.
+> In production this is DogTag's governance key, at DogTag. It admits providers to the protocol. It
+> does not deploy their contract and cannot admit a signing key to one.
 
-### 1.1 Sign in
+## 1.0 Boot the admin role
 
-http://localhost:39741 - the admin password is prefilled in demo mode. Click **Sign in**. You land on
-the **Dashboard**.
-
-Walked, on a stock `demo-up.sh` stack, the Dashboard reports:
-
-- Registered businesses **0**, Pending applications **0**, Approved issuers **0**
-- *"The oversight indexer is not connected in this environment, so cross-issuer on-chain totals are
-  unavailable. Set `INDEXER_API_BASE` on the central backend to enable them."*
-- **AUTHORITY: "Authority map unavailable."**
-
-**That last one is expected on the launch set and is not a misconfiguration.** The card needs the
-factory's `Ownable2Step` owner, and the launch `DogTagIssuerFactory` is a plain contract with **no
-`owner()` at all** - `cast call <factory> 'owner()(address)'` reverts. The endpoint behind the card
-answers 200 with `factoryOwner.owner: null`, and the card declines to render a partial map.
-
-Do not read that as "the hosted key holds nothing". Walked, `admin-api`'s own boot log says the
-opposite - *"control-plane authority preflight: hosted signer 0x8e27… holds every configured
-authority"* - and the chain agrees: `ProviderRegistry.owner()` is the ledger's `admin`, and
-`hasRole(DEFAULT_ADMIN_ROLE, admin)` and `hasRole(WHITELIST_ADMIN, admin)` both read `true`.
-**The place that tells you whether registrar actions will execute is the Providers page banner** (§1.2).
-
-The indexer line is a *different* condition from the indexer being simulated: `demo-up.sh` does not
-pass `INDEXER_API_BASE` to `admin-api` at all, so the Dashboard totals and the Activity page 503 while
-the indexer itself is perfectly healthy on :46001.
-
-### 1.2 Register a provider - **Providers** in the left nav
-
-Read the banner at the top first. Walked:
-
-> The hosted admin key holds this registry - registrar actions execute directly.
-
-If it says anything else, your `ADMIN_PRIVATE_KEY` is not the governance signer and every action below
-comes back **proposed** rather than mined - carrying unsigned calldata for someone else to execute.
-Nothing is broken in that case, but nothing reaches the chain either.
-
-**It is three steps, not two, and the third is the one people miss.** Registration writes standing
-`PENDING`, and the registry admits only `ACTIVE`. A provider that is registered and approved but never
-activated is inert - and the row says so.
-
-**Step 1 - Register.** Click **Register provider**, then **Fill demo data**. That mints a fresh random
-provider id, fills the controller, and writes an obviously-fake identity statement. Click **Review** -
-which computes the keccak256 digest and enables the button - then **Register**.
-
-Three things there are worth reading rather than clicking past:
-
-- **The provider id is arbitrary and permanent.** Generated at random, deliberately meaning nothing -
-  not the name, not the domain, not a key. Copy it: the provider needs it for §2, and it can never be
-  reassigned.
-- **The identity statement text is never sent to the backend and is stored nowhere.** Only its digest
-  reaches the chain. It stays readable under **Registrar actions this session**, and only until you
-  navigate away.
-- **Registration refuses placeholder data.** A zero identity digest, schema or hash algorithm is
-  rejected by the contract, so a real statement is a precondition rather than a formality.
-
-**Step 2 - Activate.** The new row reads **pending** with the note *"Registered but INERT - every
-self-service action refuses until this is Active."* Click **Activate**; the note becomes *"Cleared to
-act."*
-
-**Step 3 - Approve a record type.** The row carries one button per record type - **DOG_PROFILE**,
-**VACCINATION**, **GROOMING**, **BOARDING**. Click the one you need.
-
-Walked, on the provider the deployment left in place: clicking **DOG_PROFILE** produced
-**"Mined: approved DOG_PROFILE"** with the provider id and the transaction hash, and the row's
-**APPROVED TO CREATE** cell gained `DOG_PROFILE` beside the record types it already held. A **Withdraw
-DOG_PROFILE** button replaced it. The grant is per record type: approving one approves no other.
-
-**Confirm it from the chain rather than from the page.** This is the exact read the provider's Deploy
-button is gated on, and it **must be asked as the factory**:
+**Do:**
 
 ```bash
-source scripts/lib/ledger.sh
-cast call "$(ledger_addr ProviderRegistry)" "canCreateService(bytes20,bytes32,address)(bool)" \
-  <providerId> "$(cast keccak DOG_PROFILE)" <controllerAddr> \
-  --from "$(ledger_addr DogTagIssuerFactory)" --rpc-url https://devrpc.roax.net
+LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh admin
 ```
 
-Walked: `true` for DOG_PROFILE, VACCINATION and TRAVEL_CLEARANCE; `false` for GROOMING and BOARDING,
-which were never approved. **Omit `--from` and it answers `false` for every provider on earth** - with
-no `from`, `msg.sender` is the zero address, no factory generation matches, and the whole aggregate
-collapses. The portal passes the factory account on exactly that one read.
+**Means:** `admin-api` on `:39742` and the admin portal on `:39741`. The preflight checks the chain
+id and that your governance key holds `WHITELIST_ADMIN`; if it does not, it refuses here rather than
+booting a portal whose every action would silently produce unsigned calldata instead of a
+transaction.
 
-### 1.3 Finish the provider off - the four actions only DogTag can take
+## 1.1 Sign in
 
-**Do this after the provider has deployed their contract (§2.4).** Everything here is `onlyOwner` on the
-provider registry, so no provider key can do any of it.
+**Do:** open http://localhost:39741 and click **Sign in** (the password is prefilled in demo mode).
 
-Expand the provider's row with **Show services** beside its id. That opens **Attached services** - what
-this provider has attached, and for each one the five lifecycle terms `canIssue` folds, shown
-separately because each has a different fix.
+**Means:** you land on the Dashboard. Its business counters read 0 until you register someone.
 
-Walked, a healthy service row reads: *Provider active ✓ · Service active ✓ · Factory generation live ✓ ·
-Owner confirmed ✓ · An issuer may issue now ✓*, then **holds the issue right (registry-wide)** with the
-addresses, then *"The provider has published this as its current VACCINATION service."*
+## 1.2 Register the provider
 
-**A withdrawn grant is shown struck through beside the granted ones, and that is deliberate** - "granted
-then withdrawn" is a different fact from "never granted", and only the log can tell them apart. Read the
-badges, not a flattened text copy: the distinction is carried by styling.
+**Do:** **Providers** in the left nav. Read the banner first - it must say *"registrar actions execute
+directly"*. Then **Register provider** → **Fill demo data** → **Review** → **Register**.
 
-#### 1.3.1 Attach their contract
+> If the banner instead says actions route to governance as proposals, your `GOVERNANCE_PRIVATE_KEY`
+> is not the registrar key (§0.3). Nothing is broken, but nothing below will reach the chain either -
+> each action returns unsigned calldata for someone else to execute. Fix the key and reboot the role.
 
-Click **Attach a contract**, paste the address the provider sent you, press **Check**, then **Attach**.
+**Means:** the provider now exists on chain with standing PENDING. `Fill demo data` mints a random
+provider id, sets the controller to the published anvil test account
+`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`, and writes an obviously-fake identity statement;
+**Review** hashes that statement, and only the hash reaches the chain.
 
-The address is the only thing you type: the check probes each active factory generation's own `isClone`
-to work out which generation deployed it, then reads `recordType()` and `owner()` off the contract.
-Walked, it reported *"Checked - ready to attach"* with the factory generation, **record type
-DOG_PROFILE** and the owner, plus *"— sent as the expected owner; a mismatch at send time refuses the
-transaction rather than attaching to the wrong key."* Then **"Mined: attached 0xd6c3…a9f8"**.
+> **Copy the provider id.** §2 needs it, and it can never be reassigned. The statement text is stored
+> nowhere and disappears when you navigate away.
 
-> **The one refusal worth recognising.** A *generation-1* `DogTagIssuer` has no `owner()` at all, so it
-> can never be attached however correct the rest of the form is. The check says so in words rather than
-> letting the send revert - a property of that contract, not a form error to correct.
+## 1.3 Activate it
 
-#### 1.3.2 Set its standing to Active
+**Do:** the new row reads **pending**. Click **Activate**.
 
-Attaching lands the service at PENDING exactly as registering lands a provider there, so **attaching
-alone grants nothing**. Click **Activate** on the service row. Walked: **"Mined: service 0xd6c3…a9f8
-standing → active"**.
+**Means:** standing goes PENDING → ACTIVE. Until it does, the provider is inert: every self-service
+action refuses, so registering alone grants nothing.
 
-#### 1.3.3 Grant the issue right
+## 1.4 Approve the record types it may create
 
-Click **Issuance capability** on the service row. Walked, the dialog is headed *"Issue right on this
-address, registry-wide"* and says:
+**Do:** on the same row, click **DOG_PROFILE**. Then click **VACCINATION**.
 
-> The key that will SIGN issuances. This is the registrar's grant to make and nobody else's: a service
-> delegate carries content-write permissions and does not satisfy `canIssue`, so a provider cannot grant
-> their own signing key. The grant is on the ADDRESS and names no service, so it reaches EVERY service in
-> effective standing - including other providers'.
-
-Enter the address that will sign, pick **Grant**, confirm. Walked: **"Mined: issue right granted to
-0x7e3a…436d (every service in standing)"**.
-
-**Read the scope sentence literally.** Since #143 the right is a bitmask on an address (`rightsOf`), not
-a per-service grant. That is precisely why issuing takes a *second* check - see §3.0.
-
-#### 1.3.4 Approve the typed resolvers
-
-In **Typed resolvers**, click **Approve / pull** for each kind.
-
-**The panel carries no textual approved/not-approved state** - walked, each row is just the kind, the
-address, a copy button and the button, with the address badge rendered in the success style when
-approved. Read the chain if you need certainty:
-
-```bash
-source scripts/lib/ledger.sh
-PR=$(ledger_addr ProviderRegistry)
-cast call $PR 'isResolverApproved(uint8,address)(bool)' 0 "$(ledger_addr ProviderDirectory)"      --rpc-url https://devrpc.roax.net
-cast call $PR 'isResolverApproved(uint8,address)(bool)' 1 "$(ledger_addr ServiceDomainResolver)"  --rpc-url https://devrpc.roax.net
-```
-
-Walked: **both `true`** on the deployed set - the registrar half of §2.6 and §2.7 is already done.
-Approving is the whole of the registrar's part; the provider must then **select** the resolver on their
-own portal, and that half was **not** done (see §2.6).
-
-> **`resolverApproved()` exists on `ProviderDirectory` only.** `ServiceDomainResolver` has no such
-> function and the call reverts with empty returndata; its equivalent is the per-service
-> `isAuthoritativeFor(address)`. Ask the core's `isResolverApproved` for both, as above.
-
-> **Verify capability** is the card below and is deliberately *not* part of this sequence. It is keyed
-> by PURPOSE and takes no service: an issuer is not implicitly a verifier. Walked, all five purposes -
-> `boarding_intake`, `travel_check`, `grooming_intake`, `daycare_access`, `service_animal` - read *"No
-> relayer may verify for this purpose."*
-
-### 1.4 The rest of the admin portal
-
-Opened but not re-walked: **Activity**, **Issuers / Factory**, **Onboard issuer**, **Business
-registry**, **Issuer applications**, **Governance**. **Verification bench** has a section of its own - §7.
-
-> **The Whitelist page is gone**, and is not coming back. It called `isWhitelistedFor` on the single
-> authority, which answers that off an orthogonal axis - a confident `false` for every genuine issuer
-> signer - and granted through `whitelistFor`, which that contract does not implement at all. Its
-> replacements are **Issuance capability** (§1.3.3) and **Verify capability**, both on the Providers page.
-
-**Activity** reads the oversight indexer and 503s on a `demo-up.sh` stack, because `INDEXER_API_BASE`
-is not passed to `admin-api` (§1.1).
+**Means:** the registrar has said which kinds of contract this provider may deploy. It is per record
+type - approving one approves no other. The vet needs both: DOG_PROFILE anchors dog tags,
+VACCINATION anchors vaccination records.
 
 ---
 
-## 2. The provider sets themselves up  ·  hat: **PROVIDER**
+# 2. PROVIDER - deploy your own contract
 
-> **Switch hats - this is the section that shows the actual product.** You are now the vet/groomer
-> business. In production you are a different company, on your own machine, with your own wallet, and
-> DogTag cannot do any of this for you: `createIssuer` takes no owner argument, so the contract is
-> owned by whoever deploys it. On this single-machine walk you press these buttons yourself right
-> after pressing the admin's - that is the demo's convenience, **not** the design.
+> **Switch hats.** You are now the veterinary business. In production you are a different company on
+> your own machine with your own wallet. `createIssuer` takes no owner argument, so whoever deploys
+> the contract owns it - which is why DogTag cannot do this step for you.
 
-The provider is the business the admin just registered. This is where they deploy their own issuing
-contract and select it.
+**The provider's self-service page is served by the vet portal**, so you boot the vet role to act as
+the provider. On a real deployment the business runs that portal itself; here it is the same laptop.
 
-**There is no backend on this path at all**: every read and every write is made from the provider's own
-wallet, straight to the chain.
+## 2.0 Boot the vet role
 
-### Read this first: the sequence, and whose move each step is
+**Do:**
 
-Making a contract live takes **three moves, and the middle one is DogTag's**:
+```bash
+LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh vet
+```
 
-> provider deploys (`createIssuer`) → **REGISTRAR attaches + activates** (§1.3.1, §1.3.2) → provider
-> selects it as current (`repointService`)
+**Means:** `vet-api` on `:41874` and the vet portal on `:41873`. It warns that two contract addresses
+are unset and boots anyway - those are the contracts you are about to deploy, so nothing else could
+be true yet. Issuing refuses until §4.4 sets them; everything in this section works without them.
 
-`attachService` is `onlyOwner` on the provider registry, so no provider key can send it however
-correctly everything else is set up - and `repointService` refuses an address that was never attached.
+## 2.1 Sign in
 
-| Flow | Needs from DogTag first |
+**Do:** open http://localhost:41873 and click **Sign in** (prefilled in demo mode).
+
+**Means:** you are in the vet portal as its operator.
+
+## 2.2 Create or unlock the shop's signing key
+
+**Do:** the top of the page says *Custody is locked*.
+
+- **Seen it before on this machine?** Click **Unlock**, then **Unlock and continue** - both fields
+  are prefilled.
+- **First run?** There is no key yet. Go to **Setup**, sign in with the admin password (also
+  prefilled), and follow the wizard: **genesis** → confirm → unlock.
+
+Then open **Signing keys** in the nav and **copy the address it names in its first line.**
+
+**Means:** the backend now holds a key it can sign with. The sealed key is stored on disk and the
+decrypted one never is, which is why custody re-locks on every restart of this backend.
+
+> Do this before deploying, even though deploying does not need it: §3.3 has to grant a right to that
+> address, and the address does not exist until the key does.
+
+## 2.3 Connect your wallet
+
+**Do:** you need a browser wallet holding the controller address from §1.2. Install one (MetaMask,
+Rabby - any EIP-6963 wallet), add ROAX as a custom network, and import the controller's key:
+
+| | |
 |---|---|
-| 1. Deploy your own contract | nothing |
-| 2. Choose which contract is current | attach (§1.3.1) + standing (§1.3.2) |
-| 3. Your domain | the domain resolver approved (§1.3.4) - **already true on the deployed set** |
-| 4. Your listing | the directory resolver approved (§1.3.4) - **already true on the deployed set** |
+| Network name | ROAX |
+| RPC URL | `https://devrpc.roax.net` |
+| Chain ID | `135` |
+| Controller key | `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80` |
 
-**Issuing needs one more thing after all of that** - two, in fact. See §3.0.
+Then in the vet portal: **Provider self-service** in the nav → **Connect wallet** at the **top right
+of the page header** (not in the page itself).
 
-### Before you start
+**Means:** this page has no backend, so every action *and every read-only check* is signed by you.
+Every control stays disabled until a wallet is connected, and says so.
 
-| | What you need | Where it comes from |
-|---|---|---|
-| 1 | **Your provider id** | §1.2, on the row you registered |
-| 2 | **A browser wallet holding the controller address** | the address §1.2 registered as controller |
-| 3 | **Testnet gas in that account** | every action here is a transaction you sign |
+> That key is the published anvil test account - printed by every `anvil` start, and what
+> `Fill demo data` put in the controller field in §1.2 precisely so anyone can act as this provider
+> on a disposable testnet. It is public by design and holds testnet funds only. Never put a real key
+> in a browser.
 
-This page has no backend, so there is no hosted key to act on your behalf - not for the writes, and not
-even for the read-only **Check** buttons.
+## 2.4 Deploy the DOG_PROFILE contract
 
-### 2.1 Open the page
+**Do:** paste your provider id, set **Record type** to `DOG_PROFILE`, leave **Contract number** at
+`0`, click **Check what this would deploy**, then **Deploy** and confirm in your wallet.
 
-Vet portal → **Provider self-service** in the left nav (`/provider`; the groomer portal has the same
-item).
+**Means:** you own a `DogTagIssuer` contract. The check shows the exact address before anything is
+sent, because the address is computed from the record type, your wallet and that number - so
+**Deploy** only ever sends what a check approved, and goes back to disabled if you edit a field.
 
-**If the whole page is replaced by "Provider self-service is not configured"**, the `VITE_*` addresses
-did not reach the portal. On a `demo-up.sh` stack they do - walked, the page rendered all four flows
-immediately. If you served the portal some other way, vite inlines `VITE_*` at **build** time, so set
-them before building.
+> **Copy the deployed address.** §3.1 and §4.1 need it.
 
-### 2.2 The vet and the groomer show different pages
+---
 
-- **Vet**: four flows - deploy, choose, domain, listing.
-- **Groomer**: **only the listing**, headed just *Your provider record* and *Your listing*.
+# 3. ADMIN - attach and authorise the contract
 
-A groomer verifies and does not issue, so it has no issuing contract at all; flows 1 to 3 are keyed by
-one and are not merely hidden but inapplicable. Flow 4 is keyed by the provider record, so a groomer
-appears in the directory exactly as a vet does. **The rest of §2 assumes the vet portal.**
+> Back to the admin portal, still running from §1. These four actions are `onlyOwner` on the provider
+> registry: no provider key can perform any of them.
 
-### 2.3 Connect your wallet
+## 3.1 Attach it
 
-**Every control is disabled until a wallet is connected - including the read-only Check buttons.** With
-no backend on this path, every action *and every preflight* is made from the provider's own key.
+**Do:** **Providers** → **Show services** on your provider's row → **Attach a contract**. Paste the
+address from §2.4, **Check**, then **Attach**.
 
-Connect from the **top-right of the portal header**, not the page itself, and make sure it is on ROAX.
-Then paste your provider id and set the record type.
+**Means:** DogTag has admitted this contract to that provider's record. The address is the only thing
+you type: the check works out which factory deployed it and reads its record type and owner off the
+chain. Until it is attached, the provider cannot select it.
 
-**Do the chain check before you deploy, not after.** The **Check** buttons do not test which chain your
-wallet is on - those reads go to the portal's own endpoint - so on the wrong chain every check still
-passes and only the **Deploy** fails, as a wallet error that does not obviously name the cause.
+## 3.2 Activate the service
 
-> **Careful with Fill demo data.** It fills the record type, a domain, a location and the contacts - but
-> deliberately **not** the provider id, because a made-up provider id is one that does not exist.
+**Do:** click **Activate** on the service row.
 
-### 2.4 Flow 1 - deploy your own contract
+**Means:** attaching lands the service at PENDING, exactly as registering did for the provider, so
+attaching alone grants nothing.
 
-1. Leave **Contract number** at `0`. (It is the CREATE2 salt's only free input: your contract's address
-   is computed in advance from the record type, your wallet and this number, so it is the only part of
-   the address you get to choose.)
-2. Click **Check what this would deploy**. **Deploy stays disabled until you do**, and says so - it only
-   ever sends something a check has approved, for the values in the form *at that moment*. Change a
-   field afterwards and it goes back to disabled, saying that too.
+## 3.3 Grant the issue right
 
-Walked, for `DOG_PROFILE`: verdict **Ready**, the exact address shown before anything was sent, and two
-checks -
+**Do:** click **Issuance capability** on the service row, enter the signer address from §2.2, pick
+**Grant**, confirm.
 
-| Check | Result |
-|---|---|
-| Is your provider record cleared to act? | **PASSED** - *"Your provider record is active."* |
-| May this key deploy a contract for your provider and record type? | **PASSED** - *"Approved: your key may deploy this record type for your provider."* |
+**Means:** that address may now sign issuances. The grant is on the **address**, registry-wide - it
+names no service. That is deliberate, and it is exactly why issuing needs a second permission that
+only the provider can give (§4.2).
 
-with *"Ready to deploy. You will own the contract. DogTag then attaches it to your provider record
-before you can select it."*
+## 3.4 Approve the typed resolvers
 
-3. Click **Deploy** and confirm in your wallet.
-
-Walked: the contract deployed at **exactly** the address the preview named - independently predicted
-beforehand with `predictIssuer(bytes32,address,uint96)` and identical. Confirmed from the chain
-afterwards: `owner()` is the controller, `recordType()` equals `keccak("DOG_PROFILE")`, the factory's
-`isClone` answers `true`, and **`issuanceAllowed(creator)` is already `true`** - the clone seeds its own
-list with its deployer (#144).
-
-The plan card then relabels itself *"Superseded: these answers were read before your transaction"*, with
-the verdict struck through and an amber *"Superseded"* beside it. The answers stay on screen rather than
-vanishing, which is the point.
-
-**Copy the deployed address.** Flows 2 and 3 need it.
-
-**If it refuses** with *"Contract number 0 has already been used"*, you have deployed here before. Each
-number produces one fixed address and two contracts cannot share one. Put `1` in **Contract number** and
-check again.
-
-### 2.5 Flow 2 - choose which contract is current
-
-**DogTag has to attach and activate your contract first** (§1.3.1, §1.3.2). The page says so in a notice
-before you click.
-
-1. Paste the deployed address into **Contract address**.
-2. Click **Check this contract**.
-
-Walked **after** §1.3.1 and §1.3.2: verdict **Ready**, with *"Attached to your provider record, and
-available to select."* and five checks, all **PASSED** -
-
-| Check | |
-|---|---|
-| Did the DogTag issuer factory deploy this contract? | PASSED |
-| Who owns this contract? | PASSED |
-| Has DogTag attached this contract to your provider record? | PASSED |
-| May your key select this contract? | PASSED |
-| Does this contract's standing still allow changes? | PASSED |
-
-3. Click **Make this my current contract**. Walked: `repointService` mined.
-
-**Before DogTag attaches it**, the third check instead reads **FAILED** - *"Not yet attached. A contract
-you have deployed is not listed until DogTag attaches it."* - with the remedy in the product's own
-words. That is the expected state if you get ahead of the registrar, not a fault in what you deployed.
-
-**This is the move that makes `canIssue` finally read true.** Walked and confirmed on chain:
-`canIssue(clone, controller)` went `false` → `true` with `repointService`, while `canRevoke` and
-`isRecognizedIssuer` were already true - the nested ladder folding the current-service pointer, not a
-fault to debug.
-
-**Leave the contract address in the field.** Flow 3 reads it.
-
-> **One piece of on-page copy is now stale.** Flow 2's notice still says the attach step *"has no page
-> for it yet"*. It does - §1.3.1.
-
-### 2.6 Flow 3 - claim your domain
-
-**The trap on this page:** the **Check the domain record** button is gated on flow 2's **Contract
-address** field, not on the Domain field beside it. With step 2 empty the button stays dead however much
-you type here. The page says so in amber.
-
-Type a domain and click **Check the domain record**.
-
-**Not walked to completion on this stack.** The registrar half is done - `isResolverApproved(DOMAIN, …)`
-reads `true` (§1.3.4) - but the *provider* half is not: the service's `domainResolver` is the zero
-address, so nothing is selected. Confirm which half you are missing rather than guessing:
+**Do:** in **Typed resolvers**, confirm both kinds show their address in the success style. Confirm
+from the chain if you want certainty:
 
 ```bash
 source scripts/lib/ledger.sh
-cast call "$(ledger_addr ProviderRegistry)" \
-  'service(address)((bytes20,bytes32,bytes32,address,address,uint64,uint8))' <clone> \
-  --rpc-url https://devrpc.roax.net
-# fields: providerId, factoryGeneration, recordType, confirmedOwner, domainResolver, ownerEpoch, standing
+PR=$(ledger_addr ProviderRegistry); RPC=https://devrpc.roax.net
+cast call $PR 'isResolverApproved(uint8,address)(bool)' 0 "$(ledger_addr ProviderDirectory)"     --rpc-url $RPC
+cast call $PR 'isResolverApproved(uint8,address)(bool)' 1 "$(ledger_addr ServiceDomainResolver)" --rpc-url $RPC
 ```
 
-Walked: `domainResolver` is `0x0000…0000` on every attached service. Selecting it is
-`setDomainResolver(service, resolver)` and it is the provider's own call.
+**Means:** the registrar has allowed these two resolvers fleet-wide, which is its half of the
+provider's domain and listing flows. Both read `true` on the deployed set, so there is nothing to
+send. The provider's half - selecting one - has no button yet (§11).
 
-**Publishing no domain and never having said are kept apart, deliberately** - the resolver's disposition
-is `UNSET | NO_DOMAIN | CLAIMED | CLEARED`, so an empty string is never allowed to mean three things.
+---
 
-### 2.7 Flow 4 - publish your listing
+# 4. PROVIDER - select it, admit your key, point the backend at it
 
-Click **Fill demo data** to populate contacts and a location, then **Check what this would publish**.
+## 4.1 Make it your current contract
 
-**Not walked to completion on this stack**, for the same reason as §2.6: the directory resolver is
-approved but the provider record's `directoryResolver` is the zero address.
+**Do:** vet portal → **Provider self-service** → flow 2. Paste the address from §2.4 into
+**Contract address**, **Check this contract**, then **Make this my current contract**.
+
+**Means:** new credentials of that record type now anchor here. This is the move that makes the
+chain's `canIssue` finally answer true - before it, every other term held and this one did not.
+
+## 4.2 Admit your signing key to the contract
+
+**Do:** **Signing keys** in the nav. Connect the wallet that **owns** the contract, click **Use this
+shop's signing key** under it, then **Admit** and confirm.
+
+**Means:** issuing needs **two** permissions and this is the second. The registrar granted the right
+in §3.3; this list is the contract owner's own, and the protocol admin is deliberately excluded from
+writing it - so neither party can put a signer on somebody else's contract alone.
+
+> A freshly deployed contract already admits whoever deployed it. The vet's backend signs with a
+> *different* address - its custody signer - so this step is always needed for it.
+
+## 4.3 Do §2.4 → §4.2 again for VACCINATION
+
+**Do:** repeat the deploy (§2.4 with **Record type** `VACCINATION`, contract number `0` again), then
+the admin's §3.1–§3.3, then §4.1 and §4.2.
+
+**Means:** you now own two contracts - one for dog tags, one for vaccination records. The same
+contract number gives a different address because the record type is part of the computation.
+
+## 4.4 Tell the backend which contracts it anchors into
+
+**Do:** add both addresses to `contracts/.env`, then restart just the vet:
+
+```
+PROFILE_ISSUER_ADDR=<the DOG_PROFILE contract from §2.4>
+VACCINATION_ISSUER_ADDR=<the VACCINATION contract from §4.3>
+```
 
 ```bash
-source scripts/lib/ledger.sh
-cast call "$(ledger_addr ProviderRegistry)" \
-  'provider(bytes20)((address,address,bool,bool,address,uint64,uint64,uint8))' <providerId> \
-  --rpc-url https://devrpc.roax.net
-# the FIFTH field is directoryResolver; walked, it is 0x0
+scripts/demo-down.sh vet
+LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh vet
 ```
 
-**`resolverApproved()` on `ProviderDirectory` now reads `true`.** A previous revision of this guide told
-you to run that read and expect `false`, and used it to explain why flow 4 stops. That is no longer the
-reason - approval is done, selection is not, and the two are different halves. The product's own message
-covers both (*"either not approved by DogTag or not selected by your provider record"*), which is why
-reading the chain is the only way to tell which.
-
-Two properties worth knowing for when it does open:
-
-- **A blank location publishes no pin at all.** It does not publish `0,0`, which is a real coordinate off
-  the coast of Ghana. The page states the consequence plainly.
-- **Re-publishing rewrites rather than appends**, which is what stops one provider appearing in two
-  places at once.
-
-### 2.8 Where §2 leaves you
-
-A full walk is: §1.2 register, activate and approve → §2.4 the provider deploys → §1.3 DogTag attaches,
-activates and grants → §2.5 the provider selects it. **Walked end to end on this stack**, to a live
-`canIssue(service, signer) == true` for a brand-new DOG_PROFILE contract; `serviceCount()` went from 1 to 3.
-
-Flows 3 and 4 additionally need the provider to select each resolver, which has no button on this page
-yet.
+**Means:** the backend reads these at boot, so it learns where to anchor only on a restart. The boot
+now names both contracts instead of warning about them.
 
 ---
 
-## 3. The vet issues a credential  ·  hat: **PROVIDER** (vet)
+# 5. VET - register a pet and issue a credential
 
-Vet portal, http://localhost:41873. Custody must be unlocked (§0.10).
+## 5.0 Unlock custody
 
-### 3.0 Before the vet can anchor anything: issuance takes TWO permissions - **Signing keys** in the nav
+**Do:** sign in at http://localhost:41873, click **Unlock** in the banner, then **Unlock and
+continue**.
 
-This is the step most likely to stop you, and it is the reason a correctly registered provider with a
-correctly attached contract can still fail to issue.
-It **is** on a screen now; a previous revision of this guide sent you to a terminal here, because
-there was no screen to send you to.
+**Means:** the restart in §4.4 re-locked it. Nothing signs or issues until you unlock.
 
-`DogTagIssuer.issue` requires **both**:
+## 5.1 Register the pet
 
-```
-registry.canIssue(address(this), msg.sender)   // 1. the authority's grant + lifecycle
-&& issuanceAllowed[msg.sender]                 // 2. THIS contract's own list
-```
+**Do:** **Register pet** in the nav → **Fill demo data** → **Start issuance**.
 
-Layer 1 is the registrar's, granted in the ADMIN portal (§1.3.3).
-Layer 2 is the PROVIDER's, and lives on the vet/groomer portal's **Signing keys** page (`/signers`).
-They are on different portals because they belong to different people, which is the whole design:
-`setIssuanceAllowed` admits only from the contract's `owner()` and deliberately excludes the protocol
-admin, because the admin also writes layer 1 and one key holding both is the cross-provider issuance
-layer 2 exists to prevent.
+**Means:** a dog tag is allocated and the page shows a QR plus a URL on your `LAN_IP`. The owner's
+device scans it, folds the profile tree on the phone and posts only the resulting root - the vet
+never holds the owner's secret, which is why a desktop cannot finish this step (§11).
 
-**Why this bites even when you have done everything right.** A contract seeds its own list with its
-**deployer** (#144), so the provider that clicked Deploy in §2 is already admitted.
-But the vet backend signs with its **own custody signer**, derived at genesis, which is a different
-address - and nothing in §1 or §2 puts it on any list.
+> **Note the dog tag id** (`1` on a fresh set). §5.2 and §6.3 use it.
 
-**The click-through.** Open **Signing keys** in the vet portal nav. The page reads both contracts'
-lists live from the chain and leads with the diagnosis:
-
-> This shop signs with `0x7e3a6603…436d`, and this contract's issuance list does not admit it - so
-> every attempt to issue through this contract will be refused, however the DogTag admin has set the
-> authority's issue right. Admit it below.
-
-Each row carries a WORD, not just a colour - **Can issue**, **Withdrawn**, or **Not admitted** - so a
-screenshot or a text dump keeps them apart. Your own signing key's row is labelled *this shop's
-signing key*.
-
-1. Connect the wallet that **owns the contract** (top right). Until you do, Admit is disabled and
-   says so; connect a different wallet and it names the owner you need instead.
-2. Click **Use this shop's signing key** under the contract you want - it fills the address for you.
-3. Click **Admit**, and confirm in your wallet.
-
-The page reports the transaction as *submitted, outcome not yet known* and only redraws the list once
-a receipt reports success - so a pending grant is never shown as a completed one. When it lands the
-row flips to **Can issue** and the heading changes.
-
-**Do the same for the `DOG_PROFILE` contract**, which the dog-tag bind in §3.1 anchors through. It is
-the half most easily forgotten, because completing a bind needs the phone app and so is rarely walked
-on a desktop.
-
-Removing is the same page: the **Remove** button on any row. The chain also lets the protocol admin
-remove (removal only ever narrows), but it does that from its own console.
-
-If you want to confirm from outside the product - a definite `false` on either layer refuses:
+You can see exactly what the phone would receive:
 
 ```bash
-cast call "$(ledger_addr ProviderRegistry)" 'canIssue(address,address)(bool)' <clone> <signer> --rpc-url $RPC
-cast call <clone> 'issuanceAllowed(address)(bool)' <signer> --rpc-url $RPC
+curl -s http://127.0.0.1:41874/p/<the token in that URL>
 ```
 
-**`scripts/demo-bootstrap.sh` grants layer 1 only, and now says so.** It funds the signer, grants
-`setRights(signer, RIGHT_ISSUE)` and the VERIFY capabilities, then **checks layer 2 and exits
-non-zero** naming this page - it signs with the governance key, which is exactly the key the contract
-refuses to let admit. It used to grant through `whitelistFor` and preflight
-`VerificationRegistryConsent.issuerRegistry()`, neither of which the launch set implements; it failed
-loudly, but with a false diagnosis about mis-wiring.
+## 5.2 Issue a record
 
-### 3.1 Register the pet - **Register pet** in the nav (`/issue-dog-tag`)
+**Do:** **Issue a record** in the nav → **Fill demo data** → set **Dog tag id** to the one from
+§5.1 → **Sign & Issue**.
 
-A record attaches to a pet that already has a dog tag, so this comes first, once per pet.
+**Means:** a rabies certificate is built, its Merkle root is anchored on chain by your VACCINATION
+contract, and the page reports **Verified on-chain**. A record can be issued while the dog tag is
+still waiting for its device bind - the two are anchored independently.
 
-Click **Fill demo data** - walked, it fills owner identity (`Alex Doe`, `GB`, a passport number) and the
-pet profile (`Rex`, dog, Labrador Retriever, male, neutered) plus a microchip. Click **Start issuance**.
+## 5.3 Take the credential out
 
-Walked result:
+**Do:** **Records** in the nav lists what this shop has issued, each with an explorer link. To carry
+one elsewhere, fetch it. The bearer token is the value of `vet.opToken` in the portal's local storage
+(DevTools → Application → Local Storage → `http://localhost:41873`):
 
-> **Owner scans to receive their dog tag**
-> Dog tag **1** allocated — pending device bind.
-> `http://192.168.16.45:41874/p/c80bab85517c3ead86ee26654ec2ae08`
-> Owner scans this in the DogTag app to receive their dog tag. Waiting for the device to bind…
-> Status: **pending**
-
-Note the host is the `LAN_IP` you set in §0.8. With the default it would be an address no phone can reach.
-
-**This is as far as a desktop can take it, and the reason is architectural rather than a gap.** The
-owner's device folds the profile tree and posts the resulting root; the vet never holds the owner's
-secret. Completing the bind needs the phone app (§9).
-
-You can still see exactly what the phone would receive:
-
-```
-curl -s http://127.0.0.1:41874/p/<token>
+```bash
+TOKEN=<paste vet.opToken here>
+curl -s http://127.0.0.1:41874/records -H "Authorization: Bearer $TOKEN"
 ```
 
-Walked: JSON carrying `sessionId`, `dogTagId: "1"`, `status: "pending"`, the full pet block, the owner
-identity block, the vet-generated `identityLeaves` (each with its own salt), and an `unverifiedClaims`
-block whose `issuerClone` was **the DOG_PROFILE clone created in §2** - which is the check that the whole
-chain is coherent.
-
-### 3.2 Issue a record - **Issue a record** in the nav
-
-**A record can be issued while the dog tag is still pending its bind** - walked, and worth knowing,
-because the two are anchored independently.
-
-Click **Fill demo data** (a rabies certificate, recordType `VACCINATION`), set **Dog tag id** to `1`, and
-click **Sign & Issue**.
-
-Walked result:
-
-> **Credential issued** — Record `85b03c74-ee79-42ca-a63f-571500624485`
-> **On-chain status: Verified on-chain** — `DogTagIssuer.isValid(root) = true`
-> Merkle root: `0x1acc40a0da64d0b150824c88782be58ae1ac64f49504a186766412c1961acbdf`
-
-Confirmed independently from the chain: the transaction succeeded, `rootIssuer(root)` resolves to the
-VACCINATION clone, `isValid(root)` is `true`, `issuedBy(root)` is the vet's custody signer, and the
-clone's `recordType()` equals `keccak("VACCINATION")`.
-
-**Note the form is filled even when the page text looks empty** - the values live in inputs, which do not
-appear in a text dump of the page.
-
-### 3.3 Getting the credential out
-
-The **Records** page lists what this shop has issued, with an explorer link for each. To take a
-credential elsewhere - into the owner wallet, or the bench - fetch it from the backend:
-
-```
-curl -s http://127.0.0.1:41874/records -H "Authorization: Bearer <vet.opToken from localStorage>"
-```
-
-**The field is `wrapped_doc`, snake_case** - walked; a previous revision of this guide called it
-`wrappedDoc`. Each row also carries `confirmed_tx_hash`, `block_number` and `explorer_url`.
+**Means:** the field you want is `wrapped_doc` - that JSON object *is* the credential. §6.5, §7.1,
+§8.1 and §9.1 each need a copy of it.
 
 ---
 
-## 4. The groomer  ·  hat: **PROVIDER** (groomer)
+# 6. GROOMER - the shop, and checking a credential it did not write
 
-Groomer portal, http://localhost:43617. Sign in - the operator password is prefilled - and unlock custody
-exactly as in §0.10.
+> A groomer verifies and does not issue. Its backend is the same binary as the vet's with
+> `BUSINESS_TYPE=groomer`, and the issuance routes are not mounted at all - so it has no Records page
+> and no Issue page.
 
-**The groomer runs the same backend binary as the vet with `BUSINESS_TYPE=groomer`, and that is visible
-in the nav.** Walked, the groomer's nav is: Dashboard, Calendar, Appointments, Clients, Pets, All
-verifications, Groomers, Reports, Marketing, Import from user, Ad-hoc verification, Setup, Provider
-self-service, Settings.
+## 6.0 Boot the groomer role
 
-**There is no Records page and no Issue page** - a groomer is whitelisted to VERIFY, not to issue, and
-the issuance routes are not even mounted on its backend.
+**Do:**
 
-### 4.1 Create a client, with their pet
-
-**Clients → New client → Fill demo data → Create client.**
-
-Walked: the demo values are unmistakably fake - `Demo Client (sample)`, `+65 6000 0000`,
-`demo.client@example.com`, `1 Demo Street, #01-01, Singapore 000000`, notes *"Demo record - not a real
-person."* - with an inline pet block filled as `Demo Dog (sample)`, Golden Retriever, female, and a
-microchip. **Add pet** adds further pet blocks to the same client. The client then appears in the list
-under NAME / CONTACT / PETS.
-
-The pet block carries its own note: *"Pet details only. A DogTag is linked from the pet's own page, where
-what linking does - and what it does not do - is spelled out. Any tag already linked stays as it is."*
-
-### 4.2 The pet is addressable in its own right
-
-**Pets** lists every pet the shop knows, under PET / SPECIES-BREED / OWNER / DOGTAG. Walked, the new pet
-read `Demo Dog (sample) · Dog · Golden Retriever · Demo Client (sample) · **No tag**`.
-
-Click the pet to open its detail page. Walked: the profile, the microchip, the owner as a link, and
-**Edit** / **Book appointment** / **Delete**, plus a DogTag block and a Credentials block.
-
-### 4.3 Link a DogTag, and watch the microchip cross-check
-
-Under **DogTag**, type the tag id and click **Add DogTag**. Walked with tag `1` - the one the vet
-allocated in §3.1 - the row became *"1 linked to this pet's record"* with a **Remove from this record**
-action, and the cross-check reported:
-
-> **Microchip not compared**
-> This shop holds no credential for that DogTag, so there is nothing to compare the microchip against.
-
-**That neutral state is the one to understand, because it is the common one - and note WHY it fired
-here.** The groomer's store is separate from the vet's, so issuing a credential in §3.2 puts nothing in
-this shop's hands. The check compares the microchip on the shop's own pet record against the microchip
-inside a credential *this shop holds* for that tag; with none held there is nothing to compare, so it
-says so rather than reporting a pass. A mismatch refuses the link rather than changing any credential's
-verdict - the credential is still genuine, it just describes a different animal. Getting a credential
-into the shop is what **Import from user** (§4.6) is for.
-
-The same page states the role boundary plainly: *"This portal cannot mint a DogTag or revoke a
-credential. A groomer is whitelisted to VERIFY, not to issue — which is exactly what makes a vaccination
-check here worth anything, since the shop asserting the record cannot also be the shop that wrote it."*
-
-### 4.4 Book an appointment
-
-From the pet page click **Book appointment** - it carries the client and pet through in the URL - then
-**Fill demo data**, then **Book appointment**.
-
-**One thing to correct by hand: Fill demo data clears the pre-selected pet.** Walked and confirmed
-directly: the form URL carried `?clientId=…&petId=…`, and after the demo fill the **Pet** select read
-*No specific pet*. That is legal - an appointment need not name a pet - but set it back before booking if
-you want the verification tied to one.
-
-Walked after setting it back: booked as *Demo full groom (sample)*, status **Scheduled**, with
-CLIENT / PET / GROOMER (*Demo Groomer*) / BOOKED all populated and the notes *"Demo booking - not a real
-appointment."* The detail page also carries **Send to client**, the per-booking handoff.
-
-### 4.5 See it on the calendar, and publish the diary
-
-**Calendar** shows Day / Week / Month with a **Today** control. Walked: the booking appeared in the week
-view on its day, showing the time and the client.
-
-**Calendar sync** publishes the shop's diary at one web address that Google, Apple or Luma can subscribe
-to. Click **Publish calendar address**; it mints a secret URL ending `.ics` and states the trade-off:
-
-> **Treat this address like a password.** Anyone who has it can read your whole schedule — client names,
-> pets and times — without logging in. That is what lets a calendar app subscribe without an account.
-
-Walked: fetching that URL returned a real iCalendar document carrying
-`X-WR-CALNAME:Pampered Paws — appointments`, a 15-minute refresh interval
-(`REFRESH-INTERVAL;VALUE=DURATION:PT15M` and `X-PUBLISHED-TTL:PT15M`), and a `VEVENT` for the booking
-with its `DTSTART`, `STATUS:CONFIRMED` and a `SUMMARY` of
-`Demo full groom (sample) - Demo Dog (sample) / Demo Client (sample)`.
-
-The route is unauthenticated by necessity - a calendar client cannot present a bearer - so the 32-byte
-secret in the path is the whole gate. It is revocable and rotatable from that page.
-
-The same page imports an `.ics` the other way; the file is parsed **in the browser**, which is what makes
-times in any timezone come across exactly.
-
-### 4.6 Check a credential the shop did not write
-
-**Ad-hoc verification** (`/verify`) has two surfaces answering different questions.
-
-**Verify credential** takes a pasted wrapped document and needs no owner and no phone: it recomputes
-integrity and reads the issuing contract directly on ROAX. Walked with the credential from §3.2:
-
-> **Verdict: pass** · Valid · VACCINATION
-> Integrity **Yes** · On-chain valid **Yes** · Issued **Yes** · Revoked **No** · Issuer authorised at
-> issuance **Yes**
-> Root and Recomputed root identical · Issuer clone · **Issuing signer (from chain)** · Issued at
-
-The signer is read from the chain (`issuedBy`) rather than typed in; the optional **Expected issuer
-signer** field can only tighten the result. *(The button is labelled **Verify credential**; a previous
-revision of this guide called it "Check credential status".)*
-
-**Export on chain** is the other question - the owner-hidden consent flow, where the owner approves on
-their phone and the shop learns only what the owner chose to share. It starts with a purpose (walked:
-*Grooming intake — rabies status*) and **Start export**, which mints a QR. **Completing it needs the
-phone app**, so it is not walked here; §9 lists it.
-
-**Import from user** is the third route, and the one that would populate §4.3's cross-check. It wants a
-customer JWT that a receptionist has no way to obtain, so it was not walked.
-
-**All verifications** is the shop's own durable history - purpose, record type, status, transaction and
-timestamps. It deliberately stores no credential PII.
-
-### 4.7 Prove to yourself the data survives
-
-If you set up Mongo in §0.7, confirm it rather than trusting it. Restart the groomer backend **by PID**:
-
-```
-kill $(lsof -nP -iTCP:43618 -sTCP:LISTEN -t)      # then re-run scripts/demo-up.sh
+```bash
+LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh groomer
 ```
 
-Three distinct outcomes worth telling apart: the **shop data survives**; the **operator session survives
-too** (sessions live in the same store), so no re-login; and **custody re-locks**, because the sealed key
-persists and the decrypted seed does not. On the default in-memory store all three are lost instead, and
-nothing warns you - which is why §0.7 is a decision to make before you start.
+Then sign in at http://localhost:43617 and unlock custody exactly as in §2.2.
+
+**Means:** a second, independent business on `:43617` / `:43618`, with its own store and its own
+signing key. The vet is still running and untouched.
+
+## 6.1 Create a client and their pet
+
+**Do:** **Clients** → **New client** → **Fill demo data** → **Create client**.
+
+**Means:** a client record with an inline pet. Every demo value says it is a demo - a receptionist
+must never mistake a filled row for a real person.
+
+## 6.2 Open the pet
+
+**Do:** **Pets** in the nav, then click the pet.
+
+**Means:** a pet is addressable in its own right, with its own profile, owner link, DogTag block and
+Credentials block.
+
+## 6.3 Link the DogTag and read the microchip cross-check
+
+**Do:** under **DogTag**, type the dog tag id from §5.1 and click **Add DogTag**.
+
+**Means:** the tag is linked, and the shop compares the microchip on its own pet record against the
+microchip inside a credential *it holds* for that tag. It holds none - the vet's store is a different
+business's - so it reports **Microchip not compared** rather than a pass. A mismatch would refuse the
+link and would not change any credential's verdict: the credential is still genuine, it just
+describes a different animal.
+
+## 6.4 Book an appointment and publish the diary
+
+**Do:** from the pet page click **Book appointment** → **Fill demo data** → set the **Pet** select
+back to the pet → **Book appointment**. Then **Calendar** → **Calendar sync** → **Publish calendar
+address**.
+
+**Means:** the booking appears on the calendar, and the shop's diary is published at one secret URL
+any calendar app can subscribe to. Treat that URL like a password - it is unauthenticated by
+necessity, because a calendar client cannot present a token.
+
+> `Fill demo data` clears the pre-selected pet. That is legal - an appointment need not name one -
+> but set it back before booking.
+
+## 6.5 Check the vet's credential
+
+**Do:** **Ad-hoc verification** → paste the `wrapped_doc` from §5.3 into **Verify credential** →
+**Verify credential**.
+
+**Means:** **pass**, with five checks: integrity, on-chain valid, issued, not revoked, and issuer
+authorised at issuance. No owner and no phone are involved - it recomputes the document's hash
+offline and reads the issuing contract directly. This is the cross-business check that matters: the
+shop asserting the record is not the shop that wrote it.
 
 ---
 
-## 5. Government  ·  hat: **PROVIDER** (government authority)
+# 7. GOVERNMENT - verify somebody else's credential, then issue its own
 
-> A government authority is a provider like any other here: it deploys and owns its own issuing
-> contract, and the registrar attaches it. Nothing about it is privileged in the protocol.
+> A government authority is a provider like any other here. Nothing about it is privileged.
 
-Government portal, http://localhost:44831.
+## 7.0 Boot the government role
 
-### 5.1 Verify somebody else's credential - **walked, and it works**
+**Do:**
 
-This is the cross-role check: the vet issued in §3.2, the government verifies here, and the two share no
-database.
+```bash
+LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh government
+```
 
-Paste the wrapped document into **Verify a document (paste JSON)** and click **Verify**.
+**Means:** `government-api` on `:44832`, its portal on `:44831`. Its own binary, its own store. The
+preflight tells you it can read the chain but not sign, which §7.2 fixes.
 
-Walked result on the vet's real credential:
+## 7.1 Verify the vet's credential
 
-> **✓ VALID**
-> integrity: yes · on-chain: yes · issuer authorised at issuance: yes · factory-deployed: yes
-> Issuer **Seaport Vet** *(from the document — the issuing contract could not be read)*
-> The on-chain domain claim could not be read
-> *This document carries no issuer identity inside its Merkle root, so its issuer domain could not be
-> cross-checked.*
+**Do:** open http://localhost:44831, paste the `wrapped_doc` from §5.3 into **Verify a document
+(paste JSON)**, click **Verify**.
 
-The JSON beneath it carries `issuerWhitelistState: "passed"`, `issuerWhitelisted: true` and a
-`blockNumber` - every read pinned to one block.
+**Means:** **✓ VALID**, with every read pinned to one block. The vet issued it, the government
+verifies it, and the two share no database - only the chain.
 
-Two things there are worth pausing on.
-
-**"Issuer authorised at issuance" is a historical question, not a current one.** The page says so:
-*"whether the signer that anchored this root held the capability AT THAT BLOCK, from the governing
-registry's own grant log. Delisting is forward-only, so a since-rotated issuer does not invalidate what
-it issued."* A vet that rotates its key does not retroactively void every certificate it ever issued.
-
-**The issuer name now comes from the document, because the contract has none.** A generation-2 clone's
-`name()` is empty by construction, so the page reports *"the issuing contract could not be read"* and
-`onchainNameAvailable` is `false`. A previous revision of this guide recorded an issuer-name *mismatch*
-being reported here; on the launch set there is no on-chain name to disagree with, so
-`documentNameDiffers` is `false` and no mismatch is shown. The property that the name sits outside the
-Merkle root is unchanged - §7.2 shows it from the attacker's side.
-
-All reads here are gasless, and no owner and no phone are involved: this checks a document, not a consent.
-
-The same check is available unauthenticated over HTTP, which is what the mandatory issuer-whitelist
-pillar guards:
+The same check is available with no account at all:
 
 ```bash
 curl -s -X POST http://127.0.0.1:44832/v1/verify -H 'content-type: application/json' \
   --data '{"wrapped_doc": <the document>}'
 ```
 
-**The field is `wrapped_doc`**; a camelCase key answers 422 naming it.
+> *"Issuer authorised at issuance"* asks whether the signer held the right **at the block it
+> anchored**, not now. Delisting is forward-only, so a vet that later rotates its key does not
+> retroactively void every certificate it ever issued.
 
-### 5.2 Issue - **walked, but NOT with the provisioning script, which no longer works**
+## 7.2 Issue a travel clearance
 
-**On a stock stack this is disabled and it says so.** `/health` reports `canSign: false` and
-`issuers: { TRAVEL_CLEARANCE: null, EU_HEALTH_CERT: null }`, matching the preflight warning in §0.8.
-Anchoring needs three things a plain `demo-up.sh` does not create: a funded government signer, that
-signer authorised, and a contract to anchor into.
+**Do:** the authority needs its own contract, so walk the same handshake once more for record type
+`TRAVEL_CLEARANCE`: §1.4 to approve it, §2.4 to deploy it, §3.1–§3.3 to attach, activate and grant,
+then §4.1 to select it.
 
-**`scripts/demo-provision-government.sh` is broken against the launch set, in three independent ways** -
-walked by reading it rather than by running it:
+**In §3.3, grant the issue right to the wallet that deployed this contract** - not to the vet's
+signer. The government backend signs with that same wallet's key, which is what the next block sets.
 
-| It calls | The launch set |
-|---|---|
-| `IssuerRegistry.whitelistFor(bytes32,address)` | `ProviderRegistry` does not implement it on the issuance axis |
-| `createIssuer(string,bytes32,address)` | the factory's signature is `createIssuer(bytes20,bytes32,uint96)` |
-| checks the factory's `owner()` | the launch factory has no `owner()` and the call reverts |
-
-So do it the way §1 and §2 already describe, and point the backend at the result:
-
-1. A TRAVEL_CLEARANCE clone must exist, be attached and active, and its intended signer must satisfy
-   **both** layers of §3.0. Confirm with `canIssue` and `issuanceAllowed`.
-2. Put the clone and the signing key in `contracts/.env` and restart:
+Then point the backend at it and restart:
 
 ```
-TRAVEL_CLEARANCE_ISSUER_ADDR=<the clone>
-GOV_SIGNER_KEY=<a key satisfying both layers of §3.0>
+TRAVEL_CLEARANCE_ISSUER_ADDR=<the contract from §2.4>
+GOV_SIGNER_KEY=<the private key of the wallet that deployed it>
 ```
 
-**Restart the government backend afterwards** - it reads those at boot. Walked, `/health` then flipped to
-`canSign: true` with the clone named under `issuers.TRAVEL_CLEARANCE` and the signer echoed.
-
-**Then issue.** **Fill demo data** → **Issue + anchor**. Walked result:
-
-> **✓ anchored on-chain**
-> root `0x161590867c61…`
-> Receipt **PH2G6TST0WY4** - *Official CDC-modeled travel-clearance receipt (printable / phone-showable).*
-> **View / print receipt →**
-> Public status page (PII-free, what the QR encodes): `http://localhost:44831/r/PH2G6TST0WY4`
-> **Hand the credential to the owner:** Create QR · Copy wrapped document
-
-Confirmed independently from the chain: the transaction succeeded, `isValid(root)` on the
-TRAVEL_CLEARANCE clone answers `true`, and `issuedBy(root)` is the configured government signer.
-
-**The public status page is the part worth opening.** It is unauthenticated and deliberately PII-free -
-the whole point being that the QR on a printed receipt can be checked by anyone without exposing the
-traveller:
-
-```
-curl -s http://127.0.0.1:44832/v1/receipts/<receiptId>/status
+```bash
+scripts/demo-down.sh government
+LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh government
 ```
 
-Walked: `effectiveStatus: VALID`, the record type, `validUntil`, an `issuanceDate` derived from the
-chain, the root, the issuing contract, `chainId: 135`, `simulated: false`, an explorer link and a
-`checkedAt`. Its HTML twin at `/r/<receiptId>` renders the same. **Checked rather than assumed:** the
-rendered page contains none of the Section A person fields (importer name, id number, date of birth,
-email) that the authenticated record carries.
+Then **Fill demo data** → **Issue + anchor**.
 
-> **`EU_HEALTH_CERT` has no clone on this deployment** and `/health` reports it `null`. Leave
-> `EU_HEALTH_CERT_ISSUER_ADDR` unset - the API then reports that issuer as null and `/issue` dry-runs
-> rather than anchoring somewhere wrong.
+**Means:** `/health` flips to `canSign: true` and the credential is anchored on chain. You get a
+printable CDC-modelled receipt with a QR pointing at a public status page.
+
+> **There is no §4.2 step here, and that is not an omission.** A contract admits its own deployer
+> automatically, so making the government sign with the wallet that deployed its contract satisfies
+> the second permission with nothing to click. The vet needs §4.2 only because its backend signs with
+> a key it generated itself, which is a *different* address from the one that deployed. Confirm
+> either way:
+>
+> ```bash
+> cast call <the contract> 'issuanceAllowed(address)(bool)' <the signer> --rpc-url https://devrpc.roax.net
+> ```
+
+## 7.3 Open the public status page
+
+**Do:**
+
+```bash
+curl -s http://127.0.0.1:44832/v1/receipts/<the receiptId>/status
+```
+
+**Means:** anyone can check that receipt without an account and without seeing the traveller. The
+page carries the status, the record type, validity and the chain reads - and none of the Section A
+person data the authenticated record holds.
 
 ---
 
-## 6. The owner receives the credential  ·  hat: **HOLDER**
+# 8. HOLDER - the owner receives the credential
 
-> **Switch hats.** You are now the pet owner. In production this is a phone in someone's pocket, and
-> no operator, admin or provider can act for them: consent is proven from a secret that never leaves
-> the device.
+> **Switch hats.** You are the pet owner. No operator, admin or provider can act for you.
 
-Owner wallet, http://localhost:45931. It has **no backend** - everything is local to the browser.
+## 8.0 Boot the owner wallet
 
-Go to **Receive**, paste the wrapped document from §3.3, and click **Add to wallet**.
+**Do:**
 
-Walked: the wallet routes to `/credential/<root>` and shows
+```bash
+scripts/demo-up.sh owner
+```
 
-> 💉 **VACCINATION** · issued by Seaport Vet
-> **✓ Integrity intact**
-> **✓ Anchored on-chain**
+**Means:** http://localhost:45931, and **no backend at all** - everything is local to the browser.
+This is the only role that needs no chain preflight and no governance key.
 
-with every field that was hashed into the root - microchip code and standard, vaccine product code, name
-and manufacturer, batch, series, vaccination date, valid-from, valid-until, next-due, authorising vet and
-dog tag id - under *"Exactly the values hashed into this credential's on-chain Merkle root."*, then a
-**Cryptographic identity** block carrying the Merkle root and the issuer clone.
+## 8.1 Receive it
 
-**The integrity check is offline and the anchor check is a direct chain read.** No server was asked
-whether this credential is good.
+**Do:** **Receive**, paste the `wrapped_doc` from §5.3, click **Add to wallet**.
 
-The **Fill demo data (vaccination)** and **Fill demo data (travel)** buttons on that page are the
-zero-setup path if you have not issued anything yet. They are the one place in the product where such a
-button is not gated on demo mode, because the owner wallet has no demo-mode flag at all.
+**Means:** the wallet shows **✓ Integrity intact** and **✓ Anchored on-chain**, then every field
+that was hashed into the root. The integrity check is offline and the anchor check is a direct chain
+read - no server was asked whether this credential is good.
 
 ---
 
-## 7. Verification, and eleven attempts to defeat it  ·  hat: **ANYONE**
+# 9. ANYONE - the verification bench
 
-> Verification is permissionless - it reads the chain and needs no role at all. It is shown from the
-> admin portal only because that is where the bench lives.
+> Verification is permissionless. It reads the chain and needs no role. The bench lives in the admin
+> portal only because that is where it was built.
 
-Admin portal → **Verification bench**. This is the surface for "what exactly is checked, and what is not".
+## 9.1 Run the checks on a real credential
 
-### 7.1 A genuine credential
+**Do:** admin portal → **Verification bench** → paste the `wrapped_doc` from §5.3 → **Run the
+checks**.
 
-Paste the §3.2 credential into **Wrapped document JSON** and click **Run the checks**.
+**Means:** nine rows, each showing which contract was asked, what it answered and at which block.
+Three of them are marked *not in the verdict*: the verifier's verdict covers integrity, on-chain
+status and the issuer pillar, and nothing else. Expiry is reported beside it rather than folded in,
+because the chain records anchoring and revocation and has no concept of a validity window.
 
-Walked: **Verifier verdict: valid**, with *"Every on-chain read was pinned to block 339784"*, and nine
-rows, **all Pass**:
+## 9.2 Try to defeat it
 
-| Check | |
-|---|---|
-| Is the document's content intact - does it still hash to the root it claims? | Pass |
-| Was this issued by a contract that genuinely descends from the DogTag factory? | Pass |
-| Does the document name the same contract the factory says issued it? | Pass |
-| Was the signer that issued this authorised for this record type when it anchored the root? | Pass |
-| Is this root actually anchored on-chain by its issuing contract? | Pass |
-| Has the issuer revoked this credential? | Pass |
-| Is this credential still within its validity window? *(not in the verdict)* | Pass |
-| Is the registry this client is configured with the one that gates this issuer? *(not in the verdict)* | Pass |
-| Was that signer authorised at the moment this root was anchored? *(not in the verdict)* | Pass |
+**Do:** click the mutation buttons, then **Run the whole catalogue**.
 
-**The rows marked *not in the verdict* are the point of the page.** The verifier's verdict covers
-integrity, on-chain status and the issuer pillar, and nothing else. Expiry is reported beside it rather
-than folded in, because the chain records anchoring and revocation and has no concept of a validity
-window. So an expired-but-anchored credential legitimately shows a valid verdict above a red expiry row,
-and the page marks which is which rather than leaving you to guess.
-
-Each row also shows the evidence it rests on - which contract was asked, what it answered, and at which
-block.
-
-### 7.2 Try to break it - the mutation buttons
-
-Each button tells one specific lie with the record you loaded and re-runs everything. **Read each
-button's "what will NOT catch this" list as carefully as its result.** The first mutation, *"Relabel the
-issuer's name"*, declares *"Designed to be caught by: nothing on this verification path"* - the name is
-not covered by the Merkle root, so relabelling it is not detected here.
-
-### 7.3 The attack catalogue - **Run the whole catalogue**
-
-Eleven complete fraudulent records, each with its own scripted chain, each declaring in advance which
-check must refuse it. These need no loaded record and make no network call: they exercise chain states a
-live chain cannot be asked to produce - a signer delisted after it issued, a contract the factory never
-deployed vouching for a root, a registry that does not govern the clone.
-
-Walked: **all eleven matched their declared expectations**, with no divergence. Verdicts across the
-eleven: three `valid`, seven `not valid`, one `no verdict`.
-
-**One of the eleven is an honest control - a genuine credential that must verify.** The page states why
-it is there: *"without it a catalogue of nothing but frauds would look perfect against a verifier that
-refused everything."* That control passing is what makes the other ten results mean anything.
-
-One scenario deliberately produces **no verdict** rather than a refusal: pointed at an endpoint on the
-wrong chain, every on-chain row reports *could not run* and the verdict is withheld. "The factory has no
-record of this root" would be an accusation nobody was in a position to make.
+**Means:** each mutation tells one specific lie with your record and re-runs everything, declaring in
+advance what will *not* catch it - relabelling the issuer's name is caught by nothing on this path,
+because the name is not covered by the Merkle root. The catalogue is eleven complete fraudulent
+records with their own scripted chains, each declaring which check must refuse it. **One of the
+eleven is a genuine credential that must pass** - without it, a verifier that refused everything
+would look perfect.
 
 ---
 
-## 8. Reference: live reads
-
-Read the live state rather than trusting numbers written here, and resolve every address from the ledger.
+# 10. Reference: reading the live state
 
 ```bash
 source scripts/lib/ledger.sh
@@ -1437,108 +648,95 @@ PR=$(ledger_addr ProviderRegistry)
 
 cast call $PR 'providerCount()(uint256)' --rpc-url $RPC
 cast call $PR 'serviceCount()(uint256)'  --rpc-url $RPC
-cast call $PR 'isResolverApproved(uint8,address)(bool)' 0 "$(ledger_addr ProviderDirectory)"     --rpc-url $RPC
-cast call $PR 'isResolverApproved(uint8,address)(bool)' 1 "$(ledger_addr ServiceDomainResolver)" --rpc-url $RPC
-cast call "$(ledger_addr ProviderDirectory)" 'resolverApproved()(bool)' --rpc-url $RPC
+
+# The two reads that decide whether anything can be issued - both must be true.
+cast call $PR 'canIssue(address,address)(bool)' <contract> <signer> --rpc-url $RPC
+cast call <contract> 'issuanceAllowed(address)(bool)' <signer> --rpc-url $RPC
+
+# Is a contract the record type it claims?
+cast call <contract> 'recordType()(bytes32)' --rpc-url $RPC
+cast keccak VACCINATION
 ```
 
-Walked on this stack: `providerCount` **1**; `serviceCount` **1 → 3** across this walk; both
-`isResolverApproved` reads **true**; `ProviderDirectory.resolverApproved()` **true**.
-
-The two rights reads are the ones that decide whether anything can be issued:
+Health, per role:
 
 ```bash
-cast call $PR 'rightsOf(address)(uint256)' <signer> --rpc-url $RPC          # bit 0 = RIGHT_ISSUE
-cast call $PR 'canIssue(address,address)(bool)' <clone> <signer> --rpc-url $RPC
-cast call <clone> 'issuanceAllowed(address)(bool)' <signer> --rpc-url $RPC
+for p in 39742 41874 43618 44832 41875 46001; do printf "%-6s " $p; curl -s http://127.0.0.1:$p/health; echo; done
+for p in 39741 41873 43617 44831 45931; do printf "%-6s %s\n" $p "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$p/)"; done
 ```
 
-**Mask the bit; never compare the whole word.** Bit 0 is the only settable bit today, so "the word equals
-1" and "bit 0 is set" agree on every mask the contract can currently emit - which is exactly what would
-let a whole-word comparison survive review until a second right is allocated.
+> Use `localhost` for the portals, not `127.0.0.1`. Vite dev servers bind IPv6 only, so a
+> `127.0.0.1` probe reports a healthy portal as dead.
 
-To see the grant history, read the log. **Use raw JSON-RPC, not `cast logs`** - the latter renders extra
-rows for the same query, so an empty result from it is weak evidence for a strong claim:
-
-```bash
-curl -s -X POST $RPC -H 'content-type: application/json' --data \
- '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"'"$PR"'","topics":["0xbc9c679fe541a4f3fcf5f2887c4adcd6e7703f7ea9d0933b8862662f8290af7f"],"fromBlock":"0x0","toBlock":"latest"}]}'
-```
-
-That topic0 is `RightsSet(address,uint256)`. Walked: three entries, the last of which withdraws a grant -
-which is why the admin panel renders that address struck through rather than dropping it.
+Two more roles exist that the walk above never needs: `indexer` (the oversight event feed, which
+serves the portals' Traceability and Oversight pages) and `prover` (a server-side consent prover for
+phones that cannot prove locally).
 
 ---
 
-## 9. What this guide does not cover
+# 11. What this guide does not cover
 
 **Phone surfaces.** The holder app carries a compiled Rust core and bundled proving artifacts and is
-not built by `demo-up.sh`; `docs/MOBILE_BUILD.md` covers it. **Some of this is now walked on a real
-handset** - see §10.2 - so read this list precisely rather than as a blanket exclusion:
+not built by `demo-up.sh` - [MOBILE_BUILD.md](./MOBILE_BUILD.md) covers it. Some of it is walked on a
+real handset; see §12.2. Specifically **not** walked: the dog-tag device bind (§5.1), and any
+completed owner-hidden consent proof, including the groomer's **Export on chain**.
 
-- **WALKED: importing a record to the phone.** A real `TRAVEL_CLEARANCE`, anchored on ROAX, scanned in
-  from a `/r/<token>` QR and rendered **VALID** on the device.
-- **WALKED: the consent flow's on-chain discovery check.** The export QR was scanned, a record selected,
-  Face ID passed, and `runLevelBFlow` resolved the discovery set from the bundled `ProtocolRegistry`
-  anchor - then correctly **refused** a verifier whose claimed chain disagreed with it.
-- **NOT WALKED: the dog-tag bind (§3.1).** The `/p/<token>` QR is minted and resolves correctly; the
-  device half has still not been performed. The tag visible on the handset came from an imported
-  credential's `dogTagId`, **not** from a bind, so the phone holds no owner-secret for it.
-- **NOT WALKED: a COMPLETED owner-hidden consent proof**, including the groomer's **Export on chain**
-  (§4.6). The flow was driven to the anchor check and refused there. Finishing it needs two things that
-  do not exist on this deployment yet: a verifier whose claimed `chainId` is 135 (which needs
-  `setVerifierCapability` granted to a live relayer - `canVerify` currently answers `false` for every
-  address), and an owner-secret on the device, which requires the bind above first.
-- **NOT WALKED: nearby provider search, the offline provider cache, and the directions handoff.** All
-  are phone surfaces, and the rendered result rows additionally cannot be verified on a dev machine at
-  all, because the directory host is a fixed production constant with no debug override.
+**Selecting a typed resolver** (the provider's half of §3.4). Both are approved by the registrar;
+the provider portal has no button for `setDomainResolver` / `setDirectoryResolver` yet, so flows 3
+and 4 of the provider page cannot be completed.
 
-**Selecting either typed resolver (§2.6, §2.7).** Both are approved by the registrar; neither is selected
-by the provider, and the provider portal has no button for `setDomainResolver` / `setDirectoryResolver`.
+**The microchip MATCH and MISMATCH outcomes** (§6.3). Only the neutral *not compared* state is
+reachable, because the other two need the shop to hold a credential for that tag, which arrives
+through **Import from user** - and that form wants a customer JWT a receptionist has no way to
+obtain.
 
-**The microchip MATCH and MISMATCH outcomes (§4.3).** Only the neutral *not compared* state was walked.
-Reaching the other two needs the shop to hold a credential for that tag, which arrives through **Import
-from user** - and that form wants a customer JWT a receptionist has no way to obtain.
+**The government's `EU_HEALTH_CERT` record type.** No contract for it exists on this deployment, so
+`/health` reports it `null` and `/issue` dry-runs rather than anchoring somewhere wrong.
 
-**The government's `EU_HEALTH_CERT` record type.** It has no clone on this deployment and `/health`
-reports it `null`.
+**`scripts/demo-provision-government.sh` does not work against this contract set** and §7.2 does not
+use it. It calls `whitelistFor`, a three-argument `createIssuer`, and the factory's `owner()` - none
+of which the launch set implements.
 
-**A note on the Playwright suites.** `make e2e-web` is the launchable entry point and stands up what the
-specs need. Do **not** run the specs directly and unfiltered: several are unmocked live-portal drivers
-that create real records and anchor them on chain, and `vite preview` honours `server.proxy`, so serving
-a portal on a port of your own does not give you a backend of your own.
+**The Playwright suites.** `make e2e-web` is the launchable entry point. Do not run the specs
+directly and unfiltered: several are unmocked live-portal drivers that create real records and anchor
+them on chain.
 
 ---
 
-## 10. Evidence: what was walked, when, and against what
+# 12. Evidence: what was walked, when, and against what
 
-### 10.2 On a real handset, 2026-08-05 - the anchor resolves, and the refusal is real
+## 12.1 The role-by-role boot, 2026-08-05
+
+Walked on **2026-08-05** against commit **`03b410c`** plus this branch, on the live ROAX set
+(chainId 135), from a machine with nothing running.
+
+## 12.2 On a real handset, 2026-08-05 - the anchor resolves, and the refusal is real
 
 Walked on **iPhone 15 Pro "KZG"** (device `F2A840C4-DFA6-5C37-AF64-77DBCA7C2B12`, udid
 `00008130-001A08E40021401C`), iOS 26.6, against commit **`fd26154`**. The app was built for a real
-device and installed - **the first rebuild since the contracts were replaced**, which is what made any
-of this reachable: the previous build bundled a superseded `ProtocolRegistry`, so discovery failed
+device and installed - the first rebuild since the contracts were replaced, which is what made any of
+this reachable: the previous build bundled a superseded `ProtocolRegistry`, so discovery failed
 closed for a reason that was not the real one.
 
 **The anchor.** `apps/ios/DogTag/roax.json` was regenerated from the ledger by
 `scripts/gen-mobile-roax-config.sh`, and the build carries **`ProtocolRegistry
-0xc385F939004c932568927ac14107E0f329176A60`** - matching `contracts/deployments/roax.json`. The Profile
-screen renders it on the device, alongside `ProviderRegistry 0x1ff6FdCeFf15AC…`, `DogTagSBT
+0xc385F939004c932568927ac14107E0f329176A60`** - matching `contracts/deployments/roax.json`. The
+Profile screen renders it on the device, alongside `ProviderRegistry 0x1ff6FdCeFf15AC…`, `DogTagSBT
 0xFc33A3e702b7d6…` and `ROAX (chainId 135)`.
 
-**A real credential.** A `TRAVEL_CLEARANCE` was issued by a live `government-api` and anchored on chain:
+**A real credential.** A `TRAVEL_CLEARANCE` was issued by a live `government-api` and anchored:
 
 | what | value |
 |---|---|
 | root | `0x20af931b400e49fd830b8768ef09ff859a98eee23ead39a20be73caf76828fbd` |
 | tx | `0x09984f5fae65efcb53c49ffa00e2d3dc67d3ff113fbb0b22c5275a276fc1af68` |
 | block | **348342** |
-| issuing clone | `0x0Ca65d55D9092Cac03A1981Afd9a115905A526E3` |
+| issuing contract | `0x0Ca65d55D9092Cac03A1981Afd9a115905A526E3` |
 
-Read back with `cast`: `isValid(root)` = **true**, `issuedBy(root)` = the whitelisted signer, and
-`rootIssuer(root)` = that clone. It was scanned onto the handset from a `/r/<token>` QR and the phone
-renders it **VALID** - which additionally means the mandatory issuer-whitelist pillar resolved on
-device, since a definite VALID requires it to pass.
+Read back with `cast`: `isValid(root)` = **true**, `issuedBy(root)` = the authorised signer, and
+`rootIssuer(root)` = that contract. It was scanned onto the handset from a `/r/<token>` QR and the
+phone renders it **VALID** - which additionally means the mandatory issuer-whitelist pillar resolved
+on device, since a definite VALID requires it to pass.
 
 **The discovery anchor resolves on device.** Scanning a verifier's `/x/<token>` export QR, selecting
 that record and passing Face ID ran `runLevelBFlow`, which produced, on screen:
@@ -1548,55 +746,37 @@ Owner-hidden verification refused: Invalid("claimed chainId 0 does not match anc
 ```
 
 That message comes from the catch after `validateDiscovery`, which is reached **only** past the guard
-that requires both `getDiscoverySet` and `getActiveArtifactSet` to have returned decodable records. So
-both anchor reads succeeded against `0xc385F939…` over the bundled endpoint, and the `135` in the
-message is the anchor's own value. **The refusal is correct**: the verifier was deliberately running a
-simulated chain and honestly advertised `chainId 0`, and the anti-redirect check refused the mismatch.
-A verifier on the live chain claims 135 and passes.
+that requires both `getDiscoverySet` and `getActiveArtifactSet` to have returned decodable records.
+So both anchor reads succeeded over the bundled endpoint, and the `135` in the message is the
+anchor's own value. **The refusal is correct**: the verifier was deliberately running a simulated
+chain and honestly advertised `chainId 0`, and the anti-redirect check refused the mismatch.
 
-Two things this does **not** establish, stated so nobody reads more into it: no Groth16 consent proof
-was generated (the flow refused before proving), and no dog-tag bind was performed (§9).
+Two things this does **not** establish: no Groth16 consent proof was generated (the flow refused
+before proving), and no dog-tag bind was performed.
 
-**A defect this walk found and fixed.** That refusal originally rendered as 12pt muted text below the
-button, and the holder read a Face ID tick followed by "nothing happened". A security refusal nobody
-can see is a silent failure. It now renders as a bordered card with an icon, a plain-language headline,
-and the line **"Your record was not shared."** - and a refusal is deliberately styled differently from
-a failure, so "we stopped this" and "it broke" cannot be confused.
+## 12.3 On the desktop stack, 2026-08-04
 
-### 10.1 On the desktop stack, 2026-08-04
+Walked on **2026-08-04** against commit **`3d3632f`** and, for the Signing keys page, `d0f8cd8`, on
+a live stack on ROAX chainId 135.
 
-Walked on **2026-08-04**, against commit **`3d3632f`** plus this branch's two fixes, on a live stack on
-ROAX chainId 135, booted from `scripts/demo-up.sh`.
-Every result quoted above as walked was observed in a browser or over `curl`/`cast` on that date.
+**The two-layer issuance requirement** (now §4.2) was driven entirely from the browser, and each step
+confirmed independently with `cast`:
 
-**§3.0 was re-walked on 2026-08-04 against `d0f8cd8` plus the Signing keys page**, on the same live
-ROAX set, because that section previously sent the reader to a terminal. The loop below was driven
-entirely from the browser - **no terminal was used for any of it** - and each step was then confirmed
-independently with `cast`:
+| what | transaction | block |
+|---|---|---|
+| **Remove** the vet's signing key | `0xe31c29c7…c20ab86c` | 340437 |
+| Issue a record, which is then **refused on chain** | reverted `0xa649bcb3` | - |
+| **Admit** it again | `0xd144be4a…d0192c25` | 340452 |
+| Issue the same record, which **anchors** | `0xcaaa6cfd…d9397e41` | 340456 |
 
-| what | from | transaction | block |
-|---|---|---|---|
-| **Remove** the vet's signing key | Signing keys page | `0xe31c29c7…c20ab86c` | 340437 |
-| Issue a record, which is then **refused on chain** | Issue a record page | reverted `0xa649bcb3` | - |
-| **Admit** it again | Signing keys page | `0xd144be4a…d0192c25` | 340452 |
-| Issue the same record, which **anchors** | Issue a record page | `0xcaaa6cfd…d9397e41` | 340456 |
-
-The refusal is the load-bearing half: between blocks 340437 and 340452 the authority answered
+The refusal is the load-bearing half: between blocks 340437 and 340452 the registry answered
 `canIssue == true` while the contract's own list answered `false`, and `cast sig NotLocallyAllowed()`
-is `0xa649bcb3` - so the page's warning that "every attempt to issue through this contract will be
-refused" was a true statement about what the chain would do, not a guess. The credential that landed
-afterwards reads back `rootIssuer(root)` = the VACCINATION contract, `isValid(root)` = true, and
-`issuedBy(root)` = the vet's own custody signer.
+is `0xa649bcb3` - so the page's warning was a true statement about what the chain would do.
 
-The groomer portal's copy of the page was walked too: it shows that shop's own signing key
-(`0xc01e…cf83`), reports it **Not admitted** on both contracts, and disables Admit with "Connect your
-wallet first" - the honest state for a portal with no wallet connected.
-
-`scripts/demo-bootstrap.sh` was run against that groomer signer `0xc01e…cf83`. It granted layer 1
-through `setRights` and the three VERIFY purposes through `setVerifierCapability` (each read back
-`canVerify == true`), granted the SBT `ISSUER_ROLE`, then **exited 1** naming the Signing keys page
-because layer 2 was missing. These are live governance writes on the shared set, so they are recorded
-rather than described:
+`scripts/demo-bootstrap.sh` was run against the groomer's signer. It granted the registry-wide right
+through `setRights` and three VERIFY purposes through `setVerifierCapability` (each read back
+`canVerify == true`), granted the SBT `ISSUER_ROLE`, then **exited 1** naming the Signing keys page,
+because the second permission is one the governance key is not allowed to write:
 
 | what | transaction | block |
 |---|---|---|
@@ -1606,93 +786,31 @@ rather than described:
 | `setVerifierCapability(grooming_intake, …)` | `0x616cdd61…36e8ba1` | 340473 |
 | `setVerifierCapability(boarding_intake, …)` | `0xf0f2f059…7c85bd24` | 340474 |
 | `setVerifierCapability(daycare_access, …)` | `0xb5f445b0…35d5b0ae` | 340475 |
-| fund again - the second run's ONE non-idempotent write | `0x154db47d…6805b519` | 340477 |
+| fund again - the second run's one non-idempotent write | `0x154db47d…6805b519` | 340477 |
 
-Run a second time it skipped every GRANT and still exited 1. That last row is why the funding is now
-read-before-write too: it was the one unconditional write in a script whose selling point is that it
-is idempotent, which made the balance climb on every re-run - a false claim about its own behaviour
-rather than merely a wasted transfer. Re-running it now reports *already holds … PLASMA - skipping*.
+**Walked end to end on that date:** the boot and every `/health`; the deploy rehearsed on an
+`anvil --fork-url` fork of ROAX to `ONCHAIN EXECUTION COMPLETE & SUCCESSFUL` (12 transactions) plus
+the two-phase publish, with the ledger restored and verified byte-identical; admin sign-in, approving
+a record type, and attach/activate/grant each mined and read back; the provider page's flow 1
+deploying a real DOG_PROFILE contract at exactly the predicted address, and flow 2's `repointService`
+taking `canIssue` from false to true; register-pet through to the minted QR; a record issued to
+**Verified on-chain** and verified independently (`rootIssuer`, `isValid`, `issuedBy`, `recordType`);
+the whole groomer role including the published `.ics` diary fetched and checked; government
+verification of the vet's credential both in the portal and over the unauthenticated `POST /v1/verify`;
+a government credential issued to **✓ anchored on-chain** with both public receipt surfaces confirmed
+to carry no person data; the owner wallet receiving the vet's credential; and the bench on the genuine
+credential (nine rows, all Pass) plus the eleven-scenario catalogue run in full with no divergence.
 
-None of that is a capability escape: layer 1 is the scope-free `RIGHT_ISSUE`, and layer 2 is exactly
-what stops it becoming issuance on somebody else's contract - which is the whole point of there being
-two.
-
-**The wallet was a scripted EIP-6963 provider signing with the well-known PUBLIC anvil test key**, the
-one the deploy ledger records as this provider's controller precisely so anyone can act as it on a
-disposable testnet. The product code exercised is identical - the same connect path, the same
-preflights, the same transactions - but no real wallet's own UI was driven, so a wallet-specific
-problem would not have shown up. The shim lived in `index.html` for the walk and was reverted.
-
-**Walked end to end:**
-
-- **§0** - the boot, including the chain preflight; `/health` on all six backends and all five portals;
-  the `demo-up.sh` line-continuation defect reproduced (`.demo/admin-web.log` containing an environment
-  dump, the script hung, four portals never started) and fixed; the `ledger.sh` zsh defect reproduced
-  (`ledger_addr` empty for every key under zsh, `cast` answering `invalid value ''`) and fixed, then
-  re-verified across bash/zsh × `set -u` × repo-root/subdirectory, plus the cwd-walk path, the
-  outside-a-repo loud failure and the `DOGTAG_LEDGER` override; the hardcoded `LAN_IP` confirmed
-  unreachable and overridden; all nine deployed contracts confirmed by code size; `getDiscoverySet`
-  decoded and confirmed active.
-- **§0.3** - the deploy **rehearsed on an `anvil --fork-url` fork of ROAX**: `Deploy.s.sol run()` to
-  `ONCHAIN EXECUTION COMPLETE & SUCCESSFUL` with 12 transactions (9 CREATE + 3 registrar calls), then the
-  two-phase publish to a nine-word `getDiscoverySet` with `active = 1` and a `circuitId` identical to the
-  live one. The ledger clobber was reproduced, then restored and verified byte-identical by sha256 and by
-  an empty `git diff`. The four artifact pins were confirmed to agree three ways.
-- **§1** - admin sign-in; the Dashboard's "Authority map unavailable" traced to the factory having no
-  `owner()`, cross-checked against `admin-api`'s own preflight log and three chain reads; the Providers
-  banner; approving a record type (**Mined: approved DOG_PROFILE**); `canCreateService` re-confirmed from
-  the chain in all three forms including the `--from`-less trap; **§1.3** attach, activate and grant the
-  issue right, each mined and each read back.
-- **§2** - the four-flow page rendering with addresses supplied by `demo-up.sh`; flow 1 checked to
-  **Ready** and deployed a real DOG_PROFILE contract at exactly the predicted address, with `owner()`,
-  `recordType()`, `isClone` and the #144 creator-seed all verified independently; flow 2 checked to
-  **Ready** with five passing checks and `repointService` mined, taking `canIssue` from false to true.
-  Flows 3 and 4 were **not** completed - see §9.
-- **§3** - the two-layer issuance requirement established by chain reads and, at the time, by grepping
-  for a surface that did not exist; `setIssuanceAllowed` sent by hand from the clone owner (**that is
-  the step the Signing keys page replaced** - see the re-walk above); register-pet through to
-  the minted QR with the `/p/` endpoint resolved; a record issued to **Verified on-chain**, then verified
-  independently (`rootIssuer`, `isValid`, `issuedBy`, `recordType`).
-- **§4** - the whole groomer role: the nav enumerated; a client and pet created; the pet opened; DogTag
-  `1` linked and the microchip cross-check's neutral state observed; an appointment booked (with the
-  Fill-demo-data pet reset confirmed against the URL that carried the pet through) and seen on the week
-  view; the `.ics` diary published and **fetched**, confirming its calendar name, refresh interval and
-  the booking's own `VEVENT`; and **Verify credential** run on the vet's credential to **Verdict: pass**
-  with all five pillars.
-- **§5.1** - government verification of the vet's credential, both in the portal and over the
-  unauthenticated `POST /v1/verify`, block-pinned, with `issuerWhitelistState: "passed"`.
-- **§5.2** - the government backend wired to the existing TRAVEL_CLEARANCE clone **without** the broken
-  provisioning script, `/health` confirmed at `canSign: true`, a credential issued to **✓ anchored
-  on-chain** and verified independently (`isValid`, `issuedBy`, receipt status 0x1 at block 339837), and
-  both public receipt surfaces fetched and checked to carry no Section A person data.
-- **§6** - the owner wallet receiving the vet's credential and reporting integrity and anchoring.
-- **§7** - the bench on the genuine credential (nine rows, all Pass, block-pinned); the eleven-scenario
-  catalogue run in full with **no divergence** (3 valid, 7 not valid, 1 no verdict).
-- **§8** - every read in that section.
-
-**Not walked, each with its reason stated in place:** everything in §9, plus:
-
-- **`scripts/demo-provision-government.sh` was established as broken by READING it, not by running it.**
-  Its three incompatibilities with the launch set are each visible in its source, and §5.2 was completed
-  by the manual route instead, so running it would only have created noise on the testnet.
-- **The deploy was rehearsed on a fork, not broadcast to live ROAX.** Re-broadcasting would replace a
-  working set and the provisioned provider that makes §2 walkable at all, and would invalidate the
-  ledger's own provenance notes. The live set was verified read-only instead. This is an honestly-marked
-  unwalked step, not a gap.
-
-**One caveat about §2, stated because it affects how much weight to put on it.** The wallet used for the
-provider flows was a scripted EIP-6963 provider signing with the well-known **public** anvil test key -
-the key the ledger records as the walk provider's controller precisely so anyone can act as it on a
-disposable testnet. The product code exercised is identical (the same connect path, the same preflights,
-the same transactions), but the wallet's own UI was not exercised, so a wallet-specific problem would not
+**The wallet was a scripted EIP-6963 provider signing with the published anvil test key** - the key
+the ledger records as this provider's controller precisely so anyone can act as it on a disposable
+testnet. The product code exercised is identical: the same connect path, the same preflights, the
+same transactions. But no real wallet's own UI was driven, so a wallet-specific problem would not
 have shown up.
 
-**A correction worth recording, because it is the failure mode this guide is about.** Reading the admin
-service panel through a flattened text dump made a *withdrawn* issue-right holder look like a current
-one, and that was written down as a defect before being checked. It is not one: the withdrawn address
-renders struck through beside the granted one, and the distinction is carried entirely by styling. Read
-the rendered element, not a text extraction, whenever a distinction is visual.
+**Not walked, with reasons:** everything in §11; and the deploy was rehearsed on a fork rather than
+broadcast to live ROAX, because re-broadcasting would replace a working set and invalidate the
+ledger's own provenance notes.
 
-**There is no CI for any of these paths.** The two mobile workflows are dispatch-only and no workflow runs
-the Rust test suite, so a local walk is the only evidence any of this works. If you change a portal,
-re-walk the section rather than assuming.
+**There is no CI for any of these paths.** The two mobile workflows are dispatch-only and no workflow
+runs the Rust test suite, so a local walk is the only evidence any of this works. If you change a
+portal, re-walk the section rather than assuming.
