@@ -51,6 +51,9 @@
 		7D251C8F539845D14B911FDC /* NearbyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C11CA1B0355D326B91CE598 /* NearbyDecision.swift */; };
 		82DFB6F5477D97DDCA88CF69 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7926F506647E68F6A59FDAF /* Theme.swift */; };
 		83C860308EA1DF6528BA3144 /* VerdictDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6600A3A4E4FCE92799ACBA5A /* VerdictDisplay.swift */; };
+		EB93C6963D9F223E806EFB68 /* ExportAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67E0A25541F607402D6B54EA /* ExportAvailability.swift */; };
+		1F487292EF5992091A1C1B1D /* ExportAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67E0A25541F607402D6B54EA /* ExportAvailability.swift */; };
+		3829DF31153A3E3B3A06F0E9 /* ExportAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 612AAA77710FED8ECB886A54 /* ExportAvailabilityTests.swift */; };
 		847729E21947C654A60BC69C /* PublicSignalIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9AFF180B3A3062BCB03AFE3 /* PublicSignalIndex.swift */; };
 		88E11CB08CC2C81AE51118FA /* Keccak256.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85DFF42E4A240519092B9764 /* Keccak256.swift */; };
 		8CCF26157DAEF743762A190D /* NearbyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C11CA1B0355D326B91CE598 /* NearbyDecision.swift */; };
@@ -86,6 +89,7 @@
 		0338C98CEC9DA9E969E82F12 /* DogTagCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagCard.swift; sourceTree = "<group>"; };
 		05A35C55F156CE4480CF763C /* HomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreen.swift; sourceTree = "<group>"; };
 		144F9FDA42E1E4D6D587F38B /* VerdictDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerdictDisplayTests.swift; sourceTree = "<group>"; };
+		612AAA77710FED8ECB886A54 /* ExportAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportAvailabilityTests.swift; sourceTree = "<group>"; };
 		16C0807944D4980D034D65AF /* ZkeyAssetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZkeyAssetTests.swift; sourceTree = "<group>"; };
 		1DE9492A41E44C4441AF7189 /* DogTagFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = DogTagFFI.xcframework; sourceTree = "<group>"; };
 		1F0A5F7F5D703C32FA3502B1 /* InclusionProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InclusionProof.swift; sourceTree = "<group>"; };
@@ -102,6 +106,7 @@
 		4DEC7E3F44BE4B254D3F66FF /* RpcEndpointSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RpcEndpointSettingsTests.swift; sourceTree = "<group>"; };
 		58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = dogtag_standard.swift; sourceTree = "<group>"; };
 		6600A3A4E4FCE92799ACBA5A /* VerdictDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerdictDisplay.swift; sourceTree = "<group>"; };
+		67E0A25541F607402D6B54EA /* ExportAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportAvailability.swift; sourceTree = "<group>"; };
 		685707046DC0696308DB5C8D /* QrPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrPayload.swift; sourceTree = "<group>"; };
 		68DE565B890849516CEFD273 /* RpcEndpointSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RpcEndpointSettings.swift; sourceTree = "<group>"; };
 		6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelScreen.swift; sourceTree = "<group>"; };
@@ -178,6 +183,7 @@
 				4DEC7E3F44BE4B254D3F66FF /* RpcEndpointSettingsTests.swift */,
 				7B95325FF1F4944402491733 /* SeedBackupGateTests.swift */,
 				144F9FDA42E1E4D6D587F38B /* VerdictDisplayTests.swift */,
+				612AAA77710FED8ECB886A54 /* ExportAvailabilityTests.swift */,
 				16C0807944D4980D034D65AF /* ZkeyAssetTests.swift */,
 			);
 			path = DogTagTests;
@@ -222,6 +228,7 @@
 				CEFF4BE5934863572EB85AB5 /* TravelReceiptView.swift */,
 				6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */,
 				6600A3A4E4FCE92799ACBA5A /* VerdictDisplay.swift */,
+				67E0A25541F607402D6B54EA /* ExportAvailability.swift */,
 				D798CCFF5A5C7C6A7BFFBF8A /* VerifyScreen.swift */,
 				E35FCC686C0AAD6B317376C7 /* Wallet.swift */,
 				E35067E42CB675A6C8D77F8D /* Wordlist.swift */,
@@ -380,6 +387,7 @@
 				E9C15C0493BE17D1889DAF14 /* TravelReceiptView.swift in Sources */,
 				20F038D3B3ECF7634BEC4266 /* TravelScreen.swift in Sources */,
 				C410E585C90E372FE1DD3E6C /* VerdictDisplay.swift in Sources */,
+				EB93C6963D9F223E806EFB68 /* ExportAvailability.swift in Sources */,
 				D0F8DCB58714F356E47D7CBE /* VerifyScreen.swift in Sources */,
 				F99C7D3CA52E6CCBE02EB6A5 /* Wallet.swift in Sources */,
 				49DE2EAF2A416E46CC4633B1 /* Wordlist.swift in Sources */,
@@ -418,6 +426,8 @@
 				A3F8875BCFAE4F889D5255FA /* Secp256k1.swift in Sources */,
 				5ED75BCD0F8D263753A27352 /* SeedBackupGateTests.swift in Sources */,
 				83C860308EA1DF6528BA3144 /* VerdictDisplay.swift in Sources */,
+				1F487292EF5992091A1C1B1D /* ExportAvailability.swift in Sources */,
+				3829DF31153A3E3B3A06F0E9 /* ExportAvailabilityTests.swift in Sources */,
 				65ED4AA620B79A45A87C717D /* VerdictDisplayTests.swift in Sources */,
 				79707F44BBB3AA784F23FDFF /* Wallet.swift in Sources */,
 				01B380635FD7CE3D7FD44D1F /* Wordlist.swift in Sources */,
