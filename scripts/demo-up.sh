@@ -35,6 +35,10 @@ else
     esac
   done
 fi
+# Normalised to exactly one space between names and none at either end, so every place that prints it
+# reads the same whether the caller named roles or took the default.
+# shellcheck disable=SC2086
+ROLES="$(echo $ROLES)"
 want(){ case " $ROLES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # Any role but `owner` reads the chain at boot (or is configured from it), so the chain preflight runs
 # for all of them. The owner wallet has no backend and reads the chain only from the browser.
@@ -135,7 +139,7 @@ port_free(){ # port, role, what
 # PREFLIGHT — fail loudly here rather than boot a stack that looks healthy and silently does nothing.
 # ------------------------------------------------------------------------------------------------
 CHAIN_ID_EXPECTED="${CHAIN_ID:-135}"
-echo "Preflight (roles:$ROLES)"
+echo "Preflight (roles: $ROLES)"
 
 # Print the chain line only when a chain check actually runs. Stating the configured endpoint for a
 # role that never contacts it reads as a check that passed.
@@ -509,7 +513,7 @@ run owner-web ":45931" pnpm --filter @dogtag/owner-web dev
 fi
 
 echo
-echo "UP (roles:$ROLES). Started just now:"
+echo "UP (roles: $ROLES). Started just now:"
 if want admin;      then echo "  admin       portal http://localhost:39741   api :39742"; fi
 if want vet;        then echo "  vet         portal http://localhost:41873   api :41874"; fi
 if want groomer;    then echo "  groomer     portal http://localhost:43617   api :43618"; fi
@@ -519,6 +523,6 @@ if want prover;     then echo "  prover      api :41875   POST /prove-consent"; 
 if want indexer;    then echo "  indexer     api :46001"; fi
 echo
 echo "Portals are vite dev servers and bind IPv6 - probe http://localhost:<port>, not 127.0.0.1."
-echo "Stop just these:  scripts/demo-down.sh$(echo "$ROLES" | sed 's/  */ /g')"
+echo "Stop just these:  scripts/demo-down.sh $ROLES"
 echo "Stop everything:  scripts/demo-down.sh"
 echo "Walk-through:     docs/DEMO_CLICKS.md"

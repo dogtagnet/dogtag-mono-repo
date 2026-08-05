@@ -242,7 +242,9 @@ be true yet. Issuing refuses until §4.4 sets them; everything in this section w
 - **Seen it before on this machine?** Click **Unlock**, then **Unlock and continue** - both fields
   are prefilled.
 - **First run?** There is no key yet. Go to **Setup**, sign in with the admin password (also
-  prefilled), and follow the wizard: **genesis** → confirm → unlock.
+  prefilled), and follow the wizard: **genesis** → confirm → unlock. It shows you 24 words once,
+  makes you tick that you wrote them down, then asks you to re-type three of them and choose an
+  encryption passphrase - so have somewhere to write before you press **Generate 24-word seed**.
 
 Then open **Signing keys** in the nav and **copy the address in the line "This shop signs with …".**
 
@@ -731,6 +733,19 @@ self-service page rendered all four flows**, which is what makes §2 reachable b
 exists and is the whole reason the ordering could change. Also checked: a second `demo-up.sh vet` is
 refused by port with the role's own stop command named; bringing up `admin` alongside left the vet's
 recorded pids untouched; and `demo-down.sh admin` left the vet serving.
+
+**Boot-everything still works**, checked separately with a bare `scripts/demo-up.sh` from a clean
+machine: all seven roles started, seven pid files, six backends answering `/health` and five portals
+`200`, with `indexer` and `prover` - the two roles the walk above never needs - among them and neither
+log carrying a stack trace. `scripts/demo-down.sh` then stopped all eleven processes and left nothing
+listening.
+
+**Both branches of §2.2 were walked, including the one a fresh clone hits.** The custody seal was
+moved aside to put the vet in genuine first-run state, and the Setup wizard driven through
+**genesis → confirm → unlock**: it showed 24 words once, required the written-down acknowledgment,
+challenged three of them by position, took an encryption passphrase, and produced a working signer
+that **Signing keys** then named. The original seal was restored afterwards and verified byte-identical
+by sha256.
 
 **§0** - `0.2` run verbatim under zsh: nine contracts, each with code, and `getDiscoverySet` returning
 a nine-word record whose last word is `1`. `0.3`'s key check confirmed the configured key resolves to
