@@ -440,6 +440,11 @@ struct ScanScreen: View {
             let wantGroup = CredentialGroup.from(recordType: sess.recordType)
             let matching = store.credentials.filter { $0.group == wantGroup }
             let candidates = matching.isEmpty ? store.credentials : matching
+            // One decision for both the control's enabled-ness and the sentence beside it, so the
+            // two can never disagree — see `ExportAvailability` for why the reason cannot live
+            // inside the action a disabled control never fires.
+            let availability = ExportAvailability.of(
+                candidateCount: candidates.count, hasSelection: selected != nil, working: working)
             VStack(alignment: .leading, spacing: 14) {
                 card {
                     Text("Export request").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
@@ -504,9 +509,25 @@ struct ScanScreen: View {
                 }
                 Button { presentExport(host: host, token: token, groomerAddr: groomerAddr, sess: sess) } label: {
                     Text(working ? "Working…" : "Approve & export").frame(maxWidth: .infinity).padding(.vertical, 12)
-                        .foregroundColor(.white).background(RoundedRectangle(cornerRadius: 12).fill(c.success))
+                        .foregroundColor(.white)
+                        // A disabled control must not keep the live colour: `.disabled` does not dim a
+                        // custom background, so the button read as pressable while doing nothing.
+                        .background(RoundedRectangle(cornerRadius: 12)
+                            .fill(availability.canProceed ? c.success : c.muted.opacity(0.45)))
                 }
-                .disabled(selected == nil || working)
+                .disabled(!availability.canProceed)
+                // WHY the control is inert, rendered from the state rather than from the action the
+                // disabled control never fires. Absent this, an empty wallet met a dead button in
+                // silence — the state a first-time holder is always in.
+                if let reason = availability.blockedReason {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(reason).font(.system(size: 12, weight: .semibold)).foregroundColor(c.onBackground)
+                        if let step = availability.nextStep {
+                            Text(step).font(.system(size: 12)).foregroundColor(c.muted)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 // While working the ForgeWaitView already surfaces the live status; show the plain
                 // status text only when idle (the final success/timeout line).
                 if !working && !status.isEmpty {

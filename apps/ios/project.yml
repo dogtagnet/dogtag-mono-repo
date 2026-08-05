@@ -84,6 +84,12 @@ targets:
       # could pin the verdict rules the way RoaxRpcSelectorTest pins Android; Models.swift above already
       # depends on it, so it must be here regardless.
       - path: DogTag/VerdictDisplay.swift
+      # ExportAvailability is Foundation-only: the pure decision behind the export panel's
+      # "Approve & export" control — whether it may fire, and WHY not when it may not. Extracted so
+      # this bundle can pin the no-silent-refusal invariant (a blocked state must carry a reason),
+      # which is exactly what the previous shape could not satisfy: its only explanation lived inside
+      # the action a disabled control never fires.
+      - path: DogTag/ExportAvailability.swift
       # DogTagCard is Foundation-only: the pure fold behind the Profile screen's Dog-tags card - which
       # sources contributed a tag, and the "answered / could-not-read / not-yet-asked" distinction that
       # decides whether the card may claim there is no tag. Deliberately projects OwnedTag/ImportedTag
