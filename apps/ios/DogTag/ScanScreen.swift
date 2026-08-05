@@ -37,6 +37,9 @@ struct ScanScreen: View {
     @State private var scanning = true
     @State private var payload: QrPayload? = nil
     @State private var status = ""
+    /// The terminal result of a presentation. Nil while idle or in flight. Rendered as a
+    /// prominent card - a refusal on this screen must never be 12pt muted text again.
+    @State private var outcome: ConsentOutcome? = nil
     @State private var working = false
     @State private var selected: Credential? = nil
     // D1 disclosure picker: the `owner.identity.*` keyPaths the owner chose to REVEAL to this
@@ -530,9 +533,14 @@ struct ScanScreen: View {
                 }
                 // While working the ForgeWaitView already surfaces the live status; show the plain
                 // status text only when idle (the final success/timeout line).
-                if !working && !status.isEmpty {
-                    Text(status).font(.system(size: 12))
-                        .foregroundColor(status.hasPrefix("Verified on-chain") ? c.success : c.muted)
+                // The terminal result. This is where a SECURITY REFUSAL is delivered, so it is a card
+                // with an icon and a headline rather than a line of 12pt muted text - the shape that
+                // let a correct refusal read as "nothing happened" on the consent screen.
+                if !working, let o = outcome {
+                    consentOutcomeCard(o)
+                }
+                if !working && outcome == nil && !status.isEmpty {
+                    Text(status).font(.system(size: 12)).foregroundColor(c.muted)
                 }
             }
         } else {
@@ -553,10 +561,12 @@ struct ScanScreen: View {
             reason: "Present '\(credential.displayTypeLabel)' to \(sess.relayer.isEmpty ? "the verifier" : sess.relayer)"
         ) { ok, error in
             guard ok else {
-                status = error ?? "auth failed"
+                status = ""
+                outcome = .couldNotComplete(.authentication(error))
                 return
             }
             working = true
+            outcome = nil
             let roax = RoaxConfig.load()
             Task {
                 await runLevelBFlow(
@@ -584,7 +594,8 @@ struct ScanScreen: View {
         status = "Validating owner-hidden discovery anchor…"
         guard let claims = sess.claims else {
             working = false
-            status = "Owner-hidden session is missing its discovery claims — refusing."
+            status = ""
+            outcome = .refused(.sessionMissingClaims)
             return
         }
         // Resolve both on-chain axes. Missing configuration/publication fails closed.
@@ -610,7 +621,8 @@ struct ScanScreen: View {
             protocolRegistry: roax.protocolRegistry, version: version)
         guard let cs = await csTask, let arti = await asTask else {
             working = false
-            status = "Owner-hidden verification is not available yet (discovery anchor unpublished)."
+            status = ""
+            outcome = .couldNotComplete(.anchorUnavailable)
             return
         }
         // Build the FFI `TrustedAnchor`. `contractSetActive`/`artifactSetActive` come from the two
@@ -650,9 +662,19 @@ struct ScanScreen: View {
         // registry/chainId/version/versionId/both-active/minAppVersion checks, which all still fire.
         // An independent app-side purpose is queued as follow-up hardening.
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
+        // The anti-redirect trip gets its OWN catch: a verifier that disagrees with the on-chain
+        // anchor is a deliberate REFUSAL, and folding it into the outer catch would render the one
+        // protective decision on this screen as "something went wrong".
         do {
             _ = try validateDiscovery(
                 claims: ffiClaims, anchor: anchor, appVersion: appVersion, expectedPurpose: sess.purpose)
+        } catch {
+            working = false
+            status = ""
+            outcome = .refused(.verifierFailedAnchorCheck(detail: ConsentOutcome.discoveryDetail("\(error)")))
+            return
+        }
+        do {
 
             // The server and contract repeat this whitelist check before spending gas.
             status = "Checking groomer authorization…"
@@ -662,14 +684,16 @@ struct ScanScreen: View {
                 key: verifyKey, signer: sess.relayer)
             guard case .valid = wl else {
                 working = false
-                status = "This groomer is not authorized (not whitelisted)."
+                status = ""
+                outcome = .refused(.verifierNotAuthorized)
                 return
             }
             if !DnsVerify.isLocalHost(host) {
                 status = "Verifying groomer DNS…"
                 guard await DnsVerify.verifyGroomer(host: host, groomerAddr: groomerAddr) else {
                     working = false
-                    status = "Groomer DNS not verified — refusing to present."
+                    status = ""
+                    outcome = .refused(.verifierDomainUnverified)
                     return
                 }
             }
@@ -680,7 +704,8 @@ struct ScanScreen: View {
             // proveConsent derives and checks the complete witness internally from the seed.
             guard let seedHex = Wallet.seedHex() else {
                 working = false
-                status = "Wallet seed unavailable — authenticate and try again."
+                status = ""
+                outcome = .couldNotComplete(.walletLocked)
                 return
             }
             // Use the throwing accessor here: an encrypted store that exists but cannot be read is
@@ -690,12 +715,14 @@ struct ScanScreen: View {
             }),
                   owner.abandonedAt == nil else {
                 working = false
-                status = "No active owner-hidden secret exists for this dog tag."
+                status = ""
+                outcome = .couldNotComplete(.noOwnerSecret)
                 return
             }
             guard owner.derivationVersion == ProfileTreeStore.derivationVersion else {
                 working = false
-                status = "This owner-hidden secret uses an unsupported derivation version."
+                status = ""
+                outcome = .couldNotComplete(.unsupportedSecretVersion)
                 return
             }
             let attributes = owner.attributes.map { a -> [String: Any] in
@@ -716,7 +743,8 @@ struct ScanScreen: View {
                   let zkeyPath = ZkeyAsset.ensure(descriptor: descriptor),
                   let graphPath = ZkeyAsset.ensureGraph(descriptor: descriptor) else {
                 working = false
-                status = "Owner-hidden proving artifact missing from bundle."
+                status = ""
+                outcome = .couldNotComplete(.provingArtifactMissing)
                 return
             }
             status = "Generating owner-hidden proof…"
@@ -757,7 +785,8 @@ struct ScanScreen: View {
                 rpcUrl: RpcEndpointSettings.rpcUrl(), verificationRegistry: verificationRegistry,
                 nullifier: nullifier) {
                 working = false
-                status = "This verification was already recorded."
+                status = ""
+                outcome = .refused(.alreadyRecorded)
                 return
             }
 
@@ -799,7 +828,8 @@ struct ScanScreen: View {
                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                let reject = object["error"] as? String, !reject.isEmpty {
                 working = false
-                status = "Submit rejected (\(reject))."
+                status = ""
+                outcome = .couldNotComplete(.proofRejected("\(reject)"))
                 return
             }
 
@@ -825,7 +855,8 @@ struct ScanScreen: View {
             }
             if let failedMsg {
                 working = false
-                status = "Verification failed: \(failedMsg)"
+                status = ""
+                outcome = .couldNotComplete(.recordingFailed(failedMsg))
                 return
             }
             if done {
@@ -833,18 +864,66 @@ struct ScanScreen: View {
                     host: host, sessionId: sess.sessionId, token: token)?.txHash
                 working = false
                 if let tx, !tx.isEmpty {
-                    status = "Verified on-chain — owner hidden. tx \(String(tx.prefix(14)))…"
+                    status = ""
+                    outcome = .succeeded(txHash: String(tx.prefix(14)) + "…")
                 } else {
-                    status = "Verified on-chain — owner hidden."
+                    status = ""
+                    outcome = .succeeded(txHash: nil)
                 }
             } else {
                 working = false
-                status = "Submitted; awaiting confirmation."
+                status = ""
+                outcome = .awaitingConfirmation
             }
         } catch {
+            // Reached only by a throw AFTER the anchor check passed (proving/submission). A refusal
+            // by `validateDiscovery` has its own catch above and must never arrive here as a failure.
             working = false
-            status = "Owner-hidden verification refused: \(error)"
+            status = ""
+            outcome = .couldNotComplete(.unexpected("\(error)"))
         }
+    }
+
+    /// Colour for an outcome's tone. A refusal is deliberately the WARNING colour, not the danger
+    /// colour: nothing is broken, DogTag decided. Three tones so the holder can tell "it worked",
+    /// "we stopped this" and "it failed" apart at a glance, by colour AND by icon.
+    private func outcomeTint(_ o: ConsentOutcome) -> Color {
+        switch o.tone {
+        case .success: return c.success
+        case .blocked: return c.warning
+        case .failure: return c.danger
+        }
+    }
+
+    @ViewBuilder
+    private func consentOutcomeCard(_ o: ConsentOutcome) -> some View {
+        let tint = outcomeTint(o)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: o.iconName).font(.system(size: 22, weight: .semibold)).foregroundColor(tint)
+                Text(o.title).font(.system(size: 17, weight: .bold)).foregroundColor(c.onBackground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // THE ANSWER TO THE FIRST QUESTION A HOLDER ASKS. Its own line, above the prose, because
+            // "did my record go out?" must not have to be inferred from a paragraph.
+            if o.nothingWasShared {
+                Text("Your record was not shared.")
+                    .font(.system(size: 14, weight: .semibold)).foregroundColor(tint)
+            }
+            Text(o.explanation).font(.system(size: 13)).foregroundColor(c.onBackground)
+                .fixedSize(horizontal: false, vertical: true)
+            if let detail = o.technicalDetail, !detail.isEmpty {
+                Text(detail).font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if o.suggestsRetry {
+                Text("You can try again.").font(.system(size: 12)).foregroundColor(c.muted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(tint.opacity(0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(tint, lineWidth: 1.5))
     }
 
     // ---- helpers ----

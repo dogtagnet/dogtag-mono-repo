@@ -1,5 +1,15 @@
 # DogTag - testnet end-to-end demo (LIVE on ROAX)
 
+> **This is the narrative overview, not the guide to follow.**
+> If you want to *do* the walk - from an empty machine through every use case, with each step actually
+> performed on a live stack - read **[DEMO_CLICKS.md](./DEMO_CLICKS.md)** instead. That is the single
+> entry point.
+>
+> This file is kept because `scripts/demo-up.sh` and `scripts/e2e-roles.sh` point at it as the prose
+> companion to the e2e scripts, and because it indexes what `e2e-smoke.sh` / `e2e-zk.sh` assert. It
+> describes the same flow in summary form and is **not** maintained as a click-through: where the two
+> disagree, DEMO_CLICKS.md is the one that was walked.
+
 Click through the whole flow against the **live ROAX deployment** (chainId 135, addresses from `contracts/.env` / `contracts/deployments/roax.json`):
 **admin onboards a vet/groomer** via **apply→approve** (issuers get issuance whitelists - and a `DOG_PROFILE` issuer also gets `DogTagSBTConsent.ISSUER_ROLE` - while **verifiers get `VERIFY:<purpose>` whitelisted** the same way; the admin portal **only approves + whitelists wallet addresses**)
 → the **phone creates a self-custodial wallet** (the seed is what the owner leaves are derived from)
