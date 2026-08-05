@@ -9,6 +9,15 @@ pet-owner phone app, and the on-chain consent proof.
 **Who it is for:** anyone who wants to see DogTag work, from scratch, without already knowing the
 codebase. An AI agent can run the fenced blocks top to bottom; a human follows the same steps.
 
+**You will play four different people.** Operator, admin, provider, holder - and on one laptop you play
+all of them, which is exactly how a reader comes away believing one admin deploys everything. That is
+the opposite of the design: **each provider deploys and owns its own issuing contract**, and DogTag
+cannot do it for them. Every section says whose hands are on the keyboard; the table at the top of §0
+says who they really are in production. If you read one thing before starting, read that table.
+
+Every heading in §0 is also tagged **DO** (something to run) or **KNOW** (background, nothing to run),
+so you are never hunting for a command in a section that has none.
+
 **You do not need to read any other document to get through this one.** Where another doc is genuinely
 the right place for a detail, this guide links to it at the moment you need it. `docs/` holds a dozen
 files and you should not have to browse them and guess - so here is the whole map, once:
@@ -63,12 +72,91 @@ The order below is the order to read it in. Each role picks up the state the pre
 
 ---
 
-## 0. Cold start
+## 0. Cold start  ·  hat: **OPERATOR**
+
+### Who is acting, and why it matters
+
+**This guide has you play four different people.** On one laptop that is convenient; in production they
+are different organisations on different machines holding different keys. Where this walk has you switch
+hats, it says so - because the role split is the architecture, not presentation.
+
+| Role | Who this really is | What they do | Where |
+|---|---|---|---|
+| **OPERATOR** | DogTag, once | Installs the toolchain, deploys the ten protocol contracts, boots the stack | **§0** |
+| **ADMIN / REGISTRAR** | DogTag's governance key | Registers a provider, approves it, attaches its service, grants rights | §1 |
+| **PROVIDER** | the vet / groomer / government business, on **their own** machine and wallet | **Deploys and owns its own issuing contract**, selects it, admits its own signing keys | §2, §3, §4, §5 |
+| **HOLDER** | the pet owner, on a phone | Receives credentials, consents to verification | §6, §7 |
+
+**The single most important thing to take from this guide: the ADMIN does not deploy a provider's
+contract, and cannot.** Each provider deploys its own clone from DogTag's factory and owns it. That is
+not a demo shortcut - it is enforced in the contracts, and the factory's own source says why an
+operator-deploys-on-behalf path was rejected:
+
+> An "operator creates on behalf of a provider" variant was considered and rejected, because a
+> create-on-behalf-of path is how a clone's recorded business comes to be the operator who pressed the
+> button rather than the organisation it was for.
+> — `contracts/src/DogTagIssuerFactory.sol`
+
+Two more places the boundary is enforced, so you can see it is real rather than a convention:
+
+- **`createIssuer` takes no owner argument.** The owner is always `msg.sender`, so whoever deploys it
+  owns it (`DogTagIssuerFactory.sol:333`).
+- **Only a clone's owner may admit a signing key to it. The protocol admin is excluded by design** and
+  may only *remove* one: *"Only a REMOVAL may come from the protocol admin; admitting is the owner's
+  alone"* (`DogTagIssuer.sol:340`). Issuing needs BOTH the registrar's grant AND the provider's own
+  list, precisely so neither party can issue alone.
+
+If you come away from this guide thinking one admin stands everything up, the guide has taught you the
+opposite of what was built.
+
+### DO or KNOW - every step below is labelled
+
+Section 0 mixes things you **run** with things you **need to understand**, and hunting for a command in
+a section that has none wastes your time. So each heading is tagged:
+
+- **DO** - there is something to run or click here.
+- **KNOW** - background. Nothing to run. Read it and move on.
+
+### THE COLD-START LOOP - read this before you boot
+
+**A genuinely cold start cannot boot in one pass, and nothing in the tooling warns you.** Here is the
+loop, up front, because a first-time reader cannot see it coming:
+
+`scripts/demo-up.sh` hard-requires two addresses and exits without them. Its own error names the
+problem exactly:
+
+```
+set PROFILE_ISSUER_ADDR to a factory clone this provider deployed
+set VACCINATION_ISSUER_ADDR to a factory clone this provider deployed
+```
+
+Those are **provider-deployed clones** (see the role table above). `Deploy.s.sol` does not create them,
+the ledger holds no key for them, and **a freshly deployed set has none**. But §1 and §2 - where a
+provider deploys one - need a running stack to click through. That is the loop.
+
+**The way out, and the order this walk used:**
+
+1. **OPERATOR** - §0.1 → §0.7, pointing `PROFILE_ISSUER_ADDR` / `VACCINATION_ISSUER_ADDR` at **any**
+   existing clone as a placeholder. `demo-up.sh` checks only that they are non-empty, not that the
+   record type is right, so the stack comes up.
+2. **ADMIN**, then **PROVIDER** - walk §1 and §2. The provider deploys its real clone and the registrar
+   attaches it.
+3. **OPERATOR** - put the real clone addresses into `contracts/.env` (§0.5) and re-run `demo-up.sh`.
+
+If the ledger's `_provisioning` note already records clones from a previous walk, you can use those as
+the placeholder in step 1 and skip straight to a real boot. Confirm any clone before trusting it:
+
+```bash
+cast call <clone> 'recordType()(bytes32)' --rpc-url https://devrpc.roax.net
+cast keccak VACCINATION      # must match
+```
+
+---
 
 **Read §0.1 before anything else.** Two of the steps below fail in ways that look like something else,
 and one of them silently starts only a single portal out of five.
 
-### 0.1 What you need on the machine
+### 0.1 DO (operator) - What you need on the machine
 
 | | | Checked with |
 |---|---|---|
@@ -85,7 +173,7 @@ git submodule update --init --recursive contracts/lib/forge-std contracts/lib/op
 pnpm install --frozen-lockfile
 ```
 
-### 0.2 The contracts are ALREADY deployed - confirm that, do not redeploy
+### 0.2 DO (operator) - The contracts are ALREADY deployed: confirm, do not redeploy
 
 `contracts/deployments/roax.json` is the ledger, and it is the only place an address lives. The whole
 set is live on ROAX. Confirm it rather than trusting this page:
@@ -124,7 +212,7 @@ registry, SBT, verifier and provider registry the ledger names.
 **The getter is `getDiscoverySet`.** `getContractSet` belongs to an earlier record shape; calling it
 reverts at the dispatcher with EMPTY returndata, which reads identically to an unpublished version.
 
-### 0.3 Deploying a set of your own - rehearse on a fork FIRST
+### 0.3 KNOW - Deploying a set of your own (skip unless you are deploying)
 
 Skip this section entirely if you are using the deployed set, which is the normal case.
 
@@ -202,7 +290,7 @@ cp /tmp/roax.json.backup contracts/deployments/roax.json
 git diff --stat contracts/deployments/roax.json      # MUST be empty
 ```
 
-### 0.4 Addresses are configuration, and the deploy writes it
+### 0.4 KNOW - Addresses are configuration, and the deploy writes it
 
 You never paste a contract address into a stack. Two generators read the deploy ledger
 (`contracts/deployments/roax.json`) and produce the configuration for you.
@@ -285,7 +373,7 @@ keeps its old addresses until it is rebuilt.
 an undeclared file carrying a ledger or retired address fails, and a declared file that no longer
 carries one fails too.
 
-### 0.5 `contracts/.env` - what belongs in it, and what must NOT
+### 0.5 DO (operator) - `contracts/.env`: what belongs in it, and what must NOT
 
 `scripts/demo-up.sh` sources this file with `set -a`, so **every variable in it overrides the ledger.**
 That is the trap: a `contracts/.env` written before the redeploy carries `ISSUER_REGISTRY_ADDR`,
@@ -308,15 +396,22 @@ GOV_SIGNER_KEY=…                    # optional, for §5.2
 `DEMO_MODE=1` is not cosmetic: without it the backends refuse to boot on the dev secrets, with
 `FATAL: refusing to boot in production mode: CENTRAL_HMAC_SECRET is set to the insecure dev default`.
 
-### 0.6 The two clone addresses, and why they are not in the ledger
+### 0.6 KNOW - The two clone addresses are the PROVIDER's, not yours
+
+**Nothing to run here.** This explains where two addresses come from - and, more usefully, **whose job
+it is to create them, which is not yours.**
 
 `PROFILE_ISSUER_ADDR` and `VACCINATION_ISSUER_ADDR` are **hard-required** by `demo-up.sh` - it exits
-naming them. They are per-provider `DogTagIssuer` clones, deployed by a provider rather than by
-`Deploy.s.sol`, so the ledger holds no key for them and there is nothing to resolve.
+naming them. They are per-provider `DogTagIssuer` clones. **A PROVIDER deploys them from DogTag's
+factory and owns them** (§2.4); `Deploy.s.sol` does not create them and the ledger holds no key for
+them, because they are not protocol contracts - they belong to the business.
 
-**A freshly deployed set has none of them**, so on a genuinely cold start you must create them, which
-means walking §1 and §2 first. The ledger's `_provisioning` note records which clones the deployment
-walk left behind; read that, and confirm each answers `recordType()` before using it:
+That is why you, wearing the OPERATOR hat, cannot simply produce one. **The way through this is the
+cold-start loop at the top of §0** - boot on a placeholder, walk §1 and §2 so a provider deploys a real
+clone, then put its address here and restart.
+
+Confirm any clone before trusting it, whether it came from the ledger's `_provisioning` note or from a
+provider you just walked:
 
 ```bash
 cast call <clone> 'recordType()(bytes32)' --rpc-url https://devrpc.roax.net
@@ -325,13 +420,9 @@ cast keccak VACCINATION      # must match
 
 Walked on this stack: the deployed set carried a VACCINATION clone and a TRAVEL_CLEARANCE clone and
 **no DOG_PROFILE clone at all**, so §3.1 had nothing to anchor into until one was created. Creating it
-is §1.2 → §2.4 → §1.3 → §2.5, and this walk did exactly that.
+is §1.2 → §2.4 → §1.3 → §2.5 - note that the two `§2` steps are the **provider** acting, not the admin.
 
-**A placeholder boots.** `demo-up.sh` requires the variables to be non-empty but does not check
-`PROFILE_ISSUER_ADDR`'s record type, so you can point it at any clone to get the stack up, walk §1 and
-§2 to create the real one, and restart. That is the order this walk used.
-
-### 0.7 Decide now whether your data should survive a restart
+### 0.7 DO (operator) - Decide now whether your data should survive a restart
 
 Out of the box every backend uses an in-memory store: clients, pets, appointments, records and sessions
 all vanish when a backend restarts. For one sitting that is fine.
@@ -365,7 +456,7 @@ Verify off the running process rather than assuming - this is the check that can
 ps eww $(lsof -nP -iTCP:41874 -sTCP:LISTEN -t) | tr ' ' '\n' | grep '^MONGO_'
 ```
 
-### 0.8 Boot
+### 0.8 DO (operator) - Boot
 
 ```
 LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh      # macOS; use your own LAN address
@@ -409,7 +500,7 @@ The tell is `.demo/admin-web.log` containing an environment dump rather than vit
 over and every checkout builds to the same relative path, so a pattern kill reaches whichever instance
 it happens to hit, including one somebody else is using.
 
-### 0.9 Check it is actually up
+### 0.9 DO (operator) - Check it is actually up
 
 ```
 for p in 39742 41874 43618 44832 41875 46001; do printf "%-6s " $p; curl -s http://127.0.0.1:$p/health; echo; done
@@ -432,7 +523,7 @@ Government's `/health` is the richest and is worth reading in full - walked, it 
 `"backend":"live"`, `"chainId":135`, `"simulated":false`, `"canSign":false` and
 `"issuers":{"EU_HEALTH_CERT":null,"TRAVEL_CLEARANCE":null}` on a stock boot. See §5.2.
 
-### 0.10 Unlock custody on the vet and the groomer
+### 0.10 DO (operator) - Unlock custody on the vet and the groomer
 
 **Custody re-locks on every restart of those two backends.** The sealed key survives; the decrypted
 seed does not. Nothing signs or issues until you unlock.
@@ -454,7 +545,13 @@ supplied.
 
 ---
 
-## 1. Admin
+## 1. Admin  ·  hat: **ADMIN / REGISTRAR**
+
+> **Switch hats.** You are now DogTag's registrar, not the machine operator. In production this is a
+> different organisation holding the governance key. The registrar **admits providers to the protocol**
+> - it registers them, approves what they may create, attaches the contract they deployed and grants
+> issuing rights. It **does not deploy their contract** (that is §2) and it cannot admit a signing key
+> to one.
 
 ### 1.1 Sign in
 
@@ -635,7 +732,13 @@ is not passed to `admin-api` (§1.1).
 
 ---
 
-## 2. The provider sets themselves up
+## 2. The provider sets themselves up  ·  hat: **PROVIDER**
+
+> **Switch hats - this is the section that shows the actual product.** You are now the vet/groomer
+> business. In production you are a different company, on your own machine, with your own wallet, and
+> DogTag cannot do any of this for you: `createIssuer` takes no owner argument, so the contract is
+> owned by whoever deploys it. On this single-machine walk you press these buttons yourself right
+> after pressing the admin's - that is the demo's convenience, **not** the design.
 
 The provider is the business the admin just registered. This is where they deploy their own issuing
 contract and select it.
@@ -845,7 +948,7 @@ yet.
 
 ---
 
-## 3. The vet issues a credential
+## 3. The vet issues a credential  ·  hat: **PROVIDER** (vet)
 
 Vet portal, http://localhost:41873. Custody must be unlocked (§0.10).
 
@@ -983,7 +1086,7 @@ curl -s http://127.0.0.1:41874/records -H "Authorization: Bearer <vet.opToken fr
 
 ---
 
-## 4. The groomer
+## 4. The groomer  ·  hat: **PROVIDER** (groomer)
 
 Groomer portal, http://localhost:43617. Sign in - the operator password is prefilled - and unlock custody
 exactly as in §0.10.
@@ -1117,7 +1220,10 @@ nothing warns you - which is why §0.7 is a decision to make before you start.
 
 ---
 
-## 5. Government
+## 5. Government  ·  hat: **PROVIDER** (government authority)
+
+> A government authority is a provider like any other here: it deploys and owns its own issuing
+> contract, and the registrar attaches it. Nothing about it is privileged in the protocol.
 
 Government portal, http://localhost:44831.
 
@@ -1228,7 +1334,11 @@ email) that the authenticated record carries.
 
 ---
 
-## 6. The owner receives the credential
+## 6. The owner receives the credential  ·  hat: **HOLDER**
+
+> **Switch hats.** You are now the pet owner. In production this is a phone in someone's pocket, and
+> no operator, admin or provider can act for them: consent is proven from a secret that never leaves
+> the device.
 
 Owner wallet, http://localhost:45931. It has **no backend** - everything is local to the browser.
 
@@ -1254,7 +1364,10 @@ button is not gated on demo mode, because the owner wallet has no demo-mode flag
 
 ---
 
-## 7. Verification, and eleven attempts to defeat it
+## 7. Verification, and eleven attempts to defeat it  ·  hat: **ANYONE**
+
+> Verification is permissionless - it reads the chain and needs no role at all. It is shown from the
+> admin portal only because that is where the bench lives.
 
 Admin portal → **Verification bench**. This is the surface for "what exactly is checked, and what is not".
 
