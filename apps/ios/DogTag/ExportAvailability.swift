@@ -1,6 +1,6 @@
 import Foundation
 
-/// Why the export panel's "Approve & export" control can or cannot proceed — as a VALUE, so the
+/// Why the export panel's "Approve & export" control can or cannot proceed - as a VALUE, so the
 /// reason is rendered declaratively beside the control instead of living in a code path that only
 /// runs once the control has already been pressed.
 ///
@@ -9,7 +9,7 @@ import Foundation
 /// selected else { status = "Select a record first." }`. That guard is UNREACHABLE in exactly the
 /// state it describes: the button is disabled precisely when `selected == nil`, so the action never
 /// fires and the message can never render. A holder with an empty wallet got a full-colour button
-/// that did nothing and said nothing — the refuses-without-saying-why shape this codebase removes
+/// that did nothing and said nothing - the refuses-without-saying-why shape this codebase removes
 /// everywhere else (`NearbyDecision`, `VerdictDisplay`, and the provider portal's
 /// `actionAvailability`, whose own note records that the FIRST-RUN state is the one that ships
 /// broken).
@@ -21,7 +21,7 @@ import Foundation
 /// Pure (Foundation only, no SwiftUI, no FFI), so `DogTagTests` compiles it directly and the
 /// no-silent-refusal invariant below is pinned rather than argued.
 enum ExportAvailability: Equatable {
-    /// A record is selected and nothing is in flight — the control is live.
+    /// A record is selected and nothing is in flight - the control is live.
     case ready
     /// A presentation is already running; the control shows "Working…" and must not re-fire.
     case working
@@ -43,7 +43,7 @@ enum ExportAvailability: Equatable {
     /// enabled-ness and the explanation below can never disagree.
     var canProceed: Bool { self == .ready }
 
-    /// What is wrong, in the holder's terms. Non-nil for every state that blocks — see the
+    /// What is wrong, in the holder's terms. Non-nil for every state that blocks - see the
     /// exhaustiveness test; that equivalence is the whole point of the type.
     var blockedReason: String? {
         switch self {

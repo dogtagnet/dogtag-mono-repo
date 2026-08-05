@@ -90,6 +90,12 @@ targets:
       # which is exactly what the previous shape could not satisfy: its only explanation lived inside
       # the action a disabled control never fires.
       - path: DogTag/ExportAvailability.swift
+      # ConsentOutcome is Foundation-only: the terminal result of presenting a credential, carrying
+      # the plain-language copy for the three kinds a holder must tell apart — it worked, DogTag
+      # refused (deliberately, nothing shared), and we could not complete the check. Extracted so this
+      # bundle pins the copy rules; the previous shape rendered a SECURITY REFUSAL as 12pt muted text
+      # and the holder read it as nothing having happened.
+      - path: DogTag/ConsentOutcome.swift
       # DogTagCard is Foundation-only: the pure fold behind the Profile screen's Dog-tags card - which
       # sources contributed a tag, and the "answered / could-not-read / not-yet-asked" distinction that
       # decides whether the card may claim there is no tag. Deliberately projects OwnedTag/ImportedTag

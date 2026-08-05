@@ -4,7 +4,7 @@ import XCTest
 ///
 /// The defect these tests exist for: the control was disabled whenever `selected == nil`, while the
 /// only sentence explaining a missing selection lived inside the action the disabled control never
-/// fires. So the state a holder actually meets first — an empty wallet — produced a full-colour
+/// fires. So the state a holder actually meets first - an empty wallet - produced a full-colour
 /// button that did nothing and said nothing. These cases pin that the explanation is a property of
 /// the STATE (and so always rendered) rather than of a code path.
 final class ExportAvailabilityTests: XCTestCase {
@@ -28,7 +28,7 @@ final class ExportAvailabilityTests: XCTestCase {
 
     // MARK: - The invariant the defect violated
 
-    /// THE LOAD-BEARING TEST. A control that cannot be pressed must say why — with exactly one
+    /// THE LOAD-BEARING TEST. A control that cannot be pressed must say why - with exactly one
     /// exemption, `working`, because the panel already renders live progress there (ForgeWaitView).
     /// Any other blocked state without a reason is a dead button, which is the bug.
     func test_everyBlockedStateExplainsItself_exceptWorkingWhichShowsProgressInstead() {
@@ -67,7 +67,7 @@ final class ExportAvailabilityTests: XCTestCase {
         XCTAssertTrue(s.blockedReason!.lowercased().contains("no records"),
                       "the reason must say there are no records: \(s.blockedReason!)")
 
-        // And it must name what he needs first — a record issued to him — not merely restate the fault.
+        // And it must name what he needs first - a record issued to him - not merely restate the fault.
         let step = s.nextStep!
         XCTAssertTrue(step.lowercased().contains("vet") || step.lowercased().contains("groomer"),
                       "the next step must name who issues a record: \(step)")
@@ -83,7 +83,7 @@ final class ExportAvailabilityTests: XCTestCase {
         XCTAssertEqual(unpicked, .noneSelected)
         XCTAssertNotEqual(empty.blockedReason, unpicked.blockedReason)
         XCTAssertNotEqual(empty.nextStep, unpicked.nextStep)
-        // The unpicked case must NOT send the holder off to a vet — they already hold records.
+        // The unpicked case must NOT send the holder off to a vet - they already hold records.
         XCTAssertFalse(unpicked.nextStep!.lowercased().contains("vet"),
                        "a holder who already has records must not be told to go get one")
     }
