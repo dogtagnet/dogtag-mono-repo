@@ -4,15 +4,41 @@
 # non-secret keystore meta) IS persisted to .demo/{vet,groomer}-custody.json (CUSTODY_SEAL_PATH), so
 # after a restart the operator UNLOCKS (same signer) instead of re-genesising. Everything else (records,
 # sessions, op/admin sessions) is still in-memory and lost on restart.
-# Logs in .demo/, PIDs in .demo/pids. Stop with: scripts/demo-down.sh
+# Logs in .demo/, PIDs in .demo/pids.<role>. Stop with: scripts/demo-down.sh [role...]
 #
-#   scripts/demo-up.sh
+#   scripts/demo-up.sh                 # every role, as before
+#   scripts/demo-up.sh admin           # ONE role: its backend and its portal
+#   scripts/demo-up.sh admin vet       # several
 #
-# Then: open the portals (URLs printed), do the vet/groomer Setup wizard to genesis a signer,
-# run scripts/demo-bootstrap.sh <thatSigner>, and click Issue -> Create QR. See docs/DEMO.md.
+# ROLE BY ROLE IS THE POINT, not a convenience. Each provider runs its own stack, so booting all six
+# services from one command teaches the opposite of the design - one operator running the whole
+# network. Every role here starts, and stops, on its own.
+#
+# Roles: admin vet groomer government owner prover indexer
+#
+# Each role gets its OWN pid file (.demo/pids.<role>), so bringing one up cannot orphan another - the
+# defect a single shared file caused, where re-running the script wiped the record demo-down.sh kills
+# by and left services running with nothing pointing at them.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"; mkdir -p .demo
+
+ALL_ROLES="indexer admin vet groomer prover government owner"
+if [ "$#" -eq 0 ]; then
+  ROLES="$ALL_ROLES"
+else
+  ROLES=""
+  for r in "$@"; do
+    case " $ALL_ROLES " in
+      *" $r "*) ROLES="$ROLES $r" ;;
+      *) echo "ERROR: '$r' is not a role. Roles: $ALL_ROLES" >&2; exit 1 ;;
+    esac
+  done
+fi
+want(){ case " $ROLES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# Any role but `owner` reads the chain at boot (or is configured from it), so the chain preflight runs
+# for all of them. The owner wallet has no backend and reads the chain only from the browser.
+wants_chain(){ for r in indexer admin vet groomer prover government; do want "$r" && return 0; done; return 1; }
 if [ -f "$ROOT/contracts/.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -46,8 +72,13 @@ VACC_CLONE="${VACCINATION_ISSUER_ADDR:-}"
 : "${IR:?no ProviderRegistry in the ledger; set ISSUER_REGISTRY_ADDR}"
 : "${VR:?no VerificationRegistryConsent in the ledger; set VERIFICATION_REGISTRY_CONSENT_ADDR}"
 : "${SBT:?no DogTagSBTConsent in the ledger; set SBT_CONSENT_ADDR}"
-: "${PROFILE_ISSUER:?set PROFILE_ISSUER_ADDR to a factory clone this provider deployed}"
-: "${VACC_CLONE:?set VACCINATION_ISSUER_ADDR to a factory clone this provider deployed}"
+# THE TWO CLONE ADDRESSES ARE NOT A BOOT REQUIREMENT, and making them one created a cold-start loop
+# with no way out: these are clones a PROVIDER deploys from the provider self-service page, that page
+# is served by the vet portal, and the vet portal needs the vet backend up to sign in - so the boot
+# demanded an address that only the boot could let you create.
+# vet-api already handles absence correctly: both default to the zero address and the issuance routes
+# refuse with "owner-hidden issuance not configured" at the point of use. That is the honest
+# degradation - a vet whose backend is up and cannot yet anchor - so warn and boot.
 # FACTORY — the admin portal's Issuers/Factory UI (predict + deploy a clone) needs this. It was never
 # passed, so admin-api fell back to the zero address and every factory call answered
 # "FACTORY_ADDR not configured" while governance/authority reported factoryOwner.target = 0x0.
@@ -76,27 +107,48 @@ MONGO_DB_GOVERNMENT="${MONGO_DB_GOVERNMENT:-dogtag_government}"
 # LAN IP so the share/verify QR points at a host the PHONE can reach (localhost is the phone itself).
 # Override with: LAN_IP=192.168.x.x scripts/demo-up.sh
 LAN_IP="${LAN_IP:-172.24.230.152}"
-# The key must hold the fresh deployment's registry/admin authorities and fund demo writes.
+# The key must hold the fresh deployment's registry/admin authorities and fund demo writes. ONLY
+# admin-api signs with it, so only the admin role may demand it - otherwise booting the owner wallet,
+# which has no backend at all, would ask for a governance key to serve a static page.
 ADMIN_PK="${GOVERNANCE_PRIVATE_KEY:-${DEPLOYER_PRIVATE_KEY:-}}"
-: "${ADMIN_PK:?set GOVERNANCE_PRIVATE_KEY or DEPLOYER_PRIVATE_KEY for the fresh deployment admin}"
-ADMIN_ADDR="$(cast wallet address --private-key "$ADMIN_PK")"
-run(){ echo "  $1 -> $2 (log .demo/$1.log)"; ( "${@:3}" >".demo/$1.log" 2>&1 & echo $! >> .demo/pids ); }
+ADMIN_ADDR=""
+if want admin; then
+  : "${ADMIN_PK:?set GOVERNANCE_PRIVATE_KEY or DEPLOYER_PRIVATE_KEY for the fresh deployment admin}"
+  ADMIN_ADDR="$(cast wallet address --private-key "$ADMIN_PK")"
+fi
+# PIDs are recorded PER ROLE, and the role is derived from the service name rather than threaded
+# through a global, so a service can never be filed under the wrong role.
+run(){ local role="${1%-api}"; role="${role%-web}"
+  echo "  $1 -> $2 (log .demo/$1.log)"; ( "${@:3}" >".demo/$1.log" 2>&1 & echo $! >> ".demo/pids.$role" ); }
 die(){ echo; echo "ERROR: $*" >&2; exit 1; }
+# A port already bound is otherwise SILENT: run() backgrounds the process, so a second instance that
+# loses the bind dies inside the log redirect and the script still prints UP. Re-running one role is
+# the normal action now, so this refusal earns its place.
+port_free(){ # port, role, what
+  local held; held="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true)"
+  [ -z "$held" ] || die "port $1 is already in use by pid(s) $(echo "$held" | tr '\n' ' ')- $3 cannot start.
+  If it is this demo's own $2, stop it first:  scripts/demo-down.sh $2
+  If it is something else, leave it alone and free the port yourself. Never kill by name or path:
+  many checkouts of this repo build the same binary to the same relative path."; }
 
 # ------------------------------------------------------------------------------------------------
 # PREFLIGHT — fail loudly here rather than boot a stack that looks healthy and silently does nothing.
 # ------------------------------------------------------------------------------------------------
 CHAIN_ID_EXPECTED="${CHAIN_ID:-135}"
-echo "Preflight (chainId $CHAIN_ID_EXPECTED, $RPC):"
+echo "Preflight (roles:$ROLES)"
+echo "  chain                 chainId $CHAIN_ID_EXPECTED, $RPC"
 
+if wants_chain; then
 ACTUAL_CHAIN_ID="$(cast chain-id --rpc-url "$RPC" 2>/dev/null || true)"
 [ -n "$ACTUAL_CHAIN_ID" ] || die "cannot reach $RPC (cast chain-id failed). The demo needs the live node."
 [ "$ACTUAL_CHAIN_ID" = "$CHAIN_ID_EXPECTED" ] \
   || die "$RPC reports chainId $ACTUAL_CHAIN_ID, expected $CHAIN_ID_EXPECTED. Refusing to boot against the wrong chain."
 echo "  chainId               $ACTUAL_CHAIN_ID  ok"
+fi
 
 # The factory must be bound to the SAME IssuerRegistry the rest of the stack uses. A stale ledger entry
 # from a superseded deployment is otherwise invisible: clones deploy, but against a registry nobody reads.
+if wants_chain; then
 FACTORY_REGISTRY="$(cast call "$FACTORY" 'registry()(address)' --rpc-url "$RPC" 2>/dev/null || true)"
 [ -n "$FACTORY_REGISTRY" ] || die "factory $FACTORY has no registry() - not a DogTagIssuerFactory (or wrong chain)."
 if [ "$(echo "$FACTORY_REGISTRY" | tr 'A-Z' 'a-z')" != "$(echo "$IR" | tr 'A-Z' 'a-z')" ]; then
@@ -104,6 +156,24 @@ if [ "$(echo "$FACTORY_REGISTRY" | tr 'A-Z' 'a-z')" != "$(echo "$IR" | tr 'A-Z' 
   Clones deployed from it would be invisible to every verifier. Fix FACTORY_ADDR or ISSUER_REGISTRY_ADDR."
 fi
 echo "  factory               $FACTORY -> registry $IR  ok"
+fi
+
+# The two per-provider clones. Warned about rather than required (see the note where they are read):
+# only vet/groomer/prover consume them, and vet-api fails closed at the point of use.
+if want vet || want groomer || want prover; then
+  # Each message names the exact surface that refuses, because the two refuse in DIFFERENT places and
+  # a reader who is told the wrong one goes looking in the wrong screen. Verified against the code:
+  # PROFILE_ISSUER_ADDR is read by profile_issue_custodial_bind (the DEVICE's half - the operator can
+  # still start a session and mint the QR), VACCINATION_ISSUER_ADDR by prepare, which 400s outright.
+  [ -n "$PROFILE_ISSUER" ] || echo "  profile clone         UNSET - a dog-tag session still mints its QR, but the owner's device
+                        cannot complete the bind. Deploy a DOG_PROFILE contract on the vet portal's
+                        Provider self-service page, then set PROFILE_ISSUER_ADDR." >&2
+  [ -n "$VACC_CLONE" ] || echo "  vaccination clone     UNSET - 'Issue a record' refuses with 'unknown recordType / no issuer
+                        address'. Same page, record type VACCINATION; then set VACCINATION_ISSUER_ADDR." >&2
+  if [ -n "$PROFILE_ISSUER" ] && [ -n "$VACC_CLONE" ]; then
+    echo "  provider clones       profile $PROFILE_ISSUER, vaccination $VACC_CLONE"
+  fi
+fi
 
 # The operator's DECLARATION that out-of-band signing is intended, resolved ONCE so the refusal below and
 # admin-api agree on it. `ADMIN_PROPOSE_ONLY` is the canonical name and `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`
@@ -121,6 +191,8 @@ esac
 # The hosted admin signer MUST hold WHITELIST_ADMIN. The retired deployer EOA lost it in governance
 # Phase-2, and with only DEPLOYER_PRIVATE_KEY the stack booted cleanly while every portal grant returned
 # disposition:"proposed" with unsigned calldata and nothing landed on-chain. Fail here instead.
+# It is the ADMIN role's own signer, so only that role is refused over it.
+if want admin; then
 WL_ADMIN_ROLE="$(cast keccak "WHITELIST_ADMIN")"
 HAS_WL="$(cast call "$IR" 'hasRole(bytes32,address)(bool)' "$WL_ADMIN_ROLE" "$ADMIN_ADDR" --rpc-url "$RPC" 2>/dev/null || true)"
 if [ -z "$HAS_WL" ]; then
@@ -148,6 +220,7 @@ elif [ "$HAS_WL" != "true" ]; then
 else
   echo "  admin signer          $ADMIN_ADDR holds WHITELIST_ADMIN  ok"
 fi
+fi
 
 # GOVERNMENT chain backend. `live` (default) = real ROAX. The government stack used to select its
 # in-process MemChain whenever DEMO_MODE was set - which contracts/.env sets - so its verify/records
@@ -160,6 +233,7 @@ TRAVEL_CLEARANCE_ISSUER_ADDR="${TRAVEL_CLEARANCE_ISSUER_ADDR:-}"
 # genuinely live and must not be announced as simulated, and an unrecognised value must die HERE rather
 # than printing a clean boot while government-api exits inside the backgrounded run().
 GOV_BACKEND_LC="$(echo "$GOV_CHAIN_BACKEND" | tr 'A-Z' 'a-z')"
+if want government; then
 case "$GOV_BACKEND_LC" in
   live|alloy|rpc) GOV_SIMULATED=0 ;;
   mem|memory|simulated|sim) GOV_SIMULATED=1 ;;
@@ -204,22 +278,47 @@ if [ "$GOV_SIMULATED" = "0" ]; then
 else
   echo "  government            GOV_CHAIN_BACKEND=$GOV_CHAIN_BACKEND -> SIMULATED chain (nothing broadcast)."
 fi
+fi
+
+# Every port a selected role will bind, checked BEFORE anything is built or started.
+if want indexer;    then port_free 46001 indexer    "indexer-api"; fi
+if want admin;      then port_free 39742 admin      "admin-api"; port_free 39741 admin "the admin portal"; fi
+if want vet;        then port_free 41874 vet        "vet-api";     port_free 41873 vet "the vet portal"; fi
+if want groomer;    then port_free 43618 groomer    "groomer-api"; port_free 43617 groomer "the groomer portal"; fi
+if want prover;     then port_free 41875 prover     "prover-api"; fi
+if want government; then port_free 44832 government "government-api"; port_free 44831 government "the government portal"; fi
+if want owner;      then port_free 45931 owner      "the owner wallet"; fi
 echo
 
 # Truncate the PID list only once every preflight refusal is behind us. Doing it at the top meant a
 # re-run against an ALREADY-RUNNING stack wiped the record scripts/demo-down.sh kills by, and then
 # refused to boot - orphaning the running services with nothing left pointing at them.
-: > .demo/pids
+# ONLY the roles being started are truncated, so bringing one up leaves every other role's record
+# intact - the same defect one file away.
+for r in $ROLES; do : > ".demo/pids.$r"; done
 
-echo "Building backend binaries (release for speed)…"
-cargo build -q --release ${MONGO_URI:+--features mongo} -p admin-api -p vet-api -p government-api -p indexer-api
+# Build only what the selected roles run. `-p` naming is by CRATE, and the vet binary serves the vet,
+# the groomer and (feature-on, separate target dir) the prover.
+CRATES=""
+if want admin;      then CRATES="$CRATES -p admin-api"; fi
+if want vet;        then CRATES="$CRATES -p vet-api"; fi
+if want groomer;    then case "$CRATES" in *"-p vet-api"*) ;; *) CRATES="$CRATES -p vet-api" ;; esac; fi
+if want government; then CRATES="$CRATES -p government-api"; fi
+if want indexer;    then CRATES="$CRATES -p indexer-api"; fi
+if [ -n "$CRATES" ]; then
+  echo "Building backend binaries (release for speed)…"
+  # shellcheck disable=SC2086
+  cargo build -q --release ${MONGO_URI:+--features mongo} $CRATES
+fi
 # The PROVER SERVICE is the SAME vet-api binary but compiled WITH the `prover` feature (which mounts
 # `/prove-consent`). We build it to a SEPARATE target dir so the vet/groomer instances stay on the
 # feature-OFF binary and therefore cannot accept a proving witness.
-echo "Building prover-service binary (vet-api --features prover)…"
-cargo build -q --release -p vet-api --features prover --target-dir "$ROOT/target/prover"
+if want prover; then
+  echo "Building prover-service binary (vet-api --features prover)…"
+  cargo build -q --release -p vet-api --features prover --target-dir "$ROOT/target/prover"
+fi
 
-echo "Starting backends:"
+echo "Starting:"
 # OVERSIGHT INDEXER (govarch PR-4) — scans ROAX events into a scope-enforced, non-PII index. In the
 # demo it runs INDEXER_DEMO_MODE: scripted in-memory events + two well-known tokens (an UNSCOPED
 # oversight token for government, a SCOPED token for vet/groomer). The role portals' Traceability /
@@ -230,10 +329,13 @@ echo "Starting backends:"
 # legacy singleton variables inherited from contracts/.env for this child: startup deliberately rejects
 # both forms together so stale legacy values cannot silently disagree with INDEXER_GENERATIONS.
 INDEXER_GENERATIONS_JSON="[{\"factory\":\"$FACTORY\",\"issuerRegistry\":\"$IR\",\"verificationRegistry\":\"$VR\",\"seedClones\":[]}]"
+if want indexer; then
 run indexer-api ":46001" env \
   -u FACTORY_ADDR -u ISSUER_REGISTRY_ADDR -u VERIFICATION_REGISTRY_CONSENT_ADDR -u SEED_CLONES \
   INDEXER_DEMO_MODE=1 PORT=46001 INDEXER_GENERATIONS="$INDEXER_GENERATIONS_JSON" \
   "$ROOT/target/release/indexer-api"
+fi
+if want admin; then
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
   SBT_ADDR=$SBT FACTORY_ADDR=$FACTORY PROVIDER_REGISTRY_ADDR=$PROVIDER_REGISTRY \
@@ -241,12 +343,14 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   MONGO_URI="$MONGO_URI" MONGO_DB="$MONGO_DB_ADMIN" \
   ADMIN_PROPOSE_ONLY="$ADMIN_PROPOSE_ONLY" \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
+fi
 # Every verifier/issuance process receives the same owner-hidden pair. PROFILE_ISSUER is a real
 # factory clone: roots are issue(R)'d there, while mintCustodial seals the same R on the SBT.
 # FACTORY_ADDR goes to every vet-api instance because all three serve POST /verify/credential, whose
 # issuer-whitelist pillar resolves the issuing clone from the factory's write-once rootIssuer[R]. A
 # deployment without it cannot evaluate that pillar and reports it `unavailableNoFactoryConfigured` -
 # which is honest, but leaves a forged issuer.documentStore refused by nothing but integrity.
+if want vet; then
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
   SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER FACTORY_ADDR=$FACTORY \
@@ -256,6 +360,8 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   MONGO_URI="$MONGO_URI" MONGO_DB="$MONGO_DB_VET" \
   CUSTODY_SEAL_PATH="$ROOT/.demo/vet-custody.json" \
   run vet-api ":41874" "$ROOT/target/release/vet-api"
+fi
+if want groomer; then
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
   SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER FACTORY_ADDR=$FACTORY \
@@ -265,6 +371,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   MONGO_URI="$MONGO_URI" MONGO_DB="$MONGO_DB_GROOMER" \
   CUSTODY_SEAL_PATH="$ROOT/.demo/groomer-custody.json" \
   run groomer-api ":43618" "$ROOT/target/release/vet-api"
+fi
 # PROVER SERVICE — the trusted 64-bit prover a 32-bit-only Android phone queries for its consent proof
 # (the phone then submits that proof to the GROOMER itself, so the groomer never sees the witness).
 # It's a vet-api built WITH `--features prover` and CIRCUITS_BUILD_DIR set so the real consent prover
@@ -272,6 +379,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
 # the demo runs it as a platform service. Exposed via PROVER_PUBLIC_URL (mirrors VET/GROOMER_PUBLIC_URL):
 #   cloudflared tunnel --url http://localhost:41875  ->  PROVER_PUBLIC_URL=https://<sub>.trycloudflare.com
 # then point the phone's `prover_api` pref at that URL (demo-prepare-phone.sh / Settings).
+if want prover; then
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
   SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER FACTORY_ADDR=$FACTORY \
@@ -281,6 +389,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   MONGO_URI="" MONGO_DB="" \
   CUSTODY_SEAL_PATH="$ROOT/.demo/prover-custody.json" \
   run prover-api ":41875" "$ROOT/target/prover/release/vet-api"
+fi
 
 # GOVERNMENT stack — a SEPARATE deployable (its own government-api binary, own port, own DB), not a
 # vet-api re-run. It runs against LIVE ROAX (GOV_CHAIN_BACKEND=live, the default): reads AND on-chain
@@ -306,6 +415,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
 # authoritative.
 ISSUER_DOMAIN_REGISTRY="${ISSUER_DOMAIN_REGISTRY_ADDR:-$(ledger_addr IssuerDomainRegistry)}"
 ISSUER_DOMAIN_REGISTRY="${ISSUER_DOMAIN_REGISTRY:-0x0000000000000000000000000000000000000000}"
+if want government; then
 ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority" ISSUER_DOMAIN=gov.local \
   VERIFICATION_REGISTRY_ADDR=$VR \
   FACTORY_ADDR=$FACTORY \
@@ -318,8 +428,8 @@ ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority"
   MONGO_URI="$MONGO_URI" MONGO_DB="$MONGO_DB_GOVERNMENT" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_OVERSIGHT_TOKEN=dogtag-indexer-oversight-demo-token \
   run government-api ":44832" "$ROOT/target/release/government-api"
+fi
 
-echo "Starting portals (vite dev):"
 # The admin portal no longer takes VITE_ISSUER_DOMAIN_REGISTRY_ADDR: the bench's two issuer-domain
 # rows were removed once IssuerDomainRegistry was confirmed empty (boundCloneCount() reads 0), so
 # nothing here reads that address. Do NOT re-add it pointing at ServiceDomainResolver - that is the
@@ -329,6 +439,7 @@ echo "Starting portals (vite dev):"
 # THE PORTALS NOW GET THEIR ADDRESSES. They never did: `packages/ui` held a constant table, so a
 # demo portal read whatever that file said rather than what this deploy actually is. That table is
 # gone, and unset now means "report yourself unconfigured" - so the addresses have to arrive here.
+if want admin; then
 run admin-web ":39741" env VITE_DEMO_MODE=1 \
   VITE_PROVIDER_REGISTRY_ADDR="$PROVIDER_REGISTRY" VITE_DOGTAG_ISSUER_FACTORY_ADDR="$FACTORY" \
   VITE_DOGTAG_ISSUER_IMPL_ADDR="$ISSUER_IMPL" VITE_DOGTAG_SBT_CONSENT_ADDR="$SBT" \
@@ -336,6 +447,7 @@ run admin-web ":39741" env VITE_DEMO_MODE=1 \
   VITE_PROTOCOL_REGISTRY_ADDR="$PROTOCOL_REGISTRY" VITE_PROVIDER_DIRECTORY_ADDR="$DIRECTORY" \
   VITE_SERVICE_DOMAIN_RESOLVER_ADDR="$DOMAIN_RESOLVER" VITE_ADMIN_SIGNER_ADDR="$ADMIN_SIGNER" \
   pnpm --filter @dogtag/admin-web dev
+fi
 # The S-17 content mirror, so the provider self-service page can publish into the demo indexer
 # instead of reporting "no content mirror is configured". Both are needed: the base names the
 # mirror and the token is the ONLY bearer its PUT accepts. LAN_IP rather than localhost, because the
@@ -351,6 +463,7 @@ run admin-web ":39741" env VITE_DEMO_MODE=1 \
 # oversight token, which would put read authority over the event feed into the same bundle.
 DEMO_MIRROR_BASE="${DEMO_MIRROR_BASE:-http://$LAN_IP:46001}"
 DEMO_MIRROR_INGEST_TOKEN=dogtag-indexer-mirror-ingest-demo-token
+if want vet; then
 run vet-web    ":41873" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" \
   VITE_PROVIDER_REGISTRY_ADDR="$PROVIDER_REGISTRY" VITE_DOGTAG_ISSUER_FACTORY_ADDR="$FACTORY" \
   VITE_DOGTAG_ISSUER_IMPL_ADDR="$ISSUER_IMPL" VITE_DOGTAG_SBT_CONSENT_ADDR="$SBT" \
@@ -359,6 +472,8 @@ run vet-web    ":41873" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLON
   VITE_SERVICE_DOMAIN_RESOLVER_ADDR="$DOMAIN_RESOLVER" VITE_ADMIN_SIGNER_ADDR="$ADMIN_SIGNER" \
   VITE_CONTENT_MIRROR_BASE="$DEMO_MIRROR_BASE" VITE_CONTENT_MIRROR_TOKEN="$DEMO_MIRROR_INGEST_TOKEN" \
   pnpm --filter @dogtag/vet-web dev
+fi
+if want groomer; then
 run groomer-web ":43617" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" \
   VITE_PROVIDER_REGISTRY_ADDR="$PROVIDER_REGISTRY" VITE_DOGTAG_ISSUER_FACTORY_ADDR="$FACTORY" \
   VITE_DOGTAG_ISSUER_IMPL_ADDR="$ISSUER_IMPL" VITE_DOGTAG_SBT_CONSENT_ADDR="$SBT" \
@@ -367,16 +482,27 @@ run groomer-web ":43617" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLO
   VITE_SERVICE_DOMAIN_RESOLVER_ADDR="$DOMAIN_RESOLVER" VITE_ADMIN_SIGNER_ADDR="$ADMIN_SIGNER" \
   VITE_CONTENT_MIRROR_BASE="$DEMO_MIRROR_BASE" VITE_CONTENT_MIRROR_TOKEN="$DEMO_MIRROR_INGEST_TOKEN" \
   pnpm --filter @dogtag/groomer-web dev
+fi
+if want government; then
 run government-web ":44831" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/government-web dev
+fi
 # OWNER (holder) wallet — local records, selective disclosure, and verification receipts. The native
 # apps own the owner-hidden scan/prove flow; the browser wallet has no backend or prover wiring.
+if want owner; then
 run owner-web ":45931" pnpm --filter @dogtag/owner-web dev
+fi
 
 echo
-echo "UP. Portals:  admin http://localhost:39741  vet http://localhost:41873  groomer http://localhost:43617  government http://localhost:44831  owner-wallet http://localhost:45931"
-echo "Backends:     admin :39742  vet :41874  groomer :43618  government :44832  prover :41875  indexer :46001   (ROAX chainId 135)"
-echo "Three-role showcase: scripts/e2e-roles.sh --live   (vet ISSUES -> government VERIFIES -> government ISSUES)"
-echo "Prover svc:   POST :41875/prove-consent  (32-bit-Android fallback; set PROVER_PUBLIC_URL to tunnel it)"
-echo "Owner wallet: http://localhost:45931  (Receive a wrapped doc -> inspect receipts or share selected fields)"
-echo "Next: provision the fresh issuance/verification roles, then Issue -> Create QR -> scan on phone (docs/DEMO.md)."
-echo "For the PHONE: set its server base to this Mac's LAN IP (not localhost) — see docs/DEMO.md."
+echo "UP (roles:$ROLES). Started just now:"
+if want admin;      then echo "  admin       portal http://localhost:39741   api :39742"; fi
+if want vet;        then echo "  vet         portal http://localhost:41873   api :41874"; fi
+if want groomer;    then echo "  groomer     portal http://localhost:43617   api :43618"; fi
+if want government; then echo "  government  portal http://localhost:44831   api :44832"; fi
+if want owner;      then echo "  owner       wallet http://localhost:45931   (no backend, by design)"; fi
+if want prover;     then echo "  prover      api :41875   POST /prove-consent"; fi
+if want indexer;    then echo "  indexer     api :46001"; fi
+echo
+echo "Portals are vite dev servers and bind IPv6 - probe http://localhost:<port>, not 127.0.0.1."
+echo "Stop just these:  scripts/demo-down.sh$(echo "$ROLES" | sed 's/  */ /g')"
+echo "Stop everything:  scripts/demo-down.sh"
+echo "Walk-through:     docs/DEMO_CLICKS.md"
