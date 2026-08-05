@@ -136,9 +136,11 @@ port_free(){ # port, role, what
 # ------------------------------------------------------------------------------------------------
 CHAIN_ID_EXPECTED="${CHAIN_ID:-135}"
 echo "Preflight (roles:$ROLES)"
-echo "  chain                 chainId $CHAIN_ID_EXPECTED, $RPC"
 
+# Print the chain line only when a chain check actually runs. Stating the configured endpoint for a
+# role that never contacts it reads as a check that passed.
 if wants_chain; then
+echo "  chain                 chainId $CHAIN_ID_EXPECTED, $RPC"
 ACTUAL_CHAIN_ID="$(cast chain-id --rpc-url "$RPC" 2>/dev/null || true)"
 [ -n "$ACTUAL_CHAIN_ID" ] || die "cannot reach $RPC (cast chain-id failed). The demo needs the live node."
 [ "$ACTUAL_CHAIN_ID" = "$CHAIN_ID_EXPECTED" ] \
@@ -245,14 +247,28 @@ if [ "$GOV_SIMULATED" = "0" ]; then
   TC_ROLE="$(cast keccak "TRAVEL_CLEARANCE")"
   if [ -z "$GOV_SIGNER_KEY" ]; then
     echo "  government            LIVE chain, NO signer -> /issue can only dry_run (no on-chain anchor)."
-    echo "                        Provision one with: scripts/demo-provision-government.sh"
+    echo "                        Give it one by walking docs/DEMO_CLICKS.md section 7.2."
   else
     GOV_ADDR="$(cast wallet address --private-key "$GOV_SIGNER_KEY")"
     GOV_BAL="$(cast balance "$GOV_ADDR" --rpc-url "$RPC" 2>/dev/null || echo 0)"
-    GOV_WL="$(cast call "$IR" 'isWhitelistedFor(bytes32,address)(bool)' "$TC_ROLE" "$GOV_ADDR" --rpc-url "$RPC" 2>/dev/null || true)"
-    echo "  government signer     $GOV_ADDR  balance ${GOV_BAL} wei  TRAVEL_CLEARANCE whitelisted=${GOV_WL:-unreadable}"
-    [ "$GOV_BAL" != "0" ] || echo "    WARNING: unfunded - on-chain issuance will fail. scripts/demo-provision-government.sh funds it." >&2
-    [ "$GOV_WL" = "true" ] || echo "    WARNING: not whitelisted for TRAVEL_CLEARANCE - DogTagIssuer.issue() reverts NotWhitelisted." >&2
+    echo "  government signer     $GOV_ADDR  balance ${GOV_BAL} wei"
+    [ "$GOV_BAL" != "0" ] || echo "    WARNING: unfunded - on-chain issuance will fail. Send it gas." >&2
+    # ISSUING TAKES TWO PERMISSIONS AND THIS ASKS FOR BOTH. It used to ask `isWhitelistedFor(recordType,
+    # signer)`, which the launch authority answers off the ORTHOGONAL VERIFY axis for a caller that is
+    # not itself an attached service - a confident `false` for every genuine issuer signer. So a
+    # correctly configured government was told at every boot that it was not whitelisted and that
+    # issue() would revert, while canIssue answered true and issuance worked. Never hand that getter a
+    # record-type key. The two real gates are the registry's canIssue and the contract's own list, and
+    # both are service-scoped, so they can only be asked once the clone is known.
+    if [ -n "$TRAVEL_CLEARANCE_ISSUER_ADDR" ]; then
+      GOV_CAN="$(cast call "$IR" 'canIssue(address,address)(bool)' "$TRAVEL_CLEARANCE_ISSUER_ADDR" "$GOV_ADDR" --rpc-url "$RPC" 2>/dev/null || true)"
+      GOV_ALLOWED="$(cast call "$TRAVEL_CLEARANCE_ISSUER_ADDR" 'issuanceAllowed(address)(bool)' "$GOV_ADDR" --rpc-url "$RPC" 2>/dev/null || true)"
+      echo "                        canIssue=${GOV_CAN:-unreadable}  issuanceAllowed=${GOV_ALLOWED:-unreadable}"
+      # An UNREADABLE answer is not a `false` and must never be reported as one - it says the read
+      # failed, not that the signer lacks the permission.
+      [ "$GOV_CAN" != "false" ] || echo "    WARNING: the registry does not authorise this signer to issue through that contract." >&2
+      [ "$GOV_ALLOWED" != "false" ] || echo "    WARNING: that contract's own list does not admit this signer - issue() reverts NotLocallyAllowed." >&2
+    fi
   fi
   # A configured clone is a config error whether or not a signer exists, so this is checked either way.
   # `DogTagIssuer.issue` is onlyWhitelisted against the clone's OWN registry(), so a clone bound to a
@@ -268,7 +284,7 @@ if [ "$GOV_SIMULATED" = "0" ]; then
       die "TRAVEL_CLEARANCE clone $TRAVEL_CLEARANCE_ISSUER_ADDR is bound to registry $CLONE_REGISTRY but the stack uses ISSUER_REGISTRY_ADDR=$IR.
   Its onlyWhitelisted gate reads a registry nobody writes to, so issue() reverts NotWhitelisted even
   after a correct whitelistFor. See contracts/deployments/roax.json -> government_clones (the fresh set)
-  vs government_clones_deadRegistry_legacy. Re-provision: scripts/demo-provision-government.sh"
+  vs government_clones_deadRegistry_legacy. Deploy a fresh one: docs/DEMO_CLICKS.md section 7.2."
     fi
     CLONE_RT="$(cast call "$TRAVEL_CLEARANCE_ISSUER_ADDR" 'recordType()(bytes32)' --rpc-url "$RPC" 2>/dev/null || true)"
     [ "$(echo "${CLONE_RT:-}" | tr 'A-Z' 'a-z')" = "$(echo "$TC_ROLE" | tr 'A-Z' 'a-z')" ] \
@@ -397,7 +413,7 @@ fi
 # contracts/.env sets DEMO_MODE, so its verify/records surfaces were simulated while /health still
 # claimed chainId 135; the chain backend is now an explicit, separate switch from the demo store.
 # On-chain issuance needs a funded, whitelisted GOV_SIGNER_KEY + a DogTagIssuer clone
-# (TRAVEL_CLEARANCE_ISSUER_ADDR) — provision both with scripts/demo-provision-government.sh. Without
+# (TRAVEL_CLEARANCE_ISSUER_ADDR) — see docs/DEMO_CLICKS.md section 7.2 for both. Without
 # them the stack still runs live-read-only and /issue builds+persists via dry_run.
 # GOV_CHAIN_BACKEND=mem opts INTO simulation; /health then reports backend="simulated", chainId=null.
 # FACTORY_ADDR is LINK 1 of the issuer↔domain chain and is what makes verification resolve the issuing

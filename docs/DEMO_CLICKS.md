@@ -39,11 +39,12 @@ machines holding different keys.
 | to build the phone apps | [MOBILE_BUILD.md](./MOBILE_BUILD.md) |
 | to deploy your own contract set | [DEPLOY.md](./DEPLOY.md) |
 
-**No contract address is written into this guide.** Every one is resolved from
+**No contract address is written into this guide as configuration.** Every one is resolved from
 `contracts/deployments/roax.json`, which the deploy writes.
 
-§12 records what was walked, when, and against which commit. A step marked unwalked says so with its
-reason - could-not-check is never reported as pass.
+**§12 records what was walked, when, and against which commit**, quoting a few addresses in shortened
+form as the historical record. A step marked unwalked says so with its reason - could-not-check is
+never reported as pass.
 
 ---
 
@@ -183,9 +184,9 @@ directly"*. Then **Register provider** → **Fill demo data** → **Review** →
 > each action returns unsigned calldata for someone else to execute. Fix the key and reboot the role.
 
 **Means:** the provider now exists on chain with standing PENDING. `Fill demo data` mints a random
-provider id, sets the controller to the published anvil test account
-`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`, and writes an obviously-fake identity statement;
-**Review** hashes that statement, and only the hash reaches the chain.
+provider id, sets the controller to the published anvil test account whose key §2.3 gives you, and
+writes an obviously-fake identity statement; **Review** hashes that statement, and only the hash
+reaches the chain.
 
 > **Copy the provider id.** §2 needs it, and it can never be reassigned. The statement text is stored
 > nowhere and disappears when you navigate away.
@@ -243,10 +244,13 @@ be true yet. Issuing refuses until §4.4 sets them; everything in this section w
 - **First run?** There is no key yet. Go to **Setup**, sign in with the admin password (also
   prefilled), and follow the wizard: **genesis** → confirm → unlock.
 
-Then open **Signing keys** in the nav and **copy the address it names in its first line.**
+Then open **Signing keys** in the nav and **copy the address in the line "This shop signs with …".**
 
 **Means:** the backend now holds a key it can sign with. The sealed key is stored on disk and the
 decrypted one never is, which is why custody re-locks on every restart of this backend.
+
+That page also says *"No issuing contract is configured on this deployment"*, which is correct right
+now - you have not deployed one yet. It fills in after §4.4.
 
 > Do this before deploying, even though deploying does not need it: §3.3 has to grant a right to that
 > address, and the address does not exist until the key does.
@@ -283,7 +287,11 @@ Every control stays disabled until a wallet is connected, and says so.
 sent, because the address is computed from the record type, your wallet and that number - so
 **Deploy** only ever sends what a check approved, and goes back to disabled if you edit a field.
 
-> **Copy the deployed address.** §3.1 and §4.1 need it.
+> **If the check refuses** with *"that one number's address is simply taken"*, you have deployed this
+> record type from this wallet before. Put `1` in **Contract number** and check again - each number
+> gives one fixed address, and two contracts cannot share one.
+
+> **Copy the deployed address.** §3.1, §4.1 and §4.4 need it.
 
 ---
 
@@ -426,11 +434,13 @@ one elsewhere, fetch it. The bearer token is the value of `vet.opToken` in the p
 
 ```bash
 TOKEN=<paste vet.opToken here>
-curl -s http://127.0.0.1:41874/records -H "Authorization: Bearer $TOKEN"
+curl -s http://127.0.0.1:41874/records -H "Authorization: Bearer $TOKEN" \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["records"][0]["wrapped_doc"]))'
 ```
 
-**Means:** the field you want is `wrapped_doc` - that JSON object *is* the credential. §6.5, §7.1,
-§8.1 and §9.1 each need a copy of it.
+**Means:** that one JSON object *is* the credential - the field is `wrapped_doc`, snake_case, and the
+line above pulls it out of the newest record. **Save it**: §6.5, §7.1, §8.1 and §9.1 each paste a copy
+of it.
 
 ---
 
@@ -448,10 +458,13 @@ curl -s http://127.0.0.1:41874/records -H "Authorization: Bearer $TOKEN"
 LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh groomer
 ```
 
-Then sign in at http://localhost:43617 and unlock custody exactly as in §2.2.
+Then sign in at http://localhost:43617.
 
 **Means:** a second, independent business on `:43617` / `:43618`, with its own store and its own
 signing key. The vet is still running and untouched.
+
+> **Leave custody locked.** The banner will say it is, and nothing in this section needs it: a
+> groomer only ever reads the chain, and unlocking exists to let a backend *sign*.
 
 ## 6.1 Create a client and their pet
 
@@ -705,10 +718,113 @@ them on chain.
 
 # 12. Evidence: what was walked, when, and against what
 
-## 12.1 The role-by-role boot, 2026-08-05
+## 12.1 The role-by-role walk, 2026-08-05
 
 Walked on **2026-08-05** against commit **`03b410c`** plus this branch, on the live ROAX set
-(chainId 135), from a machine with nothing running.
+(chainId 135), starting from nothing running and bringing up one role at a time in the order above.
+
+**The boot, which is what this revision changed.** `contracts/.env` was reduced to the three lines
+§0.3 names and the vet role was booted with **no contract addresses at all** - the genuine cold start,
+which the previous revision could not do. It came up, warned about both contracts by name, and served
+the portal; `/health` answered `{"status":"ok"}` and the portal `200`. On that stack the **Provider
+self-service page rendered all four flows**, which is what makes §2 reachable before any contract
+exists and is the whole reason the ordering could change. Also checked: a second `demo-up.sh vet` is
+refused by port with the role's own stop command named; bringing up `admin` alongside left the vet's
+recorded pids untouched; and `demo-down.sh admin` left the vet serving.
+
+**§0** - `0.2` run verbatim under zsh: nine contracts, each with code, and `getDiscoverySet` returning
+a nine-word record whose last word is `1`. `0.3`'s key check confirmed the configured key resolves to
+the ledger's `admin`.
+
+**§1** - admin booted alone; the Providers banner read *"The hosted admin key holds this registry -
+registrar actions execute directly."* The provider row showed standing **active**, *"Cleared to act."*,
+and controller `0xf39f…2266` - the published anvil account §1.2 and §2.3 name. §1.4 was driven for
+real, both directions, on the existing provider:
+
+| what | transaction | block |
+|---|---|---|
+| approve `GROOMING` | `0x4e83a73a…78946290` | 349050 |
+| withdraw `GROOMING` | `0x457556c1…b1294c64` | - |
+
+It was withdrawn again deliberately, to leave the shared set exactly as it was found.
+
+**§2** - the vet portal signed in, custody unlocked, and **Signing keys** named the signer
+`0x7e3a6603…0c436d` while honestly reporting *"No issuing contract is configured on this deployment"* -
+the state §2.2 describes. A wallet holding the controller was connected on ROAX, and §2.4's check ran
+twice: at contract number `0` it **refused** with *"that one number's address is simply taken"* (that
+provider deployed there on a previous walk), and at `1` it returned **Ready** with the exact address
+`0x14A09008…DEF3a` computed before anything was sent.
+
+**§4.4 → §5** - both contract addresses added to `contracts/.env` and the vet role restarted; the boot
+then named both instead of warning. Custody re-locked and was unlocked again, as §5.0 says. A pet was
+registered (**dog tag 1**, QR on the real `LAN_IP`), the `/p/<token>` endpoint returned the block the
+phone would receive with `issuerClone` equal to the DOG_PROFILE contract, and a record was issued to
+**Verified on-chain**:
+
+| what | value |
+|---|---|
+| root | `0x0b685f56de169c10d233c98f932783305e926381f30ec6ee4f93e2f868d44ee7` |
+| tx | `0x4800839b963a78b0f18196c3c387920acb94618042d158b015c0820fa21b4e10` |
+
+Read back independently with `cast`: `rootIssuer(root)` = the VACCINATION contract
+`0xdD1533D6…605d57`, `isValid(root)` = **true**, `issuedBy(root)` = `0x7E3A6603…0C436D` (the same
+signer the portal named), and `recordType()` = `keccak256("VACCINATION")`.
+
+**§6** - the groomer booted as a second business while the vet kept serving. A client and pet were
+created, the pet opened, and dog tag `1` linked, giving the neutral **"Microchip not compared - this
+shop holds no credential for that DogTag"**. §6.5 verified the vet's credential to **Verdict: pass**
+with all five pillars and root == recomputed root. **All of §6 was done with custody LOCKED**, which is
+why §6.0 now tells you to leave it that way - the previous revision asked for an unlock that does
+nothing here.
+
+**§7** - government booted alone and reported `backend: live`, `chainId: 135`, `canSign: false`,
+both issuers `null`. §7.1 verified the vet's credential in the portal (**✓ VALID**) and over the
+unauthenticated `POST /v1/verify` (`verdict: true`, `issuerWhitelistState: "passed"`, block-pinned).
+§7.2's claim that the deployer seed satisfies the second permission was confirmed on chain before
+relying on it: the contract's `owner()` and the government signer are the same address, and
+`issuanceAllowed` and `canIssue` both read **true** with nothing clicked. After pointing the backend at
+the contract and restarting, `/health` flipped to `canSign: true` and a travel clearance anchored:
+
+| what | value |
+|---|---|
+| root | `0x1c8cb68e2e95fca0a2ff8d61fd26dedf685b284eff3f7f589a0fc22f7fa2daee` |
+| tx | `0x67fca6240d3b5fe4a18f6ea02140d62f3004e06d800fc871a6358994d2cc7731` |
+| receipt | `W0ZJH1A2EH57` |
+
+§7.3's public status page returned `effectiveStatus: VALID`, `simulated: false`. **Checked rather than
+assumed:** its HTML twin at `/r/<receiptId>` is 1,739 bytes and contains none of the Section A person
+fields, nor even an `@`.
+
+**§8** - the owner wallet booted with no chain preflight and no governance key, took the credential,
+and rendered **✓ Integrity intact** and **✓ Anchored on-chain** with every hashed field, including
+`DOG TAG ID 1`.
+
+**§9** - the bench on that credential: **nine rows, all Pass**, every read pinned to block 349139. The
+attack catalogue ran in full: **11 scenarios, 11 matched their declared expectation, 0 divergences**
+(3 valid, 7 not valid, 1 no verdict), the genuine control among them.
+
+**Two defects this walk found in the boot script, both fixed here.** The government preflight asked
+`isWhitelistedFor(recordType, signer)`, which the launch authority answers off its orthogonal VERIFY
+axis - so it printed `whitelisted=false` and warned that `issue()` would revert, about a signer whose
+`canIssue` and `issuanceAllowed` were both true and which issued successfully minutes later. It now
+asks those two directly. And the preflight printed the configured chain endpoint even for a role that
+never contacts it, which reads as a check that passed; it now prints that line only when a check runs.
+
+**Not re-walked on this pass, with reasons:**
+
+- **Deploying a second contract and repointing to it (§2.4's Deploy, §3.1–§3.3, §4.1).** The check was
+  driven to **Ready**, but deploying and then selecting it would move this provider's current
+  DOG_PROFILE pointer away from the contract the machine's `contracts/.env` names, breaking a working
+  setup on a shared testnet for no new evidence. Those transactions were walked on 2026-08-04 and are
+  recorded in §12.3.
+- **Registering a brand-new provider (§1.2).** The existing provider was used instead, so the register
+  dialog itself was not re-submitted; §1.4 was driven for real against it. §12.3 covers registration.
+- **Everything in §11**, for the reasons given there.
+
+The wallet was again a scripted EIP-6963 provider signing with the published anvil test key, injected
+into the vet portal's `index.html` for the walk and reverted afterwards; the file is byte-identical to
+its committed form. `contracts/.env` was modified during the walk and restored byte-identical,
+confirmed by sha256.
 
 ## 12.2 On a real handset, 2026-08-05 - the anchor resolves, and the refusal is real
 
@@ -720,7 +836,7 @@ closed for a reason that was not the real one.
 
 **The anchor.** `apps/ios/DogTag/roax.json` was regenerated from the ledger by
 `scripts/gen-mobile-roax-config.sh`, and the build carries **`ProtocolRegistry
-0xc385F939004c932568927ac14107E0f329176A60`** - matching `contracts/deployments/roax.json`. The
+0xc385F939…76A60`** - matching `contracts/deployments/roax.json`. The
 Profile screen renders it on the device, alongside `ProviderRegistry 0x1ff6FdCeFf15AC…`, `DogTagSBT
 0xFc33A3e702b7d6…` and `ROAX (chainId 135)`.
 
@@ -731,7 +847,7 @@ Profile screen renders it on the device, alongside `ProviderRegistry 0x1ff6FdCeF
 | root | `0x20af931b400e49fd830b8768ef09ff859a98eee23ead39a20be73caf76828fbd` |
 | tx | `0x09984f5fae65efcb53c49ffa00e2d3dc67d3ff113fbb0b22c5275a276fc1af68` |
 | block | **348342** |
-| issuing contract | `0x0Ca65d55D9092Cac03A1981Afd9a115905A526E3` |
+| issuing contract | `0x0Ca65d55…526E3` |
 
 Read back with `cast`: `isValid(root)` = **true**, `issuedBy(root)` = the authorised signer, and
 `rootIssuer(root)` = that contract. It was scanned onto the handset from a `/r/<token>` QR and the
