@@ -67,6 +67,19 @@ export type ProviderCheckId =
   | "deploy-authority"
   /** Is the domain resolver approved fleet-wide and selected by this service? */
   | "domain-resolver-live"
+  /**
+   * Which typed resolvers may this provider choose from? Read from the chain's own allowlist, never
+   * from a bundled address, so one approved later becomes choosable with no rebuild.
+   */
+  | "resolver-choices"
+  /** Which resolver is selected right now - including the withdrawn-underneath case? */
+  | "resolver-selection-current"
+  /** Is the resolver the provider picked one the registry would accept? */
+  | "resolver-choice-approved"
+  /** Would a selection from this key be accepted? Composed from `canWriteProvider`/`canWriteService`. */
+  | "resolver-write-authority"
+  /** Would this selection change anything, or would the registry refuse it as a no-op? */
+  | "resolver-selection-change"
   /** Would a domain write from this key be accepted? */
   | "domain-write-authority"
   /** Is the directory resolver approved fleet-wide and selected by this provider? */

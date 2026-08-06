@@ -7,6 +7,11 @@
  *   3. the provider claims a domain                - `domainClaim.ts`
  *   4. the provider publishes pin/contacts/profile - `directoryPlan.ts`
  *
+ * Both 3 and 4 sit behind a SELECTION the provider makes for itself - which typed resolver holds its
+ * domain, and which holds its listing - and that is `resolverSelection.ts`. Until it shipped neither
+ * flow could be completed by anybody, because the registrar's approval half existed and the
+ * provider's selection half had no surface at all.
+ *
  * Everything here is pure and reader-injected, so every decision is testable without a node. The
  * chain seam is `readers.ts`; the live viem binding is `liveReader.ts`.
  */
@@ -36,9 +41,22 @@ export {
   type HexWord,
   type ProfileAnchorRecord,
   type ProviderChainReader,
+  ResolverKind,
   type ProviderRecord,
+  type ResolverListing,
   type ServiceRecord,
 } from "./readers";
+
+export {
+  assessResolverSelection,
+  canStopUsing,
+  describeSelection,
+  kindForScope,
+  selectionChangeRefusal,
+  type ResolverSelectionPlan,
+  type ResolverSelectionScope,
+  type ResolverSelectionState,
+} from "./resolverSelection";
 
 export {
   checkBlock,
@@ -116,6 +134,8 @@ export {
 
 export {
   createLiveProviderReader,
+  PROVIDER_PERMISSION_DIRECTORY_RESOLVER,
+  SERVICE_PERMISSION_DOMAIN_RESOLVER,
   type LiveReaderOptions,
   type ProviderContracts,
 } from "./liveReader";

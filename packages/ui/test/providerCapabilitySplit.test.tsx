@@ -71,7 +71,18 @@ describe("a vet is a provider that issues, so it gets all four flows", () => {
   it("renders every send action", async () => {
     const el = await mount({ issuance: true, listing: true });
     expect(new Set(sendIds(el))).toEqual(
-      new Set(["deploy-send", "repoint-send", "domain-claim-send", "domain-none-send", "publish-send"]),
+      new Set([
+        "deploy-send",
+        "repoint-send",
+        // The provider's own half of the typed-resolver pair, one per flow it belongs to. Flow 3's
+        // is keyed by a CONTRACT and flow 4's by the PROVIDER RECORD, which is why a groomer gets
+        // the second and not the first.
+        "domain-register-send",
+        "domain-claim-send",
+        "domain-none-send",
+        "directory-register-send",
+        "publish-send",
+      ]),
     );
     expect(el.textContent).toContain("Deploy your own contract");
     expect(el.textContent).toContain("Choose which contract is current");
@@ -84,7 +95,7 @@ describe("a vet is a provider that issues, so it gets all four flows", () => {
     // would make this pass against a page that rendered no buttons at all.
     const el = await mount({ issuance: true, listing: true });
     const sends = Array.from(el.querySelectorAll("[data-testid$='-send']"));
-    expect(sends.length).toBe(5);
+    expect(sends.length).toBe(7);
     expect(sends.every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
   });
 });
@@ -92,7 +103,10 @@ describe("a vet is a provider that issues, so it gets all four flows", () => {
 describe("a groomer is a provider that does NOT issue, so three flows are inapplicable", () => {
   it("renders the listing flow and NOTHING keyed by a clone", async () => {
     const el = await mount({ issuance: false, listing: true });
-    expect(sendIds(el)).toEqual(["publish-send"]);
+    // The DIRECTORY register selection travels with flow 4, because it is keyed by `providerId` -
+    // so a groomer, which has no clone, still needs it and still gets it. The DOMAIN one does not,
+    // for exactly the reason the domain flow itself does not.
+    expect(sendIds(el)).toEqual(["directory-register-send", "publish-send"]);
     expect(el.textContent).not.toContain("Deploy your own contract");
     expect(el.textContent).not.toContain("Choose which contract is current");
     // "Your domain" would be a flow keyed by a clone this operator does not have.

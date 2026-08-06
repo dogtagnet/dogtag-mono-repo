@@ -38,6 +38,8 @@ import type {
   NextContractNumber,
   ProviderCheck,
   ProviderVerdict,
+  ResolverSelectionPlan,
+  ResolverSelectionState,
 } from "../provider";
 
 // -------------------------------------------------------------------------------------------------
@@ -577,6 +579,107 @@ export function DomainClaimCard({
       </p>
       <p className="mt-2 text-sm">{assessment.nextStep}</p>
       <ProviderCheckList checks={assessment.checks} />
+    </section>
+  );
+}
+
+// -------------------------------------------------------------------------------------------------
+// Which typed resolver a provider has selected
+// -------------------------------------------------------------------------------------------------
+
+/**
+ * How each selection state is TONED, and the reason none of the three shares another's tone.
+ *
+ * `none` is ORDINARY - every provider starts there, and painting the commonest first-run state as an
+ * alarm trains the reader past the ones that matter. `selectedButPulled` genuinely warns: the
+ * provider is pointed at a register that answers nothing, and nothing else on the page would say so,
+ * because the selection itself succeeded. And a read that did not resolve is NEITHER, which is why
+ * an absent state renders its own neutral line rather than borrowing `none`'s sentence - "nothing is
+ * selected" is a fact about the chain and a failed read is in no position to state it.
+ */
+const SELECTION_TONE: Readonly<Record<ResolverSelectionState["kind"], string>> = {
+  none: "text-muted-foreground",
+  selected: "text-emerald-700 dark:text-emerald-400",
+  selectedButPulled: "text-amber-700 dark:text-amber-400",
+};
+
+export function ResolverSelectionCard({
+  plan,
+  retired,
+  unreadableNotice = "Which register is selected could not be read, so what this publishes through is not known.",
+}: {
+  plan: ResolverSelectionPlan;
+  retired?: PlanRetirement | null;
+  unreadableNotice?: string;
+}): ReactNode {
+  const heading = plan.scope === "directory" ? "Your directory register" : "Your domain register";
+  return (
+    <section
+      className="rounded-lg border border-border p-4"
+      data-testid={`resolver-selection-${plan.scope}`}
+    >
+      <header className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">{heading}</h3>
+        <ProviderVerdictBadge verdict={plan.verdict} retired={retired} />
+      </header>
+
+      {/* The selection's own sentence, or an explicit statement that it is unknown. There is
+          deliberately NO fallback to "nothing is selected" - see SELECTION_TONE. */}
+      <p
+        className={cn(
+          "mt-2 text-sm",
+          plan.selection ? SELECTION_TONE[plan.selection.kind] : "text-muted-foreground",
+        )}
+        data-testid={`resolver-selection-state-${plan.scope}`}
+      >
+        {plan.description ?? unreadableNotice}
+      </p>
+
+      {/* What may be chosen, read from the chain rather than from a bundled list. An EMPTY approved
+          set and an unreadable list are separate lines: one says DogTag has approved nothing, the
+          other says we could not ask, and the first is a claim the second cannot make. */}
+      {plan.choices === undefined ? (
+        <p className="mt-2 text-sm text-muted-foreground" data-testid={`resolver-choices-${plan.scope}`}>
+          The registers you may choose from could not be read.
+        </p>
+      ) : (
+        <div className="mt-2 text-sm" data-testid={`resolver-choices-${plan.scope}`}>
+          {plan.choices.length === 0 ? (
+            <p className="text-muted-foreground">
+              DogTag has approved no register of this kind yet, so there is nothing to select.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {plan.choices.map((r) => (
+                <li key={r} className="flex items-center gap-2">
+                  <ChainValue value={r} label="approved register" href={addressExplorerHref(r)} />
+                </li>
+              ))}
+            </ul>
+          )}
+          {/* Listed-but-withdrawn entries are shown so a short choice list is legible rather than
+              mysterious, and struck through so they cannot be mistaken for choices. The registry
+              never removes an address once it has named it. */}
+          {plan.withdrawn && plan.withdrawn.length > 0 ? (
+            <div className="mt-2" data-testid={`resolver-withdrawn-${plan.scope}`}>
+              <p className="text-xs text-muted-foreground">
+                Approval withdrawn - listed here because the registry never removes an address, and
+                not selectable:
+              </p>
+              <ul className="mt-1 flex flex-col gap-1">
+                {plan.withdrawn.map((r) => (
+                  <li key={r} className="flex items-center gap-2 line-through opacity-70">
+                    <ChainValue value={r} label="withdrawn register" href={addressExplorerHref(r)} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      <p className="mt-2 text-sm">{plan.nextStep}</p>
+      <ProviderCheckList checks={plan.checks} />
     </section>
   );
 }
