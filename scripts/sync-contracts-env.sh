@@ -9,8 +9,12 @@
 # GOVERNANCE_PRIVATE_KEY over a file holding the previous deployment's key boots an admin that owns
 # nothing on the new contracts, and every check you run against the SHELL agrees with the ledger
 # while the FILE is the thing nobody looked at. This command makes the file say what the terminal
-# says. Only EXPORTED variables are visible to it - `set -a; source <your env file>; set +a` first
-# if yours are not.
+# says. Only EXPORTED variables are visible to it: a bare `NAME=value` assignment is a shell
+# variable this process can never see, so the report says `kept: NAME` and the file's old value
+# stands - put `export` in front and re-run. Do NOT "fix" that by sourcing contracts/.env itself:
+# sourcing the TARGET file loads its OLD values over the value you just set, and the next run then
+# truthfully reports `unchanged` on a stale key. (`set -a; source <a file of your own variables>;
+# set +a` is fine - just never this script's own target.)
 #
 # THE ALLOWLIST IS CLOSED, deliberately. Dumping `env` would leak every secret in the shell and
 # write a hundred lines nothing reads. The set below is derived from what actually consumes this
@@ -171,9 +175,10 @@ if [ -f "$ENV_FILE" ]; then
             changed=1
           fi
         else
-          # Not silently blanked - the file's value stands, and we say so.
+          # Not silently blanked - the file's value stands, and we say so, WITH the remedy: this is
+          # the line a reader sees when they assigned without `export` and believe they just set it.
           append "$line"
-          say "kept: $key (not exported in this shell - the file's value is left alone)"
+          say "kept: $key (not exported in this shell - the file's value is left alone; if you just set it, run: export $key=<value>  and re-run)"
         fi
         ;;
       other)

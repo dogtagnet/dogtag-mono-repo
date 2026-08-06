@@ -90,6 +90,30 @@ could-not-check is never reported as pass.
 
 Eight sections, §0 to §7. Do them in this order; each one depends on the one before it.
 
+**Starting over from a previous walk?**
+
+**Who:** the OPERATOR, on a machine that has run this guide before.
+
+**Do:** stop everything first - this is also the answer when a boot refuses with
+`ERROR: port … is already in use` and the holder is an earlier run of this demo:
+
+```bash
+scripts/demo-down.sh          # no argument = every role, killed by its recorded pids only
+```
+
+**Means:** the stop is most of the reset, because every backend runs in-memory by default -
+records, clients, pets and sessions die with the processes. Four things survive it:
+
+| survives the stop | what to do |
+|---|---|
+| `.demo/` - the vet/groomer/prover **custody seals** (each shop's signing-key seed), plus logs | keep it to keep the same shops: on the next boot you unlock instead of re-genesis. For a genuinely fresh start, `rm -rf .demo` **after** the stop - the old signing keys are then gone for good, §3.2 genesis runs again, and any on-chain grant to the old signer names a key nobody holds. |
+| `contracts/.env` | §0.5 owns it - its sync command replaces what is stale. Do not hand-edit it. |
+| **Mongo databases**, if you set `MONGO_URI` | no script in this repo drops them - drop `dogtag`, `dogtag_vet`, `dogtag_groomer`, `dogtag_government` (the defaults) yourself, or the "fresh" walk silently resumes the old one's data. |
+| the **browser and the phone** | portal sign-ins and the owner wallet live in the browser's localStorage - clear site data if they must forget. The phone app keeps what it imported; §2.1 says when it must be rebuilt and reinstalled. |
+
+Nothing on-chain is ever cleared: the testnet keeps every contract ever deployed, and a new §0.4
+deployment supersedes the old set in place.
+
 ---
 
 # 0. OPERATOR - prepare the machine and establish the contracts
@@ -205,6 +229,12 @@ issuer implementation and the provider registry at construction, and
 > repoint before it takes effect; a zero lets the publisher key repoint the entire declared protocol
 > set in one transaction. Use `0` on a development chain so you can deploy, publish and iterate in
 > one sitting. Never set it on a production deployment.
+>
+> **Those two lines need the `export`, and the way a bare assignment fails is quiet.** A bare
+> `PUBLISH_TIMELOCK_SECS=0` is a shell variable `forge` never sees, so the script deploys on the
+> 2-day default without complaint - and that value is **immutable** on the registry, so §0.4.4's
+> execute then refuses until the two days elapse and the only way back to `0` is redeploying.
+> `ADMIN` and `CUSTODIAN` cannot fail this way: missing, the script stops loudly naming them.
 
 ### 0.4.3 Publish the protocol version, phase 1 - propose
 
@@ -310,6 +340,20 @@ and it says so), `removed` (a line the file must not carry), `refused` (exported
 never written). Before any write it copies the file to `contracts/.env.bak.<timestamp>` and prints
 that path; it leaves the file at mode 600; run it twice and the second run reports no change.
 
+**`kept` on a variable you are sure you just set means your value never reached the command.** A
+bare `GOVERNANCE_PRIVATE_KEY=…` assignment is a shell variable, not an environment variable, and
+the command reads the environment - so it cannot see yours, leaves the file's old value in place,
+and reports `kept`. That is not a success line. Put `export` in front of the assignment and re-run;
+the report line for that variable must then say `set` (or `unchanged`, once the file agrees).
+
+> **To check what landed, read the file - never `source` it.** Sourcing `contracts/.env` loads the
+> FILE's values into your shell, over the very value you just set - so with a stale file, one
+> "check" puts the old key back in your terminal, and the next sync then truthfully reports
+> `unchanged` with both sides stale. Each round of that undoes the one before it. The check that
+> cannot do this is the verify block at the end of this section: it reads the file in a throwaway
+> shell and prints an address, never a key. (§1.3 does source this file, deliberately - that is for
+> loading a file you have already proven into your shell to sign with, never for checking one.)
+
 **If the file already exists** - a previous walk, a shared machine, an older version of this guide -
 the command is the whole point, because the stale file is the trap that checks against your SHELL
 cannot see: `demo-up.sh` reads the file, not the shell, so a previous deployment's
@@ -374,15 +418,26 @@ is sourced last-wins), and keeps the per-provider lines that §5.3 and §7.5 add
 **`GOVERNANCE_PRIVATE_KEY` is the key that holds the registrar authorities on your contract set.**
 Under Option B it is the `ADMIN` key you chose in §0.4.1. Under Option A it is held by whoever
 operates DogTag, is not in this repository and never will be, and
-`contracts/deployments/roax.json` records only its address, under `admin`. Confirm you have the
-right one either way:
+`contracts/deployments/roax.json` records only its address, under `admin`.
+
+**Prove the FILE holds it before you boot anything.** The boot scripts read the file, so this is
+the check that predicts them - and it is where a wrong key costs one line now instead of a
+preflight refusal several sections later:
 
 ```bash
-source contracts/.env
 source scripts/lib/ledger.sh
-cast wallet address --private-key "$GOVERNANCE_PRIVATE_KEY"   # must equal:
+cast wallet address --private-key \
+  "$(env -i /bin/bash --norc --noprofile -c 'source contracts/.env; printf %s "$GOVERNANCE_PRIVATE_KEY"')"
+# ^ must print the same address as:
 ledger_addr admin
+# "Error: Failed to decode private key" = the file's GOVERNANCE_PRIVATE_KEY line is missing or not a key.
 ```
+
+The inner command reads `contracts/.env` in a throwaway shell with an empty environment, so your
+terminal is untouched and only the FILE can answer - a correct key still exported in your shell
+cannot mask a wrong or missing line, and nothing here prints a key, only the address it derives to.
+If the two addresses disagree, the file holds the wrong key: `export` the right one and re-run the
+sync command above.
 
 **Without it you cannot complete §1 or §4**, and the admin role refuses to boot rather than start a
 portal whose every action would silently produce unsigned calldata instead of a transaction.
