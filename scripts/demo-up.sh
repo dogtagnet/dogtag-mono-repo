@@ -251,7 +251,7 @@ if [ "$GOV_SIMULATED" = "0" ]; then
   TC_ROLE="$(cast keccak "TRAVEL_CLEARANCE")"
   if [ -z "$GOV_SIGNER_KEY" ]; then
     echo "  government            LIVE chain, NO signer -> /issue can only dry_run (no on-chain anchor)."
-    echo "                        Give it one by walking docs/DEMO_CLICKS.md section 7.2."
+    echo "                        Give it one by walking docs/DEMO_CLICKS.md section 7.5."
   else
     GOV_ADDR="$(cast wallet address --private-key "$GOV_SIGNER_KEY")"
     GOV_BAL="$(cast balance "$GOV_ADDR" --rpc-url "$RPC" 2>/dev/null || echo 0)"

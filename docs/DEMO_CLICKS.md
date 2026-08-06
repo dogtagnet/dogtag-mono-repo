@@ -1,5 +1,33 @@
 # DogTag - from a bare machine to every use case
 
+## ⚠ READ THIS FIRST: this is a TESTNET WALKTHROUGH, not a production runbook
+
+It exists so you can learn the product and test it end to end on a throwaway chain. **Followed as
+written it produces a system that must never hold real data**, and the reasons are not cosmetic:
+
+| Followed as written, this guide | so |
+|---|---|
+| runs on **ROAX testnet** (chain 135), a disposable chain whose state is routinely thrown away | no credential issued here means anything |
+| sets **`DEMO_MODE=1`**, which switches OFF the guard that refuses to boot on insecure secrets | the backends then run on the demo passwords `admin` and `operator` (§0.5) |
+| **prefills those passwords into every sign-in box** | anyone who reaches the portal is signed in |
+| fills forms with **fake identity data** and registers a provider on **no KYC at all** | the registrar's on-chain identity assertion says nothing |
+| signs with keys you hold in a **browser wallet** | fine for testnet funds; never for a key that matters |
+
+**Do not "harden" this into production by deleting `DEMO_MODE=1`.** That does not work, and it fails
+in the most misleading way available: the backends refuse to start, name two *other* secrets, and
+then boot happily on the password `admin` once you fix the two they named. §0.5 has the measurement.
+A real deployment is a different procedure, not this one with a flag removed.
+
+**Building something real?** Read **[REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md)** (your own server,
+domains, TLS, hardened secrets) and **[PREREQUISITES.md](./PREREQUISITES.md)** (every secret that must
+be real, and how to generate it). Come back here to learn the shape of the product; go there to run
+it for anyone but yourself.
+
+Individual steps repeat the specific warning where it applies, so you meet it at the moment you would
+otherwise carry it forward.
+
+---
+
 This is the one file. It has two phases and you do them in order.
 
 | | | |
@@ -242,7 +270,7 @@ registry. Until it reads `1`, no phone can complete a verification. Go to §0.5.
 
 ## 0.5 Write `contracts/.env`
 
-**Do:** create `contracts/.env` with exactly this:
+**Do:** the file must end up holding **exactly these three lines and nothing else**:
 
 ```
 ROAX_RPC=https://devrpc.roax.net
@@ -250,9 +278,60 @@ DEMO_MODE=1
 GOVERNANCE_PRIVATE_KEY=<the registrar key - see below>
 ```
 
+**If the file does not exist**, create it with those three lines and go on.
+
+**If it already exists** - a previous walk, a shared machine, an older version of this guide - then
+this is a *replace*, not an append. **Delete every line that names a contract address.** This
+prints the ones to remove, and nothing else:
+
+```bash
+grep -nE '(_ADDR|_ADDRESS)=' contracts/.env \
+  | grep -vE '(PROFILE_ISSUER_ADDR|VACCINATION_ISSUER_ADDR|TRAVEL_CLEARANCE_ISSUER_ADDR)='
+grep -n '^DEPLOYER_PRIVATE_KEY=' contracts/.env
+```
+
+No output from both means there is nothing to remove. Anything they print, delete. (The three the
+first command spares are per-provider contracts that do not exist yet; §5.4 and §7.5 add them.)
+
 **Means:** the boot script sources this file, so it is where the two things the ledger cannot answer
-live - which chain to talk to, and the registrar's key. `DEMO_MODE=1` is not cosmetic: without it
-the backends refuse to boot on the dev passwords.
+live - which chain to talk to, and the registrar's key.
+
+> **Why the deletion matters, and why skipping it costs you three sections.** Every protocol address
+> is resolved from `contracts/deployments/roax.json` **only when the environment does not already
+> name one** - the script reads `${FACTORY_ADDR:-$(ledger_addr DogTagIssuerFactory)}` and ten
+> variables like it, so a leftover from a superseded deployment **wins over the ledger silently**.
+> Nothing complains at the moment you boot the wrong pairing; you find out later, when the preflight
+> refuses with *"factory … is bound to registry … but the stack uses ISSUER_REGISTRY_ADDR=…"* and it
+> reads like a chain fault. It is not - it is this file. `DEPLOYER_PRIVATE_KEY` is the same trap
+> wearing a different hat: it is the fallback the boot uses when `GOVERNANCE_PRIVATE_KEY` is absent,
+> and it names a retired key that holds no registrar authority, so §1 would produce unsigned calldata
+> instead of transactions.
+
+> ### ⚠ `DEMO_MODE=1` is the line that must never reach production
+>
+> It is not cosmetic and it is not a logging switch: it **turns off** `validate_production_secrets`,
+> the guard that refuses to boot on unset or well-known secrets. With it set, `scripts/demo-up.sh`
+> starts every backend on `ADMIN_PASSWORD=admin`, `OPERATOR_PASSWORD=operator` and the published
+> `CENTRAL_HMAC_SECRET`, and the portals prefill those passwords into the sign-in box.
+>
+> **Deleting this line does not harden the stack, and the way it fails is quiet.** The guard rejects
+> a secret only if it is *empty* or *exactly equal to the specific dev-default literal it knows* - it
+> is a list of known-bad strings, not a strength check. Both backends were run on this commit with
+> `DEMO_MODE` unset and the exact secrets `demo-up.sh` passes (§16.6 records it):
+>
+> | | with `DEMO_MODE` deleted |
+> |---|---|
+> | `vet-api` | refuses - `CENTRAL_HMAC_SECRET is set to the insecure dev default` |
+> | `admin-api` | refuses, but for an unrelated reason: `SHARE_JWT_SIGNING_KEY is required in production` |
+> | `admin-api`, with **only** that one variable added | **boots.** `/health` answers `ok` - still on `ADMIN_PASSWORD=admin` and still on the published HMAC |
+>
+> The password never comes up. `admin` is not the literal `admin-pw` the guard looks for, so it
+> passes; and `admin-api`'s guard does not examine `CENTRAL_HMAC_SECRET` at all, so that stays at its
+> published value too. **One variable** is the whole distance between the demo secrets and a running
+> registrar console, and the error you get names a different secret entirely.
+>
+> A real deployment supplies real secrets from the start: **[PREREQUISITES.md](./PREREQUISITES.md) §2**
+> lists every one, and **[REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md)** is the hardened path.
 
 **`GOVERNANCE_PRIVATE_KEY` is the key that holds the registrar authorities on your contract set.**
 Under Option B it is the `ADMIN` key you chose in §0.4.1. Under Option A it is held by whoever
@@ -320,31 +399,115 @@ a transaction.
 
 **Means:** you land on the Dashboard. Its business counters read 0 until you register someone.
 
-## 1.3 Register the provider
+> **That prefilled password is `admin`, and it is prefilled because `VITE_DEMO_MODE=1` is set.** It
+> is not a placeholder you are meant to change here - the backend really is running on it (§0.5). On
+> anything reachable by anyone else this is the whole of your registrar's authentication.
+
+## 1.3 Generate the provider's controller key and fund it
+
+> **This is the provider's key, not DogTag's.** On one laptop you generate it yourself because you
+> are about to play both hats. In production the provider generates it on their own machine and
+> sends DogTag **the address only** - never the key.
+
+**Do:** generate a key, and read its address:
+
+```bash
+cast wallet new
+```
+
+It prints an **Address** and a **Private key**. Keep both: §1.4 needs the address, §3.3 imports the
+key into a browser wallet. Then fund it, from the registrar key you configured in §0.5:
+
+```bash
+set -a; source contracts/.env; set +a
+RPC=https://devrpc.roax.net
+CONTROLLER=<the Address it just printed>
+
+# Check the source first - a zero here is the one thing that stops the send.
+cast balance "$(cast wallet address --private-key "$GOVERNANCE_PRIVATE_KEY")" --rpc-url $RPC --ether
+
+cast balance "$CONTROLLER" --rpc-url $RPC --ether                  # 0
+cast send "$CONTROLLER" --value 0.01ether \
+  --private-key "$GOVERNANCE_PRIVATE_KEY" --rpc-url $RPC --legacy
+cast balance "$CONTROLLER" --rpc-url $RPC --ether                  # 0.010000000000000000
+```
+
+**Means:** you hold a key nobody else has, with enough gas to be a provider. It pays for the eight
+transactions setup asks the provider to sign - three contract deployments (§3.4, §3.5, §7.3), three
+selections (§5.1, §5.2, §7.5) and two key admissions (§5.3) - and then for every credential the
+government issues in §11.2, because §7.5 hands this same key to that backend. 0.01 PLASMA is roughly
+four thousand times what setup costs, because gas on ROAX is about 0.001 gwei and a contract
+deployment is a few hundred thousand gas, so there is ample room for both.
+
+> **Where the gas comes from: your own registrar key, and there is no faucet.** Checked on
+> 2026-08-06: ROAX publishes no public faucet (`faucet.roax.net` does not resolve, and the explorer
+> links to none) - note it is chain 135, unrelated to the public Plasma testnet, which is a different
+> chain with faucets of its own.
+>
+> That costs you nothing here, because the registrar key §0.5 already required **has to be funded
+> anyway** - §1.4 registers the provider with it, on chain - so by the time you reach this step you
+> already hold the only funded key the guide needs.
+> ([PREREQUISITES.md](./PREREQUISITES.md) §2.1 states that requirement and how to check it.)
+>
+> **If that first balance reads `0`**, stop here: nothing below can be sent, and the fix is upstream
+> of this guide. On a chain you do not operate, you must be funded by whoever does; no step here can
+> conjure gas.
+
+> ### ⚠ Generate it. Never substitute a published key
+>
+> Any key a document could print for you is a key whose secret is published, and a published secret
+> is not a secret: **anyone in the world could act as your provider.** The well-known development
+> keys - anvil's account 0 is the usual one - are exactly this. They work on any chain, which is what
+> makes them tempting and what makes them the wrong habit to build.
+>
+> There is no faster path offered here on purpose. Generating your own costs one command.
+>
+> Yours is still a **testnet** key: it goes into a browser wallet (§3.3) and holds throwaway funds.
+> Never reuse it elsewhere, and never put a key that controls anything real into a browser.
+
+> **Walked this guide before?** Then a provider is already registered whose controller is one of
+> those published keys - anyone can act as it. **Register a new provider** with the key you just
+> generated (§1.4) rather than reusing that one. `ProviderRegistry` does have a two-step controller
+> transfer, but no route or button in this product calls it, so registering afresh is the only path
+> a reader has. The old provider becomes inert once nothing points at it, and on a disposable
+> testnet that is the whole remedy.
+
+## 1.4 Register the provider
 
 **Do:** **Providers** in the left nav. Read the banner first - it must say *"registrar actions
-execute directly"*. Then **Register provider** → **Fill demo data** → **Review** → **Register**.
+execute directly"*. Then **Register provider** → **Fill demo data** → paste the address from §1.3
+into **Controller address** → **Review** → **Register**.
 
 > If the banner instead says actions route to governance as proposals, your `GOVERNANCE_PRIVATE_KEY`
 > is not the registrar key (§0.5). Nothing is broken, but nothing below will reach the chain either -
 > each action returns unsigned calldata for someone else to execute. Fix the key and reboot the role.
 
 **Means:** the provider now exists on chain with standing PENDING. `Fill demo data` mints a random
-provider id, sets the controller to the published anvil test account whose key §3.3 gives you, and
-writes an obviously-fake identity statement; **Review** hashes that statement, and only the hash
-reaches the chain.
+provider id and writes an obviously-fake identity statement; **Review** hashes that statement, and
+only the hash reaches the chain.
+
+> **`Fill demo data` deliberately leaves Controller address blank, and the screen says so.** That is
+> the one field a preset must not supply: it is the key that will act as this provider, so a shipped
+> value would be one address shared by every reader of this guide, and the only key a preset could
+> name is one whose secret is published (§1.3). **Review** refuses a blank or malformed controller,
+> so you cannot register past it by accident.
+
+> **You are asserting KYC you did not perform.** The identity statement is what the registrar swears
+> to about this entity, and the demo fills it with *"Demo registration - no KYC was performed."* -
+> which is the only honest thing it can say. Registration is permanent and the provider id can never
+> be reassigned, so on a real registry this is the step that carries the legal weight.
 
 > **Copy the provider id.** §3 needs it, and it can never be reassigned. The statement text is
 > stored nowhere and disappears when you navigate away.
 
-## 1.4 Activate it
+## 1.5 Activate it
 
 **Do:** the new row reads **pending**. Click **Activate**.
 
 **Means:** standing goes PENDING → ACTIVE. Until it does, the provider is inert: every self-service
 action refuses, so registering alone grants nothing.
 
-## 1.5 Approve the record types it may create
+## 1.6 Approve the record types it may create
 
 **Do:** on the same row, click **DOG_PROFILE**. Then click **VACCINATION**.
 
@@ -530,17 +693,33 @@ now - you have not deployed one yet. It fills in after §5.4.
 > Do this before deploying, even though deploying does not need it: §4.4 has to grant a right to
 > that address, and the address does not exist until the key does.
 
+> ### ⚠ The prefilled passphrase encrypts the shop's signing seed
+>
+> Demo mode prefills three credentials here, and this is the one that is not just a login: the
+> **encryption passphrase** is what protects the 24-word seed at rest, and demo mode fills it with
+> `demo-pass-0000`. Whoever holds it and the sealed file on disk can sign as this business - issue
+> credentials in its name, on chain, indistinguishably.
+>
+> Type your own if you intend to keep this shop. On a real deployment the passphrase and the 24 words
+> are the two things you must actually record somewhere safe; the wizard shows the words once and
+> there is no recovery path. See **[REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md)** for how a real
+> business runs genesis.
+
 ## 3.3 Connect your wallet
 
-**Do:** you need a browser wallet holding the controller address from §1.3. Install one (MetaMask,
-Rabby - any EIP-6963 wallet), add ROAX as a custom network, and import the controller's key:
+**Do:** you need a browser wallet holding the controller key you generated in §1.3. Install one
+(MetaMask, Rabby - any EIP-6963 wallet), add ROAX as a custom network:
 
 | | |
 |---|---|
 | Network name | ROAX |
 | RPC URL | `https://devrpc.roax.net` |
 | Chain ID | `135` |
-| Controller key | `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80` |
+| Currency symbol | `PLASMA` |
+
+Then import your controller's **private key** - the one `cast wallet new` printed in §1.3, the one
+you funded and registered as the controller in §1.4. Confirm the wallet shows the same address that
+row displays, and a balance of `0.01`.
 
 Then in the vet portal: **Provider self-service** in the nav → **Connect wallet** at the **top right
 of the page header** (not in the page itself).
@@ -548,10 +727,14 @@ of the page header** (not in the page itself).
 **Means:** this page has no backend, so every action *and every read-only check* is signed by you.
 Every control stays disabled until a wallet is connected, and says so.
 
-> That key is the published anvil test account - printed by every `anvil` start, and what
-> `Fill demo data` put in the controller field in §1.3 precisely so anyone can act as this provider
-> on a disposable testnet. It is public by design and holds testnet funds only. Never put a real key
-> in a browser.
+> **If the wallet shows a different address**, it is not the controller and every action on this page
+> will refuse - the registry checks the caller against the controller recorded in §1.4. Re-import the
+> key from §1.3 rather than registering a second provider.
+
+> **This is a testnet key in a browser extension, which is the only place such a key belongs.** A
+> browser wallet is reachable by every page you open and every extension you have installed. Yours
+> holds 0.01 PLASMA on a disposable chain, so the worst case is that you generate another. Never put
+> a key that controls anything real into one.
 
 ## 3.4 Deploy the DOG_PROFILE contract
 
@@ -725,7 +908,7 @@ signing key. The vet is still running and untouched.
 > type to it, and deploys from the provider self-service page the vet portal serves - because that
 > is the only surface in the product where a provider deploys, and the government portal has none.
 > In production the authority would be its own registered provider, on its own machine, with its own
-> wallet; you would then run §1.3 to §1.5 again for it before starting here. Nothing about the steps
+> wallet; you would then run §1.3 to §1.6 again for it before starting here. Nothing about the steps
 > below changes either way.
 
 ## 7.1 Boot the government role
@@ -739,12 +922,25 @@ LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh government
 **Means:** `government-api` on `:44832`, its portal on `:44831`. Its own binary, its own store. The
 preflight tells you it can read the chain but not sign, which §7.5 fixes.
 
+> ### ⚠ In demo mode this authority has one baked API token and an ephemeral store
+>
+> `DEMO_MODE` makes `government-api` fall back to the published bearer `dogtag-gov-demo-token`, and
+> the portal falls back to the same value - so the routes that gate **issuing** and the **operator
+> record reads** are open to anyone who knows a string that is in this repository. Those record reads
+> carry Section A person data (name, date of birth, id number, email, phone), which is exactly why
+> they are gated at all.
+>
+> It also selects an in-memory store, so **every credential this authority issues disappears when the
+> backend restarts.** The on-chain anchor survives; the record behind it does not. Set a real
+> `GOV_API_TOKEN` and a real `MONGO_URI` for anything you intend to keep - with no token configured
+> and demo mode off, those routes fail closed with 503 rather than opening.
+
 ## 7.2 ADMIN - approve the TRAVEL_CLEARANCE record type
 
 **Do:** in the admin portal, **Providers** → on the provider's row, click **TRAVEL_CLEARANCE**.
 
 **Means:** the registrar has said this provider may deploy a travel-clearance contract. Approving
-DOG_PROFILE and VACCINATION in §1.5 approved nothing else.
+DOG_PROFILE and VACCINATION in §1.6 approved nothing else.
 
 ## 7.3 PROVIDER - deploy the TRAVEL_CLEARANCE contract
 
@@ -763,7 +959,8 @@ and the wallet that signs here is the one that will own the contract.
 **Do:** admin portal → **Providers** → **Show services** → **Attach a contract**. Paste the
 TRAVEL_CLEARANCE address from §7.3, **Check**, **Attach**, then **Activate** on the new row. Then
 **Issuance capability** on that row, enter **the address of the wallet that deployed it** (the
-controller from §3.3, not the vet's signing key), pick **Grant**, confirm.
+controller you generated in §1.3 and connected in §3.3 - not the vet's signing key), pick **Grant**,
+confirm.
 
 **Means:** the same three registrar actions every contract needs. The signer differs from the vet's
 case because the government backend signs with the deploying wallet's own key, which §7.5 gives it.
@@ -776,10 +973,11 @@ restart the government role:
 
 ```
 TRAVEL_CLEARANCE_ISSUER_ADDR=<the contract from §7.3>
-GOV_SIGNER_KEY=<the private key of the wallet that deployed it>
+GOV_SIGNER_KEY=<your controller's private key, from §1.3>
 ```
 
 ```bash
+chmod 600 contracts/.env    # it now holds two private keys
 scripts/demo-down.sh government
 LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh government
 ```
@@ -1067,6 +1265,17 @@ that cannot prove locally).
 ---
 
 # 15. What this guide does not cover, and what it covers but has not walked
+
+**A PRODUCTION DEPLOYMENT. This whole file is a testnet walkthrough** - see the block at the top, and
+`DEMO_MODE` in §0.5. Nothing here is hardened, and the guide is not a runbook you can promote by
+changing a flag. [REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md) and
+[PREREQUISITES.md](./PREREQUISITES.md) are the real path.
+
+**Registering the generated controller key ON CHAIN (§1.4).** The key generation and funding in §1.3
+were walked in full (§16.6), and the registration form was driven to *ready to send* with that
+address in a real browser - but no `registerProvider` was broadcast with it, because doing so adds a
+permanent provider record for no evidence this branch needed. The step past that point is unchanged;
+only where the address comes from is new.
 
 **Written but NOT WALKED - the dog-tag device bind (§8.3).** The instruction is the real one and the
 backend half of it was driven (the `/p/<token>` endpoint returns exactly what the phone receives),
@@ -1391,3 +1600,76 @@ have shown up.
 **There is no CI for any of these paths.** The two mobile workflows are dispatch-only and no
 workflow runs the Rust test suite, so a local walk is the only evidence any of this works. If you
 change a portal, re-walk the section rather than assuming.
+
+## 16.6 Generate your own controller key, and what `DEMO_MODE` really gates, 2026-08-06
+
+Walked on **2026-08-06** against commit **`176d322`** plus this branch, on the live ROAX set
+(chainId 135). This is the evidence for §1.3 and for §0.5's `DEMO_MODE` warning.
+
+**§1.3, end to end, exactly as written.** `cast wallet new` produced
+`0x13976deC…417b819b` (its private key was never printed, logged or committed). Balance before:
+**0**. Funded from the registrar key §0.5 configures - the ledger's `admin`, confirmed to derive
+from `GOVERNANCE_PRIVATE_KEY`:
+
+| what | value |
+|---|---|
+| tx | `0x524ffe99…6d7f50d2` |
+| block | **352681** |
+| gasUsed / status | 21,000 / success |
+| balance after | **0.010000000000000000 PLASMA** |
+
+**The amount is derived, not chosen by feel.** ROAX gas price read **1,000,007 wei** (~0.001 gwei),
+so a 300,000-gas contract deployment costs ~0.0000003 PLASMA and the eight provider transactions of
+setup come to roughly 0.0000024 - about **1/4,000th** of what was sent, leaving ample room for the
+Phase 2 issuances that §7.5 also puts on this key. The registrar key started at 0.2499 PLASMA and
+0.01 is 4% of it.
+
+**No faucet exists for this chain.** `faucet.roax.net` and `roax.net` return no response;
+`explorer.roax.net` answers 200 and its page contains the string "faucet" zero times. A web search
+returns only the public Plasma testnet (chain 9746), which is a different chain. So the guide names
+the registrar key as the source rather than inventing a faucet.
+
+**The registrar form, driven in a real browser.** A build of the admin portal with
+`VITE_CENTRAL_API_BASE` pointed at a throwaway local mock (so `server.proxy` was out of the picture
+and the live stack unreachable by construction), served on a port of its own, in an isolated Chrome
+profile. **Register provider → Fill demo data** filled the provider id (`0x40a8f144…`), legal name,
+jurisdiction and *"Demo registration - no KYC was performed."*, and left **Controller address
+`""`** with both explanations rendered. **Review** then refused: *"Controller must be a 0x-prefixed
+20-byte address."*, **Register** disabled. Pasting the funded address above and reviewing again gave
+**Reviewed - ready to send** with digest `0x647166d3…0c8743b8` and **Register** enabled.
+
+**A screenshot changed the code.** The first pass put the explanation only beside the **Fill demo
+data** button. On screen that banner sits two fields above **Controller address** and scrolls out of
+view, so a reader arriving at the empty box reads only its always-on helper - which says what the
+field is for and nothing about why it is empty. A second, demo-gated line now sits on the field
+itself and disappears once an address is entered.
+
+**`DEMO_MODE`, measured rather than read.** Both release binaries were run with `DEMO_MODE` and
+`VITE_DEMO_MODE` unset and the exact secrets `scripts/demo-up.sh` passes, on ports chosen for the
+test and killed by recorded pid:
+
+| | result |
+|---|---|
+| `vet-api` | exits: `FATAL: refusing to boot in production mode: CENTRAL_HMAC_SECRET is set to the insecure dev default` |
+| `admin-api` | exits: `SHARE_JWT_SIGNING_KEY is required in production (DEMO_MODE unset) … refusing to start` |
+| `admin-api`, **only** `SHARE_JWT_SIGNING_KEY` added | **boots**, `/health` → `{"status":"ok"}`, on `ADMIN_PASSWORD=admin` and the demo's own `CENTRAL_HMAC_SECRET=dev-central-hmac-secret` |
+
+The third row is the finding, and it corrected this branch's own first draft twice. Written from
+reading the code, it claimed `admin-api` boots outright - it does not, it refuses on an unrelated
+secret. Written from the first measurement, it claimed a real HMAC was also needed - it is not:
+`admin-api`'s `validate_production_secrets` spec list is `ADMIN_PASSWORD` + `ADMIN_PRIVATE_KEY` and
+never mentions the HMAC, so the published one survives. **One variable** is the entire distance
+between the demo secrets and a running registrar console on the password `admin`.
+
+**Nothing of the running stack was disturbed**, checked before and after: `admin-api` on `:39742`
+answered `{"status":"ok"}` and the portal on `:39741` answered 200 throughout. The existing provider
+was touched only by one read-only `cast estimate`, which reverted and wrote nothing; no contract of
+its was repointed and no registration was sent. `contracts/.env` was sourced, never modified. Every
+process this walk started - the mock, the portal preview, and the two backends run for the
+`DEMO_MODE` measurement - was killed by the pid recorded when it started, never by name or path.
+
+**Not walked:** an on-chain `registerProvider` with the generated key. The registration form was
+driven to *ready to send* and stopped there - the mechanism past that point is unchanged by this
+branch (only where the address comes from changed), and sending would add a permanent provider
+record to the live registry for no new evidence. Also not walked: importing the key into a real
+browser wallet (§3.3), which is the same manual step as before.

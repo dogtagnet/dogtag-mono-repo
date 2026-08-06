@@ -351,10 +351,23 @@ export const DEMO_WHITELIST_GRANT: DemoWhitelistGrant = {
 /**
  * Register-a-provider preset (admin registrar surface, the generation-2 `ProviderRegistry`).
  *
- * `providerId` is left blank: the screen mints a CSPRNG id, and a fixed one would collide with
- * `AlreadyRegistered` the second time the captain walks the demo. `controller` is the well-known
- * anvil account 0 - the same key the first live provider was registered with, chosen so anyone can
- * act as it on a disposable testnet.
+ * `providerId` is not a member: the screen mints a CSPRNG id, and a fixed one would collide with
+ * `AlreadyRegistered` the second time anyone walks the demo.
+ *
+ * **`controller` is deliberately BLANK, and no preset may ever fill it.** It is the address that
+ * will act AS the provider - it deploys and owns that provider's issuing contracts - so prefilling
+ * it means shipping one address for every reader, and the only address a shipped preset can name is
+ * one whose private key is published. This field held anvil's account 0 until 2026-08-06: an address
+ * that works on any chain, whose secret is printed in anvil's own documentation, so anyone in the
+ * world could act as any provider registered with it. That is not "a test account" - it is a key
+ * with no secrecy at all, and a demo that hands one to a registrar form teaches a habit a reader
+ * will carry somewhere it matters. The reader generates their own (`docs/DEMO_CLICKS.md` §1.3) and
+ * pastes it here.
+ *
+ * The blank is FAIL-CLOSED rather than merely empty: `checkRegistration` refuses to review a
+ * controller that is not a 0x-prefixed 20-byte address, so **Register** cannot be reached with an
+ * unfilled field. Same shape as `DemoIssuerDeploy.business`, and for the same reason - a preset
+ * states what a demo can honestly supply and stops there.
  */
 export interface DemoProviderRegistration {
   controller: string;
@@ -366,7 +379,7 @@ export interface DemoProviderRegistration {
 }
 
 export const DEMO_PROVIDER_REGISTRATION: DemoProviderRegistration = {
-  controller: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  controller: "",
   legalName: "Demo Provider Pte Ltd (testnet)",
   jurisdiction: "SG",
   registrationNumber: "DEMO-KYC-0001",

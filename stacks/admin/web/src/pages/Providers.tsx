@@ -1679,6 +1679,10 @@ export function Providers() {
                   // A fresh id every time: a fixed one collides with AlreadyRegistered the second
                   // time this demo is walked.
                   setProviderId(generateProviderId());
+                  // Deliberately CLEARS the controller rather than filling it - see the note below
+                  // and DEMO_PROVIDER_REGISTRATION's own doc. Clearing, not leaving-alone: an
+                  // address left over from an earlier attempt sitting under freshly filled demo
+                  // identity data reads as though the preset supplied it.
                   setController(DEMO_PROVIDER_REGISTRATION.controller);
                   setStatement({
                     legalName: DEMO_PROVIDER_REGISTRATION.legalName,
@@ -1691,6 +1695,13 @@ export function Providers() {
               >
                 <Sparkles className="h-4 w-4" /> Fill demo data
               </Button>
+              <p className="mt-2 text-xs text-muted-foreground" data-testid="demo-controller-note">
+                Fills the identity statement and mints a provider id. It leaves{" "}
+                <strong>Controller address</strong> blank on purpose: that is the key that will act
+                as this provider, so a prefilled one would be a single address shared by every reader
+                - and the only key a shipped preset could name is one whose secret is published.
+                Generate your own and paste it below (docs/DEMO_CLICKS.md §1.3).
+              </p>
             </div>
           )}
 
@@ -1737,6 +1748,21 @@ export function Providers() {
                 provider&apos;s own key, not yours. If this is wrong, the provider cannot do anything
                 and correcting it needs a separate controller-transfer.
               </p>
+              {/* The qualifier belongs ON the field, not only in the banner beside the demo button:
+                  that banner sits two fields up and scrolls away, so a reader who arrives at an empty
+                  box reads the helper above and concludes the fill is broken. Demo-gated, because for
+                  a production operator "the demo fill leaves this blank" is noise about a button
+                  that does not render. */}
+              {env.demoMode && !controller.trim() ? (
+                <p
+                  className="mt-1 text-xs text-amber-700 dark:text-amber-500"
+                  data-testid="demo-controller-field-note"
+                >
+                  Empty on purpose - <strong>Fill demo data</strong> does not supply this one. Run{" "}
+                  <code>cast wallet new</code>, fund it, and paste its address here (docs/DEMO_CLICKS.md
+                  §1.3).
+                </p>
+              ) : null}
             </div>
 
             <fieldset className="rounded-md border p-3">
