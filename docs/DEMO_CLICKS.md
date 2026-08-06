@@ -212,6 +212,9 @@ issuer implementation and the provider registry at construction, and
 copying them, so a mismatch is caught here:
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"  # repo root. From anywhere else the shasum lines below find
+                                       # nothing and QUIETLY export a bare 0x, and forge then fails
+                                       # naming the variable ("invalid string length"), not the cause.
 source scripts/lib/ledger.sh
 export PUBLISH_PROTOCOL_REGISTRY=$(ledger_addr ProtocolRegistry)
 export PUBLISH_FACTORY=$(ledger_addr DogTagIssuerFactory)
@@ -223,13 +226,24 @@ export PUBLISH_ZKEY_SHA256=0x$(shasum -a 256 circuits/build/consent_final.zkey |
 export PUBLISH_WITNESS_MOBILE_SHA256=0x$(shasum -a 256 circuits/build/consent.graph | cut -d' ' -f1)
 export PUBLISH_R1CS_SHA256=0x$(shasum -a 256 circuits/build/consent.r1cs | cut -d' ' -f1)
 export PUBLISH_WASM_SHA256=0x$(shasum -a 256 circuits/build/consent_js/consent.wasm | cut -d' ' -f1)
-export PUBLISH_ARTIFACTS_URL=<where you serve the proving artifacts>
+# Any host works - a fetcher checks the bytes against the four pins above, so a tampering host is
+# rejected. The files are committed, so GitHub already serves them; pin the commit, not `main`,
+# so the URL can never drift from the pins you just computed.
+export PUBLISH_ARTIFACTS_URL=https://raw.githubusercontent.com/dogtagnet/dogtag-mono-repo/$(git rev-parse HEAD)/circuits/build
 export PUBLISH_MIN_APP_VERSION=1.4.0
 
 ( cd contracts && forge script \
     script/PublishProtocolVersions.s.sol:PublishProtocolVersionsPropose \
     --rpc-url <your rpc> --private-key <the publisher key> --broadcast --legacy )
 ```
+
+> **`<the publisher key>` is the key whose address holds the `PUBLISHER` role on the registry** - in
+> this deploy that is `ADMIN` from §0.4.1, unless you set `PUBLISHER` at deploy time. Confirm yours
+> qualifies before signing:
+> `cast call "$PUBLISH_PROTOCOL_REGISTRY" 'hasRole(bytes32,address)(bool)' "$(cast keccak PUBLISHER)" <your address> --rpc-url <your rpc>`
+> must answer `true`. The role is `keccak256("PUBLISHER")`, **not** `keccak256("PUBLISHER_ROLE")` -
+> deriving it from the variable name yields a role nobody holds, and a correctly-configured signer
+> then reads as unauthorized.
 
 **Means:** the version `dogtag-levelb/1` is now staged on two independent axes - the on-chain
 contract set and the off-chain proving artifacts - plus the binding between them. Nothing is active
