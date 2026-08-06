@@ -6132,3 +6132,22 @@ The script says so; it is easy to miss and looks like the provisioning failed.
 
 Note it refuses outright without `contracts/.env`, so provisioning cannot be driven purely from an
 exported environment the way `demo-up.sh` can.
+
+## `sync-contracts-env.sh` sees only EXPORTED variables, and sourcing `contracts/.env` to "check" undoes the fix
+
+Two shell mechanics compound into a loop where every attempt erases the one before it, and a captain
+lost a long stretch to exactly that on `docs/DEMO_CLICKS.md` §0.5. A bare `GOVERNANCE_PRIVATE_KEY=…`
+assignment is a shell variable no child process can see, so the sync correctly reports
+`kept: GOVERNANCE_PRIVATE_KEY` - which reads like a success line in a list of success lines; the
+message now carries the remedy (`export … and re-run`), and the guide explains it where the report
+vocabulary is defined. The second half is worse: "checking" with `set -a; source contracts/.env;
+set +a` loads the FILE's old value over the one just set, so the next sync truthfully reports
+`unchanged` with both sides stale. Sourcing that file is for loading a PROVEN file into the shell to
+sign with (§1.3), never for checking what a sync wrote. The non-destructive check reads the file in
+a throwaway shell and compares the derived address to the ledger:
+`cast wallet address --private-key "$(env -i /bin/bash --norc --noprofile -c 'source contracts/.env;
+printf %s "$GOVERNANCE_PRIVATE_KEY"')"` must equal `ledger_addr admin` - the `env -i` is
+load-bearing, because a correct key still exported in the shell must not be able to mask a wrong or
+missing line in the file. Same family as `vm.envOr` in `Deploy.s.sol`: a bare
+`PUBLISH_TIMELOCK_SECS=0` is invisible to forge, which quietly deploys on the IMMUTABLE 2-day
+default.
