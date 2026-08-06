@@ -448,6 +448,43 @@ describe("what may be chosen is what the chain approves, and the rest is shown a
     expect(button("directory-register-send").textContent).toMatch(/Stop using the directory/i);
   });
 
+  it("says the selection could not be READ rather than that nothing is selected", async () => {
+    // The card's only other option is `none`'s sentence, and "no register is selected" is a fact about
+    // the chain that a read which failed is in no position to state. Rendered here rather than only in
+    // the engine, because the fallback lives in the card - a mutation run proved the engine suite
+    // cannot see it.
+    await mount();
+    type("providerId", PROVIDER);
+    await settle();
+    // Only the SELECTOR read fails; the approved list still answers, so the card renders with its
+    // choices intact and only the selection unknown.
+    const failing = vi.fn(async () => {
+      throw new Error("selector read down");
+    });
+    root!.unmount();
+    host.remove();
+    const mod = await import("../src/provider/liveReader");
+    const spy = vi.spyOn(mod, "createLiveProviderReader");
+    spy.mockImplementation(
+      () =>
+        ({
+          approvedResolvers,
+          provider: failing,
+          canWriteProviderDirectoryResolver: canWriteDirectory,
+          issuerCreations: async () => [],
+        }) as never,
+    );
+    await mount();
+    type("providerId", PROVIDER);
+    await settle();
+    button("directory-register-check").click();
+    await settle();
+    const state = el("resolver-selection-state-directory")!.textContent!;
+    expect(state).toMatch(/could not be read/i);
+    expect(state).not.toMatch(/No provider directory is selected/i);
+    spy.mockRestore();
+  });
+
   it("labels the send by what it will DO, so the button is not a description of the widget", async () => {
     await mount();
     expect(button("directory-register-send").textContent).toMatch(/Use this directory register/i);

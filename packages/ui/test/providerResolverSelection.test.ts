@@ -309,11 +309,19 @@ describe("the choice is checked against the registry's own allowlist", () => {
 
   it("those two refusals are DIFFERENT sentences - the remedies differ", async () => {
     // One was approved and DogTag pulled it; the other was never approved, which is what a pasted or
-    // mistyped address looks like. Telling the second person to go and ask DogTag why they withdrew
-    // an approval that never existed sends them to the wrong place.
+    // mistyped address looks like. Telling the second person to ask DogTag why they withdrew an
+    // approval that never existed sends them to the wrong place.
+    //
+    // ASSERTED ON THE DISTINGUISHING CLAUSE, NOT ON WHOLE-STRING INEQUALITY. A mutation run caught the
+    // weaker version: both sentences EMBED THE ADDRESS, and the two addresses differ, so
+    // `expect(a).not.toBe(b)` held even after both branches were made to produce identical wording.
+    // A test whose subject is a distinction has to name the distinction.
     const pulled = check(await dir(WITHDRAWN, directoryReader()), "resolver-choice-approved").finding;
     const never = check(await dir(UNLISTED, directoryReader()), "resolver-choice-approved").finding;
-    expect(pulled).not.toBe(never);
+    expect(pulled).toMatch(/approval has been withdrawn/i);
+    expect(pulled).not.toMatch(/is not a provider directory DogTag has approved/i);
+    expect(never).toMatch(/is not a provider directory DogTag has approved/i);
+    expect(never).not.toMatch(/approval has been withdrawn/i);
   });
 
   it("STOPPING is always allowed, whatever the registry approves", async () => {
