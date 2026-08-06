@@ -123,6 +123,9 @@ export async function assessDomainClaim(
 ): Promise<DomainClaimAssessment> {
   const checks: ProviderCheck[] = [];
   let standing: DomainClaimStanding | undefined;
+  // Whether the register would accept a write from ANYONE. `undefined` means its own read failed, so
+  // the authority row cannot attribute a refusal either way.
+  let resolverLive: boolean | undefined;
 
   try {
     standing = await reader.domainClaimStanding(service);
@@ -133,6 +136,7 @@ export async function assessDomainClaim(
       standing.lineageRecognizesService &&
       standing.registryApprovesThisResolver &&
       standing.coreSelectsThisResolver;
+    resolverLive = live && standing.serviceStandingEffective;
     checks.push(
       providerCheck(
         "domain-resolver-live",
@@ -176,19 +180,48 @@ export async function assessDomainClaim(
     );
   }
 
+  // THE SAME RULE THE REPOINT AUTHORITY ROW FOLLOWS, and it is here for the same reason.
+  // `ServiceDomainResolver.canWriteDomain` COMPOSES `isAuthoritativeFor` - so when the register is
+  // not approved, not selected, or the contract is frozen, it answers `false` for the owner, for
+  // every delegate and for everybody else alike. Read as a fact about the key it says "the owner on
+  // file may" to somebody who IS the owner on file, about a refusal that has nothing to do with
+  // their key and that only DogTag can clear.
   try {
     const canWrite = await reader.canWriteDomain(service, caller);
-    checks.push(
-      providerCheck(
-        "domain-write-authority",
-        "May your key publish a domain for this contract?",
-        canWrite ? "pass" : "fail",
-        canWrite
-          ? "Your key may publish a domain for this contract."
-          : "Your key may not publish a domain for this contract. The owner on file, or a delegate they "
+    if (canWrite) {
+      checks.push(
+        providerCheck(
+          "domain-write-authority",
+          "May your key publish a domain for this contract?",
+          "pass",
+          "Your key may publish a domain for this contract.",
+        ),
+      );
+    } else if (resolverLive === true) {
+      checks.push(
+        providerCheck(
+          "domain-write-authority",
+          "May your key publish a domain for this contract?",
+          "fail",
+          "Your key may not publish a domain for this contract. The owner on file, or a delegate they "
             + "authorised, may.",
-      ),
-    );
+        ),
+      );
+    } else {
+      checks.push(
+        providerCheck(
+          "domain-write-authority",
+          "May your key publish a domain for this contract?",
+          "could-not-run",
+          "Whether your key may publish a domain here is not established yet.",
+          resolverLive === false
+            ? "the register refuses a write from ANY key until it is live for this contract, so this "
+              + "answer says nothing about your key - the register row above is the one to act on"
+            : "the register's own state could not be read, and it folds into this same answer, so a "
+              + "refusal here cannot be attributed to your key",
+        ),
+      );
+    }
   } catch (error) {
     checks.push(
       providerCheck(
@@ -244,8 +277,15 @@ export function canWithdraw(standing: DomainClaimStanding | undefined): boolean 
  * first half is DogTag's whatever the chain currently says. Naming both halves is what makes "not
  * your fault" concrete rather than reassuring: a provider who is told only "it is blocked" cannot
  * tell whether they are the one who is meant to act.
+ *
+ * **IT NO LONGER SAYS "NEITHER HAS A PAGE HERE YET", WHICH WAS HALF FALSE.** DogTag's half DOES have
+ * one - the admin Providers page carries the resolver approval - and a sentence saying otherwise is
+ * the same rot that told a captain there was no page for attaching a contract while he was looking
+ * at one. The SELECTION half genuinely has no surface anywhere yet (`setDirectoryResolver` and
+ * `setDomainResolver` are callable only on the contract), so that half is stated as itself. Check a
+ * claim like this against what ships before repeating it.
  */
 export const DOMAIN_REGISTER_NEEDS_TURNING_ON =
-  "Publishing a domain needs the domain register switched on for your contract, in two steps: DogTag approves the register, and only then can it be selected for your contract. Neither has a page here yet, so if this stops at the first check, that is why - it is not something you have set up wrongly.";
+  "Publishing a domain needs the domain register switched on for your contract, in two steps: DogTag approves the register, and then the register has to be selected for your contract. Both are DogTag's - ask them. If this stops at the first check, that is why, and it is not something you have set up wrongly.";
 
 export { DomainDisposition };

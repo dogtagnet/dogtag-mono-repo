@@ -233,47 +233,62 @@ export async function assessCandidateClone(
     );
   }
 
+  // Declared at function scope because the SUMMARY line needs it too: this is the state where the
+  // one-line answer has to say "wait for DogTag" rather than "read the rows to find out".
+  let awaitingRegistrar = false;
+
   // ---- 4. Authority, standing, and whether it is already the current pointer. -----------------
   if (attachedHere) {
-    // THE authorization row, and the only one that may refuse on the authority axis. Asked of the
-    // core rather than derived from `owner()`, so a delegate the chain admits is admitted here.
-    // Scoped to an attached clone because `repointService` is meaningless for an unattached one and
-    // the attachment row already carries that refusal.
-    try {
-      const mayRepoint = await reader.canWriteServiceRepoint(candidate, caller);
-      checks.push(
-        providerCheck(
-          "clone-write-authority",
-          "May your key select this contract?",
-          mayRepoint ? "pass" : "fail",
-          mayRepoint
-            ? "The registry accepts a selection from your key for this contract."
-            : "The registry does not accept a selection from your key for this contract. The owner "
-              + "on file, or a delegate they authorised for this, may.",
-        ),
-      );
-    } catch (error) {
-      checks.push(
-        providerCheck(
-          "clone-write-authority",
-          "May your key select this contract?",
-          "could-not-run",
-          "Whether the registry would accept a selection from your key could not be read.",
-          reasonFrom(error, "the canWriteService read failed"),
-        ),
-      );
-    }
-
+    // STANDING IS READ BEFORE AUTHORITY, and the order is load-bearing rather than tidy.
+    // `canWriteService` returns false on `!_serviceStandingIsEffective(...)` BEFORE it ever looks at
+    // the caller (`ProviderRegistry.sol:703`), so for a service that is not in effective standing it
+    // answers `false` for the owner, for every delegate, and for everybody else alike. The authority
+    // row used to read that shared `false` as a fact about the key and say the owner on file could
+    // do this instead - to a captain who WAS the owner on file, about a contract DogTag had just
+    // attached. Knowing the standing first is what lets that row decline to make a claim it is in no
+    // position to make.
+    let standingEffective: boolean | undefined;
     try {
       const effective = await reader.effectiveService(candidate);
+      // NOT YET ACTIVE IS NOT FROZEN, and calling it frozen stranded a captain who had done
+      // everything right. `attachService` writes the service's standing as `PENDING`, so this is the
+      // ORDINARY state of a contract DogTag has just attached - the single likeliest state a
+      // provider is in the first time they check. "Frozen" describes the opposite situation: a
+      // `RETIRED` standing is terminal and a deprecated generation cannot be undeprecated, so both
+      // really are permanent, and there is nothing to wait for. Reporting a step that is pending as
+      // one that will never come tells a provider their contract is dead when it is queued, and it
+      // sends them looking for a fault instead of at DogTag.
+      awaitingRegistrar =
+        effective.providerStanding === Standing.PENDING
+        || effective.serviceStanding === Standing.PENDING;
       const frozen =
-        effective.serviceStanding !== Standing.ACTIVE ||
-        effective.providerStanding !== Standing.ACTIVE ||
-        !effective.factoryActive;
+        !awaitingRegistrar
+        && (effective.serviceStanding !== Standing.ACTIVE
+          || effective.providerStanding !== Standing.ACTIVE
+          || !effective.factoryActive);
       // `ownerConfirmed` is reported alongside rather than folded into the standing sentence: a
       // freeze is cleared by nothing, an unconfirmed handover is cleared by the registrar
       // confirming it, and one message for both would send the provider to the wrong remedy.
-      if (frozen) {
+      standingEffective = !awaitingRegistrar && !frozen;
+      if (awaitingRegistrar) {
+        checks.push(
+          providerCheck(
+            "clone-standing",
+            "Does this contract's standing still allow changes?",
+            // STILL a `fail`, because the chain would refuse a selection right now and this row is
+            // what gates the send. What changes is the sentence, not the verdict: reporting it as a
+            // pass would offer a transaction that cannot succeed, and reporting it as could-not-run
+            // would claim we failed to read something we read perfectly well.
+            "fail",
+            `Waiting on DogTag: your ${
+              effective.providerStanding === Standing.PENDING ? "provider record" : "contract"
+            } is registered and its standing is still pending review. Attaching a contract leaves it `
+              + `pending by design - DogTag sets its standing to active as the next step, on the `
+              + `Providers page under Attached services. Nothing is wrong with what you deployed, and `
+              + `there is nothing for you to change here.`,
+          ),
+        );
+      } else if (frozen) {
         checks.push(
           providerCheck(
             "clone-standing",
@@ -315,6 +330,65 @@ export async function assessCandidateClone(
       );
     }
 
+    // THE authorization row, and the only one that may refuse on the authority axis. Asked of the
+    // core rather than derived from `owner()`, so a delegate the chain admits is admitted here.
+    // Scoped to an attached clone because `repointService` is meaningless for an unattached one and
+    // the attachment row already carries that refusal.
+    try {
+      const mayRepoint = await reader.canWriteServiceRepoint(candidate, caller);
+      if (mayRepoint) {
+        checks.push(
+          providerCheck(
+            "clone-write-authority",
+            "May your key select this contract?",
+            "pass",
+            "The registry accepts a selection from your key for this contract.",
+          ),
+        );
+      } else if (standingEffective === true) {
+        // Standing is established as fine, so the refusal really is about the key and this row is
+        // entitled to say so.
+        checks.push(
+          providerCheck(
+            "clone-write-authority",
+            "May your key select this contract?",
+            "fail",
+            "The registry does not accept a selection from your key for this contract. The owner "
+              + "on file, or a delegate they authorised for this, may.",
+          ),
+        );
+      } else {
+        // The chain gave one `false` for two possible reasons and this row cannot separate them, so
+        // it declines to blame the key. `could-not-run` rather than `fail`: nothing about the key
+        // has been ESTABLISHED, and a page that accuses an operator's key of being wrong when it is
+        // the right key sends them to change the one thing that was never the problem.
+        checks.push(
+          providerCheck(
+            "clone-write-authority",
+            "May your key select this contract?",
+            "could-not-run",
+            "Whether your key may select this contract is not established yet.",
+            standingEffective === false
+              ? "the registry refuses a selection for ANY key while this contract's standing is not "
+                + "yet active, so this answer says nothing about your key - the standing row above is "
+                + "the one to act on"
+              : "the contract's standing could not be read, and the registry folds standing into this "
+                + "same answer, so a refusal here cannot be attributed to your key",
+          ),
+        );
+      }
+    } catch (error) {
+      checks.push(
+        providerCheck(
+          "clone-write-authority",
+          "May your key select this contract?",
+          "could-not-run",
+          "Whether the registry would accept a selection from your key could not be read.",
+          reasonFrom(error, "the canWriteService read failed"),
+        ),
+      );
+    }
+
     if (recordType) {
       try {
         const current = await reader.currentService(providerId, recordType);
@@ -339,7 +413,7 @@ export async function assessCandidateClone(
     lifecycle,
     verdict,
     canRepoint,
-    nextStep: nextStepFor(lifecycle, verdict),
+    nextStep: nextStepFor(lifecycle, verdict, awaitingRegistrar),
     ...(recordType ? { recordType } : {}),
   };
 }
@@ -350,7 +424,19 @@ export async function assessCandidateClone(
  * `unknown` deliberately does not offer a remedy that would fix a refusal - the honest instruction
  * when a read failed is to try again, not to go and change something that may be perfectly fine.
  */
-export function nextStepFor(lifecycle: CloneLifecycle, verdict: ProviderVerdict): string {
+export function nextStepFor(
+  lifecycle: CloneLifecycle,
+  verdict: ProviderVerdict,
+  /**
+   * The refusal is a standing DogTag has still to set, rather than anything the provider can change.
+   *
+   * Passed in rather than inferred, and it changes the SUMMARY line specifically because that is the
+   * line a first-time provider reads and stops at. "The failed checks above say why" is true and
+   * sends them to read five rows to discover the answer is "wait" - which, for the single most
+   * common state a provider is in right after DogTag attaches their contract, is a wall.
+   */
+  awaitingRegistrar = false,
+): string {
   if (lifecycle === "notAClone") return NOT_GENUINE;
   if (verdict === "indeterminate") {
     return "Some checks could not run, so nothing about this address has been established. Try again once the connection is back.";
@@ -361,6 +447,9 @@ export function nextStepFor(lifecycle: CloneLifecycle, verdict: ProviderVerdict)
     case "foreign":
       return "This contract belongs to another provider. Deploy your own, or ask DogTag to correct the attachment.";
     case "attached":
+      if (awaitingRegistrar) {
+        return "Nothing for you to do here yet: ask DogTag to set this contract's standing to active. You can select it here once they have.";
+      }
       return verdict === "refused"
         ? "This contract cannot be selected right now. The failed checks above say why."
         : "Ready to select. New credentials of this record type will be anchored here.";
@@ -385,19 +474,29 @@ export const REPOINT_SCOPE_NOTICE =
   "Selecting a different contract changes where NEW credentials are anchored. Credentials you have already issued stay with the contract that issued them, and stay revocable there.";
 
 /**
- * That this flow depends on a step the provider cannot take, said BEFORE they try it.
+ * That this flow depends on steps the provider cannot take, said BEFORE they try it.
  *
- * A DEPENDENCY, not a status. `attachService` is `onlyOwner` on the core, so "DogTag must attach it
- * first" is a permanent property of the design and stays true after the gap closes; a sentence
- * claiming the flow is currently blocked would go stale silently, and deriving one from a live read
- * would mean rendering a could-not-run state as an accusation. The checks report what is true now;
- * this reports what this flow needs.
+ * A DEPENDENCY, not a status. `attachService` and `setServiceStanding` are both `onlyOwner` on the
+ * core, so "DogTag does this, not you" is a permanent property of the design and stays true after
+ * any given contract gets through; a sentence claiming the flow is currently blocked would go stale
+ * silently, and deriving one from a live read would mean rendering a could-not-run state as an
+ * accusation. The checks report what is true now; this reports what this flow needs.
  *
- * The second sentence is the part a provider actually needs: without it, hitting the wall reads as
- * something they misconfigured, and they go looking for a setting that does not exist.
+ * **IT SAYS TWO STEPS BECAUSE THERE ARE TWO, and naming only the first stranded a captain.**
+ * `attachService` writes the service's standing as `PENDING` - so the ordinary state immediately
+ * after an attach is a contract that is attached and still cannot be selected, which is precisely
+ * the state a provider is in the first time they come back to check. A provider told about one step
+ * has no way to read that as anything but a failure of the step they were told about.
+ *
+ * **AND IT NO LONGER CLAIMS THERE IS NOWHERE TO DO IT.** It used to end "there is no page for it
+ * yet", which was true when it was written and is now false: the admin portal's Providers page
+ * carries both controls, under Attached services. A captain read that sentence, went looking anyway,
+ * found the control, used it - and the sentence had already told him the thing he had just done was
+ * impossible. A claim about what exists elsewhere in the product is exactly the kind that rots
+ * without anything failing, so it is stated as what DogTag does rather than as what does not exist.
  */
 export const ATTACHMENT_IS_A_DOGTAG_STEP =
-  "Before you can select a contract here, DogTag has to attach it to your provider record. That step is theirs, not yours, and there is no page for it yet - so if this stops at the attachment check, nothing is wrong with what you deployed.";
+  "Before you can select a contract here, DogTag has to do two things to it: attach it to your provider record, and then set that contract's standing to active. Both are theirs, not yours - so if this stops at the attachment or the standing check, nothing is wrong with what you deployed.";
 
 /** Re-exported so a renderer can name a disposition without importing the reader module. */
 export { DomainDisposition, ZERO_ADDR };

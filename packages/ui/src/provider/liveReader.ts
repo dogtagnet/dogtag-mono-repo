@@ -188,6 +188,37 @@ const FACTORY_ABI = [
   },
 ] as const;
 
+/**
+ * The factory's own record of a creation, whole: `DogTagIssuerFactory.sol` emits this beside
+ * `IssuerCreated` for exactly that reason.
+ *
+ * `cloneNonce` is UNINDEXED and rides in the data, which is what lets a log with no block position
+ * still answer the contract-number question. Named rather than indexed out of `FACTORY_ABI`, so
+ * reordering that array cannot silently point the log filter at a different event - a wrong event
+ * here matches nothing, which renders as "you have deployed nothing".
+ */
+const ISSUER_OWNER_REGISTERED_EVENT = {
+  type: "event",
+  name: "IssuerOwnerRegistered",
+  inputs: [
+    { name: "clone", type: "address", indexed: true },
+    { name: "owner", type: "address", indexed: true },
+    { name: "providerId", type: "bytes20", indexed: true },
+    { name: "cloneNonce", type: "uint96", indexed: false },
+  ],
+} as const;
+
+/** The clone's own immutable record type. See `ProviderChainReader.cloneRecordType` for why. */
+const ISSUER_ABI = [
+  {
+    type: "function",
+    name: "recordType",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bytes32" }],
+  },
+] as const;
+
 const OWNABLE_ABI = [
   { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
 ] as const;
@@ -531,6 +562,44 @@ export function createLiveProviderReader(options: LiveReaderOptions): ProviderCh
         args: [recordType, getAddress(business), cloneNonce],
         ...at,
       })) as Address;
+    },
+
+    async issuerCreations(owner) {
+      // Genesis to head, deliberately. A floor would have to come from somewhere, and every
+      // candidate is wrong in the same direction: too high silently hides a contract the operator
+      // owns, which is the whole defect. The same unbounded shape the issuer-whitelist pillar
+      // already uses against this chain, on an operator-gated page rather than a public route.
+      //
+      // `toBlock` follows any pin so a pinned reader stays one snapshot rather than mixing a pinned
+      // call with a head-of-chain log read.
+      const logs = await client.getLogs({
+        address: contracts.factory,
+        event: ISSUER_OWNER_REGISTERED_EVENT,
+        args: { owner: getAddress(owner) },
+        fromBlock: 0n,
+        ...(blockNumber === undefined ? { toBlock: "latest" as const } : { toBlock: blockNumber }),
+      });
+      return logs.map((log) => ({
+        clone: log.args.clone as Address,
+        cloneNonce: log.args.cloneNonce as bigint,
+        providerId: log.args.providerId as HexWord,
+        // A log a node considers pending carries neither. Both are OMITTED rather than defaulted:
+        // `0` is a real block and a zeroed hash is a real-looking transaction id, and either would
+        // be a claim about a position nobody reported.
+        ...(log.transactionHash ? { txHash: log.transactionHash } : {}),
+        ...(log.blockNumber === null || log.blockNumber === undefined
+          ? {}
+          : { blockNumber: log.blockNumber }),
+      }));
+    },
+
+    async cloneRecordType(clone) {
+      return (await client.readContract({
+        address: getAddress(clone),
+        abi: ISSUER_ABI,
+        functionName: "recordType",
+        ...at,
+      })) as HexWord;
     },
 
     async domainClaimStanding(service) {

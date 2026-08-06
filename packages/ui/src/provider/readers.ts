@@ -19,6 +19,8 @@
  * ask" into "the chain refused you", which is the defect this surface exists not to have.
  */
 
+import type { IssuerCreationLog } from "./deploymentHistory";
+
 /** A 0x-prefixed hex address. */
 export type Address = `0x${string}`;
 /** A 0x-prefixed hex word (bytes32 or, for a provider id, bytes20). */
@@ -188,6 +190,27 @@ export interface ProviderChainReader {
 
   /** `factory.predictIssuer(recordType, business, cloneNonce)` - exact, before the transaction. */
   predictIssuer(recordType: HexWord, business: Address, cloneNonce: bigint): Promise<Address>;
+
+  /**
+   * Every `IssuerOwnerRegistered` this factory has emitted for `owner` - what that wallet deployed.
+   *
+   * Filtered by OWNER and never by provider id. The factory's salt is
+   * `keccak256(abi.encode(recordType, msg.sender, cloneNonce))`, so the owner is what shares a
+   * number's namespace and the provider id is not in it at all; see `deploymentHistory.ts`.
+   *
+   * The event carries no record type, which is why {@link cloneRecordType} exists rather than a
+   * second, dependent log filter.
+   */
+  issuerCreations(owner: Address): Promise<readonly IssuerCreationLog[]>;
+
+  /**
+   * `DogTagIssuer.recordType()` on the clone itself.
+   *
+   * Deliberately the CLONE's own immutable value rather than `service(clone).recordType`: the core's
+   * copy is written by `attachService` and is all-zero until the registrar acts, so reading it would
+   * report no record type for exactly the freshly-deployed contract this is asked about.
+   */
+  cloneRecordType(clone: Address): Promise<HexWord>;
 
   // -- the typed resolvers ---------------------------------------------------------------------
 

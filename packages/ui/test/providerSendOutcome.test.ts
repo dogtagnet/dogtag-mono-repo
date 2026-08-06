@@ -11,6 +11,7 @@
 // as succeeded, and an unfetchable receipt must read as NEITHER neighbour.
 import { describe, expect, it } from "vitest";
 import {
+  createdAddressMeaning,
   hasNoHash,
   isUnsettled,
   mayContinueAfter,
@@ -154,5 +155,56 @@ describe("an explorer link is a CLAIM", () => {
     for (const bad of ["0x", "0x0800", "not-a-hash"]) {
       expect(sendExplorerHref(sendRecord("s1", "Deploy contract", "succeeded", { hash: bad }))).toBeNull();
     }
+  });
+});
+
+describe("the address a deploy creates, carried on its own row", () => {
+  // A hash alone does not answer "what did I just deploy" - the operator has to open an explorer and
+  // decode a log to reach the address, which is the value they actually need in hand. It comes from
+  // the checked plan's prediction, which is exact: the factory works the address out from the same
+  // three inputs whether it is asked to predict or to deploy.
+  const CLONE = "0x14a090086a6fd747840b003a9c09521d09ddef3a";
+  const row = (state: SendState, opts: Record<string, string> = {}) =>
+    sendRecord("s1", "Deploy contract", state, {
+      createdAddress: CLONE,
+      ...(hasNoHash(state) ? {} : { hash: HASH }),
+      ...(isUnsettled(state) ? { unknownReason: "the receipt could not be read" } : {}),
+      ...opts,
+    });
+
+  it("carries the predicted address from the moment the wallet is asked", () => {
+    // Before the hash exists, which is the window the operator spends wondering what is happening.
+    expect(row("awaitingWallet").createdAddress).toBe(CLONE);
+    expect(row("submitted").createdAddress).toBe(CLONE);
+    expect(row("succeeded").createdAddress).toBe(CLONE);
+  });
+
+  it("never says a contract exists at an address nothing was created at", () => {
+    // THE ONE THING THIS VALUE MUST NOT DO. A bare address beside a reverted or still-pending row
+    // reads as a result, which is a verdict stated before the fact is established - on the surface
+    // whose whole design principle is that it does not do that.
+    const exists = /now exists/i;
+    expect(createdAddressMeaning(row("succeeded"))).toMatch(exists);
+    for (const state of ["awaitingWallet", "submitted", "reverted", "unknown", "walletSilent"] as const) {
+      expect(createdAddressMeaning(row(state)), state).not.toMatch(exists);
+    }
+  });
+
+  it("says outright that nothing was created when the transaction reverted", () => {
+    // The strongest place a bare address would be misread, so it is the one that states the negative
+    // rather than merely declining to state the positive.
+    expect(createdAddressMeaning(row("reverted"))).toMatch(/nothing was created/i);
+  });
+
+  it("leaves both could-not-tell states saying the outcome is not established", () => {
+    for (const state of ["unknown", "walletSilent"] as const) {
+      expect(createdAddressMeaning(row(state)), state).toMatch(/not established/i);
+    }
+  });
+
+  it("describes nothing for a row that creates no contract", () => {
+    // Every other send on this page - a repoint, a domain claim, a publication - creates no address,
+    // and a caption with no value to caption would be a claim about nothing.
+    expect(createdAddressMeaning(sendRecord("s2", "Select contract", "succeeded", { hash: HASH }))).toBeNull();
   });
 });

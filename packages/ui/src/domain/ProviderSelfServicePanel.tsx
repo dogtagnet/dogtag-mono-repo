@@ -20,6 +20,8 @@
 import { AlertTriangle, CircleHelp, CircleSlash, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "../components/Badge";
+import { ChainValue } from "../chain/ChainValue";
+import { addressExplorerHref, txExplorerHref } from "../chain/provenance";
 import { PROVIDER_CONTACT_CHANNELS } from "../directory/channels";
 import { cn } from "../lib/cn";
 import { ProviderLogo, type ProfileResolution } from "../mirror";
@@ -28,9 +30,12 @@ import type {
   CheckOutcome,
   CloneAssessment,
   CloneLifecycle,
+  DeployedContract,
+  DeploymentHistory,
   DeployPlan,
   DirectoryPublicationPlan,
   DomainClaimAssessment,
+  NextContractNumber,
   ProviderCheck,
   ProviderVerdict,
 } from "../provider";
@@ -255,6 +260,248 @@ export function CloneLifecycleCard({
       </p>
       <ProviderCheckList checks={assessment.checks} />
     </section>
+  );
+}
+
+// -------------------------------------------------------------------------------------------------
+// What this wallet has already deployed
+// -------------------------------------------------------------------------------------------------
+
+/**
+ * Where one deployed contract has got to, and whose move is next.
+ *
+ * `deployed` is a WAITING state with a real next step belonging to someone else, so it is worded as
+ * one rather than as a warning - a provider who reads "not attached" as a fault goes looking for
+ * something to fix that is not theirs to fix.
+ */
+const ATTACHMENT_COPY: Readonly<
+  Record<DeployedContract["attachment"], { label: string; body: string; tone: string }>
+> = {
+  notAttached: {
+    label: "Waiting for DogTag",
+    body:
+      "Yours and on chain, and not yet attached to a provider record. Send this address to DogTag "
+      + "as the next step.",
+    tone: "text-amber-700 dark:text-amber-400",
+  },
+  // THE STATE THAT STRANDED A CAPTAIN, and the reason this is not a two-value attached/not-attached.
+  // `attachService` writes PENDING, and `setServiceStanding(ACTIVE)` is a SECOND registrar call - so
+  // a contract can be genuinely attached and still not selectable, which is exactly what "Attached"
+  // alone told him he could do.
+  pendingStanding: {
+    label: "Attached, waiting for DogTag",
+    body:
+      "DogTag has attached this, and its standing is still pending. Attaching leaves a contract "
+      + "pending by design - DogTag sets its standing to active as the next step. You cannot select "
+      + "it in step 2 until they do, and there is nothing for you to change here.",
+    tone: "text-amber-700 dark:text-amber-400",
+  },
+  active: {
+    label: "Ready to select",
+    body: "Attached and active. This is the one you can select in step 2.",
+    tone: "text-emerald-700 dark:text-emerald-400",
+  },
+  otherStanding: {
+    label: "Attached, not active",
+    body:
+      "DogTag has attached this, and its standing is not active, so it cannot be selected. The "
+      + "standing is below.",
+    tone: "text-amber-700 dark:text-amber-400",
+  },
+  unknown: {
+    label: "Not established",
+    body:
+      "Where this stands with DogTag could not be read, so it is not known whether you can select "
+      + "it yet. The address and the transaction below are established either way.",
+    tone: "text-amber-700 dark:text-amber-400",
+  },
+};
+
+/**
+ * Every contract this wallet has deployed, read back from the factory's own creation log.
+ *
+ * THE THREE STATES ARE NOT INTERCHANGEABLE, and the middle one is the whole point:
+ *
+ *   * `undefined` - not read yet, or nothing to read from (no wallet, no reader). Renders NOTHING.
+ *     Wagmi reconnects asynchronously, so this state is on screen for a moment on every load; saying
+ *     "you have deployed nothing" there would be a false claim once per page view.
+ *   * `couldNotRead` - the log read failed. Says so. NEVER "you have deployed nothing", which is the
+ *     collapse this page exists not to make and would tell an operator his contract does not exist.
+ *   * `read` - established. An EMPTY read is a fact and may be said out loud.
+ */
+export function DeployedContractsCard({
+  history,
+  nextStep,
+  refreshing = false,
+}: {
+  history: DeploymentHistory | undefined;
+  nextStep: string;
+  /** A refresh is in flight over an answer already on screen. Never a substitute for a state. */
+  refreshing?: boolean;
+}): ReactNode {
+  if (!history) return null;
+  return (
+    <section className="rounded-lg border border-border p-4" data-testid="deployed-contracts">
+      <header className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">Contracts you have deployed</h3>
+        {refreshing ? (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="deployed-refreshing">
+            <Loader2 className="size-3 animate-spin" aria-hidden /> checking
+          </span>
+        ) : null}
+      </header>
+      {history.state === "couldNotRead" ? (
+        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" data-testid="deployed-unread">
+          What you have deployed could not be read, so nothing about it is known here - this does not
+          mean you have deployed nothing. Why: {history.reason}
+        </p>
+      ) : history.deployments.length === 0 ? (
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="deployed-none">
+          This wallet has not deployed any contract from the DogTag factory. Deploying one below is
+          the first step.
+        </p>
+      ) : (
+        <>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Read from the factory on chain, for the wallet you have connected - so it is here whatever
+            browser you come back on, and it is what actually exists rather than what this page
+            remembers.
+          </p>
+          <ul className="mt-3 flex flex-col gap-3" data-testid="deployed-list">
+            {history.deployments.map((d) => (
+              <DeployedContractRow key={d.clone} deployment={d} nextStep={nextStep} />
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+function DeployedContractRow({
+  deployment,
+  nextStep,
+}: {
+  deployment: DeployedContract;
+  nextStep: string;
+}): ReactNode {
+  const attachment = ATTACHMENT_COPY[deployment.attachment];
+  return (
+    <li
+      className="rounded-md border border-border bg-muted/30 p-3"
+      data-testid="deployed-contract"
+      data-attachment={deployment.attachment}
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        {/* The address, complete and copyable. This is the value the operator has to hand to
+            DogTag, so a truncated form with no way to take it away would be the defect again one
+            level down. */}
+        <ChainValue
+          label="Contract address"
+          value={deployment.clone}
+          href={addressExplorerHref(deployment.clone)}
+          full
+          stacked
+          testId="deployed-address"
+          className="min-w-0 flex-1"
+        />
+        <span className={cn("text-xs font-medium", attachment.tone)} data-testid="deployed-attachment">
+          {attachment.label}
+        </span>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">{attachment.body}</p>
+      {deployment.attachment === "unknown" && deployment.attachmentReason ? (
+        <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="deployed-attachment-reason">
+          Why: {deployment.attachmentReason}
+        </p>
+      ) : null}
+      {deployment.attachment === "notAttached" ? (
+        <p className="mt-1 text-xs" data-testid="deployed-next-step">
+          {nextStep}
+        </p>
+      ) : null}
+      {deployment.standingLabel ? (
+        <p className="mt-1 text-xs" data-testid="deployed-standing">
+          Standing: {deployment.standingLabel}
+        </p>
+      ) : null}
+      <dl className="mt-2 flex flex-col gap-1">
+        <ChainValue
+          label="Contract number"
+          value={String(deployment.cloneNonce)}
+          full
+          stacked
+          testId="deployed-nonce"
+        />
+        {/* Absent is its own case, never an empty line: a blank where a transaction id belongs
+            reads as a deploy that produced none. */}
+        {deployment.txHash ? (
+          <ChainValue
+            label="Created by transaction"
+            value={deployment.txHash}
+            href={txExplorerHref({ txHash: deployment.txHash })}
+            full
+            stacked
+            testId="deployed-tx"
+          />
+        ) : (
+          <p className="text-[11px] text-amber-700 dark:text-amber-400" data-testid="deployed-tx-unknown">
+            The transaction that created this was not reported with a position on chain, so there is
+            no transaction id to show. The contract itself is established.
+          </p>
+        )}
+        <ChainValue
+          label="Record type"
+          value={deployment.recordType ?? null}
+          full
+          stacked
+          testId="deployed-record-type"
+        />
+        {deployment.recordType === undefined ? (
+          <p className="text-[11px] text-amber-700 dark:text-amber-400" data-testid="deployed-record-type-reason">
+            Its record type could not be read{deployment.recordTypeReason ? `: ${deployment.recordTypeReason}` : ""}.
+          </p>
+        ) : null}
+        <ChainValue
+          label="Deployed for provider"
+          value={deployment.providerId}
+          full
+          stacked
+          testId="deployed-provider-id"
+        />
+      </dl>
+    </li>
+  );
+}
+
+/**
+ * The contract number the next deploy would take, or an honest statement that it is not known.
+ *
+ * Never renders a guess. A number pre-filled from an incomplete read collides on a deterministic
+ * address, and the operator's only sign of that would be the deploy check refusing a number this
+ * page put there.
+ */
+export function NextContractNumberNotice({
+  suggestion,
+  testId = "next-contract-number",
+}: {
+  suggestion: NextContractNumber;
+  testId?: string;
+}): ReactNode {
+  if (suggestion.state === "unknown") {
+    return (
+      <p className="mt-1 text-xs text-amber-700 dark:text-amber-400" data-testid={`${testId}-unknown`}>
+        The next free number could not be worked out, so nothing has been filled in for you. Why:{" "}
+        {suggestion.reason}
+      </p>
+    );
+  }
+  return (
+    <p className="mt-1 text-xs text-muted-foreground" data-testid={testId}>
+      {suggestion.highestUsed === null
+        ? "You have not deployed this record type before, so 0 is the next free number."
+        : `The highest number you have used for this record type is ${suggestion.highestUsed}, so ${suggestion.next} is the next free one.`}
+    </p>
   );
 }
 

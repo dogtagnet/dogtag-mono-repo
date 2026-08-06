@@ -1,6 +1,6 @@
 # DogTag monorepo — root task runner (just is unavailable; GNU Make 3.81)
 .DEFAULT_GOAL := help
-.PHONY: help dev build test check-addresses test-address-gate test-e2e-lib e2e e2e-web e2e-ios e2e-android parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer test-consent-parity vendor-mobile-artifacts verify-provider-selfservice-mutations verify-content-mirror-mutations
+.PHONY: help dev build test check-addresses test-address-gate test-e2e-lib e2e e2e-web e2e-ios e2e-android parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer test-consent-parity vendor-mobile-artifacts verify-provider-selfservice-mutations verify-content-mirror-mutations verify-deployment-record-mutations
 
 help: ## list targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -92,6 +92,9 @@ verify-address-config-mutations: ## mutation gate for addresses-as-configuration
 
 verify-content-mirror-mutations: ## S-17 mutation gate for the content mirror (slow; not in `test`)
 	bash scripts/verify-content-mirror-mutations.sh
+
+verify-deployment-record-mutations: ## mutation gate for the deploy record + the stranded states (slow; not in `test`)
+	bash scripts/verify-deployment-record-mutations.sh
 
 # ADMIN must be the broadcasting key: the registrar wiring inside the script is onlyOwner on a core it
 # has just handed to ADMIN. CUSTODIAN must be a neutral sink - no code, no role, never signs.

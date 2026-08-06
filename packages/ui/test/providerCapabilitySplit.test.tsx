@@ -113,6 +113,25 @@ describe("a groomer is a provider that does NOT issue, so three flows are inappl
     expect(el.querySelector("#recordType")).toBeNull();
     expect(el.querySelector("#providerId")).not.toBeNull();
   });
+
+  it("still explains its blocked control IN FULL, although flow 1 would have carried that sentence", async () => {
+    // A REGRESSION THE PAGE-WIDE REASON DEDUPE INTRODUCED, and it lands on the groomer only.
+    // Reasons are said in full once and briefly after, in source order - and the first entries in
+    // that order belong to flows 1-3, which a groomer does not render at all. So the full sentence
+    // was assigned to a control that does not exist and the only reason on the page degraded to
+    // "Unavailable while a field it needs is still empty", which names no field.
+    //
+    // Same rule as the withdraw-pin reason being placed last: a sentence may only be spent on a
+    // control that is actually rendered. Here the gate is the capability block, one level up.
+    const el = await mount({ issuance: false, listing: true });
+    const reasons = [...el.querySelectorAll("[data-testid$='-reason'][data-block]")];
+    expect(reasons.length).toBeGreaterThan(0);
+    expect(reasons.some((r) => r.getAttribute("data-style") === "full")).toBe(true);
+    // And the full one is the COMPLETE sentence, not the one-line repeat form. No wallet is
+    // connected in this suite, so the obstacle here is `notConnected` and the half that matters is
+    // where the button is - which the brief form does not carry.
+    expect(el.textContent).toMatch(/button in the top right/i);
+  });
 });
 
 describe("an unconfigured deployment checks nothing and says so", () => {
