@@ -56,6 +56,12 @@ test-ts: ## TS SDK + shared-UI tests (incl. shared testvectors.json)
 	# nothing about them. Named explicitly rather than broadened to `pnpm -r test`, which would sweep
 	# in Playwright specs that drive live portals and anchor real records on chain.
 	pnpm --filter @dogtag/ui test
+	# `@dogtag/admin-web` is the SAME gap one package over: it carries the registrar surface's own
+	# mounted suites - the demo fill that must not supply a controller key, the chain-ref rendering -
+	# and it was reachable only through the paused no-mistakes gate, so `make test` said nothing about
+	# it either. Safe to name here: it has no `e2e/` directory at all, and its vitest config scopes
+	# `include` to `test/**`, so this cannot sweep in a live-portal driver.
+	pnpm --filter @dogtag/admin-web test
 
 test-rs: ## Rust SDK tests (incl. shared testvectors.json)
 	cargo test -p dogtag-standard-rs
