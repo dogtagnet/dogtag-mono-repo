@@ -323,12 +323,12 @@ live - which chain to talk to, and the registrar's key.
 > |---|---|
 > | `vet-api` | refuses - `CENTRAL_HMAC_SECRET is set to the insecure dev default` |
 > | `admin-api` | refuses, but for an unrelated reason: `SHARE_JWT_SIGNING_KEY is required in production` |
-> | `admin-api`, once those two are supplied | **boots.** `/health` answers `ok`, on `ADMIN_PASSWORD=admin` |
+> | `admin-api`, with **only** that one variable added | **boots.** `/health` answers `ok` - still on `ADMIN_PASSWORD=admin` and still on the published HMAC |
 >
 > The password never comes up. `admin` is not the literal `admin-pw` the guard looks for, so it
-> passes - and what stopped the first attempt was a *different secret entirely*. Fix the two errors
-> it actually named and you have a registrar console on the password `admin`, with nothing anywhere
-> reporting it.
+> passes; and `admin-api`'s guard does not examine `CENTRAL_HMAC_SECRET` at all, so that stays at its
+> published value too. **One variable** is the whole distance between the demo secrets and a running
+> registrar console, and the error you get names a different secret entirely.
 >
 > A real deployment supplies real secrets from the start: **[PREREQUISITES.md](./PREREQUISITES.md) §2**
 > lists every one, and **[REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md)** is the hardened path.
@@ -432,11 +432,12 @@ cast send "$CONTROLLER" --value 0.01ether \
 cast balance "$CONTROLLER" --rpc-url $RPC --ether                  # 0.010000000000000000
 ```
 
-**Means:** you hold a key nobody else has, with enough gas to be a provider. It pays for the **eight**
-transactions this guide asks the provider to sign - three contract deployments (§3.4, §3.5, §7.3),
-three selections (§5.1, §5.2, §7.5) and two key admissions (§5.3) - and 0.01 PLASMA is roughly four
-thousand times what those cost, because gas on ROAX is about 0.001 gwei and a contract deployment is
-a few hundred thousand gas.
+**Means:** you hold a key nobody else has, with enough gas to be a provider. It pays for the eight
+transactions setup asks the provider to sign - three contract deployments (§3.4, §3.5, §7.3), three
+selections (§5.1, §5.2, §7.5) and two key admissions (§5.3) - and then for every credential the
+government issues in §11.2, because §7.5 hands this same key to that backend. 0.01 PLASMA is roughly
+four thousand times what setup costs, because gas on ROAX is about 0.001 gwei and a contract
+deployment is a few hundred thousand gas, so there is ample room for both.
 
 > **Where the gas comes from: your own registrar key, and there is no faucet.** Checked on
 > 2026-08-06: ROAX publishes no public faucet (`faucet.roax.net` does not resolve, and the explorer
@@ -463,6 +464,13 @@ a few hundred thousand gas.
 >
 > Yours is still a **testnet** key: it goes into a browser wallet (§3.3) and holds throwaway funds.
 > Never reuse it elsewhere, and never put a key that controls anything real into a browser.
+
+> **Walked this guide before?** Then a provider is already registered whose controller is one of
+> those published keys - anyone can act as it. **Register a new provider** with the key you just
+> generated (§1.4) rather than reusing that one. `ProviderRegistry` does have a two-step controller
+> transfer, but no route or button in this product calls it, so registering afresh is the only path
+> a reader has. The old provider becomes inert once nothing points at it, and on a disposable
+> testnet that is the whole remedy.
 
 ## 1.4 Register the provider
 
@@ -1611,9 +1619,10 @@ from `GOVERNANCE_PRIVATE_KEY`:
 | balance after | **0.010000000000000000 PLASMA** |
 
 **The amount is derived, not chosen by feel.** ROAX gas price read **1,000,007 wei** (~0.001 gwei),
-so a 300,000-gas contract deployment costs ~0.0000003 PLASMA and the guide's eight provider
-transactions come to roughly 0.0000024 - about **1/4,000th** of what was sent. The registrar key
-started at 0.2499 PLASMA and 0.01 is 4% of it.
+so a 300,000-gas contract deployment costs ~0.0000003 PLASMA and the eight provider transactions of
+setup come to roughly 0.0000024 - about **1/4,000th** of what was sent, leaving ample room for the
+Phase 2 issuances that §7.5 also puts on this key. The registrar key started at 0.2499 PLASMA and
+0.01 is 4% of it.
 
 **No faucet exists for this chain.** `faucet.roax.net` and `roax.net` return no response;
 `explorer.roax.net` answers 200 and its page contains the string "faucet" zero times. A web search
@@ -1643,11 +1652,14 @@ test and killed by recorded pid:
 |---|---|
 | `vet-api` | exits: `FATAL: refusing to boot in production mode: CENTRAL_HMAC_SECRET is set to the insecure dev default` |
 | `admin-api` | exits: `SHARE_JWT_SIGNING_KEY is required in production (DEMO_MODE unset) … refusing to start` |
-| `admin-api` + a real HMAC + a `SHARE_JWT_SIGNING_KEY` | **boots**, `/health` → `{"status":"ok"}`, still on `ADMIN_PASSWORD=admin` |
+| `admin-api`, **only** `SHARE_JWT_SIGNING_KEY` added | **boots**, `/health` → `{"status":"ok"}`, on `ADMIN_PASSWORD=admin` and the demo's own `CENTRAL_HMAC_SECRET=dev-central-hmac-secret` |
 
-The third row is the finding, and it corrected a claim this branch first wrote from reading the code
-alone: the guard is a list of known-bad literals, so `admin` passes it, and the thing that stops the
-first attempt is an unrelated secret. Nothing reports the password.
+The third row is the finding, and it corrected this branch's own first draft twice. Written from
+reading the code, it claimed `admin-api` boots outright - it does not, it refuses on an unrelated
+secret. Written from the first measurement, it claimed a real HMAC was also needed - it is not:
+`admin-api`'s `validate_production_secrets` spec list is `ADMIN_PASSWORD` + `ADMIN_PRIVATE_KEY` and
+never mentions the HMAC, so the published one survives. **One variable** is the entire distance
+between the demo secrets and a running registrar console on the password `admin`.
 
 **Nothing of the running stack was disturbed**, checked before and after: `admin-api` on `:39742`
 answered `{"status":"ok"}` and the portal on `:39741` answered 200 throughout. The existing provider
