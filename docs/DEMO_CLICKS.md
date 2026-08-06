@@ -284,7 +284,7 @@ registry. Until it reads `1`, no phone can complete a verification. Go to §0.5.
 
 ## 0.5 Write `contracts/.env`
 
-**Do:** the file must end up holding **exactly these three lines and nothing else**:
+The file must end up holding **exactly these three lines and nothing else**:
 
 ```
 ROAX_RPC=https://devrpc.roax.net
@@ -292,41 +292,35 @@ DEMO_MODE=1
 GOVERNANCE_PRIVATE_KEY=<the registrar key - see below>
 ```
 
-**If the file does not exist**, create it with those three lines and go on.
-
-**If it already exists** - a previous walk, a shared machine, an older version of this guide - then
-this is a *replace*, not an append. **Delete every line the command below prints.** That is two
-kinds of line, not one: any line naming a **contract address**, and the line naming the **deployer's
-private key**. Both are traps and the second is the sharper one; the paragraph after the command says
-why.
+**Do:** in the terminal you deployed from - do not hand-edit the file. Export the three (under
+Option B your shell may already hold `GOVERNANCE_PRIVATE_KEY` from §0.4; export whichever are
+missing), then run the sync command, which writes the exported environment into the file:
 
 ```bash
-grep -nE '(_ADDR|_ADDRESS)=' contracts/.env \
-  | grep -vE '(PROFILE_ISSUER_ADDR|VACCINATION_ISSUER_ADDR|TRAVEL_CLEARANCE_ISSUER_ADDR)='
-grep -nE '^(DEPLOYER_PRIVATE_KEY|DEPLOYER_ADDRESS)=' contracts/.env
+export ROAX_RPC=https://devrpc.roax.net
+export DEMO_MODE=1
+export GOVERNANCE_PRIVATE_KEY=<the registrar key - see below>
+scripts/sync-contracts-env.sh
 ```
 
-No output from both means there is nothing to remove. Anything they print, delete. Note the second
-command prints a KEY and an EOA address, neither of which is a contract address - that is deliberate,
-and it is why the rule above is "every line the command prints" rather than "every contract address".
-An earlier version of this step said the latter and then printed `DEPLOYER_PRIVATE_KEY`, which
-reasonably reads as "this is not what the rule meant" and leaves you unsure whether to act.
+**Means:** the file now says what your terminal says, whether or not it existed before. The command
+reports what it did by variable NAME and never prints a value: `set` (written from your shell),
+`unchanged`, `kept` (in the file but not exported in your shell - the file's value is left alone,
+and it says so), `removed` (a line the file must not carry), `refused` (exported in your shell but
+never written). Before any write it copies the file to `contracts/.env.bak.<timestamp>` and prints
+that path; it leaves the file at mode 600; run it twice and the second run reports no change.
 
-(The three the first command spares are per-provider contracts that do not exist yet; §5.3 and §7.5
-add them.)
+**If the file already exists** - a previous walk, a shared machine, an older version of this guide -
+the command is the whole point, because the stale file is the trap that checks against your SHELL
+cannot see: `demo-up.sh` reads the file, not the shell, so a previous deployment's
+`GOVERNANCE_PRIVATE_KEY` here boots an admin that owns nothing on your new contracts and the
+preflight refuses, while every check you run in the terminal agrees with the ledger. The command
+replaces the stale key with your shell's, deletes every ledger-owned contract-address line and any
+`DEPLOYER_PRIVATE_KEY` / `DEPLOYER_ADDRESS` line (naming each one it removed - the paragraph below
+says why they are traps), collapses duplicate lines to the one the shell would have used (the file
+is sourced last-wins), and keeps the per-provider lines that §5.3 and §7.5 add later.
 
-**A duplicate key line is harmless but tidy it up anyway.** The file is sourced by the shell, so the
-LAST assignment wins - two `ROAX_RPC=` lines are not an error and the second one is what takes effect.
-That is fine when they agree and impossible to notice when they do not, so keep one of each:
-
-```bash
-awk -F= '/^[A-Z_]+=/ { if (seen[$1]++) print FILENAME ":" NR ": duplicate " $1 }' contracts/.env
-```
-
-**Means:** the boot script sources this file, so it is where the two things the ledger cannot answer
-live - which chain to talk to, and the registrar's key.
-
-> **Why the deletion matters, and why skipping it costs you three sections.** Every protocol address
+> **Why the command removes those lines, and what leaving them would cost.** Every protocol address
 > is resolved from `contracts/deployments/roax.json` **only when the environment does not already
 > name one** - the script reads `${FACTORY_ADDR:-$(ledger_addr DogTagIssuerFactory)}` and ten
 > variables like it, so a leftover from a superseded deployment **wins over the ledger silently**.
@@ -348,7 +342,8 @@ live - which chain to talk to, and the registrar's key.
 > must go anyway, because that guard is deliberately best-effort in three ways: it runs only when the
 > `admin` role is among the ones being started, an unreadable read is a WARNING rather than a refusal
 > (could-not-check must never be reported as a wrong key), and `ADMIN_PROPOSE_ONLY=1` bypasses it by
-> design. Deleting the line removes the fallback instead of relying on something catching it.
+> design. Removing the line - which the sync command does, by name - removes the fallback instead of
+> relying on something catching it.
 
 > ### ⚠ `DEMO_MODE=1` is the line that must never reach production
 >
@@ -394,8 +389,10 @@ portal whose every action would silently produce unsigned calldata instead of a 
 
 > Put **no contract address in this file** yet. Every protocol address is resolved from the ledger
 > by name, and an address here silently overrides it - which is how a stale one survives a redeploy
-> while naming a contract that decides nothing. Four variables get added later, in §5.3 and §7.5,
-> and they are the only ones that ever belong here.
+> while naming a contract that decides nothing. The sync command enforces this: a ledger-owned
+> address exported in your shell is `refused` by name, and one already in the file is `removed`.
+> Four variables get added later, in §5.3 and §7.5, and they are the only ones that ever belong
+> here - the command knows them and syncs them like the three above.
 
 ## 0.6 How you boot a role
 
@@ -933,20 +930,22 @@ displaces the other.
 
 ## 5.3 Tell the backend which contracts it anchors into
 
-**Do:** add both addresses to `contracts/.env`, then restart just the vet:
-
-```
-PROFILE_ISSUER_ADDR=<the DOG_PROFILE contract from §3.4>
-VACCINATION_ISSUER_ADDR=<the VACCINATION contract from §3.5>
-```
+**Do:** hand both addresses to the sync command - it writes them into `contracts/.env` - then
+restart just the vet:
 
 ```bash
+PROFILE_ISSUER_ADDR=<the DOG_PROFILE contract from §3.4> \
+VACCINATION_ISSUER_ADDR=<the VACCINATION contract from §3.5> \
+scripts/sync-contracts-env.sh
 scripts/demo-down.sh vet
 LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh vet
 ```
 
-**Means:** the backend reads these at boot, so it learns where to anchor only on a restart. The boot
-now names both contracts instead of warning about them.
+**Means:** the command reports `set` for each of the two names (or `unchanged` on a re-walk that
+changed nothing), backs the file up first, and touches nothing else in it. The backend reads these
+at boot, so it learns where to anchor only on a restart. The boot now names both contracts instead
+of warning about them. These two are per-provider contracts the ledger does not record, which is
+why the command accepts them while refusing every ledger-owned address.
 
 > **THIS COMES BEFORE §5.4 AND THE ORDER IS NOT ARBITRARY.** The Signing keys page builds its list of
 > contracts from these two variables, read by the backend when it starts - so until this step is done
@@ -1098,22 +1097,20 @@ case because the government backend signs with the deploying wallet's own key, w
 ## 7.5 PROVIDER - select it, then point the backend at it
 
 **Do:** vet portal → **Provider self-service** → flow 2. Paste the TRAVEL_CLEARANCE address,
-**Check this contract**, then **Make this my current contract**. Then add to `contracts/.env` and
-restart the government role:
-
-```
-TRAVEL_CLEARANCE_ISSUER_ADDR=<the contract from §7.3>
-GOV_SIGNER_KEY=<your controller's private key, from §1.3>
-```
+**Check this contract**, then **Make this my current contract**. Then hand both values to the sync
+command and restart the government role:
 
 ```bash
-chmod 600 contracts/.env    # it now holds two private keys
+TRAVEL_CLEARANCE_ISSUER_ADDR=<the contract from §7.3> \
+GOV_SIGNER_KEY=<your controller's private key, from §1.3> \
+scripts/sync-contracts-env.sh
 scripts/demo-down.sh government
 LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh government
 ```
 
-**Means:** `/health` flips to `canSign: true`. There is deliberately **no separate admit-your-key
-step here**: a contract admits its own deployer automatically, and the government signs with exactly
+**Means:** `/health` flips to `canSign: true`. The command reports `set` for both names without
+printing either value, and leaves the file at mode 600 - it now holds two private keys. There is
+deliberately **no separate admit-your-key step here**: a contract admits its own deployer automatically, and the government signs with exactly
 that wallet, so the second permission is already satisfied. The vet needed §5.4 only because its
 backend signs with a key it generated itself, which is a *different* address from the one that
 deployed. Confirm either way:
