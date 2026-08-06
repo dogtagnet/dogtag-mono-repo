@@ -916,6 +916,63 @@ describe("Providers - the issue-right control sits where its scope is", () => {
   });
 });
 
+describe("Providers - a second issue-right grant is EXPLAINED on screen", () => {
+  /**
+   * PINNED AT THE RENDER, not only at the route.
+   *
+   * `provider_journey.rs` proves the response carries the scope sentence; nothing proved the page SHOWS
+   * it. That gap matters here for two reasons the route test cannot see: the sentence is roughly three
+   * times longer than the `NoChange()` string it replaced, and it arrives beside two new JSON keys - so
+   * a renderer that took the wrong field, or a toast that dropped it, would leave the captain with the
+   * same silence he reported in the first place.
+   */
+  /** The signing key the grant names. Distinct from the controller, as a real one would be. */
+  const SIGNER = `0x${"c3".repeat(20)}`;
+
+  it("renders the scope, not the contract's error name, when the address already holds the right", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes("/rights/") && u.endsWith("/issue")) {
+          seen.push(u);
+          return new Response(
+            JSON.stringify({
+              error:
+                "this address already holds the issue right. It is ONE grant on the address covering "
+                + "every service in effective standing, so granting it from any service row has already "
+                + "covered the rest - there is nothing further to grant here. To take it away, send the "
+                + "same control in the Withdraw direction.",
+              account: SIGNER,
+              allowed: true,
+              scope: "address",
+              coversEveryService: true,
+            }),
+            { status: 409, headers: { "content-type": "application/json" } },
+          );
+        }
+        return withService(serviceView())(u, init);
+      }),
+    );
+    await mount();
+    await openIssuanceDialog();
+    type(byId("cap-addr"), SIGNER);
+    await settle();
+    capabilitySubmit()!.click();
+    await settle();
+
+    expect(seen, "the grant was never attempted").toHaveLength(1);
+    const shown = document.body.textContent ?? "";
+    // The useful fact reaches the screen, in full.
+    expect(shown).toContain("already holds the issue right");
+    expect(shown).toContain("every service in effective standing");
+    expect(shown).toContain("from any service row");
+    // And not the contract's error name, which is what told the captain nothing.
+    expect(shown).not.toContain("NoChange");
+  });
+});
+
 function capabilitySubmit() {
   return document.body.querySelector<HTMLButtonElement>('[data-testid="capability-submit"]');
 }

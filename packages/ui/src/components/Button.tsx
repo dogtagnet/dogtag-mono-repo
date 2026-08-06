@@ -32,8 +32,12 @@ import { Spinner } from "./Spinner";
  * test, a reviewer or a screenshot differ all read the same truth), and nothing rests on an argument
  * about Tailwind's variant ordering or on `:disabled` carrying more specificity than a plain class.
  *
- * It also covers `loading`, which sets `disabled` on the element but is not the `:disabled` pseudo-class
- * at the moment the classes are computed.
+ * **IT MUST NOT COVER `loading`, AND THAT EXCLUSION IS THE WHOLE OF WHY THERE ARE TWO FLAGS.** A loading
+ * button is un-pressable (it carries the `disabled` attribute) but it is not UNAVAILABLE - it is busy
+ * doing the thing you asked for, and a spinner says exactly that. Draining its fill would say the
+ * opposite, and there are 73 `loading={…}` call sites across the portals, so getting this wrong is a
+ * fleet-wide regression on every submit button that has ever spun. So the fill is removed for
+ * `disabled && !loading`; `disabled` on the ELEMENT still comes from either.
  *
  * `hover:bg-surface-muted` is included so the class list mentions the fill NOWHERE. The hover state is
  * already unreachable (`disabled:pointer-events-none`), so this changes no pixel - it exists so that a
@@ -81,18 +85,22 @@ export interface ButtonProps
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild = false, loading, children, disabled, ...props }, ref) => {
     const Comp = asChild ? Slot : "button";
-    const inert = Boolean(disabled || loading);
+    // TWO FLAGS, and they are not the same question. `unpressable` decides the ATTRIBUTE and is true
+    // for either cause; `unavailable` decides the APPEARANCE and is false while loading, because a
+    // busy button is not an unavailable one. See `INERT_FILL`.
+    const unpressable = Boolean(disabled || loading);
+    const unavailable = Boolean(disabled) && !loading;
     return (
       <Comp
         className={cn(
           buttonVariants({ variant, size }),
           // Before `className`, so a caller can still override deliberately, and after the variant so
           // `twMerge` removes the fill rather than layering on top of it.
-          inert && FILLED_VARIANTS.has(variant ?? "primary") && INERT_FILL,
+          unavailable && FILLED_VARIANTS.has(variant ?? "primary") && INERT_FILL,
           className,
         )}
         ref={ref}
-        disabled={inert}
+        disabled={unpressable}
         {...props}
       >
         {loading ? (

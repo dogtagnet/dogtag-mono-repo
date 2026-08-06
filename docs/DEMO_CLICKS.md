@@ -1100,7 +1100,7 @@ LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh government
 
 **Means:** `/health` flips to `canSign: true`. There is deliberately **no separate admit-your-key
 step here**: a contract admits its own deployer automatically, and the government signs with exactly
-that wallet, so the second permission is already satisfied. The vet needed §5.3 only because its
+that wallet, so the second permission is already satisfied. The vet needed §5.4 only because its
 backend signs with a key it generated itself, which is a *different* address from the one that
 deployed. Confirm either way:
 
@@ -1133,7 +1133,7 @@ produces the credential that use cases 3 to 6 all consume.
 **Do:** sign in at http://localhost:41873, click **Unlock** in the banner, then **Unlock and
 continue**.
 
-**Means:** the restart in §5.4 re-locked it. Nothing signs or issues until you unlock.
+**Means:** the restart in §5.3 re-locked it. Nothing signs or issues until you unlock.
 
 ## 8.2 Register the pet and mint the QR
 
@@ -1618,7 +1618,7 @@ deployment"*. A wallet holding the controller was connected on ROAX, and the dep
 at contract number `0` it **refused** with *"that one number's address is simply taken"*, and at `1`
 it returned **Ready** with the exact address `0x14A09008…DEF3a` computed before anything was sent.
 
-**§5.4 → use cases 1 and 2** - both contract addresses added to `contracts/.env` and the vet role
+**§5.3 → use cases 1 and 2** - both contract addresses added to `contracts/.env` and the vet role
 restarted; the boot then named both instead of warning. Custody re-locked and was unlocked again. A
 pet was registered (**dog tag 1**, QR on the real `LAN_IP`), the `/p/<token>` endpoint returned the
 block the phone would receive with `issuerClone` equal to the DOG_PROFILE contract, and a record was
@@ -1683,7 +1683,7 @@ during the walk and restored byte-identical, confirmed by sha256.
 Walked on **2026-08-04** against commit **`3d3632f`** and, for the Signing keys page, `d0f8cd8`, on
 a live stack on ROAX chainId 135.
 
-**The two-layer issuance requirement** (now §5.3) was driven entirely from the browser, and each
+**The two-layer issuance requirement** (now §5.4) was driven entirely from the browser, and each
 step confirmed independently with `cast`:
 
 | what | transaction | block |

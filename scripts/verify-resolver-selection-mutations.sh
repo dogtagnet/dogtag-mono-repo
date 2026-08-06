@@ -323,9 +323,17 @@ check "the in-flight window leaves the button live" \
 # The APPEARANCE half - the part the captain actually saw, and the part no state test can see.
 check "a disabled filled button keeps its fill (the reported defect, reintroduced)" \
   "$BUTTON" \
-  '          inert && FILLED_VARIANTS.has(variant ?? "primary") && INERT_FILL,' \
+  '          unavailable && FILLED_VARIANTS.has(variant ?? "primary") && INERT_FILL,' \
   '          false && FILLED_VARIANTS.has(variant ?? "primary") && INERT_FILL,' \
   ts "$LIFE" "drops the primary fill once it is disabled"
+
+# The `loading` exclusion. Folding it back in drains the fill of every spinning submit button in every
+# portal - 73 `loading={…}` call sites - and says "became unavailable" about a control that is working.
+check "a LOADING button is drained like an unavailable one" \
+  "$BUTTON" \
+  'const unavailable = Boolean(disabled) && !loading;' \
+  'const unavailable = Boolean(disabled || loading);' \
+  ts test/buttonInertLook.test.tsx "keeps its fill while loading"
 
 check "the inert look is applied as a disabled: prefix, so twMerge never strips the fill" \
   "$BUTTON" \
