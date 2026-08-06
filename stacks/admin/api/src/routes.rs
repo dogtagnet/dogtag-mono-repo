@@ -2802,16 +2802,32 @@ async fn rights_set_issue(
     // because could-not-check must not block a legitimate grant. The contract stays the real gate.
     let read = capabilities_from(st.chain.issuance_rights_log(&registry).await, "RightsSet");
     if read.allowed(&signer) == Some(body.allowed) {
+        // NAMES THE SCOPE, not just the refusal. A bare "NoChange()" told an operator nothing about
+        // why pressing this on a SECOND service row was pointless: the grant is keyed on the address
+        // and carries no service, so granting from one row has already covered every other. Reported
+        // as the useful fact rather than as the contract's error name.
+        let already = if body.allowed {
+            "this address already holds the issue right. It is ONE grant on the address covering \
+             every service in effective standing, so granting it from any service row has already \
+             covered the rest - there is nothing further to grant here. To take it away, send the \
+             same control in the Withdraw direction."
+                .to_string()
+        } else {
+            "this address does not hold the issue right, so there is nothing to withdraw. The right \
+             is keyed on the address rather than on a service, so it was never held for one service \
+             and absent for another."
+                .to_string()
+        };
         return err_json(
             StatusCode::CONFLICT,
             json!({
-                "error": format!(
-                    "this address already holds RIGHT_ISSUE = {} - the contract refuses a no-op \
-                     with NoChange()",
-                    body.allowed
-                ),
+                "error": already,
                 "account": signer,
                 "allowed": body.allowed,
+                // The scope, as data rather than only in prose, so a client can render it without
+                // parsing the sentence.
+                "scope": "address",
+                "coversEveryService": true,
             }),
         );
     }

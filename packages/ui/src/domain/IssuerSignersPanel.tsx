@@ -106,6 +106,33 @@ type Load =
   | { state: "loaded"; data: IssuanceAllowedResponse }
   | { state: "failed"; reason: string };
 
+/**
+ * What to say when this deployment names no issuing contract - which is a CONFIGURATION step nobody
+ * has taken yet, not a fault.
+ *
+ * FOUND ON A LIVE WALK, and it is this page's version of the rule the rest of the surface obeys: a
+ * could-not-do names WHY and WHAT IS NEEDED, never a bare absence. The predecessor read "No issuing
+ * contract is configured on this deployment, so there is no issuance list to show" - which puts the
+ * blame on "this deployment" and reads as something broken in the system, offers no remedy, and leaves
+ * a reader who has just deployed two contracts of their own with no way to connect the two facts.
+ *
+ * The real cause is exact and namable: this list is built from the BACKEND's `PROFILE_ISSUER_ADDR` and
+ * `<RECORD_TYPE>_ISSUER_ADDR` variables, read at BOOT (`routes::issuance_allowed_roster` folds
+ * `cfg.issuer_addrs` and `cfg.profile_issuer_addr`, and skips any address that is unset or zero). So
+ * the contracts exist, the operator owns them, and the backend has simply not been told about them -
+ * and, because they are read at boot, telling it needs a restart. Naming the variables is the
+ * actionable part even for a reader without shell access: it tells them precisely what to ask for.
+ *
+ * Exported and pinned rather than inline, because it is a product sentence making a claim about a
+ * cause - the same treatment `ATTACHMENT_IS_A_DOGTAG_STEP` and the two register notices get.
+ */
+export const NO_CONTRACTS_CONFIGURED =
+  "This shop's backend has not been told which contracts it anchors into, so there is no issuance "
+  + "list to show yet. Nothing is wrong with the contracts you deployed and nothing here needs "
+  + "fixing: the backend reads PROFILE_ISSUER_ADDR and <RECORD_TYPE>_ISSUER_ADDR from its own "
+  + "environment when it starts, so those have to be set to your contract addresses and the backend "
+  + "restarted. Once it comes back, your contracts appear here and you can admit your signing key.";
+
 export function IssuerSignersPanel({ load, rpcUrl }: IssuerSignersPanelProps): ReactNode {
   const { address, isConnected, chainId } = useAccount();
   const { writeContractAsync } = useWriteContract();
@@ -307,8 +334,7 @@ export function IssuerSignersPanel({ load, rpcUrl }: IssuerSignersPanelProps): R
         <Card>
           <CardContent className="pt-6">
             <p className="text-sm" data-testid="no-contracts">
-              No issuing contract is configured on this deployment, so there is no issuance list to
-              show.
+              {NO_CONTRACTS_CONFIGURED}
             </p>
           </CardContent>
         </Card>

@@ -281,17 +281,33 @@ GOVERNANCE_PRIVATE_KEY=<the registrar key - see below>
 **If the file does not exist**, create it with those three lines and go on.
 
 **If it already exists** - a previous walk, a shared machine, an older version of this guide - then
-this is a *replace*, not an append. **Delete every line that names a contract address.** This
-prints the ones to remove, and nothing else:
+this is a *replace*, not an append. **Delete every line the command below prints.** That is two
+kinds of line, not one: any line naming a **contract address**, and the line naming the **deployer's
+private key**. Both are traps and the second is the sharper one; the paragraph after the command says
+why.
 
 ```bash
 grep -nE '(_ADDR|_ADDRESS)=' contracts/.env \
   | grep -vE '(PROFILE_ISSUER_ADDR|VACCINATION_ISSUER_ADDR|TRAVEL_CLEARANCE_ISSUER_ADDR)='
-grep -n '^DEPLOYER_PRIVATE_KEY=' contracts/.env
+grep -nE '^(DEPLOYER_PRIVATE_KEY|DEPLOYER_ADDRESS)=' contracts/.env
 ```
 
-No output from both means there is nothing to remove. Anything they print, delete. (The three the
-first command spares are per-provider contracts that do not exist yet; §5.4 and §7.5 add them.)
+No output from both means there is nothing to remove. Anything they print, delete. Note the second
+command prints a KEY and an EOA address, neither of which is a contract address - that is deliberate,
+and it is why the rule above is "every line the command prints" rather than "every contract address".
+An earlier version of this step said the latter and then printed `DEPLOYER_PRIVATE_KEY`, which
+reasonably reads as "this is not what the rule meant" and leaves you unsure whether to act.
+
+(The three the first command spares are per-provider contracts that do not exist yet; §5.3 and §7.5
+add them.)
+
+**A duplicate key line is harmless but tidy it up anyway.** The file is sourced by the shell, so the
+LAST assignment wins - two `ROAX_RPC=` lines are not an error and the second one is what takes effect.
+That is fine when they agree and impossible to notice when they do not, so keep one of each:
+
+```bash
+awk -F= '/^[A-Z_]+=/ { if (seen[$1]++) print FILENAME ":" NR ": duplicate " $1 }' contracts/.env
+```
 
 **Means:** the boot script sources this file, so it is where the two things the ledger cannot answer
 live - which chain to talk to, and the registrar's key.
@@ -302,10 +318,23 @@ live - which chain to talk to, and the registrar's key.
 > variables like it, so a leftover from a superseded deployment **wins over the ledger silently**.
 > Nothing complains at the moment you boot the wrong pairing; you find out later, when the preflight
 > refuses with *"factory … is bound to registry … but the stack uses ISSUER_REGISTRY_ADDR=…"* and it
-> reads like a chain fault. It is not - it is this file. `DEPLOYER_PRIVATE_KEY` is the same trap
-> wearing a different hat: it is the fallback the boot uses when `GOVERNANCE_PRIVATE_KEY` is absent,
-> and it names a retired key that holds no registrar authority, so §1 would produce unsigned calldata
-> instead of transactions.
+> reads like a chain fault. It is not - it is this file.
+>
+> **`DEPLOYER_PRIVATE_KEY` is the sharper trap, and the mechanism is one line of the boot script.**
+> `scripts/demo-up.sh` resolves its admin signer as
+> `ADMIN_PK="${GOVERNANCE_PRIVATE_KEY:-${DEPLOYER_PRIVATE_KEY:-}}"` - so with the governance key absent
+> it does not fail, it silently falls back to the deployer key. That key lost `WHITELIST_ADMIN` in
+> governance Phase-2, and the script's own comment records what the fallback produced: the stack
+> "booted cleanly while every portal grant returned `disposition:"proposed"` with unsigned calldata and
+> nothing landed on-chain". A stack that lies is worse than one that is down, because everything you
+> click reports success.
+>
+> There IS a boot preflight against exactly this now - it reads `hasRole(WHITELIST_ADMIN, …)` and
+> refuses - so do not read the above as the current behaviour in every case. Read it as why the line
+> must go anyway, because that guard is deliberately best-effort in three ways: it runs only when the
+> `admin` role is among the ones being started, an unreadable read is a WARNING rather than a refusal
+> (could-not-check must never be reported as a wrong key), and `ADMIN_PROPOSE_ONLY=1` bypasses it by
+> design. Deleting the line removes the fallback instead of relying on something catching it.
 
 > ### ⚠ `DEMO_MODE=1` is the line that must never reach production
 >
@@ -351,7 +380,7 @@ portal whose every action would silently produce unsigned calldata instead of a 
 
 > Put **no contract address in this file** yet. Every protocol address is resolved from the ledger
 > by name, and an address here silently overrides it - which is how a stale one survives a redeploy
-> while naming a contract that decides nothing. Four variables get added later, in §5.4 and §7.5,
+> while naming a contract that decides nothing. Four variables get added later, in §5.3 and §7.5,
 > and they are the only ones that ever belong here.
 
 ## 0.6 How you boot a role
@@ -434,7 +463,8 @@ cast balance "$CONTROLLER" --rpc-url $RPC --ether                  # 0.010000000
 
 **Means:** you hold a key nobody else has, with enough gas to be a provider. It pays for the eight
 transactions setup asks the provider to sign - three contract deployments (§3.4, §3.5, §7.3), three
-selections (§5.1, §5.2, §7.5) and two key admissions (§5.3) - and then for every credential the
+selections (§5.1, §5.2, §7.5), two key admissions (§5.4) and two register selections (§5.5) - and
+then for every credential the
 government issues in §11.2, because §7.5 hands this same key to that backend. 0.01 PLASMA is roughly
 four thousand times what setup costs, because gas on ROAX is about 0.001 gwei and a contract
 deployment is a few hundred thousand gas, so there is ample room for both.
@@ -667,7 +697,7 @@ LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh vet
 
 **Means:** `vet-api` on `:41874` and the vet portal on `:41873`. It warns that two contract
 addresses are unset and boots anyway - those are the contracts you are about to deploy, so nothing
-else could be true yet. Issuing refuses until §5.4 sets them; everything in this section works
+else could be true yet. Issuing refuses until §5.3 sets them; everything in this section works
 without them.
 
 ## 3.2 Sign in and create the shop's signing key
@@ -688,7 +718,8 @@ Then open **Signing keys** in the nav and **copy the address in the line "This s
 decrypted one never is, which is why custody re-locks on every restart of this backend.
 
 That page also says *"No issuing contract is configured on this deployment"*, which is correct right
-now - you have not deployed one yet. It fills in after §5.4.
+now - you have not deployed one yet. It fills in after §5.3, which is the step that tells the backend
+about them.
 
 > Do this before deploying, even though deploying does not need it: §4.4 has to grant a right to
 > that address, and the address does not exist until the key does.
@@ -765,7 +796,7 @@ for DogTag*, the Activate half has not been done.
 > already been used for this record type from this wallet. Each number gives one fixed address and
 > two contracts cannot share one, so take the number the page suggests and check again.
 
-> **Copy the deployed address.** §4.2, §4.3, §4.4, §5.1, §5.2 and §5.4 all need it. It is on the
+> **Copy the deployed address.** §4.2, §4.3, §4.4, §5.1, §5.2, §5.3 and §5.5 all need it. It is on the
 > card, with a copy button, for as long as the contract exists.
 
 ## 3.5 Deploy the VACCINATION contract
@@ -817,12 +848,17 @@ standing.
 
 ## 4.4 Grant the issue right to the vet's signing key
 
-**Do:** click **Issuance capability** on either service row, enter the signer address from §3.2,
-pick **Grant**, confirm.
+**Do:** on any service row, find the dashed **Issue right - one grant per ADDRESS, covering every
+service** block, click **Grant / withdraw for an address**, enter the signer address from §3.2, pick
+**Grant**, confirm.
 
 **Means:** that address may now sign issuances. The grant is on the **address**, registry-wide - it
-names no service, which is why you do this once and not per contract. That is deliberate, and it is
-exactly why issuing needs a second permission that only the provider can give (§5.2 and §5.3).
+names no service, which is why you do this once and not per contract. The control sits inside that
+dashed block rather than up in the row's Activate/Suspend cluster for exactly that reason: those two
+ARE per-service and this is not. If you press it a second time on another row you get told the address
+already holds the right and that one grant covered every service - which is the same fact stated from
+the other side, not a failure. That is deliberate, and it is
+exactly why issuing needs a second permission that only the provider can give (§5.4).
 
 ## 4.5 Confirm the typed resolvers are approved
 
@@ -838,11 +874,25 @@ cast call $PR 'isResolverApproved(uint8,address)(bool)' 1 "$(ledger_addr Service
 
 **Means:** the registrar has allowed these two resolvers fleet-wide, which is its half of the
 provider's domain and listing flows. Under Option A both already read `true`; under Option B the
-deploy wired them. The provider's half - selecting one - has no button yet (§15).
+deploy wired them. The provider's half is **selecting** one, which they do themselves in §5.5 - you
+cannot do it for them, and approving without their selection leaves both flows refusing.
 
 ---
 
-# 5. VET - select your contracts, admit your key, point the backend at them
+# 5. VET - select your contracts, point the backend at them, admit your key, pick your registers
+
+**The order in this section is forced, and three of the five steps only work after the one before it.**
+Stated here rather than left to be discovered, because every step reads as independently doable and two
+of them are not:
+
+| step | needs first | what happens if you jump to it |
+|---|---|---|
+| 5.1 / 5.2 select your contracts | DogTag attached and activated them (§4.2, §4.3) | the check stops at *Waiting on DogTag* |
+| **5.3 tell the backend** | the addresses from §3.4 / §3.5 | nothing - this is the step that unblocks 5.4 |
+| **5.4 admit your key** | **5.3, including the restart** | **Signing keys lists no contracts and shows no Admit button at all** |
+| 5.5 pick your registers | DogTag approved them (§4.5) | the register check refuses, naming the approval |
+
+Only 5.5 is independent of the rest of this section; it needs §4.5 and nothing here.
 
 ## 5.1 Make the DOG_PROFILE contract current
 
@@ -867,20 +917,7 @@ answer true for this record type - before it, every other term held and this one
 **Means:** the same for vaccination records. The pointer is per record type, so selecting one never
 displaces the other.
 
-## 5.3 Admit your signing key to both contracts
-
-**Do:** **Signing keys** in the nav. Connect the wallet that **owns** the contracts, click **Use
-this shop's signing key**, then **Admit** and confirm - once for the DOG_PROFILE contract and once
-for the VACCINATION contract.
-
-**Means:** issuing needs **two** permissions and this is the second. The registrar granted the right
-in §4.4; this list is the contract owner's own, and the protocol admin is deliberately excluded from
-writing it - so neither party can put a signer on somebody else's contract alone.
-
-> A freshly deployed contract already admits whoever deployed it. The vet's backend signs with a
-> *different* address - its custody signer - so this step is always needed for it, on every contract.
-
-## 5.4 Tell the backend which contracts it anchors into
+## 5.3 Tell the backend which contracts it anchors into
 
 **Do:** add both addresses to `contracts/.env`, then restart just the vet:
 
@@ -896,6 +933,59 @@ LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh vet
 
 **Means:** the backend reads these at boot, so it learns where to anchor only on a restart. The boot
 now names both contracts instead of warning about them.
+
+> **THIS COMES BEFORE §5.4 AND THE ORDER IS NOT ARBITRARY.** The Signing keys page builds its list of
+> contracts from these two variables, read by the backend when it starts - so until this step is done
+> and the restart has happened, that page has nothing to list and **no Admit button exists at all**.
+> An earlier version of this guide had the two the other way round and sent readers to a page that
+> could not work yet. If you find yourself on Signing keys with no contracts, you are ahead of this
+> step, not looking at a fault.
+
+## 5.4 Admit your signing key to both contracts
+
+**Do:** **Signing keys** in the nav. Connect the wallet that **owns** the contracts, click **Use
+this shop's signing key**, then **Admit** and confirm - once for the DOG_PROFILE contract and once
+for the VACCINATION contract.
+
+**Means:** issuing needs **two** permissions and this is the second. The registrar granted the right
+in §4.4; this list is the contract owner's own, and the protocol admin is deliberately excluded from
+writing it - so neither party can put a signer on somebody else's contract alone.
+
+> A freshly deployed contract already admits whoever deployed it. The vet's backend signs with a
+> *different* address - its custody signer - so this step is always needed for it, on every contract.
+
+## 5.5 Choose your directory and domain registers
+
+**Do:** vet portal → **Provider self-service**. Two selections, each in its own flow:
+
+- **flow 3 (Your domain)** - paste a contract address into step 2's **Contract address** if it is not
+  already there, pick the register in **Which domain register do you use?**, **Check the domain
+  register**, then **Use this domain register**.
+- **flow 4 (Your listing)** - pick the register in **Which directory register do you use?**, **Check
+  the directory register**, then **Use this directory register**.
+
+**Means:** a typed register answers nothing until BOTH halves hold - DogTag approves it fleet-wide
+(§4.5, theirs) and you select it for your own record (this, yours). The registrar cannot make this
+selection for you: `setDirectoryResolver` admits your controller key and `setDomainResolver` the
+contract's owner, and neither admits the protocol admin. Until you do it, the rest of flows 3 and 4
+refuse - your listing is not published, so you do not appear in the directory and nothing a pet owner
+searches finds you.
+
+The choice list is read from the chain's own allowlist, so it shows what DogTag has actually approved
+rather than a value baked into the page - and an approval DogTag has since withdrawn is listed struck
+through and cannot be picked. Confirm either selection from the chain:
+
+```bash
+source scripts/lib/ledger.sh
+PR=$(ledger_addr ProviderRegistry); RPC=https://devrpc.roax.net
+cast call $PR 'provider(bytes20)((address,address,bool,bool,address,uint64,uint64,uint8))' <your providerId> --rpc-url $RPC
+cast call $(ledger_addr ProviderDirectory) 'isLiveFor(bytes20)(bool)' <your providerId> --rpc-url $RPC
+```
+
+The fifth member of that tuple is your directory register, and `isLiveFor` is the two halves ANDed.
+
+> Flow 4 is keyed by your **provider record**, so a groomer gets it too (§6) even though it issues
+> nothing. Flow 3 is keyed by a **contract**, so it applies only to a role that has one.
 
 ---
 
@@ -1313,9 +1403,14 @@ in Phase 2 that needs a phone at all - use cases 2 to 6 are complete without one
 app is built and installed in §2 and the discovery anchor is proven to resolve on device (§16.3),
 but no Groth16 consent proof has been driven end to end through a verifier.
 
-**Selecting a typed resolver** (the provider's half of §4.5). Both are approved by the registrar;
-the provider portal has no button for `setDomainResolver` / `setDirectoryResolver` yet, so flows 3
-and 4 of the provider page cannot be completed.
+**Selecting a typed resolver is now WALKABLE (§5.5) and has not been walked on chain.** The provider
+portal has the two controls - `setDirectoryResolver` in flow 4 and `setDomainResolver` in flow 3, both
+signed by the provider - and their preflights were driven in a browser against a **fork** of ROAX with
+the real deployed bytecode, real approvals and the real provider records, reaching *ready to send* and
+sending. What has NOT happened is a send against the live chain: doing so would select a register on the
+captain's own provider record while he is walking the guide on it. So flows 3 and 4 are no longer dead
+ends, and the on-chain half of §5.5 is unproven. Everything downstream of it - a published listing, a
+claimed domain, a provider appearing in the directory - is unproven with it.
 
 **The microchip MATCH and MISMATCH outcomes** (§10.2). Only the neutral *not compared* state is
 reachable, because the other two need the shop to hold a credential for that tag, which arrives

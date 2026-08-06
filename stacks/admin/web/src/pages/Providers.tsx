@@ -441,10 +441,7 @@ function ServiceRow({
               Suspend
             </Button>
           ) : null}
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => onGrant(s.serviceAddress)}>
-            <ShieldCheck className="mr-1 h-3.5 w-3.5" />
-            Issuance capability
-          </Button>
+          {/* THE ISSUE-RIGHT CONTROL IS DELIBERATELY NOT HERE. See the registry-wide block below. */}
         </div>
       </div>
 
@@ -467,15 +464,42 @@ function ServiceRow({
         same list on every service row in the system - a heading reading "may issue on this contract"
         would imply a scope the data no longer has, which is how an operator comes to believe a
         holder is confined to one provider.
+
+        THE CONTROL LIVES HERE, INSIDE THIS BLOCK, AND THAT PLACEMENT IS THE FIX. It used to sit in the
+        row's action cluster beside Activate and Suspend - which ARE per-service - so it read as a
+        per-service action, and the sentence correcting that was three elements further down. A captain
+        pressed it on his second service row and got a bare `NoChange()`, which told him nothing about
+        why. Placement is a claim about scope, and it outranks any explanation placed after it.
       */}
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-muted-foreground">holds the issue right (registry-wide):</span>
-        <CapabilityHolders read={view.issuance} empty="Nobody yet - grant the issue right." />
+      <div
+        className="mt-2 rounded-md border border-dashed p-2"
+        data-testid="issue-right-registry-wide"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span className="font-medium">
+            Issue right &mdash; one grant per ADDRESS, covering every service
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            data-testid="grant-issue-right"
+            onClick={() => onGrant(s.serviceAddress)}
+          >
+            <ShieldCheck className="mr-1 h-3.5 w-3.5" />
+            Grant / withdraw for an address
+          </Button>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-muted-foreground">holds the issue right (registry-wide):</span>
+          <CapabilityHolders read={view.issuance} empty="Nobody yet - grant the issue right." />
+        </div>
+        <p className="mt-1 text-[11px] text-muted-foreground" data-testid="issuance-scope-note">
+          Granted on an address and names no service, so every holder above can anchor on any service
+          in effective standing - not only this one. Granting from this row is the same write as
+          granting from any other; there is nothing per-service to do here.
+        </p>
       </div>
-      <p className="mt-0.5 text-[11px] text-muted-foreground" data-testid="issuance-scope-note">
-        The issue right is granted on an address and names no service, so every holder above can
-        anchor on any service in effective standing - not only this one.
-      </p>
 
       <div className="mt-1 text-xs text-muted-foreground" data-testid="service-pointer">
         {view.currentPointer.state === "unavailable" ? (

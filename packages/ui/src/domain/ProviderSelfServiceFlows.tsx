@@ -74,7 +74,6 @@ import {
   ATTACHMENT_IS_NOT_SELF_SERVICE,
   assessCandidateClone,
   checkBlock,
-  describeActionBlock,
   describePlanRetirement,
   renderReason,
   sequenceReasons,
