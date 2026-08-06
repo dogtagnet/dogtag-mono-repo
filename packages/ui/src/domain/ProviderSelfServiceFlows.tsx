@@ -74,21 +74,30 @@ import {
   assessCandidateClone,
   checkBlock,
   describeActionBlock,
+  describePlanRetirement,
+  renderReason,
+  sequenceReasons,
   planGateState,
   sendBlock,
   type ActionBlock,
+  type RenderedReason,
   assessDomainClaim,
   canWithdraw,
   CONTACT_ONLY_NOTICE,
   CONTACTS_ARE_ANCHORED_NOT_SERVED,
+  createdAddressMeaning,
   createLiveProviderReader,
+  DEPLOYED_CONTRACT_NEXT_STEP,
   DIRECTORY_NEEDS_TURNING_ON,
   DOMAIN_REGISTER_NEEDS_TURNING_ON,
   mayContinueAfter,
   mirrorPublicationRefusal,
+  nextContractNumber,
   outcomeFromReceiptStatus,
+  parseContractNumber,
   planCloneDeployment,
   planDirectoryPublication,
+  readDeploymentHistory,
   REPOINT_SCOPE_NOTICE,
   sendExplorerHref,
   sendRecord,
@@ -96,6 +105,7 @@ import {
   validateDomain,
   WITHDRAW_LOCATION_NOTICE,
   type CloneAssessment,
+  type DeploymentHistory,
   type DeployPlan,
   type DirectoryPublicationPlan,
   type DomainClaimAssessment,
@@ -114,8 +124,10 @@ import { classifySurfaceFault, type SurfaceFault } from "../wallet/walletError";
 import { roaxPublicClient } from "../wallet/contracts";
 import {
   CloneLifecycleCard,
+  DeployedContractsCard,
   DeployPlanCard,
   DirectoryPublicationCard,
+  NextContractNumberNotice,
   PublishedListingCard,
   DomainClaimCard,
   WalletFaultNotice,
@@ -185,11 +197,22 @@ const WALLET_TIMEOUT_MS = 180_000;
  * these are ordinary first-run states ("run the check first"), not warnings, and painting them all
  * as alarms would train the reader past the ones that are.
  */
-function ActionReason({ block, testId }: { block: ActionBlock | null; testId: string }): ReactNode {
-  if (!block) return null;
+function ActionReason({
+  reason,
+  testId,
+}: {
+  reason: RenderedReason | null;
+  testId: string;
+}): ReactNode {
+  if (!reason) return null;
   return (
-    <p className="text-xs text-muted-foreground" data-testid={testId} data-block={block.kind}>
-      {describeActionBlock(block)}
+    <p
+      className="text-xs text-muted-foreground"
+      data-testid={testId}
+      data-block={reason.block.kind}
+      data-style={reason.style}
+    >
+      {renderReason(reason)}
     </p>
   );
 }
@@ -321,6 +344,21 @@ export function ProviderSelfServiceFlows({
     null,
   );
 
+  // What this wallet has already deployed, read back from the chain. `undefined` is NOT a fourth
+  // rendered outcome and NOT an empty list - it is "not read yet", which is the state every page
+  // load passes through while wagmi reconnects, and which must render nothing at all.
+  const [deployHistory, setDeployHistory] = useState<DeploymentHistory | undefined>(undefined);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  // Bumped when a transaction SETTLES, never when one is submitted. Keying the re-read on the send
+  // log's length would fire at `awaitingWallet` - before the deploy is mined, so the read comes back
+  // without it - and then never again, leaving the list stale at precisely the moment the operator
+  // has just deployed and is looking for the result.
+  const [settled, setSettled] = useState(0);
+  // Whether the operator has taken the contract-number field over. Their number wins from then on:
+  // the pre-fill is a convenience, and a page that kept overwriting a typed value would be deciding
+  // which contract to deploy on their behalf.
+  const [nonceEdited, setNonceEdited] = useState(false);
+
   const [busy, setBusy] = useState(false);
   // A CLASSIFIED fault, not a raw string. The kind is what lets the renderer say whose fault it is
   // and what nothing was established about - which a message alone cannot carry.
@@ -374,6 +412,48 @@ export function ProviderSelfServiceFlows({
     };
   }, [reader, providerId, providerIdOk, mirrorBase, sent.length]);
   const caller = address as `0x${string}` | undefined;
+
+  // WHAT THIS WALLET HAS DEPLOYED. Read on mount and after every settled transaction, so a provider
+  // returning to this page - on this browser or any other - sees their contracts without having
+  // deployed anything again to find out. Keyed on `caller` alone: the record is the factory's own
+  // creation log filtered by owner, and the provider id in the form is neither in the filter nor in
+  // the address salt (see `deploymentHistory.ts`).
+  useEffect(() => {
+    if (!reader || !caller) {
+      setDeployHistory(undefined);
+      return;
+    }
+    let current = true;
+    setHistoryLoading(true);
+    void (async () => {
+      const history = await readDeploymentHistory(caller, reader);
+      if (current) {
+        setDeployHistory(history);
+        setHistoryLoading(false);
+      }
+    })();
+    return () => {
+      current = false;
+      // Not cleared here: a superseded read must not blank an answer already on screen, and the
+      // loading flag is what says a fresher one is on its way.
+      setHistoryLoading(false);
+    };
+  }, [reader, caller, settled]);
+
+  // The next free contract number, derived from what exists rather than from a counter. Scoped by
+  // record type because that is what the factory's salt is scoped by.
+  const suggestedNonce = useMemo(
+    () => (deployHistory ? nextContractNumber(deployHistory, recordTypeKey) : null),
+    [deployHistory, recordTypeKey],
+  );
+  // Pre-filled only while the operator has not taken the field over, and only from a KNOWN answer -
+  // a number filled in from an incomplete read would collide on a deterministic address, and the
+  // only sign of it would be this page's own check refusing a number this page put there.
+  useEffect(() => {
+    if (nonceEdited || suggestedNonce?.state !== "known") return;
+    setCloneNonce(String(suggestedNonce.next));
+  }, [nonceEdited, suggestedNonce]);
+  const nonceInput = useMemo(() => parseContractNumber(cloneNonce), [cloneNonce]);
 
   // A FAULT MUST NOT OUTLIVE THE THING THAT CAUSED IT. It used to clear only at the start of the
   // next run(), so a wallet message stayed on screen while the user did exactly what it asked -
@@ -457,15 +537,34 @@ export function ProviderSelfServiceFlows({
       what: string,
       retire: () => void,
       send: () => Promise<`0x${string}`>,
+      /**
+       * The contract address this send creates, for a send that creates one.
+       *
+       * Threaded onto EVERY state of the row rather than added at the end, so the address is on
+       * screen from the moment the wallet is asked - which is the window the operator spends
+       * wondering what is happening. `createdAddressMeaning` is what keeps each state's wording
+       * honest about whether anything exists there yet.
+       */
+      opts: { createdAddress?: string } = {},
     ): Promise<SendState> => {
       const id = `send-${++sendSeq.current}`;
-      const settle = (record: SendRecord) =>
+      const { createdAddress } = opts;
+      const settle = (record: SendRecord) => {
         setSent((s) => s.map((r) => (r.id === record.id ? record : r)));
+        // RE-READ THE CHAIN ON A TERMINAL STATE, never on submission. `submitted` means the hash
+        // exists and nothing has mined, so a read triggered there comes back without the very thing
+        // it was triggered to find - and, being the last trigger, would leave the page stale exactly
+        // after the deploy the operator is watching for. The two could-not-tell states DO trigger
+        // one, because that is the case where reading the chain is the only way to find out.
+        if (record.state !== "submitted" && record.state !== "awaitingWallet") {
+          setSettled((n) => n + 1);
+        }
+      };
 
       // RECORDED BEFORE THE WALLET IS ASKED. This is the whole fix: the row used to be created only
       // after `send()` resolved, so the entire wallet window had no on-screen state - and a wallet
       // that never answered left the page blank forever while a transaction mined on chain.
-      setSent((s) => [sendRecord(id, what, "awaitingWallet"), ...s]);
+      setSent((s) => [sendRecord(id, what, "awaitingWallet", { createdAddress }), ...s]);
 
       // Follow a hash to its receipt. Extracted so the LATE path below - a wallet that answers after
       // we stopped waiting - gets exactly the same treatment rather than a second, thinner copy.
@@ -476,14 +575,14 @@ export function ProviderSelfServiceFlows({
             timeout: RECEIPT_TIMEOUT_MS,
           });
           const state = outcomeFromReceiptStatus(receipt.status);
-          settle(sendRecord(id, what, state, { hash }));
+          settle(sendRecord(id, what, state, { hash, createdAddress }));
           return state;
         } catch (e) {
           // NOT a failure and NOT a success. A receipt we could not fetch says nothing about whether
           // the transaction mined - it is routed here rather than into the page-level fault notice,
           // which would collapse it into the same bucket as a wallet refusal.
           const reason = e instanceof Error ? e.message.split("\n")[0]! : String(e);
-          settle(sendRecord(id, what, "unknown", { hash, unknownReason: reason }));
+          settle(sendRecord(id, what, "unknown", { hash, unknownReason: reason, createdAddress }));
           return "unknown";
         }
       };
@@ -513,6 +612,7 @@ export function ProviderSelfServiceFlows({
         retire();
         settle(
           sendRecord(id, what, "walletSilent", {
+            createdAddress,
             unknownReason:
               "Your wallet did not respond in time. It may still have sent this - check your wallet's "
               + "activity, and run the check again: if the contract was created, the check reports that "
@@ -530,7 +630,7 @@ export function ProviderSelfServiceFlows({
       // than an optional one so a new flow cannot silently omit it. A rejected signature never
       // reaches this line, which is correct: nothing was submitted, so nothing was falsified.
       retire();
-      settle(sendRecord(id, what, "submitted", { hash }));
+      settle(sendRecord(id, what, "submitted", { hash, createdAddress }));
       return follow(hash);
     },
     [rpcUrl],
@@ -565,6 +665,35 @@ export function ProviderSelfServiceFlows({
   const pre = { busy, connected: isConnected && !!caller, hasReader: !!reader };
   const chain = { expected: ROAX_CHAIN_ID, actual: chainId };
   const gate = (missingInput?: string | null) => checkBlock({ ...pre, missingInput });
+
+  // EACH FLOW'S CHECK BLOCK, DERIVED ONCE. Three things now read it - the sentence under the Check
+  // button, the superseded banner (which must not instruct a Check that is unavailable), and the
+  // send's own sentence (which must not repeat it) - and three call sites re-deriving it is three
+  // chances for the banner to name an obstacle that is not the one in force.
+  const deployCheckBlock = gate(
+    !providerIdOk
+      ? "Enter your provider id to check."
+      : nonceInput.state === "invalid"
+        ? "Enter a valid contract number to check."
+        : null,
+  );
+  const repointCheckBlock = gate(
+    !providerIdOk
+      ? "Enter your provider id to check."
+      : !candidate
+        ? "Enter the address of the contract you deployed in step 1 to check it."
+        : null,
+  );
+  const domainCheckBlock = gate(
+    candidate
+      ? null
+      : "Enter your contract address in step 2 first. A domain is published for a "
+        + "contract, so there is nothing to check until this page knows which one - "
+        + "this button is gated on that field, not on the domain above.",
+  );
+  const publishCheckBlock = gate(providerIdOk ? null : "Enter your provider id to check.");
+
+
   const sendGate = (
     check: string,
     plan: Parameters<typeof sendBlock>[0]["plan"],
@@ -599,6 +728,71 @@ export function ProviderSelfServiceFlows({
     canAct: !!publication?.canPublish,
     verdict: publication?.verdict,
   });
+
+  // ONE ORDERED LIST OF EVERY RENDERED REASON ON THE PAGE, deduped in source order.
+  //
+  // PAGE-WIDE rather than per-flow, because the obstacles that repeat are page-wide: a disconnected
+  // wallet, a wrong chain, an action in flight and an unreachable node block every control there is.
+  // Per-flow deduping fixed the adjacent repetition the captain reported and still left the same
+  // four-line sentence four times down the page, once per flow. What does NOT collapse is anything
+  // flow-specific - each flow's "run <its own check> first" and each flow's missing-field sentence
+  // are different text, so they are each said in full where they belong.
+  //
+  // Built here rather than inline so the order the dedupe uses is the order of one array rather than
+  // an assumption about when JSX children are evaluated, and so a control added later has to be
+  // added to this list to get a reason at all - which is louder than silently inheriting none.
+  const [
+    deployCheckReason,
+    deploySendReason,
+    repointCheckReason,
+    repointSendReason,
+    domainCheckReason,
+    domainClaimReason,
+    domainNoneReason,
+    domainWithdrawReason,
+    publishCheckReason,
+    publishSendReason,
+    withdrawPinReason,
+    // A CONTROL THAT WILL NOT RENDER CONTRIBUTES `null`, so a sentence is never spent on it.
+    //
+    // The groomer mounts this component with `issuance: false`, so flows 1-3 are not rendered at
+    // all - and they are first in this order. Passing their blocks unconditionally assigned the full
+    // sentence to a control that does not exist, and the only reason a groomer could see degraded to
+    // the brief form: "Unavailable while a field it needs is still empty", which names no field. A
+    // groomer landing here with nothing typed had a disabled Check and nothing anywhere telling them
+    // to enter their provider id.
+    //
+    // Same rule as the withdraw-pin entry being last, applied one level up: there the gate is the
+    // button's own condition, here it is the capability block around three whole flows.
+  ] = sequenceReasons([
+    ...(capabilities.issuance
+      ? ([
+          deployCheckBlock,
+          sendGate("Check what this would deploy", deployPlanState),
+          repointCheckBlock,
+          sendGate("Check this contract", clonePlanState),
+          domainCheckBlock,
+          sendGate(
+            "Check the domain record",
+            domainPlanState,
+            domainPlanState === "ready" && !validateDomain(domain).ok
+              ? "Enter a valid domain to publish one. You can still declare that you deliberately have none."
+              : null,
+          ),
+          sendGate("Check the domain record", domainPlanState),
+          sendGate("Check the domain record", domainPlanState),
+        ] as (ActionBlock | null)[])
+      : [null, null, null, null, null, null, null, null]),
+    ...(capabilities.listing
+      ? ([
+          publishCheckBlock,
+          sendGate("Check what this would publish", publicationPlanState, publicationMirrorRefusal),
+          // Flow 4's withdraw-pin send is conditionally RENDERED, so it is last within its flow: the
+          // full sentence must land on a control that always exists.
+          sendGate("Check what this would publish", publicationPlanState),
+        ] as (ActionBlock | null)[])
+      : [null, null, null]),
+  ]);
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
@@ -688,18 +882,54 @@ export function ProviderSelfServiceFlows({
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
+              {/* What already exists, BEFORE the form that would add to it. A provider who has just
+                  deployed comes back to this page looking for one thing, and it is here. */}
+              <DeployedContractsCard
+                history={deployHistory}
+                nextStep={DEPLOYED_CONTRACT_NEXT_STEP}
+                refreshing={historyLoading}
+              />
               <div>
                 <Label htmlFor="cloneNonce">Contract number</Label>
                 <Input
                   id="cloneNonce"
                   value={cloneNonce}
-                  onChange={(e) => setCloneNonce(e.target.value)}
+                  onChange={(e) => {
+                    // Their number wins from here on. The pre-fill is a suggestion, and a field that
+                    // kept re-filling itself would be choosing which contract to deploy for them.
+                    setNonceEdited(true);
+                    setCloneNonce(e.target.value);
+                  }}
                   inputMode="numeric"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  This number is the only part of your contract&apos;s address that you choose.
-                  Leave it at 0 for your first one.
+                  This number is the only part of your contract&apos;s address that you choose. It is
+                  filled in with the next free one; you can change it.
                 </p>
+                {/* PARSED, not trusted. The field is pre-filled and the operator is invited to
+                    override it, so a non-numeric value is ordinary now - and unguarded it throws out
+                    of `BigInt` into the wallet-fault notice, putting a surface fault where a verdict
+                    about a typed field belongs. */}
+                {nonceInput.state === "invalid" ? (
+                  <p className="mt-1 text-xs text-red-700 dark:text-red-400" data-testid="nonce-invalid">
+                    {nonceInput.reason}
+                  </p>
+                ) : null}
+                {suggestedNonce ? <NextContractNumberNotice suggestion={suggestedNonce} /> : null}
+                {suggestedNonce?.state === "known"
+                && nonceInput.state === "ok"
+                && nonceInput.value !== suggestedNonce.next ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-1"
+                    data-testid="use-next-number"
+                    onClick={() => setCloneNonce(String(suggestedNonce.next))}
+                  >
+                    Use {String(suggestedNonce.next)}
+                  </Button>
+                ) : null}
                 {/* The question the captain actually asked, answered where he asked it. The old
                     hint said what the number lets you DO and never why it exists, which is the
                     half that makes it make sense. */}
@@ -725,15 +955,18 @@ export function ProviderSelfServiceFlows({
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
-                  disabled={!ready || !providerIdOk}
+                  disabled={!ready || !providerIdOk || nonceInput.state !== "ok"}
                   onClick={() =>
                     run(async () => {
+                      // The PARSED value. `BigInt(cloneNonce || "0")` threw a SyntaxError out of
+                      // here on any non-numeric entry, and the catch renders wallet faults.
+                      if (nonceInput.state !== "ok") return;
                       const plan = await planCloneDeployment(
                         {
                           providerId: providerId as `0x${string}`,
                           recordType: recordTypeKey,
                           caller: caller!,
-                          cloneNonce: BigInt(cloneNonce || "0"),
+                          cloneNonce: nonceInput.value,
                         },
                         reader!,
                       );
@@ -750,14 +983,23 @@ export function ProviderSelfServiceFlows({
                   data-testid="deploy-send"
                   onClick={() =>
                     run(async () => {
-                      const { request } = deploy!;
-                      await sendAndFollow("Deploy contract", () => setDeployHeld(spend), () =>
-                        writeContractAsync({
-                          address: contracts.factory,
-                          abi: FACTORY_ABI,
-                          functionName: "createIssuer",
-                          args: [request.providerId, request.recordType, request.cloneNonce],
-                        }),
+                      const { request, predictedAddress } = deploy!;
+                      await sendAndFollow(
+                        "Deploy contract",
+                        () => setDeployHeld(spend),
+                        () =>
+                          writeContractAsync({
+                            address: contracts.factory,
+                            abi: FACTORY_ABI,
+                            functionName: "createIssuer",
+                            args: [request.providerId, request.recordType, request.cloneNonce],
+                          }),
+                        // The address the CHECKED plan predicted, so the row carries it from the
+                        // moment the wallet is asked. Exact rather than a guess: the factory works
+                        // the address out from the same three inputs whether it predicts or deploys.
+                        // A plan whose prediction read failed passes none, and the row says nothing
+                        // about an address rather than inventing one.
+                        predictedAddress ? { createdAddress: predictedAddress } : {},
                       );
                     })
                   }
@@ -765,12 +1007,19 @@ export function ProviderSelfServiceFlows({
                   Deploy
                 </Button>
               </div>
-              <ActionReason block={gate(providerIdOk ? null : "Enter your provider id to check.")} testId="deploy-check-reason" />
               <ActionReason
-                block={sendGate("Check what this would deploy", deployPlanState)}
+                reason={deployCheckReason ?? null}
+                testId="deploy-check-reason"
+              />
+              <ActionReason
+                reason={deploySendReason ?? null}
                 testId="deploy-send-reason"
               />
-              <PlanNotice reason={deployRetired} testId="deploy-stale" />
+              <PlanNotice
+                reason={deployRetired}
+                testId="deploy-stale"
+                checkBlocked={deployCheckBlock}
+              />
               {deployShown ? (
                 <DeployPlanCard
                   plan={deployShown}
@@ -847,20 +1096,18 @@ export function ProviderSelfServiceFlows({
                 </Button>
               </div>
               <ActionReason
-                block={gate(
-                  !providerIdOk
-                    ? "Enter your provider id to check."
-                    : !candidate
-                      ? "Enter the address of the contract you deployed in step 1 to check it."
-                      : null,
-                )}
+                reason={repointCheckReason ?? null}
                 testId="repoint-check-reason"
               />
               <ActionReason
-                block={sendGate("Check this contract", clonePlanState)}
+                reason={repointSendReason ?? null}
                 testId="repoint-send-reason"
               />
-              <PlanNotice reason={cloneRetired} testId="repoint-stale" />
+              <PlanNotice
+                reason={cloneRetired}
+                testId="repoint-stale"
+                checkBlocked={repointCheckBlock}
+              />
               {cloneShown ? <CloneLifecycleCard assessment={cloneShown} retired={cloneRetired} /> : null}
             </CardContent>
           </Card>
@@ -978,39 +1225,31 @@ export function ProviderSelfServiceFlows({
                 ) : null}
               </div>
               <ActionReason
-                block={gate(
-                  candidate
-                    ? null
-                    : "Enter your contract address in step 2 first. A domain is published for a "
-                      + "contract, so there is nothing to check until this page knows which one - "
-                      + "this button is gated on that field, not on the domain above.",
-                )}
+                reason={domainCheckReason ?? null}
                 testId="domain-check-reason"
               />
               <ActionReason
-                block={sendGate(
-                  "Check the domain record",
-                  domainPlanState,
-                  domainPlanState === "ready" && !validateDomain(domain).ok
-                    ? "Enter a valid domain to publish one. You can still declare that you deliberately have none."
-                    : null,
-                )}
+                reason={domainClaimReason ?? null}
                 testId="domain-claim-send-reason"
               />
               {/* Its own reason, because its own gate: declaring you have no domain does not need a
                   valid domain in the field, so sharing the claim button's sentence would tell a
                   provider to fix something this button never asked for. */}
               <ActionReason
-                block={sendGate("Check the domain record", domainPlanState)}
+                reason={domainNoneReason ?? null}
                 testId="domain-none-send-reason"
               />
               {canWithdraw(domainState?.standing) ? (
                 <ActionReason
-                  block={sendGate("Check the domain record", domainPlanState)}
+                  reason={domainWithdrawReason ?? null}
                   testId="domain-withdraw-send-reason"
                 />
               ) : null}
-              <PlanNotice reason={domainRetired} testId="domain-stale" />
+              <PlanNotice
+                reason={domainRetired}
+                testId="domain-stale"
+                checkBlocked={domainCheckBlock}
+              />
               {domainShown ? <DomainClaimCard assessment={domainShown} retired={domainRetired} /> : null}
             </CardContent>
           </Card>
@@ -1272,20 +1511,24 @@ export function ProviderSelfServiceFlows({
               </p>
             ) : null}
             <ActionReason
-              block={gate(providerIdOk ? null : "Enter your provider id to check.")}
+              reason={publishCheckReason ?? null}
               testId="publish-check-reason"
             />
             <ActionReason
-              block={sendGate("Check what this would publish", publicationPlanState, publicationMirrorRefusal)}
+              reason={publishSendReason ?? null}
               testId="publish-send-reason"
             />
             {publication?.canWithdrawPin ? (
               <ActionReason
-                block={sendGate("Check what this would publish", publicationPlanState)}
+                reason={withdrawPinReason ?? null}
                 testId="withdraw-pin-send-reason"
               />
             ) : null}
-            <PlanNotice reason={publicationRetired} testId="publish-stale" />
+            <PlanNotice
+              reason={publicationRetired}
+              testId="publish-stale"
+              checkBlocked={publishCheckBlock}
+            />
             {publicationShown ? (
               <DirectoryPublicationCard
                 plan={publicationShown}
@@ -1326,9 +1569,18 @@ export function ProviderSelfServiceFlows({
 function PlanNotice({
   reason,
   testId,
+  checkBlocked = null,
 }: {
   reason: PlanRetirement | null;
   testId: string;
+  /**
+   * Why the Check button that would clear this is itself unavailable, or `null` when it is not.
+   *
+   * REQUIRED IN PRACTICE AT EVERY CALL SITE, because this banner's whole job is to name a remedy and
+   * the remedy is that button. Told nothing, it used to instruct "Check again before sending" over a
+   * greyed-out Check - a screen instructing an action it had disabled.
+   */
+  checkBlocked?: ActionBlock | null;
 }): ReactNode {
   if (!reason) return null;
   return (
@@ -1341,11 +1593,7 @@ function PlanNotice({
           ? "Superseded: these answers are about earlier values"
           : "Superseded: these answers were read before your transaction"}
       </p>
-      <p className="mt-1">
-        {reason === "edited"
-          ? "You have changed something since this was checked, so what is shown below describes what you typed before. Check again before sending."
-          : "A transaction has already been sent against this, so the chain may have moved since these answers were read. They are kept below so you can see what you checked. Check again before sending another."}
-      </p>
+      <p className="mt-1">{describePlanRetirement(reason, checkBlocked)}</p>
     </div>
   );
 }
@@ -1405,6 +1653,17 @@ function SendLog({ records }: { records: readonly SendRecord[] }): ReactNode {
               // distinguishes "we could not follow it" from "it failed".
               <span className="block text-amber-700 dark:text-amber-400">
                 Why the outcome is not known: {r.unknownReason}
+              </span>
+            ) : null}
+            {/* THE ADDRESS, on the row, from the moment the wallet is asked. A hash alone leaves the
+                operator to open an explorer and decode a log to find out what they just created,
+                which is the value they actually need in hand. The caption is derived from the state
+                rather than written here, so a pending or reverted row cannot present an address as a
+                contract that exists. */}
+            {r.createdAddress ? (
+              <span className="block" data-testid="sent-created-address">
+                <span className="text-muted-foreground">{createdAddressMeaning(r)}</span>{" "}
+                <span className="break-all font-mono">{r.createdAddress}</span>
               </span>
             ) : null}
           </li>

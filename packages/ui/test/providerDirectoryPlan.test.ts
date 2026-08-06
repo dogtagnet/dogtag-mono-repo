@@ -17,7 +17,9 @@ import { mirrorPublicationRefusal } from "../src/provider";
 import {
   MAX_SCANNED_LOCATION_NUMBERS,
   planDirectoryPublication,
+  Standing,
   toContractCoordinate,
+  ZERO_ADDR,
   ZERO_WORD,
   type Address,
   type DigestFn,
@@ -67,10 +69,18 @@ function reader(overrides: Partial<ProviderChainReader> = {}): ProviderChainRead
     cloneOwner: unscripted("cloneOwner"),
     service: unscripted("service"),
     effectiveService: unscripted("effectiveService"),
-    provider: unscripted("provider"),
+    // ACTIVE by default, because every case here is about the publication decision rather than
+    // about a provider that is not cleared to act. The one case that IS about standing overrides it.
+    provider: async () => ({
+      controller: CALLER,
+      directoryResolver: ZERO_ADDR,
+      standing: Standing.ACTIVE,
+    }),
     currentService: unscripted("currentService"),
     canCreateService: unscripted("canCreateService"),
     predictIssuer: unscripted("predictIssuer"),
+    issuerCreations: unscripted("issuerCreations"),
+    cloneRecordType: unscripted("cloneRecordType"),
     domainClaimStanding: unscripted("domainClaimStanding"),
     canWriteServiceRepoint: unscripted("canWriteServiceRepoint"),
     canWriteDomain: unscripted("canWriteDomain"),

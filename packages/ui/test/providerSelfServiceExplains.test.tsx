@@ -396,7 +396,12 @@ describe("the contract number explains why it exists, without becoming a wall", 
     const el = await mount({ issuance: true, listing: true });
     // Rendered whether or not the disclosure is opened: the field is not left bare.
     expect(el.textContent).toMatch(/only part of your contract's address that you choose/i);
-    expect(el.textContent).toMatch(/leave it at 0/i);
+    // The hint used to end "leave it at 0 for your first one", which was advice for a field the
+    // operator had to fill in themselves. The field is filled in from the chain now, so the hint
+    // says that instead - and says the number is still theirs to change, because a pre-filled value
+    // that looked mandatory would be a page choosing which contract to deploy for them.
+    expect(el.textContent).toMatch(/filled in with the next free one/i);
+    expect(el.textContent).toMatch(/you can change it/i);
   });
 });
 

@@ -74,6 +74,19 @@ export interface SendRecord {
   state: SendState;
   /** Why the outcome could not be established. Present if and ONLY if the state is unsettled. */
   unknownReason?: string;
+  /**
+   * The contract address this send creates, for a send that creates one.
+   *
+   * Carried because a hash alone does not answer "what did I just deploy" - the operator has to open
+   * an explorer and decode a log to get the address, which is the thing they actually need in hand.
+   * It comes from the deploy plan's `predictedAddress`, which is not a guess: the factory computes
+   * the address from the same three inputs whether it is asked to predict or to deploy.
+   *
+   * It is the ADDRESS THIS WOULD CREATE, so its meaning follows the row's state and a renderer must
+   * say so - beside `awaitingWallet` or `reverted` nothing has been created at that address, and
+   * only a `succeeded` row may present it as a contract that now exists.
+   */
+  createdAddress?: string;
 }
 
 /**
@@ -86,21 +99,24 @@ export function sendRecord(
   id: string,
   what: string,
   state: SendState,
-  opts: { hash?: string; unknownReason?: string } = {},
+  opts: { hash?: string; unknownReason?: string; createdAddress?: string } = {},
 ): SendRecord {
-  const { hash, unknownReason } = opts;
+  const { hash, unknownReason, createdAddress } = opts;
   if (hasNoHash(state) && hash) {
     throw new Error("a send record with no wallet answer cannot carry a transaction hash");
   }
   if (!hasNoHash(state) && !hash) {
     throw new Error("a settled or submitted send record must carry its transaction hash");
   }
+  const created = createdAddress ? { createdAddress } : {};
   if (isUnsettled(state)) {
     if (!unknownReason) throw new Error("a send record with an unknown outcome must state its reason");
-    return hash ? { id, hash, what, state, unknownReason } : { id, what, state, unknownReason };
+    return hash
+      ? { id, hash, what, state, unknownReason, ...created }
+      : { id, what, state, unknownReason, ...created };
   }
   if (unknownReason) throw new Error("only an unknown outcome may carry a reason");
-  return hash ? { id, hash, what, state } : { id, what, state };
+  return hash ? { id, hash, what, state, ...created } : { id, what, state, ...created };
 }
 
 /**
@@ -132,6 +148,33 @@ const STATE_LABEL: Readonly<Record<SendState, string>> = {
 
 export function sendStateLabel(state: SendState): string {
   return STATE_LABEL[state];
+}
+
+/**
+ * What a row's `createdAddress` means at this state, or `null` when there is none to describe.
+ *
+ * A pure function rather than a caption in the renderer, so the one thing this value must never do -
+ * assert a contract exists before the transaction settled - is decided once and can be pinned. The
+ * predicted address is exact and worth showing early, because it is the value the operator needs the
+ * moment they start looking; what changes with the state is whether anything is THERE yet.
+ */
+export function createdAddressMeaning(record: SendRecord): string | null {
+  if (!record.createdAddress) return null;
+  switch (record.state) {
+    case "succeeded":
+      return "This contract now exists at:";
+    case "reverted":
+      // A definite failure, so the address must be stated as the one that was NOT created - the
+      // strongest place a bare address would be read as a result.
+      return "Nothing was created. This is the address the attempt would have created:";
+    case "submitted":
+      return "The address this will create, if it succeeds:";
+    case "awaitingWallet":
+      return "The address this would create, once you approve it:";
+    case "unknown":
+    case "walletSilent":
+      return "The address this would have created. Whether it exists is not established:";
+  }
 }
 
 /**

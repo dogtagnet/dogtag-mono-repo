@@ -738,23 +738,42 @@ Every control stays disabled until a wallet is connected, and says so.
 
 ## 3.4 Deploy the DOG_PROFILE contract
 
-**Do:** paste your provider id, set **Record type** to `DOG_PROFILE`, leave **Contract number** at
-`0`, click **Check what this would deploy**, then **Deploy** and confirm in your wallet.
+**Do:** paste your provider id and set **Record type** to `DOG_PROFILE`. Leave **Contract number**
+as the page filled it in. Click **Check what this would deploy**, then **Deploy** and confirm in your
+wallet.
 
 **Means:** you own a `DogTagIssuer` contract for dog tags. The check shows the exact address before
 anything is sent, because the address is computed from the record type, your wallet and that number -
 so **Deploy** only ever sends what a check approved, and goes back to disabled if you edit a field.
 
-> **If the check refuses** with *"that one number's address is simply taken"*, this record type has
-> already been deployed from this wallet. Each number gives one fixed address and two contracts
-> cannot share one, so raise **Contract number** to `1` and check again.
+**Contract number is filled in for you**, from what this wallet has already deployed of this record
+type. The page reads that from the chain, so it is right on any browser and it is what actually
+exists rather than what this page remembers. It is still yours to change.
 
-> **Copy the deployed address.** §4.2, §4.3, §4.4, §5.1, §5.2 and §5.4 all need it.
+**After the deploy**, the row under the wallet address settles to *succeeded* and names the contract
+it created, and **Contracts you have deployed** gains it at the top - address, creating transaction,
+contract number and record type, each linked to the explorer. That card is read from the chain, so
+it is still there after a reload and on any other machine you sign in from.
+
+**What happens next is DogTag's, in two steps.** Your new contract shows **Waiting for DogTag**:
+send its address to DogTag, who attach it and then set its standing to active - both in §4.2. Until
+both are done you cannot select it in step 2, and the card says so on the row itself. Come back to
+this page after §4.2 and the same row reads **Ready to select**; if it still says *Attached, waiting
+for DogTag*, the Activate half has not been done.
+
+> **If the check refuses** with *"that one number's address is simply taken"*, that number has
+> already been used for this record type from this wallet. Each number gives one fixed address and
+> two contracts cannot share one, so take the number the page suggests and check again.
+
+> **Copy the deployed address.** §4.2, §4.3, §4.4, §5.1, §5.2 and §5.4 all need it. It is on the
+> card, with a copy button, for as long as the contract exists.
 
 ## 3.5 Deploy the VACCINATION contract
 
-**Do:** on the same page, set **Record type** to `VACCINATION`, leave **Contract number** at `0`,
-click **Check what this would deploy**, then **Deploy** and confirm in your wallet.
+**Do:** on the same page, set **Record type** to `VACCINATION`. The contract number re-fills for the
+new record type - each record type has its own numbering, so a fresh one starts at `0` even though
+you have just used a number for dog tags. Click **Check what this would deploy**, then **Deploy** and
+confirm in your wallet.
 
 **Means:** you now own a second contract, for vaccination records. The same contract number gives a
 different address because the record type is part of the computation, so `0` is correct here even
@@ -832,6 +851,13 @@ into **Contract address**, **Check this contract**, then **Make this my current 
 
 **Means:** new dog tags now anchor here. This is the move that makes the chain's `canIssue` finally
 answer true for this record type - before it, every other term held and this one did not.
+
+> **If the check stops at *"Waiting on DogTag"*,** the contract is attached and its standing is still
+> pending - the Activate half of §4.2 has not been done. Nothing is wrong with what you deployed and
+> there is nothing to change here; do §4.2's **Activate** and check again. The authority row below it
+> will read *could not run* rather than refusing your key, because while a contract's standing is not
+> active the registry refuses a selection from every key alike, so that answer says nothing about
+> yours.
 
 ## 5.2 Make the VACCINATION contract current
 

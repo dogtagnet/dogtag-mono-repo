@@ -42,12 +42,18 @@ export {
 
 export {
   checkBlock,
+  briefActionBlock,
+  renderReason,
+  sequenceReasons,
   describeActionBlock,
+  describePlanRetirement,
   planGateState,
   sendBlock,
   type ActionBlock,
   type ChainCheck,
   type PlanGateState,
+  type PlanRetirementReason,
+  type RenderedReason,
 } from "./actionAvailability";
 
 export {
@@ -65,6 +71,19 @@ export {
   type DeployPlan,
   type DeployPlanRequest,
 } from "./deployPlan";
+
+export {
+  DEPLOYED_CONTRACT_NEXT_STEP,
+  MAX_CLONE_NONCE,
+  nextContractNumber,
+  parseContractNumber,
+  readDeploymentHistory,
+  type ContractNumberInput,
+  type DeployedContract,
+  type DeploymentHistory,
+  type IssuerCreationLog,
+  type NextContractNumber,
+} from "./deploymentHistory";
 
 export {
   assessDomainClaim,
@@ -102,6 +121,7 @@ export {
 } from "./liveReader";
 
 export {
+  createdAddressMeaning,
   hasNoHash,
   isUnsettled,
   mayContinueAfter,

@@ -45,6 +45,8 @@ function reader(overrides: Partial<ProviderChainReader>): ProviderChainReader {
     currentService: unscripted("currentService"),
     canCreateService: unscripted("canCreateService"),
     predictIssuer: unscripted("predictIssuer"),
+    issuerCreations: unscripted("issuerCreations"),
+    cloneRecordType: unscripted("cloneRecordType"),
     canWriteServiceRepoint: unscripted("canWriteServiceRepoint"),
     domainClaimStanding: unscripted("domainClaimStanding"),
     canWriteDomain: unscripted("canWriteDomain"),

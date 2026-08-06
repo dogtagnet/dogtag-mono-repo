@@ -46,7 +46,15 @@ import {
   PROVIDER_PROFILE_SCHEMA,
   type LogoPublication,
 } from "../mirror/profileBlob";
-import { ZERO_WORD, type Address, type DirectoryPin, type HexWord, type ProviderChainReader } from "./readers";
+import {
+  Standing,
+  STANDING_LABEL,
+  ZERO_WORD,
+  type Address,
+  type DirectoryPin,
+  type HexWord,
+  type ProviderChainReader,
+} from "./readers";
 import {
   foldVerdict,
   providerCheck,
@@ -359,20 +367,84 @@ export async function planDirectoryPublication(
     );
   }
 
+  // THE PROVIDER'S OWN STANDING, read BEFORE its authority - the same order and the same reason as
+  // the repoint and domain flows. `ProviderRegistry.canWriteProvider` returns false on
+  // `p.standing != Standing.ACTIVE` BEFORE it looks at the caller, so for a provider record that is
+  // not ACTIVE it answers `false` for the controller, for every delegate and for everybody else.
+  //
+  // THIS IS THE STATE EVERY NEW PROVIDER STARTS IN. `registerProvider` writes `PENDING`, and
+  // `setProviderStanding(ACTIVE)` is a separate registrar call - so the very first time a provider
+  // opens this page, the row read that shared `false` and told them their key was not allowed to
+  // publish into their own record. This flow did not read the standing at all, so nothing on screen
+  // named the real cause.
+  let providerActive: boolean | undefined;
+  try {
+    const record = await reader.provider(providerId);
+    providerActive = record.standing === Standing.ACTIVE;
+    checks.push(
+      providerCheck(
+        "provider-standing",
+        "Is your provider record cleared to act?",
+        providerActive ? "pass" : "fail",
+        providerActive
+          ? "Your provider record is active."
+          : record.standing === Standing.PENDING
+            ? "Your provider record is registered and its standing is still pending review. DogTag "
+              + "sets it to active as the next step - being registered leaves it pending by design. "
+              + "There is nothing for you to change here."
+            : `Your provider record is ${STANDING_LABEL[record.standing]}, so it cannot publish.`,
+      ),
+    );
+  } catch (error) {
+    checks.push(
+      providerCheck(
+        "provider-standing",
+        "Is your provider record cleared to act?",
+        "could-not-run",
+        "Your provider record could not be read.",
+        reasonFrom(error, "the provider() read failed"),
+      ),
+    );
+  }
+
   try {
     const canWrite = await reader.canWriteProviderRecord(providerId, caller);
     mayWriteRecord = canWrite;
-    checks.push(
-      providerCheck(
-        "domain-write-authority",
-        "May your key publish into your provider record?",
-        canWrite ? "pass" : "fail",
-        canWrite
-          ? "Your key may publish into your provider record."
-          : "Your key may not publish into your provider record. The provider's controller, or a "
+    if (canWrite) {
+      checks.push(
+        providerCheck(
+          "domain-write-authority",
+          "May your key publish into your provider record?",
+          "pass",
+          "Your key may publish into your provider record.",
+        ),
+      );
+    } else if (providerActive === true) {
+      checks.push(
+        providerCheck(
+          "domain-write-authority",
+          "May your key publish into your provider record?",
+          "fail",
+          "Your key may not publish into your provider record. The provider's controller, or a "
             + "delegate they authorised, may.",
-      ),
-    );
+        ),
+      );
+    } else {
+      checks.push(
+        providerCheck(
+          "domain-write-authority",
+          "May your key publish into your provider record?",
+          "could-not-run",
+          "Whether your key may publish into your provider record is not established yet.",
+          providerActive === false
+            ? "the registry refuses a write from ANY key while your provider record's standing is not "
+              + "active, so this answer says nothing about your key - the standing row above is the "
+              + "one to act on"
+            : "your provider record's standing could not be read, and the registry folds it into this "
+              + "same answer, so a refusal here cannot be attributed to your key",
+        ),
+      );
+    }
   } catch (error) {
     checks.push(
       providerCheck(
@@ -732,9 +804,16 @@ export const CONTACTS_ARE_ANCHORED_NOT_SERVED =
  * `ResolverNotApproved` until it has run, so the first half is DogTag's however the chain reads
  * today. Stated here rather than left to the check, because a provider who has typed five contact
  * fields and a coordinate before being refused has already paid for the surprise.
+ *
+ * **IT NO LONGER SAYS "NEITHER HAS A PAGE HERE YET", WHICH WAS HALF FALSE.** DogTag's half DOES have
+ * one - the admin Providers page carries the resolver approval - and a sentence saying otherwise is
+ * the same rot that told a captain there was no page for attaching a contract while he was looking
+ * at one. The SELECTION half genuinely has no surface anywhere yet (`setDirectoryResolver` and
+ * `setDomainResolver` are callable only on the contract), so that half is stated as itself. Check a
+ * claim like this against what ships before repeating it.
  */
 export const DIRECTORY_NEEDS_TURNING_ON =
-  "Publishing a listing needs the provider directory switched on for your provider record, in two steps: DogTag approves the directory, and only then can it be selected for your record. Neither has a page here yet, so if this stops at the directory check, that is why - what you have filled in is not the problem.";
+  "Publishing a listing needs the provider directory switched on for your provider record, in two steps: DogTag approves the directory, and then the directory has to be selected for your record. Both are DogTag's - ask them. If this stops at the directory check, that is why, and what you have filled in is not the problem.";
 
 export const WITHDRAW_LOCATION_NOTICE =
   "Taking your location down leaves your listing and your contact details in place. You stop appearing in the nearby list, and you can publish a location again later. Clearing the latitude and longitude fields does NOT do this - it only means this publication carries no location.";

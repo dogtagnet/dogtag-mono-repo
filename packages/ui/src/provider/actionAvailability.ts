@@ -111,6 +111,93 @@ export function checkBlock(
 }
 
 /**
+ * One control's reason, and whether it has already been said in full further up the page.
+ *
+ * `brief` exists because the two obvious answers to a repeated sentence are both wrong. Printing it
+ * again is what a captain saw - the identical four-line sentence twice in a row, and once per flow
+ * down the page. But SUPPRESSING it breaks the older and more important rule this module exists for:
+ * a disabled control always says why, and a control whose reason was dropped because some other
+ * control said it first is silent again, which is the defect the whole file was written to remove.
+ * `never leaves a disabled send button silent, in any of the states this page has` fails on exactly
+ * that, and it is right to.
+ */
+export interface RenderedReason {
+  block: ActionBlock;
+  /** `full` for the first control that hits this obstacle; `brief` for every later one. */
+  style: "full" | "brief";
+}
+
+/**
+ * Say each obstacle in full once, and in one line under every later control it also blocks.
+ *
+ * Ordered, and the order is the source order of the controls: the first control a reader reaches is
+ * the one that should carry the explanation, and a full sentence appearing only under the last
+ * button is attached to the wrong control.
+ *
+ * Compared on the RENDERED TEXT rather than on the block kind, because two blocks of the same kind
+ * can carry genuinely different sentences - `missingInput` and `otherwiseBlocked` are whole
+ * sentences supplied by the call site, and each flow's is about a different field.
+ *
+ * The list is passed whole rather than accumulated during render, so the ordering is a property of
+ * one array rather than an assumption about when JSX children are evaluated.
+ */
+export function sequenceReasons(
+  blocks: readonly (ActionBlock | null)[],
+): (RenderedReason | null)[] {
+  const seen = new Set<string>();
+  return blocks.map((block) => {
+    if (!block) return null;
+    const text = describeActionBlock(block);
+    if (seen.has(text)) return { block, style: "brief" };
+    seen.add(text);
+    return { block, style: "full" };
+  });
+}
+
+/** The sentence to print for one control, at whichever length it earned. */
+export function renderReason(reason: RenderedReason): string {
+  return reason.style === "full"
+    ? describeActionBlock(reason.block)
+    : // Still a complete sentence naming the obstacle, so this control is explained on its own terms
+      // rather than by a pointer to something further up.
+      `Unavailable while ${briefActionBlock(reason.block)}.`;
+}
+
+/**
+ * The obstacle named in a few words, for a sentence that has to MENTION it rather than BE it.
+ *
+ * The superseded banner needs to say what is standing in the way of re-running the check, and it
+ * sits directly under a control whose own reason has already said it in full. Restating four lines
+ * there would be the duplication above in a new costume; "see the reason above" makes the reader do
+ * the joining. So each obstacle gets a short clause, and the banner reads as one sentence.
+ */
+export function briefActionBlock(block: ActionBlock): string {
+  switch (block.kind) {
+    case "busy":
+      return "something is already in flight";
+    case "notConnected":
+      return "your wallet is not connected";
+    case "readerUnavailable":
+      return "this page cannot reach the chain";
+    case "wrongChain":
+      return `your wallet is on chain ${block.actual} and this deployment is on chain ${block.expected}`;
+    case "missingInput":
+      return "a field it needs is still empty";
+    case "neverChecked":
+    case "planEdited":
+    case "planSpent":
+    case "planRefused":
+    case "planIndeterminate":
+      // Unreachable for a CHECK button, which is the only thing this describes: those five states
+      // are about a plan, and a plan is what a check produces. Answered rather than thrown so a
+      // future caller cannot crash the page on a state this simply has no short form for.
+      return "the check is unavailable";
+    case "otherwiseBlocked":
+      return block.why;
+  }
+}
+
+/**
  * The wallet's chain, when it can be established.
  *
  * `actual: undefined` means the connector did not report one, and that is NOT the wrong chain - it
@@ -162,6 +249,36 @@ export function sendBlock(
   }
   if (input.otherwiseBlocked) return { kind: "otherwiseBlocked", why: input.otherwiseBlocked };
   return null;
+}
+
+/** Why a held plan's answers no longer describe what would be sent. */
+export type PlanRetirementReason = "edited" | "spent";
+
+/**
+ * What to tell someone whose plan has been superseded - given whether they can actually re-run it.
+ *
+ * **A SCREEN MUST NOT INSTRUCT AN ACTION IT HAS DISABLED.** The superseded banner said "Check again
+ * before sending" unconditionally, so a captain whose wallet had disconnected read it directly above
+ * a Check button the page itself had greyed out. That is a dead end of the worst kind: it names one
+ * remedy, that remedy is unavailable, and nothing on screen connects the two - so the reader
+ * concludes the page is broken, which from where they are sitting it is.
+ *
+ * The obstacle's own sentence is what replaces the instruction, because that sentence already names
+ * the thing that has to happen first. Nothing here duplicates it or paraphrases it.
+ */
+export function describePlanRetirement(
+  reason: PlanRetirementReason,
+  checkBlocked: ActionBlock | null,
+): string {
+  const situation =
+    reason === "edited"
+      ? "You have changed something since this was checked, so what is shown below describes what you typed before."
+      : "A transaction has already been sent against this, so the chain may have moved since these answers were read. They are kept below so you can see what you checked.";
+  return checkBlocked
+    ? `${situation} Checking again is what clears this, and that is not available while ${briefActionBlock(
+        checkBlocked,
+      )}.`
+    : `${situation} Check again before sending${reason === "spent" ? " another" : ""}.`;
 }
 
 /**
