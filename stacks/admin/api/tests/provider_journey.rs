@@ -297,6 +297,61 @@ async fn attaching_the_same_address_twice_is_refused_with_the_correction_path() 
     assert!(b["error"].as_str().unwrap().contains("reassignServiceProvider"), "{b}");
 }
 
+/// A SECOND grant of the issue right names the SCOPE, not just the contract's error.
+///
+/// FOUND ON A LIVE WALK. The grant is keyed on the ADDRESS and carries no service, so the control
+/// appears on every attached service row and granting from one row has already covered the rest. A
+/// captain pressed it on his second row and got a bare "the contract refuses a no-op with NoChange()",
+/// which is accurate about the revert and says nothing about why the second press was pointless. The
+/// refusal now states the useful fact - one grant, every service, from any row - and carries the scope
+/// as data so a client need not parse the sentence.
+#[tokio::test]
+async fn a_second_issue_right_grant_explains_the_scope_rather_than_naming_noChange() {
+    let (app, tok, _chain) = seeded().await;
+    let grant = |allowed: bool| {
+        let app = app.clone();
+        let tok = tok.clone();
+        async move {
+            call(
+                &app,
+                "POST",
+                &format!("/v1/admin/rights/{SIGNER}/issue"),
+                Some(&tok),
+                Some(serde_json::json!({ "allowed": allowed })),
+            )
+            .await
+        }
+    };
+
+    let (s, b) = grant(true).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+
+    let (s, b) = grant(true).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    let err = b["error"].as_str().unwrap();
+    // The useful fact, in the operator's terms.
+    assert!(err.contains("already holds the issue right"), "{b}");
+    assert!(err.contains("every service in effective standing"), "{b}");
+    assert!(err.contains("from any service row"), "{b}");
+    // And NOT the contract's error name, which is what told the captain nothing.
+    assert!(!err.contains("NoChange"), "{b}");
+    // The scope as data, so a renderer does not have to read the prose.
+    assert_eq!(b["scope"], "address", "{b}");
+    assert_eq!(b["coversEveryService"], true, "{b}");
+
+    // THE WITHDRAW DIRECTION GETS ITS OWN SENTENCE. "already granted" and "was never granted" are
+    // different facts with different next moves, and a shared message would describe one of them
+    // wrongly - the same collapse this whole surface refuses everywhere else.
+    let (s, b) = grant(false).await;
+    assert_eq!(s, StatusCode::OK, "the withdraw is a real change: {b}");
+    let (s, b) = grant(false).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    let err = b["error"].as_str().unwrap();
+    assert!(err.contains("does not hold the issue right"), "{b}");
+    assert!(err.contains("nothing to withdraw"), "{b}");
+    assert!(!err.contains("already holds"), "{b}");
+}
+
 /// A capability log that could not be READ is its own state with its reason - never an empty holder
 /// set, which would say nobody may issue on the strength of a read that never happened.
 ///

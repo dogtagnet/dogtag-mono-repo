@@ -1050,6 +1050,108 @@ contract ProviderRegistryTest is Test {
         assertEq(registry.resolverCount(ProviderRegistry.ResolverKind.DOMAIN), 1);
     }
 
+    /// @notice `resolverPage` KEEPS a deapproved address, so it answers "every resolver ever named"
+    /// rather than "what may be chosen" - and the two are different questions.
+    ///
+    /// This is the exact scrutinee any client building a choice list has to filter against. Offering
+    /// a deapproved entry is a control whose write reverts `ResolverNotApproved`, and the mistake is
+    /// invisible on a deployment with one approved resolver per kind, where the filtered and
+    /// unfiltered lists agree on every value the chain can produce. `resolverCount` staying at 1 is
+    /// asserted above; that is a weaker statement than the PAGE returning the address, which is what
+    /// a client actually reads.
+    function test_the_resolver_page_keeps_an_address_whose_approval_was_withdrawn() public {
+        address resolverAddress = address(new ProviderRegistryResolverMock());
+        _approveResolver(ProviderRegistry.ResolverKind.DIRECTORY, resolverAddress);
+
+        (address[] memory approvedPage,) = registry.resolverPage(ProviderRegistry.ResolverKind.DIRECTORY, 0, 10);
+        assertEq(approvedPage.length, 1);
+        assertEq(approvedPage[0], resolverAddress);
+
+        vm.prank(AUTHORITY);
+        registry.setResolverApproved(ProviderRegistry.ResolverKind.DIRECTORY, resolverAddress, false);
+
+        // STILL PAGED, and no longer approved. A client reading the page alone would offer it.
+        (address[] memory afterPull, uint256 nextCursor) =
+            registry.resolverPage(ProviderRegistry.ResolverKind.DIRECTORY, 0, 10);
+        assertEq(afterPull.length, 1);
+        assertEq(afterPull[0], resolverAddress);
+        assertEq(nextCursor, 1);
+        assertFalse(registry.isResolverApproved(ProviderRegistry.ResolverKind.DIRECTORY, resolverAddress));
+
+        // And a client that DID offer it gets this, which is the cost of not filtering.
+        vm.prank(CONTROLLER);
+        vm.expectRevert(ProviderRegistry.ResolverNotApproved.selector);
+        registry.setDirectoryResolver(providerA, resolverAddress);
+    }
+
+    /// @notice THE SELECTION IS THE PROVIDER'S AND THE REGISTRAR CANNOT MAKE IT, which is why the
+    /// provider portal's copy telling a provider to "ask DogTag" for it was wrong for its whole life.
+    ///
+    /// `canWriteProvider` admits the provider's controller or an epoch-scoped delegate, and
+    /// `canWriteService` the contract's confirmed live owner or theirs. Neither admits `owner()`, so
+    /// the registrar holds no bypass on either axis - a provider sent to ask for this step was sent to
+    /// ask for something nobody could do for them, and both flows were uncompletable by anybody.
+    function test_the_registrar_cannot_select_a_resolver_on_a_providers_behalf() public {
+        address resolverAddress = address(new ProviderRegistryResolverMock());
+        _approveResolver(ProviderRegistry.ResolverKind.DIRECTORY, resolverAddress);
+        _approveResolver(ProviderRegistry.ResolverKind.DOMAIN, resolverAddress);
+
+        // The registrar approved it fleet-wide and is still refused the selection, on both axes.
+        vm.prank(AUTHORITY);
+        vm.expectRevert(ProviderRegistry.Unauthorized.selector);
+        registry.setDirectoryResolver(providerA, resolverAddress);
+
+        vm.prank(AUTHORITY);
+        vm.expectRevert(ProviderRegistry.Unauthorized.selector);
+        registry.setDomainResolver(address(serviceA), resolverAddress);
+
+        // The provider's own keys can, which is what makes the refusal above a division of authority
+        // rather than a contract that simply refuses everyone.
+        vm.prank(CONTROLLER);
+        registry.setDirectoryResolver(providerA, resolverAddress);
+        assertEq(registry.provider(providerA).directoryResolver, resolverAddress);
+
+        vm.prank(SERVICE_OWNER);
+        registry.setDomainResolver(address(serviceA), resolverAddress);
+        assertEq(registry.service(address(serviceA)).domainResolver, resolverAddress);
+    }
+
+    /// @notice A repeat of the same selection reverts `NoChange()`, on both axes - which is why the
+    /// portal refuses it in a preflight with its own sentence instead of producing a revert nobody can
+    /// interpret. Deselecting when nothing is selected is the same refusal reached from the other side.
+    function test_selecting_what_is_already_selected_is_refused_as_a_no_op() public {
+        address resolverAddress = address(new ProviderRegistryResolverMock());
+        _approveResolver(ProviderRegistry.ResolverKind.DIRECTORY, resolverAddress);
+        _approveResolver(ProviderRegistry.ResolverKind.DOMAIN, resolverAddress);
+
+        // Nothing is selected, so "stop using one" would change nothing.
+        vm.prank(CONTROLLER);
+        vm.expectRevert(ProviderRegistry.NoChange.selector);
+        registry.setDirectoryResolver(providerA, address(0));
+
+        vm.prank(CONTROLLER);
+        registry.setDirectoryResolver(providerA, resolverAddress);
+        vm.prank(CONTROLLER);
+        vm.expectRevert(ProviderRegistry.NoChange.selector);
+        registry.setDirectoryResolver(providerA, resolverAddress);
+
+        vm.prank(SERVICE_OWNER);
+        registry.setDomainResolver(address(serviceA), resolverAddress);
+        vm.prank(SERVICE_OWNER);
+        vm.expectRevert(ProviderRegistry.NoChange.selector);
+        registry.setDomainResolver(address(serviceA), resolverAddress);
+
+        // STOPPING IS THE UNDO AND NEEDS NO APPROVAL - the setters check approval only for a non-zero
+        // value, so a provider pointed at a register whose approval has since been pulled can always
+        // get out. Without this the selection would be permanent from any surface that only offers
+        // approved values.
+        vm.prank(AUTHORITY);
+        registry.setResolverApproved(ProviderRegistry.ResolverKind.DIRECTORY, resolverAddress, false);
+        vm.prank(CONTROLLER);
+        registry.setDirectoryResolver(providerA, address(0));
+        assertEq(registry.provider(providerA).directoryResolver, address(0));
+    }
+
     function test_service_and_provider_standing_retirement_is_terminal() public {
         vm.prank(AUTHORITY);
         registry.setProviderStanding(providerA, ProviderRegistry.Standing.RETIRED);

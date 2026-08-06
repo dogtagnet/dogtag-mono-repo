@@ -273,19 +273,20 @@ export function canWithdraw(standing: DomainClaimStanding | undefined): boolean 
  *
  * Same rule as {@link ATTACHMENT_IS_A_DOGTAG_STEP}: a permanent dependency, never a current status.
  * `ProviderRegistry.setResolverApproved` is `onlyOwner`, and `setDomainResolver` reverts
- * `ResolverNotApproved` until that has happened - so the ORDER is fixed by the contract and the
- * first half is DogTag's whatever the chain currently says. Naming both halves is what makes "not
- * your fault" concrete rather than reassuring: a provider who is told only "it is blocked" cannot
- * tell whether they are the one who is meant to act.
+ * `ResolverNotApproved` until that has happened - so the ORDER is fixed by the contract, and the
+ * FIRST half is DogTag's whatever the chain currently says.
  *
- * **IT NO LONGER SAYS "NEITHER HAS A PAGE HERE YET", WHICH WAS HALF FALSE.** DogTag's half DOES have
- * one - the admin Providers page carries the resolver approval - and a sentence saying otherwise is
- * the same rot that told a captain there was no page for attaching a contract while he was looking
- * at one. The SELECTION half genuinely has no surface anywhere yet (`setDirectoryResolver` and
- * `setDomainResolver` are callable only on the contract), so that half is stated as itself. Check a
- * claim like this against what ships before repeating it.
+ * **THE SECOND HALF IS NOW THE PROVIDER'S OWN, AND THIS SENTENCE SAID OTHERWISE FOR ITS WHOLE LIFE.**
+ * It read "Both are DogTag's - ask them", which sent a provider to ask for something they were the
+ * only party who could do - and its own doc paragraph, two revisions ago, was a warning about
+ * exactly this rot happening to its predecessor. `setDomainResolver` is gated by
+ * `canWriteService(service, caller, SERVICE_PERMISSION_DOMAIN_RESOLVER)`, which admits the
+ * contract's live owner and their delegates and NOT the registrar, so DogTag could not make this
+ * selection on a provider's behalf even if asked. The selection now has a surface in this very flow,
+ * so the sentence names the step and where it is. Check a claim like this against what ships before
+ * repeating it.
  */
 export const DOMAIN_REGISTER_NEEDS_TURNING_ON =
-  "Publishing a domain needs the domain register switched on for your contract, in two steps: DogTag approves the register, and then the register has to be selected for your contract. Both are DogTag's - ask them. If this stops at the first check, that is why, and it is not something you have set up wrongly.";
+  "Publishing a domain needs the domain register switched on for your contract, in two steps. DogTag approves the register fleet-wide - that half is theirs, and if this stops at the register check it is not something you have set up wrongly. Selecting it for your contract is YOURS, right below, signed by the key that owns the contract: DogTag cannot make that choice for you.";
 
 export { DomainDisposition };

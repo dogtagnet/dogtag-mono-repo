@@ -149,6 +149,62 @@ const CORE_ABI = [
   },
   {
     type: "function",
+    name: "isResolverApproved",
+    stateMutability: "view",
+    inputs: [
+      { name: "kind", type: "uint8" },
+      { name: "resolver", type: "address" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "resolverCount",
+    stateMutability: "view",
+    inputs: [{ name: "kind", type: "uint8" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "resolverPage",
+    stateMutability: "view",
+    inputs: [
+      { name: "kind", type: "uint8" },
+      { name: "cursor", type: "uint256" },
+      { name: "limit", type: "uint256" },
+    ],
+    outputs: [
+      { name: "values", type: "address[]" },
+      { name: "nextCursor", type: "uint256" },
+    ],
+  },
+  {
+    // THE FIRST ARGUMENT IS `bytes20`, NOT `address`. Both are 20 bytes and both accept the same hex
+    // string from a caller, so nothing at the type level or in the wallet distinguishes them - but
+    // they are different SELECTORS (`0x745ba9c5` against `0xa812c18c`), and the wrong one reverts at
+    // the dispatcher, which reads exactly like the authorization failure this whole flow is about.
+    // Pinned in `providerWriteAbi.test.ts` against `cast sig`.
+    type: "function",
+    name: "setDirectoryResolver",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "providerId", type: "bytes20" },
+      { name: "resolver", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "setDomainResolver",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "serviceAddress", type: "address" },
+      { name: "resolver", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
     name: "PROVIDER_PERMISSION_RECORD",
     stateMutability: "view",
     inputs: [],
@@ -439,6 +495,30 @@ export const PROVIDER_PERMISSION_RECORD = 1;
  * against the constant's own declaration.
  */
 export const SERVICE_PERMISSION_REPOINT = 4;
+/**
+ * `ProviderRegistry.PROVIDER_PERMISSION_DIRECTORY_RESOLVER` (`1 << 1`), the bit
+ * `setDirectoryResolver` demands.
+ *
+ * THE TWO RESOLVER BITS ARE NUMERICALLY EQUAL AND SEMANTICALLY UNRELATED. This one and
+ * `SERVICE_PERMISSION_DOMAIN_RESOLVER` are both `2`, which is why they are declared separately and
+ * pinned separately rather than shared: they happen to agree today, they live in two independent
+ * bitmask namespaces (one keyed by provider, one by service), and a single shared constant would
+ * silently follow whichever namespace moved first. Both differ from the two bits already mirrored
+ * here - `PROVIDER_PERMISSION_RECORD` is `1` and `SERVICE_PERMISSION_REPOINT` is `4` - so a
+ * copy-paste from either neighbour is wrong and answers a confident `false` about a permission
+ * nobody asked about. Pinned by `providerWriteAbi.test.ts` against the contract's own declaration.
+ */
+export const PROVIDER_PERMISSION_DIRECTORY_RESOLVER = 2;
+/** `ProviderRegistry.SERVICE_PERMISSION_DOMAIN_RESOLVER` (`1 << 1`). See the note above. */
+export const SERVICE_PERMISSION_DOMAIN_RESOLVER = 2;
+
+/**
+ * `ProviderRegistry.MAX_PAGE_SIZE`.
+ *
+ * The contract reverts `BadPage()` on `limit == 0 || limit > MAX_PAGE_SIZE`, so this is a hard bound
+ * rather than a tuning choice - asking for more pages nothing.
+ */
+const MAX_PAGE_SIZE = 100n;
 
 export function createLiveProviderReader(options: LiveReaderOptions): ProviderChainReader {
   const { contracts, rpcUrl, blockNumber } = options;
@@ -648,6 +728,79 @@ export function createLiveProviderReader(options: LiveReaderOptions): ProviderCh
         args: [providerId, getAddress(caller), PROVIDER_PERMISSION_RECORD],
         ...at,
       })) as boolean;
+    },
+
+    async canWriteProviderDirectoryResolver(providerId, caller) {
+      return (await client.readContract({
+        address: contracts.core,
+        abi: CORE_ABI,
+        functionName: "canWriteProvider",
+        args: [providerId, getAddress(caller), PROVIDER_PERMISSION_DIRECTORY_RESOLVER],
+        ...at,
+      })) as boolean;
+    },
+
+    async canWriteServiceDomainResolver(service, caller) {
+      return (await client.readContract({
+        address: contracts.core,
+        abi: CORE_ABI,
+        functionName: "canWriteService",
+        args: [getAddress(service), getAddress(caller), SERVICE_PERMISSION_DOMAIN_RESOLVER],
+        ...at,
+      })) as boolean;
+    },
+
+    async approvedResolvers(kind) {
+      // PAGED TO COMPLETION. `resolverCount` bounds the walk, and every page's read can throw - which
+      // is what the engine reports as could-not-run. A partial list is never returned: a resolver
+      // missing from a half-read page is indistinguishable from one the registrar never approved, and
+      // on a deployment with one approved resolver per kind that would tell the provider their only
+      // legitimate choice does not exist.
+      const count = (await client.readContract({
+        address: contracts.core,
+        abi: CORE_ABI,
+        functionName: "resolverCount",
+        args: [kind],
+        ...at,
+      })) as bigint;
+
+      const addresses: Address[] = [];
+      let cursor = 0n;
+      while (cursor < count) {
+        const [values, nextCursor] = (await client.readContract({
+          address: contracts.core,
+          abi: CORE_ABI,
+          functionName: "resolverPage",
+          args: [kind, cursor, MAX_PAGE_SIZE],
+          ...at,
+        })) as readonly [readonly Address[], bigint];
+        addresses.push(...values);
+        // A page that advanced nothing would loop forever. The contract cannot produce one while
+        // `cursor < count`, so this is a guard against a hostile or broken peer rather than against
+        // the contract - and it THROWS, because silently stopping here is the partial list above.
+        if (nextCursor <= cursor) {
+          throw new Error(
+            `resolverPage did not advance past cursor ${cursor} of ${count}; the resolver list could not be read in full`,
+          );
+        }
+        cursor = nextCursor;
+      }
+
+      // The approval bit, asked per entry, because THE LIST KEEPS DEAPPROVED ENTRIES FOREVER -
+      // `setResolverApproved` pushes on first sight and only ever flips the mapping. See
+      // `ResolverListing` for why this pair cannot collapse to a bare address.
+      return await Promise.all(
+        addresses.map(async (resolver) => ({
+          resolver,
+          approved: (await client.readContract({
+            address: contracts.core,
+            abi: CORE_ABI,
+            functionName: "isResolverApproved",
+            args: [kind, resolver],
+            ...at,
+          })) as boolean,
+        })),
+      );
     },
 
     async canWriteServiceRepoint(service, caller) {

@@ -24,7 +24,9 @@ import {
   DIRECTORY_ABI,
   DOMAIN_ABI,
   FACTORY_ABI,
+  PROVIDER_PERMISSION_DIRECTORY_RESOLVER,
   PROVIDER_PERMISSION_RECORD,
+  SERVICE_PERMISSION_DOMAIN_RESOLVER,
   SERVICE_PERMISSION_REPOINT,
 } from "../src/provider/liveReader";
 
@@ -38,6 +40,14 @@ const EXPECTED: Readonly<Record<string, `0x${string}`>> = {
   clearDomain: "0xf0963cd7",
   setProfileAnchor: "0x4baa4a1f",
   publishPin: "0xe22b7b87",
+  // THE PROVIDER'S OWN HALF OF THE TYPED-RESOLVER PAIR. `setDirectoryResolver`'s first argument is
+  // `bytes20`, not `address` - both are 20 bytes and both take the same hex string, so nothing at the
+  // type level or in the wallet tells them apart, but `setDirectoryResolver(address,address)` is
+  // `0xa812c18c` and reverts at the dispatcher, which reads exactly like the authorization failure
+  // this whole flow is about. That is the same shape as the stale mobile `isValid` selector this repo
+  // already paid for.
+  setDirectoryResolver: "0x745ba9c5",
+  setDomainResolver: "0x7a2a9bad",
   // The two that keep a re-publish from adding a SECOND live pin. Confirmed callable on the
   // deployed ProviderDirectory: an `eth_call` to either reverts with the NAMED `UnknownProvider()`
   // (`0xf2b51dfc`) for an unregistered provider id, while a deliberately nonexistent selector on the
@@ -54,6 +64,12 @@ const EXPECTED: Readonly<Record<string, `0x${string}`>> = {
   nextLocationNumber: "0x51b047cd",
   hasPin: "0x2f792e58",
   pin: "0xb2d3139c",
+  // The reads the register choice list is built from. `resolverPage` is the one whose shape is easy
+  // to get wrong, because it returns a TUPLE and takes three arguments in a fixed order.
+  isResolverApproved: "0x4e1a94b9",
+  resolverCount: "0x260e1ea0",
+  resolverPage: "0x8fdcab23",
+  canWriteProvider: "0x415cb2e4",
 };
 
 const ALL = [...FACTORY_ABI, ...CORE_ABI, ...DOMAIN_ABI, ...DIRECTORY_ABI];
@@ -85,6 +101,8 @@ describe("every ABI entry this surface sends against matches the deployed signat
         "publishPin",
         "updatePin",
         "removePin",
+        "setDirectoryResolver",
+        "setDomainResolver",
       ]),
     );
   });
@@ -93,7 +111,7 @@ describe("every ABI entry this surface sends against matches the deployed signat
     // The inverse guard. An extra `nonpayable` entry is a transaction someone can reach for, and an
     // ABI is the only thing standing between a page and a call it was never meant to make.
     const writes = ALL.filter((e) => e.type === "function" && e.stateMutability === "nonpayable");
-    expect(writes).toHaveLength(9);
+    expect(writes).toHaveLength(11);
   });
 });
 
@@ -126,6 +144,31 @@ describe("the mirrored permission bits are the contract's own", () => {
 
   it("SERVICE_PERMISSION_REPOINT matches its declaration", () => {
     expect(SERVICE_PERMISSION_REPOINT).toBe(declaredBit("SERVICE_PERMISSION_REPOINT"));
+  });
+
+  it("PROVIDER_PERMISSION_DIRECTORY_RESOLVER matches its declaration", () => {
+    expect(PROVIDER_PERMISSION_DIRECTORY_RESOLVER).toBe(
+      declaredBit("PROVIDER_PERMISSION_DIRECTORY_RESOLVER"),
+    );
+  });
+
+  it("SERVICE_PERMISSION_DOMAIN_RESOLVER matches its declaration", () => {
+    expect(SERVICE_PERMISSION_DOMAIN_RESOLVER).toBe(
+      declaredBit("SERVICE_PERMISSION_DOMAIN_RESOLVER"),
+    );
+  });
+
+  it("keeps the two resolver bits apart from the two already mirrored here", () => {
+    // THE HAZARD IS THAT THE TWO RESOLVER BITS EQUAL EACH OTHER (both `1 << 1`) AND NEITHER
+    // NEIGHBOUR. So a copy-paste from `PROVIDER_PERMISSION_RECORD` (1) or `SERVICE_PERMISSION_REPOINT`
+    // (4) is wrong and silent: the read succeeds and answers a confident `false` about a permission
+    // nobody asked about, which a provider reads as "you may not choose a register".
+    expect(PROVIDER_PERMISSION_DIRECTORY_RESOLVER).not.toBe(PROVIDER_PERMISSION_RECORD);
+    expect(SERVICE_PERMISSION_DOMAIN_RESOLVER).not.toBe(SERVICE_PERMISSION_REPOINT);
+    // They agree with each other TODAY, in two independent bitmask namespaces. Asserted so the
+    // coincidence is recorded rather than relied on: if either namespace moves, this goes red and
+    // whoever moved it has to decide, instead of one shared constant silently following the other.
+    expect(PROVIDER_PERMISSION_DIRECTORY_RESOLVER).toBe(SERVICE_PERMISSION_DOMAIN_RESOLVER);
   });
 
   it("is not the neighbouring service bits - a delegate trusted with one is not trusted with these", () => {

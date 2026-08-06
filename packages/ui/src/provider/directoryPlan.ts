@@ -805,15 +805,16 @@ export const CONTACTS_ARE_ANCHORED_NOT_SERVED =
  * today. Stated here rather than left to the check, because a provider who has typed five contact
  * fields and a coordinate before being refused has already paid for the surprise.
  *
- * **IT NO LONGER SAYS "NEITHER HAS A PAGE HERE YET", WHICH WAS HALF FALSE.** DogTag's half DOES have
- * one - the admin Providers page carries the resolver approval - and a sentence saying otherwise is
- * the same rot that told a captain there was no page for attaching a contract while he was looking
- * at one. The SELECTION half genuinely has no surface anywhere yet (`setDirectoryResolver` and
- * `setDomainResolver` are callable only on the contract), so that half is stated as itself. Check a
- * claim like this against what ships before repeating it.
+ * **THE SECOND HALF IS NOW THE PROVIDER'S OWN, AND THIS SENTENCE SAID OTHERWISE FOR ITS WHOLE LIFE.**
+ * It read "Both are DogTag's - ask them", which is the harm this flow exists to remove pointed at the
+ * provider: it sent them to ask for the one step nobody else could take. `setDirectoryResolver` is
+ * gated by `canWriteProvider(providerId, caller, PROVIDER_PERMISSION_DIRECTORY_RESOLVER)`, which
+ * admits the provider's controller and their delegates and NOT the registrar. The selection now has
+ * a surface in this very flow, so the sentence names the step and where it is. Check a claim like
+ * this against what ships before repeating it.
  */
 export const DIRECTORY_NEEDS_TURNING_ON =
-  "Publishing a listing needs the provider directory switched on for your provider record, in two steps: DogTag approves the directory, and then the directory has to be selected for your record. Both are DogTag's - ask them. If this stops at the directory check, that is why, and what you have filled in is not the problem.";
+  "Publishing a listing needs the provider directory switched on for your provider record, in two steps. DogTag approves the directory fleet-wide - that half is theirs, and if this stops at the directory check what you have filled in is not the problem. Selecting it for your record is YOURS, right below, signed by your controller key: DogTag cannot make that choice for you.";
 
 export const WITHDRAW_LOCATION_NOTICE =
   "Taking your location down leaves your listing and your contact details in place. You stop appearing in the nearby list, and you can publish a location again later. Clearing the latitude and longitude fields does NOT do this - it only means this publication carries no location.";

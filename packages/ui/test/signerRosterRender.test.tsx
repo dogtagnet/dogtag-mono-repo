@@ -21,7 +21,7 @@
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssuerSignersPanel } from "../src/domain/IssuerSignersPanel";
+import { IssuerSignersPanel, NO_CONTRACTS_CONFIGURED } from "../src/domain/IssuerSignersPanel";
 import type { IssuanceAllowedResponse } from "../src/signers";
 
 const OWNER = "0x00000000000000000000000000000000000000a1";
@@ -105,6 +105,49 @@ function response(over: Partial<IssuanceAllowedResponse> = {}): IssuanceAllowedR
     ...over,
   };
 }
+
+// -------------------------------------------------------------------------------------------------
+// No contracts configured is a CONFIGURATION STEP, not a fault
+// -------------------------------------------------------------------------------------------------
+
+describe("a deployment that names no issuing contract", () => {
+  // FOUND ON A LIVE WALK. The guide sent a captain here at a point where his backend had not yet been
+  // told his contract addresses, and the page said "No issuing contract is configured on this
+  // DEPLOYMENT" - which blames the system, offers no remedy, and leaves somebody who has just deployed
+  // two contracts of their own unable to connect the two facts. This page's own rule everywhere else is
+  // that a could-not-do names WHY and WHAT IS NEEDED.
+  const empty = () => mount(async () => response({ contracts: [] }));
+
+  it("names the cause as the backend's configuration, not the deployment", async () => {
+    const el = await empty();
+    const text = el.querySelector("[data-testid='no-contracts']")!.textContent!;
+    expect(text).toMatch(/backend has not been told which contracts/i);
+    expect(text).not.toMatch(/configured on this deployment/i);
+  });
+
+  it("names the remedy, including that it needs a restart", async () => {
+    const el = await empty();
+    const text = el.querySelector("[data-testid='no-contracts']")!.textContent!;
+    // The variables, so a reader without shell access still knows exactly what to ask for.
+    expect(text).toMatch(/PROFILE_ISSUER_ADDR/);
+    expect(text).toMatch(/ISSUER_ADDR/);
+    expect(text).toMatch(/restart/i);
+  });
+
+  it("says nothing the operator did is wrong, which is the half that makes it usable", async () => {
+    // Same rule as the provider page's dependency notices: a dependency stated without this reads as
+    // "you have misconfigured something" and sends the reader hunting for a setting that does not exist.
+    const el = await empty();
+    const text = el.querySelector("[data-testid='no-contracts']")!.textContent!;
+    expect(text).toMatch(/Nothing is wrong with the contracts you deployed/i);
+  });
+
+  it("renders the exported constant rather than a second copy of the sentence", async () => {
+    // So the guide and this page cannot drift into two descriptions of one cause.
+    const el = await empty();
+    expect(el.querySelector("[data-testid='no-contracts']")!.textContent).toBe(NO_CONTRACTS_CONFIGURED);
+  });
+});
 
 // -------------------------------------------------------------------------------------------------
 // An unreadable list is not an empty one

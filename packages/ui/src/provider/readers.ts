@@ -94,6 +94,39 @@ export interface DomainClaimStanding {
   serviceStandingEffective: boolean;
 }
 
+/**
+ * `ProviderRegistry.ResolverKind`, in declaration order.
+ *
+ * The two kinds are keyed differently and that difference is the whole reason there are two
+ * selections rather than one: a DIRECTORY resolver is chosen per PROVIDER (one listing, however many
+ * contracts the provider holds), a DOMAIN resolver is chosen per SERVICE (a domain belongs to one
+ * contract). Read a number off the chain, never a name.
+ */
+export enum ResolverKind {
+  DIRECTORY = 0,
+  DOMAIN = 1,
+}
+
+/**
+ * One entry of a kind's resolver list, with the authoritative approval bit beside it.
+ *
+ * **THE LIST IS APPEND-ONLY AND KEEPS DEAPPROVED ENTRIES, WHICH IS WHY THIS IS A PAIR AND NOT AN
+ * ADDRESS.** `ProviderRegistry.setResolverApproved` pushes onto `_resolverAddresses[kind]` the first
+ * time it sees an address and NEVER removes it - pulling a resolver only flips
+ * `_approvedResolvers[kind][resolver]` to false. So `resolverPage` answers "every resolver this
+ * registry has ever named for this kind", which is not the same question as "what may I choose".
+ *
+ * Offering a deapproved entry as a choice is a button whose write reverts `ResolverNotApproved`, and
+ * the mistake is invisible on today's chain: each kind has exactly one entry and both are approved,
+ * so a list-only implementation and a filtered one agree on every value the deployment can produce.
+ * The admin console's `GET /v1/admin/resolvers` already returns `{resolver, approved}` pairs for the
+ * same reason; this mirrors that shape rather than inventing a second one.
+ */
+export interface ResolverListing {
+  resolver: Address;
+  approved: boolean;
+}
+
 export const ZERO_PROVIDER_ID: HexWord = `0x${"0".repeat(40)}`;
 export const ZERO_ADDR: Address = `0x${"0".repeat(40)}`;
 /** A `bytes32` that has never been written. `ProfileAnchor.digest` at revision 0. */
@@ -223,6 +256,42 @@ export interface ProviderChainReader {
   directoryIsLiveFor(providerId: HexWord): Promise<boolean>;
   /** `ProviderRegistry.canWriteProvider(providerId, caller, PROVIDER_PERMISSION_RECORD)`. */
   canWriteProviderRecord(providerId: HexWord, caller: Address): Promise<boolean>;
+
+  // -- resolver selection ----------------------------------------------------------------------
+
+  /**
+   * Every address this registry has ever named for `kind`, each with `isResolverApproved` beside it.
+   *
+   * PAGED TO COMPLETION, not first-page-only: `resolverCount` bounds the walk and a partial read is a
+   * failure rather than a shorter list, because a resolver missing from a half-read list is
+   * indistinguishable from one the registrar never approved - and the provider would be told their
+   * only legitimate choice does not exist.
+   *
+   * The approval bit comes from {@link ResolverListing}, whose doc says why it cannot be dropped.
+   */
+  approvedResolvers(kind: ResolverKind): Promise<readonly ResolverListing[]>;
+
+  /**
+   * `ProviderRegistry.canWriteProvider(providerId, caller, PROVIDER_PERMISSION_DIRECTORY_RESOLVER)`
+   * - the EXACT predicate `setDirectoryResolver` is gated by.
+   *
+   * A DIFFERENT method from {@link canWriteProviderRecord} rather than one method taking the bit,
+   * for the reason the whole of this file gives: a caller free to name the permission is a caller
+   * free to name the wrong one, and every bit answers a different question. Publishing content into
+   * a listing and choosing which register holds that listing are separate grants, so a delegate may
+   * hold either without the other.
+   */
+  canWriteProviderDirectoryResolver(providerId: HexWord, caller: Address): Promise<boolean>;
+
+  /**
+   * `ProviderRegistry.canWriteService(service, caller, SERVICE_PERMISSION_DOMAIN_RESOLVER)` - the
+   * EXACT predicate `setDomainResolver` is gated by.
+   *
+   * Distinct from {@link canWriteServiceRepoint} for the same reason, and the numbers make the
+   * hazard concrete: this bit is `1 << 1` and the repoint bit is `1 << 2`, so a copied constant is a
+   * confident `false` about a permission nobody asked about.
+   */
+  canWriteServiceDomainResolver(service: Address, caller: Address): Promise<boolean>;
 
   /**
    * `ProviderDirectory.profileAnchor(providerId)`.

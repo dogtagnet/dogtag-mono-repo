@@ -331,6 +331,26 @@ describe("a flow that waits on a DogTag step says so before it is tried", () => 
     expect(notice("directory-dependency")).toMatch(/what you have filled in is not the problem/i);
   });
 
+  it("no longer tells a provider to ASK for the one step only they can take", async () => {
+    // THE ROT THIS CATCHES, and both notices carried it for their whole lives. Each said "Both are
+    // DogTag's - ask them" about a two-step dependency whose SECOND step the registrar cannot
+    // perform at all: `setDirectoryResolver` is gated by `canWriteProvider(..., DIRECTORY_RESOLVER)`
+    // and `setDomainResolver` by `canWriteService(..., DOMAIN_RESOLVER)`, and neither admits the
+    // owner of the core. So a provider following that sentence was sent to ask for something nobody
+    // could do for them, and the flow was uncompletable by anybody - which is exactly what a captain
+    // hit. Asserted as an ABSENCE plus its replacement, because the absence alone would pass on a
+    // notice that had simply stopped explaining anything.
+    const el = await mount({ issuance: true, listing: true });
+    const notice = (id: string) => el.querySelector(`[data-testid='${id}']`)!.textContent!;
+    for (const id of ["domain-dependency", "directory-dependency"]) {
+      expect(notice(id)).not.toMatch(/both are dogtag's/i);
+      // Case-SENSITIVE on `YOURS`, deliberately: the emphasis is the part that answers the question
+      // the old sentence got wrong, so an `/i` here would let it be softened back to lower case.
+      expect(notice(id)).toMatch(/Selecting it for your (contract|record) is YOURS/);
+      expect(notice(id)).toMatch(/dogtag cannot make that choice for you/i);
+    }
+  });
+
   it("names the DogTag step rather than only reporting that something is missing", async () => {
     const el = await mount({ issuance: true, listing: true });
     expect(el.querySelector("[data-testid='repoint-dependency']")!.textContent).toMatch(/attach/i);

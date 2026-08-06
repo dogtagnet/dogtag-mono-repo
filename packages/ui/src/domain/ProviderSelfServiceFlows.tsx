@@ -54,6 +54,7 @@ import {
 } from "../components/Card";
 import { Input } from "../components/Input";
 import { Label } from "../components/Label";
+import { cn } from "../lib/cn";
 import { PROVIDER_CONTACT_CHANNELS } from "../directory/channels";
 import {
   checkLogoPublication,
@@ -73,7 +74,6 @@ import {
   ATTACHMENT_IS_NOT_SELF_SERVICE,
   assessCandidateClone,
   checkBlock,
-  describeActionBlock,
   describePlanRetirement,
   renderReason,
   sequenceReasons,
@@ -82,7 +82,11 @@ import {
   type ActionBlock,
   type RenderedReason,
   assessDomainClaim,
+  assessResolverSelection,
+  canStopUsing,
   canWithdraw,
+  kindForScope,
+  ZERO_ADDR,
   CONTACT_ONLY_NOTICE,
   CONTACTS_ARE_ANCHORED_NOT_SERVED,
   createdAddressMeaning,
@@ -110,6 +114,9 @@ import {
   type DirectoryPublicationPlan,
   type DomainClaimAssessment,
   type ProviderContracts,
+  type ResolverListing,
+  type ResolverSelectionPlan,
+  type ResolverSelectionScope,
   type SendRecord,
   type SendState,
 } from "../provider";
@@ -130,10 +137,158 @@ import {
   NextContractNumberNotice,
   PublishedListingCard,
   DomainClaimCard,
+  ResolverSelectionCard,
   WalletFaultNotice,
   WhyThisExists,
   type PlanRetirement,
 } from "./ProviderSelfServicePanel";
+
+/**
+ * What the register dropdown has to offer, as three states rather than an array.
+ *
+ * `pending` is not `read` with an empty list, and neither is `unavailable`. A dropdown that rendered
+ * "no registers approved" while the read was still in flight would be a definite claim about DogTag
+ * made before anybody asked, and one that rendered it after a FAILED read would be the same claim
+ * made on the strength of a question that never got an answer. Both are the defect this page exists
+ * not to have, in the one place a reader would take at face value: an empty list of options.
+ */
+type ResolverOptions =
+  | { state: "pending" }
+  | { state: "read"; listings: readonly ResolverListing[] }
+  | { state: "unavailable"; reason: string };
+
+/** Native `<select>` styling matching `Input`. Native because it must be driveable and keyboard-first. */
+const SELECT_CLASS =
+  "flex h-10 w-full rounded-md border border-input bg-surface px-3 py-2 text-sm text-onSurface "
+  + "ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 "
+  + "focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
+
+/**
+ * The provider's own half of the typed-resolver pair, rendered once and used by both flows.
+ *
+ * ONE COMPONENT, TWO SCOPES, deliberately. The two selections differ only in what they are keyed by
+ * and which setter they send, so two near-identical inline blocks would be two places for a rule to
+ * drift - and this whole surface exists because one half of a two-party arrangement had no
+ * implementation at all.
+ *
+ * `<select>` is NATIVE rather than the radix component: it has to be driveable by a test harness and
+ * by a keyboard, and the repo already records that `selectOption` cannot drive a radix Select.
+ */
+function RegisterPicker({
+  scope,
+  options,
+  choice,
+  onChoice,
+  allowStop,
+  checkLabel,
+  onCheck,
+  checkDisabled,
+  checkReason,
+  sendLabel,
+  onSend,
+  sendDisabled,
+  sendReason,
+  plan,
+  retired,
+  planCheckBlock,
+}: {
+  scope: ResolverSelectionScope;
+  options: ResolverOptions;
+  choice: string;
+  onChoice: (value: string) => void;
+  /** Offer "stop using one" only when something is selected - the chain refuses the no-op otherwise. */
+  allowStop: boolean;
+  checkLabel: string;
+  onCheck: () => void;
+  checkDisabled: boolean;
+  checkReason: RenderedReason | null;
+  sendLabel: string;
+  onSend: () => void;
+  sendDisabled: boolean;
+  sendReason: RenderedReason | null;
+  plan: ResolverSelectionPlan | null;
+  retired: PlanRetirement | null;
+  planCheckBlock: ActionBlock | null;
+}): ReactNode {
+  const noun = scope === "directory" ? "directory register" : "domain register";
+  const approved = options.state === "read" ? options.listings.filter((l) => l.approved) : [];
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+      <div>
+        <Label htmlFor={`${scope}-register`}>Which {noun} do you use?</Label>
+        {/* THREE STATES, NEVER COLLAPSED INTO AN EMPTY DROPDOWN. A `<select>` with no options is the
+            one thing a reader takes at face value, so "still reading", "the read failed" and "DogTag
+            has approved none" each say themselves rather than sharing an appearance. */}
+        {options.state === "pending" ? (
+          <p
+            className="mt-1 text-sm text-muted-foreground"
+            data-testid={`${scope}-register-options-pending`}
+          >
+            Reading which registers DogTag approves…
+          </p>
+        ) : options.state === "unavailable" ? (
+          <p
+            className="mt-1 text-sm text-amber-700 dark:text-amber-400"
+            data-testid={`${scope}-register-options-unavailable`}
+          >
+            The registers you may choose from could not be read, so this page cannot offer a choice.
+            That is its connection to the chain, not anything you have set up. Reason: {options.reason}
+          </p>
+        ) : approved.length === 0 && !allowStop ? (
+          <p
+            className="mt-1 text-sm text-muted-foreground"
+            data-testid={`${scope}-register-options-none`}
+          >
+            DogTag has approved no {noun} yet, so there is nothing to choose. That half is theirs -
+            ask them. Nothing you have set up is wrong.
+          </p>
+        ) : (
+          <select
+            id={`${scope}-register`}
+            className={cn(SELECT_CLASS, "mt-1")}
+            data-testid={`${scope}-register-select`}
+            value={choice}
+            onChange={(e) => onChoice(e.target.value)}
+          >
+            {choice === "" ? <option value="">Pick a register…</option> : null}
+            {approved.map((l) => (
+              <option key={l.resolver} value={l.resolver}>
+                {l.resolver}
+              </option>
+            ))}
+            {/* Offered only when something is selected, because the chain refuses a write that would
+                change nothing - and because without it the selection would be permanent from this
+                page, which is the shape of dead end this whole surface exists to remove. */}
+            {allowStop ? (
+              <option value={ZERO_ADDR}>Stop using a {noun} — publish through none</option>
+            ) : null}
+          </select>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          disabled={checkDisabled}
+          data-testid={`${scope}-register-check`}
+          onClick={onCheck}
+        >
+          {checkLabel}
+        </Button>
+        <Button disabled={sendDisabled} data-testid={`${scope}-register-send`} onClick={onSend}>
+          {sendLabel}
+        </Button>
+      </div>
+      <ActionReason reason={checkReason} testId={`${scope}-register-check-reason`} />
+      <ActionReason reason={sendReason} testId={`${scope}-register-send-reason`} />
+      <PlanNotice
+        reason={retired}
+        testId={`${scope}-register-stale`}
+        checkBlocked={planCheckBlock}
+      />
+      {plan ? <ResolverSelectionCard plan={plan} retired={retired} /> : null}
+    </div>
+  );
+}
 
 /** Which flows this operator is a provider FOR. Stated by the caller, never inferred. */
 export interface ProviderFlowCapabilities {
@@ -337,9 +492,19 @@ export function ProviderSelfServiceFlows({
   const [logoName, setLogoName] = useState<string>("");
   const [logoError, setLogoError] = useState<string | null>(null);
 
+  // The register each selection would switch TO. `""` is "nothing picked yet" and is not a valid
+  // choice; `ZERO_ADDR` IS one, and means "stop using a register" - which the chain accepts, since
+  // both setters check approval only for a non-zero value.
+  const [domainRegisterChoice, setDomainRegisterChoice] = useState("");
+  const [directoryRegisterChoice, setDirectoryRegisterChoice] = useState("");
+
   const [deployHeld, setDeployHeld] = useState<Checked<DeployPlan> | null>(null);
   const [cloneHeld, setCloneHeld] = useState<Checked<CloneAssessment> | null>(null);
   const [domainHeld, setDomainHeld] = useState<Checked<DomainClaimAssessment> | null>(null);
+  const [domainRegisterHeld, setDomainRegisterHeld] =
+    useState<Checked<ResolverSelectionPlan> | null>(null);
+  const [directoryRegisterHeld, setDirectoryRegisterHeld] =
+    useState<Checked<ResolverSelectionPlan> | null>(null);
   const [publicationHeld, setPublicationHeld] = useState<Checked<DirectoryPublicationPlan> | null>(
     null,
   );
@@ -374,6 +539,70 @@ export function ProviderSelfServiceFlows({
   );
   const recordTypeKey = useMemo(() => keccak256(toHex(recordType)), [recordType]);
   const providerIdOk = /^0x[0-9a-fA-F]{40}$/.test(providerId);
+
+  // WHAT MAY BE CHOSEN, READ FROM THE CHAIN'S OWN ALLOWLIST rather than from a bundled address, so a
+  // register DogTag approves tomorrow becomes choosable with no rebuild and no redeploy. Read once
+  // per reader, because it is a fleet-wide fact and depends on neither the provider id nor the
+  // contract in the form.
+  //
+  // The dropdown is only the INPUT WIDGET. The plan re-reads the list itself and validates the chosen
+  // address against it, so a stale option can at worst be refused by the check with a precise
+  // sentence - never sent. That is the safe direction for the two sources to disagree in.
+  const [registerOptions, setRegisterOptions] = useState<
+    Readonly<Record<ResolverSelectionScope, ResolverOptions>>
+  >({ directory: { state: "pending" }, domain: { state: "pending" } });
+  useEffect(() => {
+    if (!reader) {
+      setRegisterOptions({ directory: { state: "pending" }, domain: { state: "pending" } });
+      return;
+    }
+    let current = true;
+    const load = async (scope: ResolverSelectionScope) => {
+      try {
+        const listings = await reader.approvedResolvers(kindForScope(scope));
+        if (current) {
+          setRegisterOptions((prev) => ({ ...prev, [scope]: { state: "read", listings } }));
+        }
+      } catch (error) {
+        if (current) {
+          setRegisterOptions((prev) => ({
+            ...prev,
+            [scope]: {
+              state: "unavailable",
+              reason:
+                error instanceof Error && error.message ? error.message : "the read gave no reason",
+            },
+          }));
+        }
+      }
+    };
+    void load("directory");
+    void load("domain");
+    return () => {
+      current = false;
+    };
+    // `sent.length` so a registrar approving a register while this page is open is picked up by the
+    // next action rather than needing a reload.
+  }, [reader, sent.length]);
+
+  // Pre-select the first approved register, ONCE, and never over a value the provider has set. Same
+  // rule as the contract-number field: a pre-fill is a convenience, and a page that kept overwriting
+  // a chosen value would be deciding on the provider's behalf. `""` is the only state this replaces,
+  // and every real choice - including `ZERO_ADDR` for "stop using one" - is non-empty.
+  const directoryFirstApproved =
+    registerOptions.directory.state === "read"
+      ? registerOptions.directory.listings.find((l) => l.approved)?.resolver
+      : undefined;
+  const domainFirstApproved =
+    registerOptions.domain.state === "read"
+      ? registerOptions.domain.listings.find((l) => l.approved)?.resolver
+      : undefined;
+  useEffect(() => {
+    if (directoryFirstApproved) setDirectoryRegisterChoice((c) => c || directoryFirstApproved);
+  }, [directoryFirstApproved]);
+  useEffect(() => {
+    if (domainFirstApproved) setDomainRegisterChoice((c) => c || domainFirstApproved);
+  }, [domainFirstApproved]);
 
   // What a READER sees of this provider. `undefined` is the pending state and is NOT a fourth
   // rendered outcome - it renders nothing, because before the resolution lands there is no answer.
@@ -476,20 +705,33 @@ export function ProviderSelfServiceFlows({
   // the button stays enabled while the CHECKED plan still carries the old one.
   const logoAddress = useMemo(() => (logo ? publicationDigest(logo.bytes) : "none"), [logo]);
   const publicationKey = `${identity}|${latInput}|${lngInput}|${JSON.stringify(contacts)}|${logoAddress}`;
+  // THE CHOSEN REGISTER IS IN THE KEY, and a dropdown is precisely the input that makes forgetting it
+  // easy: check register A, switch the select to B, and without this the button stays enabled while
+  // the CHECKED plan still carries A - so B would be sent unchecked. The directory key does not carry
+  // `candidate`, because that selection is keyed by provider id (already in `identity`) and not by any
+  // one contract.
+  const domainRegisterKey = `${identity}|${candidate}|${domainRegisterChoice}`;
+  const directoryRegisterKey = `${identity}|${directoryRegisterChoice}`;
 
   const deploy = fresh(deployHeld, deployKey);
   const clone = fresh(cloneHeld, cloneKey);
   const domainState = fresh(domainHeld, domainKey);
   const publication = fresh(publicationHeld, publicationKey);
+  const domainRegister = fresh(domainRegisterHeld, domainRegisterKey);
+  const directoryRegister = fresh(directoryRegisterHeld, directoryRegisterKey);
 
   const deployShown = shown(deployHeld);
   const cloneShown = shown(cloneHeld);
   const domainShown = shown(domainHeld);
   const publicationShown = shown(publicationHeld);
+  const domainRegisterShown = shown(domainRegisterHeld);
+  const directoryRegisterShown = shown(directoryRegisterHeld);
   const deployRetired = retiredBecause(deployHeld, deployKey);
   const cloneRetired = retiredBecause(cloneHeld, cloneKey);
   const domainRetired = retiredBecause(domainHeld, domainKey);
   const publicationRetired = retiredBecause(publicationHeld, publicationKey);
+  const domainRegisterRetired = retiredBecause(domainRegisterHeld, domainRegisterKey);
+  const directoryRegisterRetired = retiredBecause(directoryRegisterHeld, directoryRegisterKey);
   // Computed from the CHECKED plan when there is one, and from "a publication always uploads its
   // profile document" when there is not - so a deployment missing either setting says so before the
   // provider fills the form in, rather than after they press Publish.
@@ -728,6 +970,65 @@ export function ProviderSelfServiceFlows({
     canAct: !!publication?.canPublish,
     verdict: publication?.verdict,
   });
+  const domainRegisterPlanState = planGateState({
+    present: !!domainRegisterHeld,
+    spent: !!domainRegisterHeld?.spent,
+    keyMatches: domainRegisterHeld?.key === domainRegisterKey,
+    canAct: !!domainRegister?.canSelect,
+    verdict: domainRegister?.verdict,
+  });
+  const directoryRegisterPlanState = planGateState({
+    present: !!directoryRegisterHeld,
+    spent: !!directoryRegisterHeld?.spent,
+    keyMatches: directoryRegisterHeld?.key === directoryRegisterKey,
+    canAct: !!directoryRegister?.canSelect,
+    verdict: directoryRegister?.verdict,
+  });
+
+  /**
+   * Why a register CHECK cannot run: the fields it needs, in the order a provider would fix them.
+   *
+   * The domain register's blocker is the contract address in step 2, which is in ANOTHER step - the
+   * one shape a "<field> is required" template cannot carry, and the reason `missingInput` takes a
+   * whole sentence.
+   */
+  const registerCheckMissing = (scope: ResolverSelectionScope): string | null => {
+    const options = registerOptions[scope];
+    if (scope === "domain" && !candidate) {
+      return (
+        "Enter your contract address in step 2 first. A domain register is chosen for one contract, "
+        + "so there is nothing to check until this page knows which one."
+      );
+    }
+    if (scope === "directory" && !providerIdOk) {
+      return "Enter your provider id to check which directory register is selected.";
+    }
+    if (options.state === "pending") {
+      return "Still reading which registers DogTag approves. This needs your wallet connected, because there is no backend here to read the chain for you.";
+    }
+    if (options.state === "unavailable") {
+      return `The registers you may choose from could not be read (${options.reason}), so there is nothing to check against. That is this page's connection to the chain, not anything you have set up.`;
+    }
+    const choice = scope === "domain" ? domainRegisterChoice : directoryRegisterChoice;
+    if (!choice) {
+      return options.listings.some((l) => l.approved)
+        ? "Pick a register above first."
+        : "DogTag has approved no register of this kind yet, so there is nothing to pick. That half is theirs; ask them.";
+    }
+    return null;
+  };
+  const domainRegisterCheckBlock = gate(registerCheckMissing("domain"));
+  const directoryRegisterCheckBlock = gate(registerCheckMissing("directory"));
+
+  /** What the Send button will do, so its label states the action rather than describing the widget. */
+  const registerSendLabel = (choice: string, scope: ResolverSelectionScope): string =>
+    choice.toLowerCase() === ZERO_ADDR
+      ? scope === "domain"
+        ? "Stop using a domain register"
+        : "Stop using the directory"
+      : scope === "domain"
+        ? "Use this domain register"
+        : "Use this directory register";
 
   // ONE ORDERED LIST OF EVERY RENDERED REASON ON THE PAGE, deduped in source order.
   //
@@ -746,10 +1047,14 @@ export function ProviderSelfServiceFlows({
     deploySendReason,
     repointCheckReason,
     repointSendReason,
+    domainRegisterCheckReason,
+    domainRegisterSendReason,
     domainCheckReason,
     domainClaimReason,
     domainNoneReason,
     domainWithdrawReason,
+    directoryRegisterCheckReason,
+    directoryRegisterSendReason,
     publishCheckReason,
     publishSendReason,
     withdrawPinReason,
@@ -771,6 +1076,11 @@ export function ProviderSelfServiceFlows({
           sendGate("Check what this would deploy", deployPlanState),
           repointCheckBlock,
           sendGate("Check this contract", clonePlanState),
+          // The register selection is FIRST within flow 3, matching the source order below, because
+          // it is the step the rest of the flow is gated on - so it is the control that should carry
+          // the full sentence when the whole flow shares an obstacle.
+          domainRegisterCheckBlock,
+          sendGate("Check the domain register", domainRegisterPlanState),
           domainCheckBlock,
           sendGate(
             "Check the domain record",
@@ -782,16 +1092,18 @@ export function ProviderSelfServiceFlows({
           sendGate("Check the domain record", domainPlanState),
           sendGate("Check the domain record", domainPlanState),
         ] as (ActionBlock | null)[])
-      : [null, null, null, null, null, null, null, null]),
+      : [null, null, null, null, null, null, null, null, null, null]),
     ...(capabilities.listing
       ? ([
+          directoryRegisterCheckBlock,
+          sendGate("Check the directory register", directoryRegisterPlanState),
           publishCheckBlock,
           sendGate("Check what this would publish", publicationPlanState, publicationMirrorRefusal),
           // Flow 4's withdraw-pin send is conditionally RENDERED, so it is last within its flow: the
           // full sentence must land on a control that always exists.
           sendGate("Check what this would publish", publicationPlanState),
         ] as (ActionBlock | null)[])
-      : [null, null, null]),
+      : [null, null, null, null, null]),
   ]);
 
   return (
@@ -1126,6 +1438,55 @@ export function ProviderSelfServiceFlows({
               <DependencyNotice testId="domain-dependency">
                 {DOMAIN_REGISTER_NEEDS_TURNING_ON}
               </DependencyNotice>
+              {/* THE SELECTION COMES FIRST, because the rest of this flow is gated on it: without it
+                  `claimStanding` answers `coreSelectsThisResolver: false` and every domain write is
+                  refused. Before this shipped the provider had no way to make it at all. */}
+              <RegisterPicker
+                scope="domain"
+                options={registerOptions.domain}
+                choice={domainRegisterChoice}
+                onChoice={setDomainRegisterChoice}
+                allowStop={canStopUsing(domainRegister?.selection ?? domainRegisterShown?.selection)}
+                checkLabel="Check the domain register"
+                onCheck={() =>
+                  run(async () => {
+                    const plan = await assessResolverSelection({
+                      scope: "domain",
+                      subject: candidate as `0x${string}`,
+                      chosen: domainRegisterChoice as `0x${string}`,
+                      caller: caller!,
+                      reader: reader!,
+                    });
+                    setDomainRegisterHeld({ key: domainRegisterKey, plan, spent: false });
+                  })
+                }
+                checkDisabled={!!domainRegisterCheckBlock}
+                checkReason={domainRegisterCheckReason ?? null}
+                sendLabel={registerSendLabel(domainRegisterChoice, "domain")}
+                onSend={() =>
+                  run(async () => {
+                    // Addresses the PLAN's own captured values, never the form's - see rule 1 in this
+                    // file's header. Switching the dropdown after Check retires the plan, and this
+                    // line is the second, independent guard against sending the unchecked value.
+                    await sendAndFollow(
+                      registerSendLabel(domainRegister!.chosen, "domain"),
+                      () => setDomainRegisterHeld(spend),
+                      () =>
+                        writeContractAsync({
+                          address: contracts.core,
+                          abi: CORE_ABI,
+                          functionName: "setDomainResolver",
+                          args: [domainRegister!.subject, domainRegister!.chosen],
+                        }),
+                    );
+                  })
+                }
+                sendDisabled={!!sendGate("Check the domain register", domainRegisterPlanState)}
+                sendReason={domainRegisterSendReason ?? null}
+                plan={domainRegisterShown}
+                retired={domainRegisterRetired}
+                planCheckBlock={domainRegisterCheckBlock}
+              />
               <div>
                 <Label htmlFor="domain">Domain</Label>
                 <Input
@@ -1269,6 +1630,56 @@ export function ProviderSelfServiceFlows({
             <DependencyNotice testId="directory-dependency">
               {DIRECTORY_NEEDS_TURNING_ON}
             </DependencyNotice>
+            {/* THE SELECTION COMES FIRST, for the same reason as flow 3's: without it
+                `ProviderDirectory.isLiveFor` is false and every publication is refused, so a provider
+                who filled in five contact fields and a coordinate would have paid for the surprise.
+                Measured on the live set: every provider's `directoryResolver` was the zero address,
+                so this was the state EVERY provider was in. */}
+            <RegisterPicker
+              scope="directory"
+              options={registerOptions.directory}
+              choice={directoryRegisterChoice}
+              onChoice={setDirectoryRegisterChoice}
+              allowStop={canStopUsing(
+                directoryRegister?.selection ?? directoryRegisterShown?.selection,
+              )}
+              checkLabel="Check the directory register"
+              onCheck={() =>
+                run(async () => {
+                  const plan = await assessResolverSelection({
+                    scope: "directory",
+                    subject: providerId as `0x${string}`,
+                    chosen: directoryRegisterChoice as `0x${string}`,
+                    caller: caller!,
+                    reader: reader!,
+                  });
+                  setDirectoryRegisterHeld({ key: directoryRegisterKey, plan, spent: false });
+                })
+              }
+              checkDisabled={!!directoryRegisterCheckBlock}
+              checkReason={directoryRegisterCheckReason ?? null}
+              sendLabel={registerSendLabel(directoryRegisterChoice, "directory")}
+              onSend={() =>
+                run(async () => {
+                  await sendAndFollow(
+                    registerSendLabel(directoryRegister!.chosen, "directory"),
+                    () => setDirectoryRegisterHeld(spend),
+                    () =>
+                      writeContractAsync({
+                        address: contracts.core,
+                        abi: CORE_ABI,
+                        functionName: "setDirectoryResolver",
+                        args: [directoryRegister!.subject, directoryRegister!.chosen],
+                      }),
+                  );
+                })
+              }
+              sendDisabled={!!sendGate("Check the directory register", directoryRegisterPlanState)}
+              sendReason={directoryRegisterSendReason ?? null}
+              plan={directoryRegisterShown}
+              retired={directoryRegisterRetired}
+              planCheckBlock={directoryRegisterCheckBlock}
+            />
             <div className="grid gap-3 sm:grid-cols-2">
               {PROVIDER_CONTACT_CHANNELS.map((channel) => (
                 // Five channels in a two-column grid, so the last would sit half-width alone. A URL
