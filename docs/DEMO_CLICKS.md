@@ -1794,3 +1794,58 @@ driven to *ready to send* and stopped there - the mechanism past that point is u
 branch (only where the address comes from changed), and sending would add a permanent provider
 record to the live registry for no new evidence. Also not walked: importing the key into a real
 browser wallet (§3.3), which is the same manual step as before.
+
+## 16.7 The provider selects its own registers, 2026-08-06 - on a FORK, and why not on ROAX
+
+Walked on **2026-08-06** for §5.5, against `anvil --fork-url https://devrpc.roax.net --chain-id 135`
+on a spare port. A fork carries the real deployed bytecode, the real registrar approvals and the real
+provider records, so nothing here is a stand-in for the contracts; what is a stand-in is only the
+chain the transactions land on.
+
+**Why a fork and not ROAX.** The captain is walking this guide on the live set right now, and both
+sends here WRITE to a provider record and a contract on it. Selecting a register on his provider while
+he is mid-walk is not a read, and there was no need: the fork answers the same questions.
+
+**The wallet** was anvil account 0, `0xf39Fd6e5…2266` - the key every `anvil` start prints, which holds
+nothing on any real network - because it is the controller of two of the three providers on this set.
+It was announced to the page as an EIP-6963 provider by a temporary `<script type="module">` in
+`stacks/vet/web/index.html`, **reverted before commit**. A shim injected after load does not work: the
+wallet modal will show the account while wagmi's `isConnected` stays false and every gated control
+stays dead.
+
+**What was driven, and what the chain said.**
+
+| # | action | result |
+|---|---|---|
+| 1 | open **Provider self-service** | both dropdowns populated from the chain's own allowlist - `0xdA784F9B…259f78` for the directory and `0xbbe7922D…ab3f4` for the domain, i.e. the two the registrar has actually approved |
+| 2 | flow 4 → **Check the directory register** | verdict **Ready**, all five rows passed |
+| 3 | flow 4 → **Use this directory register** | tx `0x073532de…78630`, status 1, block 353699, to `ProviderRegistry` |
+| 4 | read the chain | `provider(…).directoryResolver` went `0x0` → `0xdA784F9B…259f78`, and **`ProviderDirectory.isLiveFor` went `false` → `true`** |
+| 5 | flow 4 → **Check** again | the no-op row **failed**: *"…is already your provider directory. The registry refuses a write that would change nothing"*, and **Stop using** appeared in the dropdown |
+| 6 | flow 3 → **Check the domain register**, then **Use this domain register** | tx `0xecef5179…78568`; `service(…).domainResolver` set, `claimStanding.coreSelectsThisResolver` `false` → `true`, `canWriteDomain` → `true` |
+| 7 | flow 3 → type a domain, **Check the domain record**, **Publish this domain** | tx `0xaf5528f7…96d66`; `resolveDomain` now answers disposition **2 (CLAIMED)** and `"seaport-vet.example-clinic.sg"` |
+| 8 | switch the dropdown to **Stop using** | the plan **retired** - *"You have changed something since this was checked"* - and the send disabled, without being sent |
+| 9 | re-check, then **Stop using the directory** | tx `0x681e185c…b42f1`; `isLiveFor` back to `false`, so the undo works |
+
+**Row 7 is the point of the branch.** Flow 3 could not be completed by anybody before it: the
+selection in row 6 is what moved `coreSelectsThisResolver`, and without it `canWriteDomain` is false
+for the owner, every delegate and everybody else alike.
+
+**Row 8 is the stale-plan guard on the one input most likely to slip past it.** A dropdown is exactly
+where "check A, switch to B, send B unchecked" happens, and the chosen register is in the plan key so
+switching retires the plan rather than leaving the button live.
+
+**The disabled-button fix was confirmed here too, by eye and by class list.** After row 3 the send read
+`bg-surface-muted` with **no** `bg-primary`, and the screenshot shows a flat grey control beside the
+enabled outline button next to it - where before it was a saturated blue at 50% opacity, which is what
+a captain reported as "still blue".
+
+**Nothing of the live set was disturbed**, checked after: `isLiveFor` on the real ROAX still answers
+`false` for that provider, and the running stacks on `:39742` and `:41874` both answered `/health`
+throughout. Every process started here - the fork and one `vite` - was killed by the pid recorded when
+it started, never by name or path. The portal was served with `VITE_VET_API_BASE` and
+`VITE_CENTRAL_API_BASE` pointed at an absolute dead host, which takes `/api` out of the picture
+entirely rather than relying on the vite proxy failing closed.
+
+**Not walked:** the same two sends against ROAX, for the reason above; and publishing a listing (flow
+4's own form), which additionally needs a content mirror and is `§15`'s existing open item.

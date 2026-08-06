@@ -29,13 +29,18 @@ import {
   type ResolverSelectionScope,
 } from "../src/provider";
 
+// SYNTHETIC ADDRESSES, DELIBERATELY. What these cases pin is BEHAVIOUR - which entries are offered,
+// which state a selector maps to, which row refuses - and none of it depends on the value. A real
+// ledger address here would fail `make check-addresses` (it did), and the gate is right: it reads as
+// configuration, and it names a contract that decides nothing the day that set is superseded. Same rule
+// the golden ABI vector follows.
 const PROVIDER: HexWord = "0x3f5c9a1e77b204d8e6130fa95c8b47e2d61099af";
 const SERVICE: Address = "0x1111111111111111111111111111111111111111";
 const CALLER: Address = "0x2222222222222222222222222222222222222222";
 /** The approved register - the one a provider may choose. */
-const APPROVED: Address = "0xda784f9b9d54684882210facc2c38d9a9d259f78";
+const APPROVED: Address = "0xa11ce00000000000000000000000000000000001";
 /** Listed by the registry and its approval WITHDRAWN. Still in `resolverPage`, and not a choice. */
-const WITHDRAWN: Address = "0xbbe7922d13e992022915c972522deb76b54ab3f4";
+const WITHDRAWN: Address = "0xa11ce00000000000000000000000000000000002";
 /** Never named by the registry at all - what a hand-typed or pasted address looks like. */
 const UNLISTED: Address = "0xcccccccccccccccccccccccccccccccccccccccc";
 
@@ -249,7 +254,7 @@ describe("what is selected now is three states, and a failed read is none of the
     const row = check(plan, "resolver-selection-current");
     expect(row.outcome).toBe("could-not-run");
     // Names the address anyway, because it is the one thing that WAS established.
-    expect(row.finding).toMatch(/0xda784f9b/i);
+    expect(row.finding).toMatch(/0xa11ce000/i);
   });
 
   it("an unreadable SELECTOR read is could-not-run and never `none`", async () => {

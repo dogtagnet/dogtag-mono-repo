@@ -32,8 +32,8 @@ import { ResolverKind, Standing, ZERO_ADDR, type ProviderContracts } from "../sr
 const CALLER = "0x2222222222222222222222222222222222222222";
 const PROVIDER = "0x3f5c9a1e77b204d8e6130fa95c8b47e2d61099af";
 const CLONE = "0x1111111111111111111111111111111111111111";
-const APPROVED_DIR = "0xda784f9b9d54684882210facc2c38d9a9d259f78";
-const APPROVED_DOM = "0xbbe7922d13e992022915c972522deb76b54ab3f4";
+const APPROVED_DIR = "0xa11ce00000000000000000000000000000000001";
+const APPROVED_DOM = "0xa11ce00000000000000000000000000000000002";
 const SECOND_DIR = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const WITHDRAWN_DIR = "0xdddddddddddddddddddddddddddddddddddddddd";
 const HASH = `0x${"cd".repeat(32)}`;

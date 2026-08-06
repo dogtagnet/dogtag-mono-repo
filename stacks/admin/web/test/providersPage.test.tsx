@@ -858,9 +858,63 @@ describe("Providers - the services panel", () => {
  */
 async function openIssuanceDialog() {
   await expandServices();
-  buttonWithText("Issuance capability")!.click();
+  // BY TESTID, not by label text. The label changed when the control moved out of the per-service
+  // action cluster - see "the issue-right control sits where its scope is" below - and a text match
+  // made three cases fail for a reason that had nothing to do with what they assert.
+  const btn = document.body.querySelector<HTMLButtonElement>('[data-testid="grant-issue-right"]');
+  expect(btn, "the issue-right control is absent").not.toBeNull();
+  btn!.click();
   await settle();
 }
+
+describe("Providers - the issue-right control sits where its scope is", () => {
+  // FOUND ON A LIVE WALK. The control was labelled "Issuance capability" and sat in the row's action
+  // group beside Activate and Suspend - which ARE per-service - so it read as a per-service action.
+  // Since #143 the grant is keyed on the ADDRESS and names no service, so granting from the DOG_PROFILE
+  // row already covers VACCINATION. A captain pressed it on his second row and got a bare NoChange().
+  // The sentence correcting the scope was on the page, three elements BELOW the button.
+  //
+  // PLACEMENT IS A CLAIM ABOUT SCOPE and it outranks any explanation placed after it. So the control
+  // moved inside the registry-wide block that already carries the holders list, and these cases pin the
+  // POSITION rather than the wording alone: wording can be softened, a DOM position cannot be softened
+  // without moving the element back.
+  it("is inside the registry-wide block, not the per-service action cluster", async () => {
+    vi.stubGlobal("fetch", withService(serviceView()));
+    await mount();
+    await expandServices();
+    const block = document.body.querySelector('[data-testid="issue-right-registry-wide"]');
+    expect(block, "the registry-wide block is absent").not.toBeNull();
+    const btn = document.body.querySelector('[data-testid="grant-issue-right"]');
+    expect(btn).not.toBeNull();
+    expect(block!.contains(btn!), "the control is outside the block that states its scope").toBe(true);
+  });
+
+  it("does not sit beside the two controls that ARE per-service", async () => {
+    // The specific mistake a reader makes: infer scope from the neighbours. Asserted as NON-membership
+    // of that cluster, so moving it back reddens - rather than as a class name, which can be restyled.
+    // `serviceView()` defaults to standing "pending", so `Activate` renders and the cluster is
+    // genuinely non-empty - which is what keeps the non-membership assertion from being vacuous.
+    vi.stubGlobal("fetch", withService(serviceView()));
+    await mount();
+    await expandServices();
+    const perService = buttonWithText("Activate") ?? buttonWithText("Suspend");
+    expect(perService, "neither per-service control rendered, so this case proves nothing").toBeDefined();
+    expect(perService!.parentElement!.querySelector('[data-testid="grant-issue-right"]')).toBeNull();
+  });
+
+  it("names the scope AT the control, so it cannot be read as per-service", async () => {
+    vi.stubGlobal("fetch", withService(serviceView()));
+    await mount();
+    await expandServices();
+    const block = document.body.querySelector('[data-testid="issue-right-registry-wide"]')!;
+    expect(block.textContent).toMatch(/one grant per ADDRESS, covering every service/i);
+    expect(document.body.querySelector('[data-testid="grant-issue-right"]')!.textContent).toMatch(
+      /for an address/i,
+    );
+    // And no longer the bare label that implied a scope the grant never had.
+    expect(buttonWithText("Issuance capability")).toBeUndefined();
+  });
+});
 
 function capabilitySubmit() {
   return document.body.querySelector<HTMLButtonElement>('[data-testid="capability-submit"]');
