@@ -111,6 +111,47 @@ export function checkBlock(
 }
 
 /**
+ * The kinds whose sentence is supplied whole by the CALL SITE rather than owned by this module.
+ *
+ * They matter to the brief form because their identity - WHICH field, WHICH read - lives only in
+ * the supplied words. Every other kind can be shortened here from its own data; these two can only
+ * be shortened from the sentence itself, or the shortening discards the one thing they carry.
+ */
+type SuppliedSentenceBlock = Extract<ActionBlock, { kind: "missingInput" | "otherwiseBlocked" }>;
+
+function suppliedSentence(block: SuppliedSentenceBlock): string {
+  return block.kind === "missingInput" ? block.needs : block.why;
+}
+
+/**
+ * The first sentence of a call-site-supplied reason - the short form that keeps its identity.
+ *
+ * Every `missingInput`/`otherwiseBlocked` sentence on the provider page is written with the field
+ * or obstacle in its FIRST sentence and the explanation after it ("Enter your contract address in
+ * step 2 first. A domain is published for a contract, so ..."), so the first sentence is the whole
+ * reason at its shortest. That is a writing rule for call sites, not an accident: a supplied
+ * sentence whose first sentence cannot stand alone will be shown standing alone.
+ *
+ * Parenthesis-aware because one call site interpolates an error message into a parenthetical
+ * ("could not be read (...)"), and an error's own punctuation must not truncate the sentence
+ * around it.
+ */
+export function firstSentence(text: string): string {
+  const trimmed = text.trim();
+  let depth = 0;
+  for (let i = 0; i < trimmed.length; i += 1) {
+    const ch = trimmed[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (ch === "." || ch === "!" || ch === "?")) {
+      const next = trimmed[i + 1];
+      if (next === undefined || /\s/.test(next)) return trimmed.slice(0, i + 1);
+    }
+  }
+  return trimmed;
+}
+
+/**
  * One control's reason, and whether it has already been said in full further up the page.
  *
  * `brief` exists because the two obvious answers to a repeated sentence are both wrong. Printing it
@@ -156,11 +197,19 @@ export function sequenceReasons(
 
 /** The sentence to print for one control, at whichever length it earned. */
 export function renderReason(reason: RenderedReason): string {
-  return reason.style === "full"
-    ? describeActionBlock(reason.block)
-    : // Still a complete sentence naming the obstacle, so this control is explained on its own terms
-      // rather than by a pointer to something further up.
-      `Unavailable while ${briefActionBlock(reason.block)}.`;
+  if (reason.style === "full") return describeActionBlock(reason.block);
+  const block = reason.block;
+  // A supplied sentence's short form is its own first sentence, standing alone rather than embedded
+  // after "while": an imperative ("Enter your provider id to check.") has no clause form, and a
+  // fixed clause in its place is exactly how "a field it needs is still empty" came to be shown to
+  // a captain on a card whose only visible field he had just filled - the field's name was in
+  // `needs` all along and the shortening threw it away.
+  if (block.kind === "missingInput" || block.kind === "otherwiseBlocked") {
+    return firstSentence(suppliedSentence(block));
+  }
+  // Still a complete sentence naming the obstacle, so this control is explained on its own terms
+  // rather than by a pointer to something further up.
+  return `Unavailable while ${briefActionBlock(block)}.`;
 }
 
 /**
@@ -170,8 +219,15 @@ export function renderReason(reason: RenderedReason): string {
  * sits directly under a control whose own reason has already said it in full. Restating four lines
  * there would be the duplication above in a new costume; "see the reason above" makes the reader do
  * the joining. So each obstacle gets a short clause, and the banner reads as one sentence.
+ *
+ * The supplied-sentence kinds are EXCLUDED BY TYPE, not answered vaguely: a call-site sentence has
+ * no clause form, so any constant returned here would misdescribe some call site - the retired
+ * "a field it needs is still empty" was false outright for the register reads routed through
+ * `missingInput` ("still reading", "could not be read"), not merely unhelpful. A composition site
+ * holding one of those blocks uses {@link firstSentence} on the supplied words instead, and the
+ * compiler is what makes forgetting that loud.
  */
-export function briefActionBlock(block: ActionBlock): string {
+export function briefActionBlock(block: Exclude<ActionBlock, SuppliedSentenceBlock>): string {
   switch (block.kind) {
     case "busy":
       return "something is already in flight";
@@ -181,19 +237,20 @@ export function briefActionBlock(block: ActionBlock): string {
       return "this page cannot reach the chain";
     case "wrongChain":
       return `your wallet is on chain ${block.actual} and this deployment is on chain ${block.expected}`;
-    case "missingInput":
-      return "a field it needs is still empty";
+    // The plan kinds carry the check's LABEL, and the brief form keeps it for the same reason the
+    // supplied-sentence kinds keep their field: these ARE reachable in brief form - flow 3 renders
+    // three sends against one identical plan state, so the second and third dedupe - and "the check
+    // is unavailable" named no check, which is this module's defect one kind over.
     case "neverChecked":
+      return `"${block.check}" has not been run yet`;
     case "planEdited":
+      return `the form has changed since "${block.check}" was run`;
     case "planSpent":
+      return `a transaction has already been sent against "${block.check}"`;
     case "planRefused":
+      return "the last check refused this";
     case "planIndeterminate":
-      // Unreachable for a CHECK button, which is the only thing this describes: those five states
-      // are about a plan, and a plan is what a check produces. Answered rather than thrown so a
-      // future caller cannot crash the page on a state this simply has no short form for.
-      return "the check is unavailable";
-    case "otherwiseBlocked":
-      return block.why;
+      return "the last check could not resolve";
   }
 }
 
@@ -274,11 +331,19 @@ export function describePlanRetirement(
     reason === "edited"
       ? "You have changed something since this was checked, so what is shown below describes what you typed before."
       : "A transaction has already been sent against this, so the chain may have moved since these answers were read. They are kept below so you can see what you checked.";
-  return checkBlocked
-    ? `${situation} Checking again is what clears this, and that is not available while ${briefActionBlock(
-        checkBlocked,
-      )}.`
-    : `${situation} Check again before sending${reason === "spent" ? " another" : ""}.`;
+  if (!checkBlocked) {
+    return `${situation} Check again before sending${reason === "spent" ? " another" : ""}.`;
+  }
+  if (checkBlocked.kind === "missingInput" || checkBlocked.kind === "otherwiseBlocked") {
+    // The obstacle's own words carry the field they name, so they stand as the next step rather
+    // than being paraphrased into a "while" clause that would drop it.
+    return `${situation} Checking again is what clears this. ${firstSentence(
+      suppliedSentence(checkBlocked),
+    )}`;
+  }
+  return `${situation} Checking again is what clears this, and that is not available while ${briefActionBlock(
+    checkBlocked,
+  )}.`;
 }
 
 /**

@@ -5147,6 +5147,14 @@ navigate a tab another crew is driving (observed: commands landing on a portal a
 nor the captain's). Set **both** `CHROME_DEVTOOLS_AXI_PORT` (a distinct bridge port) and
 `CHROME_DEVTOOLS_AXI_USER_DATA_DIR` (a scratch profile) to get an isolated browser, and check
 `location.href` before trusting a snapshot.
+**The env-var pair is NOT sufficient isolation, re-measured 2026-08-07 on axi 1.6.0:** with both set,
+a session that had been driving its own portal for many commands was still captured by the machine's
+ONE bridge process when another crew (re)started it - the tab jumped to their portal mid-run, and a
+click sent between two location checks landed on their page. So: assert the origin inside EVERY
+`eval` - including the one that CLICKS, in the same expression, since "the click found the right
+button" is not evidence it ran on your page - and before driving at all, check
+`ps aux | grep chrome-devtools-axi-bridge` for a bridge you did not start; if one exists, expect to
+be sharing its browser however your env is set.
 
 Also: `pnpm --filter <pkg> dev -- --port N` does NOT reach vite (the `--` is passed through literally,
 and `strictPort` then fails on the config's own port). Run `./node_modules/.bin/vite --port N` from the

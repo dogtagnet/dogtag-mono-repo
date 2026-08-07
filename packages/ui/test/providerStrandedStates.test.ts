@@ -24,6 +24,7 @@ import {
   planDirectoryPublication,
   describeActionBlock,
   describePlanRetirement,
+  firstSentence,
   renderReason,
   sequenceReasons,
   Standing,
@@ -365,6 +366,64 @@ describe("a reason is said once in full, and never left unsaid", () => {
     expect(b!.style).toBe("full");
   });
 
+  it("keeps the FIELD in a deduped missing-input reason, because it is the reason's whole identity", () => {
+    // What a captain hit on flow 2: provider id empty, the address field on THAT card filled, and
+    // the deduped reason reading "a field it needs is still empty" - the one obstacle whose short
+    // form named nothing, on the one kind whose identity is supplied per call site and so cannot be
+    // inferred from context. The brief form is now the sentence's own first sentence.
+    const [, repeat] = sequenceReasons([missing, missing]);
+    expect(repeat!.style).toBe("brief");
+    expect(renderReason(repeat!)).toBe("Enter your provider id to check.");
+    expect(renderReason(repeat!)).not.toMatch(/a field it needs is still empty/i);
+  });
+
+  it("shortens a multi-sentence demand to its first sentence, which still names the field", () => {
+    const flow3: ActionBlock = {
+      kind: "missingInput",
+      needs:
+        "Enter your contract address in step 2 first. A domain is published for a contract, so "
+        + "there is nothing to check until this page knows which one.",
+    };
+    const [, repeat] = sequenceReasons([flow3, flow3]);
+    expect(renderReason(repeat!)).toBe("Enter your contract address in step 2 first.");
+  });
+
+  it("keeps a non-field obstacle routed through missingInput honest in brief form", () => {
+    // The register reads arrive through the same parameter, and "a field it needs is still empty"
+    // was FALSE for them outright - nothing was empty, a read was pending or failed. The first
+    // sentence carries whatever the obstacle actually was.
+    const pending: ActionBlock = {
+      kind: "missingInput",
+      needs:
+        "Still reading which registers DogTag approves. This needs your wallet connected, because "
+        + "there is no backend here to read the chain for you.",
+    };
+    const [, repeat] = sequenceReasons([pending, pending]);
+    expect(renderReason(repeat!)).toBe("Still reading which registers DogTag approves.");
+  });
+
+  it("does not let an interpolated error's own punctuation truncate the sentence around it", () => {
+    // One call site interpolates a read failure into a parenthetical. An error message is free text
+    // and may carry periods; the sentence boundary is outside the parentheses.
+    expect(
+      firstSentence(
+        "The registers you may choose from could not be read (HTTP 500. Internal error), so there "
+          + "is nothing to check against. That is this page's connection to the chain.",
+      ),
+    ).toBe(
+      "The registers you may choose from could not be read (HTTP 500. Internal error), so there "
+        + "is nothing to check against.",
+    );
+  });
+
+  it("names the check in a deduped never-checked reason, for the same reason", () => {
+    // Reachable, not hypothetical: flow 3 renders three sends against one plan state, so the second
+    // and third dedupe. "The check is unavailable" named no check.
+    const never: ActionBlock = { kind: "neverChecked", check: "Check the domain record" };
+    const [, repeat] = sequenceReasons([never, never]);
+    expect(renderReason(repeat!)).toMatch(/"Check the domain record"/);
+  });
+
   it("gives the full sentence to the FIRST control, not a later one", () => {
     const [first, second] = sequenceReasons([notConnected, notConnected]);
     expect(first!.style).toBe("full");
@@ -391,5 +450,17 @@ describe("the superseded banner", () => {
     expect(text).toMatch(/chain 1 and this deployment is on chain 135/);
     // Not the four-line sentence again - that would be the duplication defect inside the fix.
     expect(text.length).toBeLessThan(describeActionBlock({ kind: "notConnected" }).length * 2);
+  });
+
+  it("names the FIELD when the blocked check wants one, in the obstacle's own words", () => {
+    // Check once, then clear the provider id: the plan is edited AND the check is blocked by the
+    // now-empty field. The banner used to say "not available while a field it needs is still
+    // empty" - the same nameless shortening the control reasons had, one surface over.
+    const text = describePlanRetirement("edited", {
+      kind: "missingInput",
+      needs: "Enter your provider id to check.",
+    });
+    expect(text).toMatch(/Enter your provider id to check\.$/);
+    expect(text).not.toMatch(/a field it needs is still empty/i);
   });
 });

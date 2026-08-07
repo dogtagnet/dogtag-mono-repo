@@ -123,6 +123,8 @@ afterEach(() => {
   root?.unmount();
   host.remove();
   root = null;
+  // The provider id is remembered in localStorage per wallet; a test must not inherit one.
+  window.localStorage.clear();
 });
 
 describe("the wallet window is never a blank page", () => {
