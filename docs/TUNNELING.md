@@ -62,8 +62,8 @@ LAN_IP=$(ipconfig getifaddr en0) scripts/demo-up.sh
 The Android app permits **cleartext HTTP for the demo** (`usesCleartextTraffic=true`), so a plain
 `http://<LAN_IP>:<port>` host works on-device — no TLS needed on the LAN path.
 
-**Verify.** From the phone's browser (same Wi-Fi), open `http://<LAN_IP>:41874/health` →
-`{"status":"ok"}`.
+**Verify.** From the phone's browser (same Wi-Fi), open `http://<LAN_IP>:41874/health` → an answer
+containing `"status":"ok"` (the vet's body carries extra keys beside it).
 
 **STOP if** the phone can't load that URL → the network is isolating clients (or it's not actually the
 same Wi-Fi). Symptom: timeout / "can't connect". Fix: use tunnels — go to §3.
@@ -74,25 +74,28 @@ same Wi-Fi). Symptom: timeout / "can't connect". Fix: use tunnels — go to §3.
 
 ---
 
-## 3. The 3 tunnels (canonical map)
+## 3. The tunnels (canonical map)
 
-The demo exposes three backends a phone may need to reach. Each gets its own `cloudflared` tunnel.
+The demo exposes four backends a phone may need to reach. Each gets its own `cloudflared` tunnel -
+start only the ones whose flows you will actually put on a phone.
 
 | service | local port | env var | how the phone gets the URL | in the QR? |
 |---|---|---|---|---|
 | vet api | `41874` | `VET_PUBLIC_URL` | `demo-up.sh` sets the vet `DEPLOYMENT_URL` → embedded as the scanned-QR host | **YES** |
 | groomer api | `43618` | `GROOMER_PUBLIC_URL` | `demo-up.sh` sets the groomer `DEPLOYMENT_URL` → embedded as the scanned-QR host | **YES** |
+| government api | `44832` | `GOV_PUBLIC_URL` | `demo-up.sh` sets the government `DEPLOYMENT_URL` → embedded as the scanned-QR host | **YES** |
 | prover-service | `41875` | `PROVER_PUBLIC_URL` | NOT in any QR — phone reads `AppConfig.DEFAULT_PROVER_API` (baked) or the in-app `prover_api` override | **NO** |
 
 ### The asymmetry — read this
 
-The three tunnels are NOT delivered to the phone the same way:
+The tunnels are NOT delivered to the phone the same way:
 
-- **vet + groomer ride in the QR.** When you set `VET_PUBLIC_URL` / `GROOMER_PUBLIC_URL`, `demo-up.sh`
-  puts that URL into the stack's `DEPLOYMENT_URL`, which becomes the **host baked into every QR code**
-  the portal generates. The phone scans `/p/<token>` (vet, issue a dog tag) or `/x/<token>` (groomer,
-  export/verify) and calls *only that scanned host*. So updating the tunnel + re-booting is enough —
-  the phone learns the new URL automatically the next time it scans.
+- **vet, groomer + government ride in the QR.** When you set `VET_PUBLIC_URL` / `GROOMER_PUBLIC_URL`
+  / `GOV_PUBLIC_URL`, `demo-up.sh` puts that URL into the stack's `DEPLOYMENT_URL`, which becomes the
+  **host baked into every QR code** the portal generates. The phone scans `/p/<token>` (vet, issue a
+  dog tag), `/x/<token>` (verify/export) or `/r/<token>` (record share) and calls *only that scanned
+  host*. So updating the tunnel + re-booting is enough — the phone learns the new URL automatically
+  the next time it scans.
 - **The prover URL must be set ON the phone.** The prover-service is never referenced by a QR. A
   32-bit-only Android device reads its prover URL from `AppConfig.DEFAULT_PROVER_API` (compiled in) or
   the in-app `prover_api` override. Setting `PROVER_PUBLIC_URL` only changes what URL the *prover
@@ -120,6 +123,9 @@ cloudflared tunnel --url http://localhost:43618
 
 # Terminal C — prover-service (→ <PROVER_TUNNEL_URL>)   # only if you'll use a 32-bit-only Android
 cloudflared tunnel --url http://localhost:41875
+
+# Terminal D - government api                            # only if a phone will scan a government QR
+cloudflared tunnel --url http://localhost:44832
 ```
 
 > `cloudflared` install: `brew install cloudflared` (macOS) / `sudo apt-get install cloudflared`
@@ -134,6 +140,7 @@ LAN_IP=<LAN_IP> \
 VET_PUBLIC_URL=<VET_TUNNEL_URL> \
 GROOMER_PUBLIC_URL=<GROOMER_TUNNEL_URL> \
 PROVER_PUBLIC_URL=<PROVER_TUNNEL_URL> \
+GOV_PUBLIC_URL=<the Terminal D URL, if you opened it> \
 scripts/demo-up.sh
 ```
 
@@ -158,8 +165,8 @@ Free `trycloudflare.com` URLs are **ephemeral**:
 So a setup that worked yesterday will silently break. **After ANY tunnel change** (you restarted
 `cloudflared`, it died overnight, or you rebooted your Mac), do BOTH of these:
 
-1. **Re-boot `demo-up.sh`** with the new `VET_PUBLIC_URL` / `GROOMER_PUBLIC_URL` (§4). The vet/groomer
-   QR host updates automatically — the phone picks it up on the next scan.
+1. **Re-boot `demo-up.sh`** with the new `VET_PUBLIC_URL` / `GROOMER_PUBLIC_URL` /
+   `GOV_PUBLIC_URL` (§4). The QR host updates automatically — the phone picks it up on the next scan.
 2. **Re-set the phone's `prover_api`** to the new `<PROVER_TUNNEL_URL>` (32-bit Android only). Nothing
    updates this for you — see §3 (the prover URL lives on the phone, not in the QR).
 
@@ -175,21 +182,23 @@ URL, and re-verify (§6).
 Every backend exposes `GET /health`. Check **each tunnel you started** before relying on it.
 
 ```bash
-# Run one per tunnel you opened. Each must return {"status":"ok"}.
+# Run one per tunnel you opened. Each must answer with "status":"ok" in the body.
 curl -fsS <VET_TUNNEL_URL>/health      ; echo
 curl -fsS <GROOMER_TUNNEL_URL>/health  ; echo
 curl -fsS <PROVER_TUNNEL_URL>/health   ; echo   # only if you started the prover tunnel
+curl -fsS <the government tunnel URL>/health ; echo   # only if you started it
 ```
 
-**Verify.** Each command prints `{"status":"ok"}`.
+**Verify.** Each command prints a JSON body containing `"status":"ok"` (issuance-enabled roles carry
+extra keys beside it).
 
-**STOP if** any of them does NOT return `{"status":"ok"}`:
+**STOP if** any of them does NOT answer with `"status":"ok"`:
 
 - `curl: (6)`/`(7)` or a TLS/host error → the tunnel isn't up or the URL is stale/wrong. Restart that
   `cloudflared` (§4) and re-copy the printed URL; remember the URL changes every run (§5).
 - 502 / "Bad Gateway" from Cloudflare → the tunnel is up but the local backend on that port isn't
   running. Confirm `demo-up.sh` is up and the service is listening on the mapped port (vet 41874 /
-  groomer 43618 / prover 41875) — see [LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md).
+  groomer 43618 / government 44832 / prover 41875) — see [LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md).
 
 ---
 
