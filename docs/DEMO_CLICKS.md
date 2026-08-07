@@ -127,6 +127,7 @@ deployment supersedes the old set in place.
 | Rust | `cargo --version` |
 | Node 22 + pnpm 10 | `node --version && pnpm --version` |
 | Foundry (`forge`/`cast`) | `forge --version` |
+| cloudflared *(OPTIONAL - only for §0.7's tunnel)* | `cloudflared --version` |
 
 ```bash
 git clone <this repo> dogtag-mono-repo && cd dogtag-mono-repo
@@ -136,7 +137,7 @@ pnpm install --frozen-lockfile
 
 **Means:** you have the source and its dependencies. The Foundry libraries are git submodules and a
 fresh clone has them empty, so the first `forge` or `cast` command fails on the remappings until you
-run that line. [PREREQUISITES.md](./PREREQUISITES.md) owns the install matrix if any of the three is
+run that line. [PREREQUISITES.md](./PREREQUISITES.md) owns the install matrix if any of them is
 missing.
 
 ## 0.2 Choose your contract set: Option A or Option B
@@ -467,6 +468,47 @@ on a port something already holds. Booting one role never disturbs another.
 > **Set `LAN_IP`.** It is stamped into every QR the stack mints, and a phone cannot reach
 > `localhost` - that is the phone itself. Its default is a hardcoded address that is almost
 > certainly not yours.
+
+## 0.7 OPTIONAL - a tunnel, when the phone will not share your network
+
+**Who:** the OPERATOR - only if §8.3's phone cannot reach the `LAN_IP` address: different network
+(cellular), guest or office Wi-Fi that isolates clients, or a machine whose address keeps changing.
+On one ordinary home Wi-Fi, skip this - `LAN_IP` is simpler and involves no third party.
+
+**Do:** start the tunnel in its own terminal and leave it running, then add
+`VET_PUBLIC_URL=<the printed URL>` to **every** vet boot this guide runs - §3.1, **and the §5.3
+restart**:
+
+```bash
+cloudflared tunnel --url http://localhost:41874    # prints https://<random-words>.trycloudflare.com
+```
+
+```bash
+LAN_IP=$(ipconfig getifaddr en0) VET_PUBLIC_URL=https://<that host> scripts/demo-up.sh vet
+```
+
+**Means:** `VET_PUBLIC_URL` becomes the vet's `DEPLOYMENT_URL`, the host stamped into every QR it
+mints - so the phone reaches the vet from any network, cellular included. Only the vet needs this
+in this guide: §8.3 is its only phone step. The groomer, prover and government take
+`GROOMER_PUBLIC_URL`, `PROVER_PUBLIC_URL` and `GOV_PUBLIC_URL` the same way for flows this guide
+does not put on a handset; [TUNNELING.md](./TUNNELING.md) owns that map.
+
+Three things this costs:
+
+- **The URL is public and unauthenticated, and this stack runs `DEMO_MODE=1`** - demo passwords,
+  prefilled sign-ins. Anyone holding the link reaches the vet's API. Testnet and throwaway data
+  bound the damage; it is still not free - stop the tunnel when the phone step is done.
+- **The URL is ephemeral.** Every `cloudflared` run prints a new one, and an idle tunnel can drop.
+  After any tunnel restart, restart the vet onto the new URL the same way; every QR already drawn
+  is dead, and a vet restart also drops its in-memory records.
+- **`scripts/demo-down.sh` does not stop `cloudflared`** - it kills only the pids `demo-up.sh`
+  recorded, and it did not start the tunnel. Stop it yourself: Ctrl-C in its terminal, or kill the
+  pid you noted when you started it - never by name, which can hit an unrelated `cloudflared`.
+
+**Check it before anything scans:** open `https://<that host>/health` in the phone's own browser.
+An answer containing `"status":"ok"` proves the whole path - phone → Cloudflare → this machine →
+the vet. A Cloudflare 502 means the tunnel is up but the vet is not; a Cloudflare 530 means the
+tunnel itself is gone - the URL is stale or `cloudflared` stopped.
 
 ---
 
@@ -1232,6 +1274,10 @@ curl -s http://127.0.0.1:41874/p/<the token in that URL>
 
 **Means:** the phone builds the profile tree locally, derives the owner secret from its own wallet
 seed, and posts only the Merkle root. The dog tag is now bound to a device nobody else can act for.
+
+> **The phone must reach the host inside the QR.** On `LAN_IP` that means the same Wi-Fi with no
+> client isolation. If it cannot - cellular, another network - §0.7's tunnel is the fix; switching
+> to it now means restarting the vet onto the tunnel URL and redoing §8.1-§8.2.
 
 > **This step has not been walked on a handset** - see §15. Everything up to the QR has, including
 > what the phone receives. Use cases 2 to 6 do not depend on it, so a reader without a phone can
