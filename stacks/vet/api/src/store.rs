@@ -231,9 +231,22 @@ pub struct ProfileIssueSession {
     pub pet_name: String,
     pub microchip: Microchip,
     pub profile: PetProfile,
-    /// "pending" -> "bound".
+    /// "pending" -> "minting" -> "bound" (or "error"). "pending" = waiting for a device to bind;
+    /// "minting" = a device's bind was accepted and the chain writes are in flight.
     pub status: String,
     pub created_at: u64,
+    /// When a device FIRST resolved the QR (`GET /p/{token}`). `None` until then. This is what lets
+    /// the portal tell "nobody has picked this QR up" apart from "a device resolved it and then
+    /// went quiet" — two different faults with two different remedies (check the network vs. check
+    /// the phone). `#[serde(default)]` keeps pre-existing rows decodable.
+    #[serde(default)]
+    pub resolved_at: Option<u64>,
+    /// The bind token's CURRENT deadline (unix secs) — a mirror of the token store's own expiry,
+    /// kept here so the operator status poll can report honest seconds-left without holding the
+    /// token. Written at mint and again at first resolve (the resolve extends the deadline; see
+    /// `routes.rs` BIND_TOKEN_* constants). 0 on pre-existing rows (reads as already expired).
+    #[serde(default)]
+    pub token_exp: u64,
     /// set on bind: the DOG_PROFILE merkle root (== SBT profileRoot[dogTagId]).
     #[serde(default)]
     pub root: Option<String>,

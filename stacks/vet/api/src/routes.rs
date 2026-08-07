@@ -2153,9 +2153,33 @@ fn identity_leaves_for(identity: &crate::store::OwnerIdentity) -> Vec<crate::sto
     leaves
 }
 
+/// How long a freshly drawn Register-pet QR waits to be SCANNED (mint -> first `GET /p/{token}`).
+///
+/// What this deadline protects: the QR is a bearer capability — whoever resolves it reads the
+/// vet-collected owner identity, and whoever binds it defines the tag's owner — so a leaked QR
+/// (photo, screen share) must stop being redeemable once the co-present ceremony is plausibly
+/// over. Ten minutes still guarantees that; the old 180s did not survive the ceremony itself: it
+/// started at MINT, so it also had to cover the owner walking over, opening the app, possibly
+/// creating a wallet, and scanning — none of which the operator controls. Measured live
+/// 2026-08-07: a legitimate run died at 180s with nothing minted.
+const BIND_TOKEN_SCAN_TTL_SECS: u64 = 600;
+
+/// Once a device HAS picked the session up (first `GET /p/{token}`), the token is guaranteed to
+/// live at least this much longer, so the scan-window clock can never kill a session mid-bind.
+///
+/// The deadline moves to `max(current, resolve + this)` — never shortened, so an early pickup
+/// keeps the full scan window (re-scans and a wallet-creation detour stay covered), and a pickup
+/// near the scan deadline still gets the whole bind window: read the screen, tap, authenticate
+/// with biometrics, fold the profile tree, POST. Worst-case token life is SCAN + BIND ≈ 15
+/// minutes, still inside the co-present ceremony. Only the FIRST resolve extends — repeated polls
+/// of `/p/` must not keep a token alive indefinitely — and the token stays strictly one-time: the
+/// bind still consumes it atomically, and an unresolved or overrun token still dies.
+const BIND_TOKEN_BIND_TTL_SECS: u64 = 300;
+
 /// POST /profiles/issue/session/start — operator-session gated. Allocate a dogTagId, persist a
-/// ProfileIssueSession with a fresh 16-byte one-time bind token (180s TTL), and return the QR URL
-/// `<deployment_url>/p/<token>` the device scans. Returns `{ token, dogTagId, sessionId, qr }`.
+/// ProfileIssueSession with a fresh 16-byte one-time bind token (scan TTL above), and return the QR
+/// URL `<deployment_url>/p/<token>` the device scans. Returns `{ token, dogTagId, sessionId, qr,
+/// ttlSecs, qrAddress }`.
 async fn profile_issue_session_start(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -2181,6 +2205,76 @@ async fn profile_issue_session_start(
     if body.pet.name.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "pet.name must not be blank");
     }
+    // THE TWO-LAYER ISSUE GATE, asked BEFORE a QR exists. `DogTagIssuer.issue` requires BOTH the
+    // authority's `canIssue` (the registrar's address-keyed ISSUE grant folded with the service
+    // lifecycle) AND the clone's OWN `issuanceAllowed` list — and this backend knows its issuer
+    // address and its signer, so nothing about the question needs a device. Without this gate the
+    // portal drew a QR and had a second human scan, build and POST for an issuance the backend was
+    // always going to refuse — the refusal surfaced as a 403 on the owner's phone (measured live
+    // 2026-08-07: rightsOf carried no ISSUE bit AND the clone had not admitted the signer).
+    //
+    // A DEFINITE `false` on either layer refuses HERE, naming which half is missing and which
+    // portal fixes it. Could-not-check is NOT a refusal: an unreadable chain (or a generation-1
+    // clone, which has neither `canIssue` nor `issuanceAllowed` to ask) proceeds and the response
+    // carries a `signerIssuance` warning instead — the bind path's own preflights still stand.
+    let signer_addr = match st.custody.active_address() {
+        Ok(a) => a,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let issuer = st.cfg.profile_issuer_addr.clone();
+    let registry_grant = st.chain.issuance_capability(&issuer, &signer_addr).await;
+    let clone_list = st.chain.issuance_allowed(&issuer, &signer_addr).await;
+    let registry_missing = matches!(
+        registry_grant,
+        Ok(crate::chain::IssuanceCapability::NotAuthorized)
+    );
+    let clone_missing = matches!(clone_list, Ok(false));
+    if registry_missing || clone_missing {
+        let mut halves = Vec::new();
+        if registry_missing {
+            halves.push(
+                "the DogTag registrar has not granted it the ISSUE right — ask DogTag to grant \
+                 it from the admin portal's Providers page",
+            );
+        }
+        if clone_missing {
+            halves.push(
+                "this clinic's own DOG_PROFILE contract has not admitted it — the contract owner \
+                 admits it on this portal's Signing keys page",
+            );
+        }
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!(
+                "cannot start dog-tag issuance: this clinic's signing key {signer_addr} is not \
+                 approved to issue dog tags. {}. Nothing was allocated and no QR was drawn.",
+                halves.join("; and ")
+            ),
+        );
+    }
+    let mut unchecked = Vec::new();
+    if !matches!(
+        registry_grant,
+        Ok(crate::chain::IssuanceCapability::Authorized)
+    ) {
+        unchecked.push("the registrar's ISSUE grant");
+    }
+    if clone_list.is_err() {
+        unchecked.push("the contract's own signer list");
+    }
+    let signer_issuance = if unchecked.is_empty() {
+        json!({ "state": "authorized" })
+    } else {
+        json!({
+            "state": "unknown",
+            "detail": format!(
+                "{} could not be checked from here — if the issuance later fails with \"not \
+                 approved\", the registrar grant (admin portal, Providers) and this portal's \
+                 Signing keys page are where to fix it",
+                unchecked.join(" and ")
+            ),
+        })
+    };
     // Allocate a dogTagId whose owner-hidden SBT profileRoot is still unset. The local counter resets
     // on restart and the SBT is shared across issuers, so a fresh counter can collide with an already
     // minted id. `mintCustodial` retires an id through the write-once `profileRoot[id]`, a marker that
@@ -2252,6 +2346,14 @@ async fn profile_issue_session_start(
     let identity_leaves = identity_leaves_for(&owner_identity);
 
     let session_id = uuid::Uuid::new_v4().to_string();
+    // one-time 16-byte bind token -> session; the QR carries `<deployment_url>/p/<token>`. The
+    // deadline starts as the SCAN window and is extended at first resolve (see the BIND_TOKEN_*
+    // constants); `token_exp` mirrors it onto the session so the status poll can report honest
+    // seconds-left without holding the token.
+    let mut bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    let token = hex::encode(bytes);
+    let exp = auth::now() + BIND_TOKEN_SCAN_TTL_SECS;
     st.store
         .put_profile_session(crate::store::ProfileIssueSession {
             session_id: session_id.clone(),
@@ -2263,20 +2365,31 @@ async fn profile_issue_session_start(
             profile,
             status: "pending".to_string(),
             created_at: auth::now(),
+            resolved_at: None,
+            token_exp: exp,
             root: None,
             tx_hash: None,
             protocol_version: None,
         })
         .await;
-
-    // one-time 16-byte bind token (180s TTL) -> session; the QR carries `<deployment_url>/p/<token>`.
-    let mut bytes = [0u8; 16];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
-    let token = hex::encode(bytes);
-    let exp = auth::now() + 180;
     st.store.put_bind_token(&token, &session_id, exp).await;
     let qr = format!("{}/p/{}", st.cfg.deployment_url, token);
-    ok(json!({ "token": token, "dogTagId": dog_tag_id, "sessionId": session_id, "qr": qr }))
+    ok(json!({
+        "token": token,
+        "dogTagId": dog_tag_id,
+        "sessionId": session_id,
+        "qr": qr,
+        // Countdowns count from ttlSecs at response receipt (never expiresAt - Date.now(): the two
+        // clocks are the backend's and the browser's, and skew shows an expired timer over a good QR).
+        "ttlSecs": BIND_TOKEN_SCAN_TTL_SECS,
+        // Whether THIS machine still answers at the address the QR names — the address is baked at
+        // boot, so a machine that moved networks prints dead QRs with nothing else saying so.
+        "qrAddress": crate::qr_address::qr_address_json(&st.cfg.deployment_url),
+        // The two-layer issue gate's answer: "authorized" (both halves read true), or "unknown"
+        // with what could not be checked. A definite refusal never reaches this response — it is
+        // the 503 above, before anything was allocated.
+        "signerIssuance": signer_issuance,
+    }))
 }
 
 /// GET /p/{token} — resolve a one-time bind token to the session metadata the device needs to build
@@ -2297,7 +2410,23 @@ async fn profile_bind_resolve(State(st): State<AppState>, Path(token): Path<Stri
         None => return err(StatusCode::NOT_FOUND, "bind token missing or expired"),
     };
     match st.store.get_profile_session(&session_id).await {
-        Some(s) => {
+        Some(mut s) => {
+            // FIRST resolve: record that a device picked the session up (the portal renders
+            // "nobody scanned" and "a device resolved it and went quiet" as different faults), and
+            // guarantee the token outlives the device's remaining work — read the screen, tap,
+            // biometrics, fold the tree, POST — by extending the deadline to at least
+            // now + BIND_TOKEN_BIND_TTL_SECS. max() so an early pickup never SHORTENS the scan
+            // window; first-resolve-only so repeated polls cannot keep a token alive forever.
+            if s.resolved_at.is_none() {
+                let now = auth::now();
+                s.resolved_at = Some(now);
+                s.token_exp = s.token_exp.max(now + BIND_TOKEN_BIND_TTL_SECS);
+                st.store
+                    .put_bind_token(&token, &session_id, s.token_exp)
+                    .await;
+                st.store.update_profile_session(s.clone()).await;
+            }
+            let s = s;
             // M7 P4 (§5.2): the CONVENIENCE tier — platform-OWNED, UNVERIFIED claims, additive to the
             // existing fields. Issuance has no verify-purpose, so the purpose is the record type
             // (`DOG_PROFILE`) — the namespace the app independently knows for this flow (never
@@ -2326,9 +2455,12 @@ async fn profile_bind_resolve(State(st): State<AppState>, Path(token): Path<Stri
                 // D1: the salted identity attributes the device folds into R. Carrying the salts
                 // here is deliberate — the device must retain them as disclosure openings — and is
                 // no wider than the ownerIdentity block above: this route is already the one-time,
-                // 180s-TTL token capability that hands the vet-held identity to the owner's device.
+                // short-TTL token capability that hands the vet-held identity to the owner's device.
                 "identityLeaves": serde_json::to_value(&s.identity_leaves).expect("IdentityLeaf serializes"),
                 "unverifiedClaims": serde_json::to_value(&claims).expect("ConvenienceClaims serializes"),
+                // Countdown convention: seconds remaining at response receipt, never a wall-clock
+                // deadline (the device's clock and this one can disagree).
+                "ttlSecs": s.token_exp.saturating_sub(auth::now()),
             }))
         }
         None => err(StatusCode::NOT_FOUND, "session not found"),
@@ -2510,9 +2642,10 @@ fn valid_root_hex(root: &str) -> bool {
 ///
 /// `mintCustodial(id, root)` takes no recipient - the tag goes to the contract's immutable custodian,
 /// so an owner wallet is not expressible in the calldata. The authorization is the **one-time bind
-/// token** alone: it is minted only by the
-/// operator-gated `/profiles/issue/session/start`, is consumed atomically, and expires in 180s.
-/// Whoever redeems it defines ownership through the owner secret sealed inside `R`.
+/// token** alone: it is minted only by the operator-gated `/profiles/issue/session/start`, is
+/// consumed atomically, and expires (scan window from mint, extended at first resolve so the
+/// deadline cannot land mid-bind — see the BIND_TOKEN_* constants). Whoever redeems it defines
+/// ownership through the owner secret sealed inside `R`.
 ///
 /// # The two on-chain conditions (datamodel §3.5)
 ///
@@ -2631,12 +2764,19 @@ async fn profile_issue_custodial_bind(
     // and verified into `R` by the integrity gate above. See docs/DPIA.md §2.1.
     session.root = Some(root.clone());
     session.protocol_version = Some(dogtag_standard::wrap::LEVEL_B_VERSION.to_string());
+    // "minting": a device's bind was ACCEPTED and the chain writes are what remains. The portal
+    // renders this apart from "pending" — while the row still said "pending" through the whole
+    // anchoring phase, the operator's screen could declare the QR dead over an issuance that was
+    // already minting. No deadline applies past this point; the spawned task settles the row to
+    // "bound" or "error" on both arms.
+    session.status = "minting".to_string();
     st.store.update_profile_session(session.clone()).await;
 
     // Re-check the write-once seal here, synchronously, before the spawn — so it is causally
     // before `issue(R)`, the first and GLOBALLY irreversible write (`registerRoot` is write-once, so a
     // consumed `R` can never be re-anchored). `/profiles/issue/session/start` already refuses an id
-    // whose `profileRoot` is set, but that check runs up to 180s earlier: without this one a collision
+    // whose `profileRoot` is set, but that check runs up to the token's whole life earlier
+    // (scan + bind windows, ~15 minutes worst case): without this one a collision
     // that opens in between burns `issue(R)` and only then reverts inside `mintCustodial`, destroying
     // the operator's QR, the device-computed `R` and the gas, and reporting a generic mint error. With
     // it, a detected collision refuses having written NOTHING to the chain.
@@ -2742,7 +2882,13 @@ fn is_nonzero_word(w: &str) -> bool {
 }
 
 /// GET /profiles/issue/session/{id} — operator-gated status poll so the portal can show whether the
-/// device has bound and surface the txHash/root. Returns the stored session row's status.
+/// device has bound and surface the txHash/root. Returns the stored session row's status plus the
+/// facts the portal needs to say something TRUE about a QR that is going nowhere: `resolvedAt`
+/// (has any device picked this up?), `tokenSecondsLeft` (the SERVER's deadline — the portal must
+/// never run its own clock; it once declared "expired" from a hardcoded 180s while the server
+/// would still have accepted a bind), and `qrAddress` (whether this machine still answers at the
+/// address the QR names — re-checked per poll, because the address can change while the QR is on
+/// screen).
 async fn profile_issue_session_status(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -2761,6 +2907,11 @@ async fn profile_issue_session_status(
         "root": s.root,
         "txHash": s.tx_hash,
         "protocolVersion": s.protocol_version,
+        "resolvedAt": s.resolved_at,
+        // Meaningful only while status == "pending" (the bind consumes the token); 0 = the token
+        // is dead and, with the session still pending, no bind can ever arrive.
+        "tokenSecondsLeft": s.token_exp.saturating_sub(auth::now()),
+        "qrAddress": crate::qr_address::qr_address_json(&st.cfg.deployment_url),
     }))
 }
 

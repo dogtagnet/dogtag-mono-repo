@@ -31,7 +31,8 @@ The issuer seals it with `DogTagSBTConsent.mintCustodial(dogTagId, R)`, which ta
 argument, so the owner's wallet appears nowhere on-chain.
 
 The issuer-side route for that handoff is **`POST /profiles/issue/custodial-bind { token, root }`**
-on the vet stack, where `token` is the one-time 180s bind token from the operator's QR and
+on the vet stack, where `token` is the one-time bind token from the operator's QR (600s scan
+window, extended to a >=300s bind window when a device first resolves `/p/`) and
 `root` is `rootHex`.
 It carries **no wallet and no signature** by design: `mintCustodial` has no recipient, so there is
 nothing for a signature to attest, and sending a wallet anyway would hand the server exactly the link

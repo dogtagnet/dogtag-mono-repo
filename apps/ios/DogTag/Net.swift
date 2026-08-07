@@ -1093,7 +1093,15 @@ enum CentralApi {
 
     enum CustodialBindResult {
         case accepted(DogTagIssue)
+        /// The POST's outcome is genuinely unknown (network failure, unreadable body): the server
+        /// may have accepted the bind, so the caller confirms from the public chain.
         case inconclusive
+        /// 410: the one-time token is missing, expired or already used. AMBIGUOUS on its own — for
+        /// a tag this phone has bound before, a lost earlier response consumed the token and the
+        /// anchor may exist; for a FRESH tag, this phone's bind definitively did not happen. The
+        /// caller resolves it with that local fact; folding this into `.inconclusive` made a
+        /// refused first-time bind read as "Submitted" after a pointless 3-minute chain poll.
+        case gone
         case rejected(statusCode: Int, body: String)
     }
 
@@ -1209,7 +1217,8 @@ enum CentralApi {
             return .rejected(statusCode: -1, body: "could not encode request")
         }
         let resp = await Http.postJSON("\(host)/profiles/issue/custodial-bind", body: bodyStr, timeout: 20)
-        if resp.code < 0 || resp.code == 410 { return .inconclusive }
+        if resp.code < 0 { return .inconclusive }
+        if resp.code == 410 { return .gone }
         guard resp.ok else { return .rejected(statusCode: resp.code, body: resp.body) }
         guard let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {

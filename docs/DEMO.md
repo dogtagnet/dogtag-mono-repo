@@ -74,7 +74,7 @@ The phone has **no** "Central API URL" setting - every host it talks to comes fr
    The wallet seed is the root of the owner-hidden identity: the three reserved owner leaves (owner-address, consent-key, owner-secret) and their salts are all derived from it, per tag.
 2. **Vet** portal (:41873) → **Register pet** → **Fill demo data**: the operator enters the
    **`ownerIdentity`** block (demo-prefilled: country `GB`, identification `P1234567`, name `Alex Doe`) plus the pet fields - and **no wallet address, ever** (nothing owner-linkable goes on-chain; the issuing vet legitimately knows who it issues to, see `docs/DPIA.md`).
-   → **Start** (`POST /profiles/issue/session/start`) → allocates a **`dogTagId` handle** (skipping any id already sealed on-chain) and renders a one-time QR `<vetHost>/p/<token>` (32-hex token, 180s TTL).
+   → **Start** (`POST /profiles/issue/session/start`) → allocates a **`dogTagId` handle** (skipping any id already sealed on-chain) and renders a one-time QR `<vetHost>/p/<token>` (32-hex token; 10-minute scan window, and once a device picks it up it always has at least 5 minutes to finish the bind).
    **Note this handle** - you set it on the vaccination cert in §3.
 3. **Phone**: scan `/p/<token>` → the app resolves the session, derives the per-tag owner leaves from its wallet seed + the `dogTagId`, folds the **owner-hidden profile tree** to the root `R` **on the device**, and POSTs `<vetHost>/profiles/issue/custodial-bind { token, root }`.
    That is the whole payload: whoever redeems the one-time token defines ownership through the owner secret sealed inside `R`.

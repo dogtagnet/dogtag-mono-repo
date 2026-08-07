@@ -100,7 +100,7 @@ async fn prepare(app: &axum::Router, op: &str, dog_tag_id: &str) -> (StatusCode,
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_preflight_asks_the_clones_own_authority_not_the_configured_registry() {
     let (app, op, backend, mem) = boot().await;
-    let rt = record_type_key("VACCINATION");
+    let _rt = record_type_key("VACCINATION");
 
     mem.set_issuance_capability(CLONE_OWN_REGISTRY, ISSUER, &backend, true);
     mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
@@ -189,7 +189,7 @@ async fn the_preflight_uses_the_narrow_rung_so_it_refuses_what_the_write_would_r
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_undeterminable_authority_is_not_reported_as_the_signers_fault() {
     let (app, op, backend, mem) = boot().await;
-    let rt = record_type_key("VACCINATION");
+    let _rt = record_type_key("VACCINATION");
 
     // Grant it on the configured registry too, so an implementation that fell back to the config
     // value would produce a PASS here and be visibly distinguishable from the honest refusal.
@@ -228,7 +228,7 @@ async fn an_undeterminable_authority_is_not_reported_as_the_signers_fault() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_signer_matrix_says_null_rather_than_false_when_it_could_not_check() {
     let (app, op, backend, mem) = boot().await;
-    let rt = record_type_key("VACCINATION");
+    let _rt = record_type_key("VACCINATION");
 
     mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
     mem.set_governing_registry(ISSUER, CLONE_OWN_REGISTRY);
@@ -251,7 +251,7 @@ async fn the_signer_matrix_says_null_rather_than_false_when_it_could_not_check()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_signer_matrix_still_reports_both_definite_answers() {
     let (app, op, backend, mem) = boot().await;
-    let rt = record_type_key("VACCINATION");
+    let _rt = record_type_key("VACCINATION");
 
     let (s, b) = call(&app, "GET", "/issuer/signers", Some(&op), None).await;
     assert_eq!(s, StatusCode::OK, "{b}");
@@ -317,7 +317,7 @@ async fn wallet_prepare_and_anchor(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_signer_delisted_after_it_anchored_can_still_confirm_its_own_issuance() {
     let (app, op, backend, mem) = boot().await;
-    let rt = record_type_key("VACCINATION");
+    let _rt = record_type_key("VACCINATION");
     mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
 
     let (record_id, _root, tx_hash) = wallet_prepare_and_anchor(&app, &op, &mem, "5").await;
@@ -354,7 +354,7 @@ async fn a_signer_delisted_after_it_anchored_can_still_confirm_its_own_issuance(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_signer_not_whitelisted_when_it_anchored_cannot_confirm() {
     let (app, op, backend, mem) = boot().await;
-    let rt = record_type_key("VACCINATION");
+    let _rt = record_type_key("VACCINATION");
     mem.set_issuance_capability(REGISTRY, ISSUER, &backend, true);
 
     let (record_id, root, tx_hash) = wallet_prepare_and_anchor(&app, &op, &mem, "6").await;

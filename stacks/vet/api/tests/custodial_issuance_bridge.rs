@@ -168,7 +168,8 @@ async fn await_settled(app: &axum::Router, op: &str, session_id: &str) -> serde_
         )
         .await;
         assert_eq!(s, StatusCode::OK);
-        if b["status"] != "pending" {
+        // "minting" is the accepted-but-anchoring intermediate state; poll through it to terminal.
+        if b["status"] != "pending" && b["status"] != "minting" {
             return b;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;

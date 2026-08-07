@@ -32,6 +32,7 @@ pub mod microchip;
 pub mod oversight;
 pub mod protocol;
 pub mod prover;
+pub mod qr_address;
 pub mod routes;
 pub mod startup;
 pub mod store;
