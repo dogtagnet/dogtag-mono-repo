@@ -89,6 +89,49 @@ impl Config {
     pub fn issuance_enabled(&self) -> bool {
         !self.is_groomer()
     }
+
+    /// The operator-facing refusal for a backend that cannot ANCHOR a dog tag, or `None` when both
+    /// owner-hidden anchor contracts are configured: the `DogTagIssuer` clone `issue(R)` anchors
+    /// into (`PROFILE_ISSUER_ADDR`) and the `DogTagSBTConsent` the tag is minted on
+    /// (`SBT_CONSENT_ADDR`). Shape-checked via `verify::valid_contract_addr`, the same predicate the
+    /// custodial-bind route fails closed on — so the two surfaces cannot disagree about what
+    /// "configured" means.
+    ///
+    /// This is a CONFIG fact, never a chain read: `None` claims the addresses are set and
+    /// well-formed, not that either contract works. It exists because the bind-time 503 is correct
+    /// but INVISIBLE where it is actionable — it surfaces on the owner's phone, after the operator
+    /// has already allocated a tag and had a second human scan a QR. Every surface that would start
+    /// that journey (the session-start route, the portal's Register pet screen via `/health`) asks
+    /// this ONE function instead of re-deriving the rule.
+    ///
+    /// The message names the missing thing in the operator's vocabulary and points at the fixing
+    /// step; the env variable rides in parentheses as the detail, never as the whole instruction.
+    pub fn dog_tag_anchor_refusal(&self) -> Option<String> {
+        let profile_ok = crate::verify::valid_contract_addr(&self.profile_issuer_addr);
+        let sbt_ok = crate::verify::valid_contract_addr(&self.sbt_consent_addr);
+        if profile_ok && sbt_ok {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if !profile_ok {
+            parts.push(
+                "the clinic's DOG_PROFILE issuer contract is not set — deploy or select it on the \
+                 Provider page, configure this backend with its address (PROFILE_ISSUER_ADDR), and \
+                 restart the backend",
+            );
+        }
+        if !sbt_ok {
+            parts.push(
+                "the DogTag SBT contract is not set — configure this backend with the \
+                 DogTagSBTConsent address from the deployment ledger, contracts/deployments/\
+                 roax.json (SBT_CONSENT_ADDR), and restart the backend",
+            );
+        }
+        Some(format!(
+            "this backend cannot anchor a dog tag on-chain: {}",
+            parts.join("; and ")
+        ))
+    }
 }
 
 /// The shared application state.

@@ -447,6 +447,21 @@ export {
   type DemoWhitelistApply,
 } from "./schema/demoData";
 
+// Dog-tag ANCHOR readiness — the one decision behind the vet portal's Register pet gate and the
+// Setup page's persistent warning. `blocked` is the only state that may replace the form; an
+// unanswered probe is could-not-check and must never render as either verdict.
+export {
+  ANCHOR_BLOCKED_HEADLINE,
+  ANCHOR_MISSING_PROFILE_ISSUER,
+  ANCHOR_MISSING_SBT,
+  ANCHOR_UNKNOWN_INCOHERENT,
+  ANCHOR_UNKNOWN_NO_BLOCK,
+  ANCHOR_UNKNOWN_NOTICE,
+  dogTagAnchorProbeFailure,
+  dogTagAnchorReadiness,
+  type DogTagAnchorReadiness,
+} from "./issuance/anchorReadiness";
+
 // LAYER 2 of the two-layer issuance requirement — the provider's own contract deciding which keys
 // may sign in its name. The write is a wallet transaction from the contract's owner; the backend
 // only reads, because it is not the owner and cannot authenticate one.

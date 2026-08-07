@@ -27,6 +27,11 @@ import {
 } from "@dogtag/ui";
 import { CheckCircle2, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  AnchorBlockedCard,
+  AnchorUnknownNotice,
+  useDogTagAnchorReadiness,
+} from "../app/AnchorReadiness";
 import { useApp } from "../app/AppContext";
 import { env } from "../lib/env";
 
@@ -101,6 +106,11 @@ const MICROCHIP_STANDARD_OPTIONS: { value: MicrochipStandard; label: string }[] 
 export function IssueDogTag() {
   const { api, signingMode } = useApp();
   const { toast } = useToast();
+  // Whether this backend can ANCHOR a dog tag (config facts off /health). `blocked` replaces the
+  // form: allocating a tag and having the owner scan a QR for an issuance the backend already knows
+  // it cannot complete is the defect this screen used to ship. `unknown` only warns — could-not-check
+  // is not a refusal, and the backend refuses an unanchorable start itself, allocating nothing.
+  const anchor = useDogTagAnchorReadiness();
 
   // Testnet demo: prefill a valid owner + pet so you just click Start issuance (no typing).
   // Production (demo off): forms start empty.
@@ -301,6 +311,12 @@ export function IssueDogTag() {
     );
   }
 
+  // A DEFINITE "this backend cannot anchor" answer refuses IN PLACE: no form, no tag allocated,
+  // no QR for a second human to scan. Only `blocked` may do this — see `useDogTagAnchorReadiness`.
+  if (anchor?.state === "blocked") {
+    return <AnchorBlockedCard readiness={anchor} />;
+  }
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
@@ -318,7 +334,8 @@ export function IssueDogTag() {
           </Button>
         )}
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        {anchor && <AnchorUnknownNotice readiness={anchor} />}
         <form onSubmit={submit} className="space-y-6">
           <fieldset className="space-y-3">
             <legend className="text-sm font-semibold text-onSurface">Owner identity</legend>
@@ -429,9 +446,13 @@ export function IssueDogTag() {
             </div>
           </fieldset>
 
-          <Button type="submit" loading={busy}>
+          <Button type="submit" loading={busy} disabled={anchor === null}>
             Start issuance
           </Button>
+          {anchor === null && (
+            // A disabled control renders its reason: the readiness probe has not answered yet.
+            <p className="text-xs text-muted">Checking whether this backend can anchor dog tags…</p>
+          )}
         </form>
       </CardContent>
     </Card>

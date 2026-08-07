@@ -487,6 +487,25 @@ export interface ProfilePet {
   microchip?: ProfileMicrochip;
 }
 /** POST /profiles/issue/session/start body. */
+/**
+ * The `dogTagIssuance` block on an issuance-enabled backend's `GET /health`: whether the two
+ * owner-hidden ANCHOR contracts (the DOG_PROFILE issuer clone and the DogTagSBTConsent) are
+ * configured. Config facts only — the backend makes no chain read for this, so `ready` claims the
+ * addresses are set and well-formed, never that the contracts work. A groomer backend (no issuance
+ * surface) sends no block at all; consumers must read absence as could-not-check, never as either
+ * verdict (`dogTagAnchorReadiness` encodes that rule).
+ */
+export interface DogTagIssuanceReadiness {
+  ready: boolean;
+  profileIssuerConfigured: boolean;
+  sbtConsentConfigured: boolean;
+}
+/** GET /health — the unauthenticated liveness probe, plus the anchor-readiness block above. */
+export interface HealthResp {
+  status: string;
+  dogTagIssuance?: DogTagIssuanceReadiness;
+}
+
 export interface ProfileIssueStartReq {
   ownerIdentity: ProfileOwnerIdentity;
   pet: ProfilePet;

@@ -17,6 +17,7 @@ import type {
   GenesisConfirmReq,
   GenesisConfirmResp,
   GenesisStartResp,
+  HealthResp,
   IcsFeedResp,
   IcsImportEventInput,
   IcsImportResp,
@@ -205,6 +206,15 @@ export function createApiClient(opts: ApiClientOptions) {
   return {
     base,
     central,
+
+    // ---- health ----
+    /**
+     * GET /health — unauthenticated. Besides liveness, an issuance-enabled backend reports whether
+     * the dog-tag ANCHOR contracts are configured (`dogTagIssuance`), which is what lets the
+     * Register pet screen refuse IN PLACE instead of allocating a tag for an issuance the backend
+     * already knows it cannot complete.
+     */
+    health: () => request<HealthResp>("GET", "/health", undefined, "none"),
 
     // ---- login ----
     login: (password: string) => request<LoginResp>("POST", "/login", { password }, "none"),

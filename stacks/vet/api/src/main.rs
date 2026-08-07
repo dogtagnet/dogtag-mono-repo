@@ -31,8 +31,14 @@ async fn main() {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(135);
     let mut issuer_addrs = HashMap::new();
+    // Empty-but-SET is UNSET: `demo-up.sh` exports `VACCINATION_ISSUER_ADDR=` verbatim when no
+    // clone is configured, and an empty string in this map used to flow through the issuance
+    // preflight as the zero address, surfacing as "preflight: rpc: ABI decoding failed: buffer
+    // overrun" — a config hole reading as a chain fault.
     if let Ok(a) = std::env::var("VACCINATION_ISSUER_ADDR") {
-        issuer_addrs.insert("VACCINATION".to_string(), a);
+        if !a.trim().is_empty() {
+            issuer_addrs.insert("VACCINATION".to_string(), a);
+        }
     }
 
     let cfg = Config {

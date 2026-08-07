@@ -80,9 +80,9 @@ VACC_CLONE="${VACCINATION_ISSUER_ADDR:-}"
 # with no way out: these are clones a PROVIDER deploys from the provider self-service page, that page
 # is served by the vet portal, and the vet portal needs the vet backend up to sign in - so the boot
 # demanded an address that only the boot could let you create.
-# vet-api already handles absence correctly: both default to the zero address and the issuance routes
-# refuse with "owner-hidden issuance not configured" at the point of use. That is the honest
-# degradation - a vet whose backend is up and cannot yet anchor - so warn and boot.
+# vet-api already handles absence correctly: both default to the zero address, Register pet refuses
+# in place before allocating a tag, and the issuance routes fail closed at the point of use. That is
+# the honest degradation - a vet whose backend is up and cannot yet anchor - so warn and boot.
 # FACTORY — the admin portal's Issuers/Factory UI (predict + deploy a clone) needs this. It was never
 # passed, so admin-api fell back to the zero address and every factory call answered
 # "FACTORY_ADDR not configured" while governance/authority reported factoryOwner.target = 0x0.
@@ -169,13 +169,16 @@ fi
 if want vet || want groomer || want prover; then
   # Each message names the exact surface that refuses, because the two refuse in DIFFERENT places and
   # a reader who is told the wrong one goes looking in the wrong screen. Verified against the code:
-  # PROFILE_ISSUER_ADDR is read by profile_issue_custodial_bind (the DEVICE's half - the operator can
-  # still start a session and mint the QR), VACCINATION_ISSUER_ADDR by prepare, which 400s outright.
-  [ -n "$PROFILE_ISSUER" ] || echo "  profile clone         UNSET - a dog-tag session still mints its QR, but the owner's device
-                        cannot complete the bind. Deploy a DOG_PROFILE contract on the vet portal's
+  # PROFILE_ISSUER_ADDR gates the whole dog-tag issuance flow — Register pet refuses IN PLACE before
+  # any tag is allocated or QR drawn (and custodial-bind fails closed too, for a session started
+  # before a restart lost the address); VACCINATION_ISSUER_ADDR gates prepare, which refuses naming
+  # the missing clone. This warning also persists in the portal itself: the vet Setup page shows it
+  # until the anchor contracts are configured, so it survives this terminal scrolling away.
+  [ -n "$PROFILE_ISSUER" ] || echo "  profile clone         UNSET - the vet portal's Register pet screen refuses in place (no tag
+                        allocated, no QR drawn). Deploy a DOG_PROFILE contract on the vet portal's
                         Provider self-service page, then set PROFILE_ISSUER_ADDR." >&2
-  [ -n "$VACC_CLONE" ] || echo "  vaccination clone     UNSET - 'Issue a record' refuses with 'unknown recordType / no issuer
-                        address'. Same page, record type VACCINATION; then set VACCINATION_ISSUER_ADDR." >&2
+  [ -n "$VACC_CLONE" ] || echo "  vaccination clone     UNSET - 'Issue a record' refuses naming the missing VACCINATION issuer
+                        contract. Same page, record type VACCINATION; then set VACCINATION_ISSUER_ADDR." >&2
   if [ -n "$PROFILE_ISSUER" ] && [ -n "$VACC_CLONE" ]; then
     echo "  provider clones       profile $PROFILE_ISSUER, vaccination $VACC_CLONE"
   fi
