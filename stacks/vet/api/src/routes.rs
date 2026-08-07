@@ -76,8 +76,24 @@ fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
 }
 
 /// Liveness probe (no auth): used by the compose healthcheck.
-async fn health() -> Resp {
-    ok(json!({ "status": "ok" }))
+///
+/// On an issuance-enabled role it also reports whether the owner-hidden dog-tag ANCHOR contracts
+/// are configured (`dogTagIssuance`), so the portal's Register pet screen can refuse IN PLACE
+/// instead of letting the owner's phone discover the custodial-bind 503 after the operator has
+/// already allocated a tag and drawn a QR. Config facts only — no chain read; `ready` claims the
+/// addresses are configured, never that the contracts work. A groomer carries NO block (it mounts
+/// no issuance routes), so a consumer must read an ABSENT block as could-not-check, never as
+/// either verdict.
+async fn health(State(st): State<AppState>) -> Resp {
+    let mut body = json!({ "status": "ok" });
+    if st.cfg.issuance_enabled() {
+        body["dogTagIssuance"] = json!({
+            "ready": st.cfg.dog_tag_anchor_refusal().is_none(),
+            "profileIssuerConfigured": valid_contract_addr(&st.cfg.profile_issuer_addr),
+            "sbtConsentConfigured": valid_contract_addr(&st.cfg.sbt_consent_addr),
+        });
+    }
+    ok(body)
 }
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
@@ -477,10 +493,32 @@ async fn prepare(
         None => {
             return err(
                 StatusCode::BAD_REQUEST,
-                "unknown recordType / no issuer address",
+                &format!(
+                    "no issuer contract is configured for recordType {} — this backend cannot \
+                     anchor that record type until its issuer clone address is configured (for \
+                     VACCINATION: set VACCINATION_ISSUER_ADDR and restart the backend)",
+                    body.record_type
+                ),
             )
         }
     };
+    // A PRESENT but blank/malformed address must be refused HERE with its cause named, never passed
+    // into a chain read: `chain::parse_addr` coerces it to the zero address, whose `registry()`
+    // eth_call answers empty returndata, and the decode failure then surfaces as
+    // "preflight: rpc: ABI decoding failed: buffer overrun while deserializing" — a config hole
+    // reading as a chain fault (measured on a live walk, 2026-08-07: `demo-up.sh` exports
+    // `VACCINATION_ISSUER_ADDR=` empty-but-set when no clone is configured).
+    if !valid_contract_addr(&issuer_addr) {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!(
+                "the issuer contract address configured for recordType {} is blank or malformed, \
+                 so this backend cannot anchor this record on-chain — configure the real issuer \
+                 clone address (for VACCINATION: VACCINATION_ISSUER_ADDR) and restart the backend",
+                body.record_type
+            ),
+        );
+    }
     // build (ALWAYS server-side, identical both modes).
     let meta = app::issuer_meta(&st.cfg, &body.record_type, &issuer_addr);
     let vc = app::build_vc(&body.record_type, &body.fields, &body.dog_tag_id);
@@ -2129,6 +2167,17 @@ async fn profile_issue_session_start(
     if !st.custody.is_unlocked() {
         return err(StatusCode::CONFLICT, "not unlocked");
     }
+    // Refuse BEFORE allocating a tag or minting a QR token. The bind route's own fail-closed check
+    // (the point of use, below) is what protects the chain — but by the time it fires a second
+    // human has already scanned a QR for an issuance this backend knew at boot it could not
+    // complete, and the refusal surfaces on the owner's phone, where nobody can act on it. This is
+    // the same predicate the bind route applies, asked where the OPERATOR is.
+    if let Some(refusal) = st.cfg.dog_tag_anchor_refusal() {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("cannot start dog-tag issuance: {refusal}"),
+        );
+    }
     if body.pet.name.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "pet.name must not be blank");
     }
@@ -2504,16 +2553,15 @@ async fn profile_issue_custodial_bind(
     // a half-wired owner-hidden stack must not burn the operator's QR (and, worse, must never mint without
     // a place to anchor the root). Both addresses are shape-checked, not merely tested for non-zero —
     // see `verify::valid_contract_addr` for why a malformed value would otherwise reach the chain as
-    // 0x0..0.
+    // 0x0..0. `dog_tag_anchor_refusal` is that same predicate pair plus the operator-vocabulary
+    // message; the session-start route asks it too, so within one process this arm is unreachable
+    // through the normal flow — it stays load-bearing because sessions OUTLIVE a process under the
+    // Mongo store, so a bind can arrive on a restart whose env no longer carries the addresses the
+    // starting process had.
     let sbt_addr = st.cfg.sbt_consent_addr.clone();
     let issuer_addr = st.cfg.profile_issuer_addr.clone();
-    if !crate::verify::valid_contract_addr(&sbt_addr)
-        || !crate::verify::valid_contract_addr(&issuer_addr)
-    {
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "owner-hidden issuance not configured (SBT_CONSENT_ADDR / PROFILE_ISSUER_ADDR)",
-        );
+    if let Some(refusal) = st.cfg.dog_tag_anchor_refusal() {
+        return err(StatusCode::SERVICE_UNAVAILABLE, &refusal);
     }
     // consume the one-time token atomically (second call -> 410).
     let session_id = match st.store.take_bind_token(&body.token).await {

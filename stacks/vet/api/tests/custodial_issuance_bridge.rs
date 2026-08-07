@@ -379,20 +379,33 @@ async fn raw_handle_binding_breaks_the_r_binding_fail_closed() {
     );
 }
 
-/// FAIL-CLOSED: an unconfigured owner-hidden deployment refuses, and does so WITHOUT burning the
-/// operator's one-time token — a half-wired stack must never consume a QR it cannot fulfil.
+/// FAIL-CLOSED: an unconfigured owner-hidden deployment refuses the BIND, and does so WITHOUT
+/// burning the operator's one-time token — a half-wired stack must never consume a QR it cannot
+/// fulfil.
+///
+/// The session is started on a CONFIGURED router and the bind arrives on one that lost the anchor
+/// address, sharing the same store and custody. That is not test contortion: session start now
+/// refuses on an unanchorable backend (see `tests/anchor_readiness.rs`), so within one process this
+/// arm is unreachable through the normal flow — but sessions OUTLIVE a process under the Mongo
+/// store, so a bind really can arrive on a restart whose env no longer carries the addresses the
+/// starting process had. This is the state that keeps the bind-time gate load-bearing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unconfigured_owner_hidden_refuses_without_consuming_the_token() {
     let mem = MemChain::new();
     let chain = Arc::new(mem.clone());
-    let mut state = mem_state(chain.clone());
-    let mut cfg = (*state.cfg).clone();
-    cfg.sbt_consent_addr = "0x0000000000000000000000000000000000000000".to_string();
-    state.cfg = Arc::new(cfg);
-    let app = vet_api::router(state);
+    let state = mem_state(chain.clone());
+    let app = vet_api::router(state.clone());
     let (_admin, op, _backend) = boot_custody(&app).await;
-
     let (token, dog_tag_id, _session_id) = start_session(&app, &op).await;
+
+    // "Restart" with the anchor gone: same store (the session and its token survive), same custody,
+    // a config whose SBT address is back at the unset zero default.
+    let mut restarted = state.clone();
+    let mut cfg = (*restarted.cfg).clone();
+    cfg.sbt_consent_addr = "0x0000000000000000000000000000000000000000".to_string();
+    restarted.cfg = Arc::new(cfg);
+    let app = vet_api::router(restarted);
+
     let root = device_root(canonical_field(&dog_tag_id));
 
     let (s, b) = call(
@@ -471,16 +484,22 @@ async fn malformed_owner_hidden_address_refuses_without_consuming_the_token() {
         "0x00000000000000000000000000000000000000ddd", // 41 digits — one long
         "00000000000000000000000000000000000000dd",    // no 0x prefix
     ] {
+        // Started configured, bound after a "restart" whose env mangled the address — the same
+        // two-router model as the unconfigured case above, and for the same reason: session start
+        // itself now refuses on a misconfigured backend.
         let mem = MemChain::new();
         let chain = Arc::new(mem.clone());
-        let mut state = mem_state(chain.clone());
-        let mut cfg = (*state.cfg).clone();
-        cfg.sbt_consent_addr = bad.to_string();
-        state.cfg = Arc::new(cfg);
-        let app = vet_api::router(state);
+        let state = mem_state(chain.clone());
+        let app = vet_api::router(state.clone());
         let (_admin, op, _backend) = boot_custody(&app).await;
-
         let (token, dog_tag_id, _session_id) = start_session(&app, &op).await;
+
+        let mut restarted = state.clone();
+        let mut cfg = (*restarted.cfg).clone();
+        cfg.sbt_consent_addr = bad.to_string();
+        restarted.cfg = Arc::new(cfg);
+        let app = vet_api::router(restarted);
+
         let root = device_root(canonical_field(&dog_tag_id));
         let body = serde_json::json!({ "token": token, "root": root });
 

@@ -20,6 +20,11 @@ import {
 import { Check, Copy, KeyRound, ShieldAlert } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  AnchorBlockedCard,
+  AnchorUnknownNotice,
+  useDogTagAnchorReadiness,
+} from "../app/AnchorReadiness";
 import { useApp } from "../app/AppContext";
 import { env } from "../lib/env";
 
@@ -40,8 +45,21 @@ export function Setup() {
     if (!adminToken && step !== "admin") setStep("admin");
   }, [adminToken, step]);
 
+  // The persistent home of the backend's boot warning: vet-api warns at boot when the dog-tag
+  // anchor contracts are unset, but a terminal scrolls away — this card stays on the screen an
+  // operator setting the stack up actually visits, until the configuration is fixed.
+  const anchor = useDogTagAnchorReadiness();
+
   return (
     <div className="space-y-6">
+      {anchor?.state === "blocked" && <AnchorBlockedCard readiness={anchor} />}
+      {anchor?.state === "unknown" && <AnchorUnknownNotice readiness={anchor} />}
+      {anchor?.state === "ready" && (
+        // A configuration fact, not a chain claim: the addresses are set and well-formed.
+        <p className="text-xs text-muted">
+          Dog-tag anchoring: the DOG_PROFILE issuer and DogTag SBT contracts are configured.
+        </p>
+      )}
       <SetupProgress step={step} />
       {step === "admin" && (
         <AdminLogin
