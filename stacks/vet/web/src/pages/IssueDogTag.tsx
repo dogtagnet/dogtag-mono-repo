@@ -126,6 +126,11 @@ export function IssueDogTag() {
 
   const [session, setSession] = useState<ProfileIssueStartResp | null>(null);
   const [status, setStatus] = useState<ProfileIssueStatusResp | null>(null);
+  // A refused start, rendered IN PLACE under the form (a toast scrolls away; the operator is
+  // standing here). The backend refuses BEFORE allocating a tag or drawing a QR when the clinic's
+  // signing key definitively may not issue — the refusal names which half is missing and which
+  // portal fixes it, so the message is the server's own words.
+  const [startRefusal, setStartRefusal] = useState<string | null>(null);
   // Consecutive polls on which the SERVER reported the token dead while the session was still
   // pending. The portal holds no deadline clock of its own: it once declared "expired" from a
   // hardcoded 180s while the backend would still have accepted a bind — and showed the same
@@ -197,6 +202,7 @@ export function IssueDogTag() {
       return;
     }
     setBusy(true);
+    setStartRefusal(null);
     try {
       const resp = await api.startProfileIssue(buildBody());
       setSession(resp);
@@ -204,6 +210,7 @@ export function IssueDogTag() {
       setDeadPolls(0);
       toast({ title: "Issuance started", description: `Dog tag ${resp.dogTagId} allocated.`, variant: "success" });
     } catch (err) {
+      setStartRefusal((err as Error).message);
       toast({ title: "Start failed", description: (err as Error).message, variant: "danger" });
     } finally {
       setBusy(false);
@@ -349,7 +356,7 @@ export function IssueDogTag() {
                     at <span className="font-mono">{qrAddr.host}</span>
                   </>
                 ) : null}
-                — check both are on the same network, then draw a new QR.
+                {" — check both are on the same network, then draw a new QR."}
               </p>
               <div className="flex flex-col items-center gap-3">{mismatchNotice}</div>
               <Button onClick={restart}>Start over</Button>
@@ -367,6 +374,18 @@ export function IssueDogTag() {
           ) : (
             <div className="flex flex-col items-center gap-3">
               {mismatchNotice}
+              {session.signerIssuance?.state === "unknown" && (
+                // Could-not-check WARNS and never refuses: the backend could not establish the
+                // signing key's issue approval, so the QR is still offered and the later failure's
+                // remedies are named up front.
+                <div
+                  data-testid="issue-gate-unknown"
+                  className="max-w-sm rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-onSurface"
+                >
+                  Could not check whether this clinic's signing key may issue dog tags:{" "}
+                  {session.signerIssuance.detail}
+                </div>
+              )}
               <QrCode value={session.qr} caption={session.qr} />
               {resolved ? (
                 <p data-testid="qr-picked-up" className="max-w-sm text-center text-sm text-muted">
@@ -537,6 +556,14 @@ export function IssueDogTag() {
           {anchor === null && (
             // A disabled control renders its reason: the readiness probe has not answered yet.
             <p className="text-xs text-muted">Checking whether this backend can anchor dog tags…</p>
+          )}
+          {startRefusal && (
+            <div
+              data-testid="issue-gate-refusal"
+              className="rounded-md border border-danger/40 bg-danger/10 p-3 text-sm text-danger"
+            >
+              {startRefusal}
+            </div>
           )}
         </form>
       </CardContent>

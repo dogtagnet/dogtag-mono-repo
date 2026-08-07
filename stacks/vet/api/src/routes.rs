@@ -2205,6 +2205,76 @@ async fn profile_issue_session_start(
     if body.pet.name.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "pet.name must not be blank");
     }
+    // THE TWO-LAYER ISSUE GATE, asked BEFORE a QR exists. `DogTagIssuer.issue` requires BOTH the
+    // authority's `canIssue` (the registrar's address-keyed ISSUE grant folded with the service
+    // lifecycle) AND the clone's OWN `issuanceAllowed` list — and this backend knows its issuer
+    // address and its signer, so nothing about the question needs a device. Without this gate the
+    // portal drew a QR and had a second human scan, build and POST for an issuance the backend was
+    // always going to refuse — the refusal surfaced as a 403 on the owner's phone (measured live
+    // 2026-08-07: rightsOf carried no ISSUE bit AND the clone had not admitted the signer).
+    //
+    // A DEFINITE `false` on either layer refuses HERE, naming which half is missing and which
+    // portal fixes it. Could-not-check is NOT a refusal: an unreadable chain (or a generation-1
+    // clone, which has neither `canIssue` nor `issuanceAllowed` to ask) proceeds and the response
+    // carries a `signerIssuance` warning instead — the bind path's own preflights still stand.
+    let signer_addr = match st.custody.active_address() {
+        Ok(a) => a,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let issuer = st.cfg.profile_issuer_addr.clone();
+    let registry_grant = st.chain.issuance_capability(&issuer, &signer_addr).await;
+    let clone_list = st.chain.issuance_allowed(&issuer, &signer_addr).await;
+    let registry_missing = matches!(
+        registry_grant,
+        Ok(crate::chain::IssuanceCapability::NotAuthorized)
+    );
+    let clone_missing = matches!(clone_list, Ok(false));
+    if registry_missing || clone_missing {
+        let mut halves = Vec::new();
+        if registry_missing {
+            halves.push(
+                "the DogTag registrar has not granted it the ISSUE right — ask DogTag to grant \
+                 it from the admin portal's Providers page",
+            );
+        }
+        if clone_missing {
+            halves.push(
+                "this clinic's own DOG_PROFILE contract has not admitted it — the contract owner \
+                 admits it on this portal's Signing keys page",
+            );
+        }
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!(
+                "cannot start dog-tag issuance: this clinic's signing key {signer_addr} is not \
+                 approved to issue dog tags. {}. Nothing was allocated and no QR was drawn.",
+                halves.join("; and ")
+            ),
+        );
+    }
+    let mut unchecked = Vec::new();
+    if !matches!(
+        registry_grant,
+        Ok(crate::chain::IssuanceCapability::Authorized)
+    ) {
+        unchecked.push("the registrar's ISSUE grant");
+    }
+    if clone_list.is_err() {
+        unchecked.push("the contract's own signer list");
+    }
+    let signer_issuance = if unchecked.is_empty() {
+        json!({ "state": "authorized" })
+    } else {
+        json!({
+            "state": "unknown",
+            "detail": format!(
+                "{} could not be checked from here — if the issuance later fails with \"not \
+                 approved\", the registrar grant (admin portal, Providers) and this portal's \
+                 Signing keys page are where to fix it",
+                unchecked.join(" and ")
+            ),
+        })
+    };
     // Allocate a dogTagId whose owner-hidden SBT profileRoot is still unset. The local counter resets
     // on restart and the SBT is shared across issuers, so a fresh counter can collide with an already
     // minted id. `mintCustodial` retires an id through the write-once `profileRoot[id]`, a marker that
@@ -2315,6 +2385,10 @@ async fn profile_issue_session_start(
         // Whether THIS machine still answers at the address the QR names — the address is baked at
         // boot, so a machine that moved networks prints dead QRs with nothing else saying so.
         "qrAddress": crate::qr_address::qr_address_json(&st.cfg.deployment_url),
+        // The two-layer issue gate's answer: "authorized" (both halves read true), or "unknown"
+        // with what could not be checked. A definite refusal never reaches this response — it is
+        // the 503 above, before anything was allocated.
+        "signerIssuance": signer_issuance,
     }))
 }
 

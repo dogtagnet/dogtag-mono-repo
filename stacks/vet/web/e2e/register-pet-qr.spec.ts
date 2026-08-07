@@ -54,6 +54,10 @@ interface Backend {
   /** Consumed one per status poll; the LAST entry is sticky. */
   statuses: StatusResp[];
   polls: number;
+  /** When set, the start route refuses with this 503 body (the two-layer issue gate). */
+  startRefusal?: string;
+  /** The start response's signerIssuance block (the issue gate's could-not-check warning). */
+  signerIssuance?: { state: "authorized" | "unknown"; detail?: string };
 }
 
 const SELF: QrAddress = { host: "192.168.16.117", check: "selfAddressed" };
@@ -83,6 +87,9 @@ async function mockBackend(page: Page, backend: Backend) {
       });
     }
     if (path === "/profiles/issue/session/start" && request.method() === "POST") {
+      if (backend.startRefusal) {
+        return route.fulfill({ status: 503, json: { error: backend.startRefusal } });
+      }
       return route.fulfill({
         json: {
           token: "tok",
@@ -91,6 +98,7 @@ async function mockBackend(page: Page, backend: Backend) {
           qr: `http://${backend.qrAddress.host}:41874/p/tok`,
           ttlSecs: backend.startTtlSecs,
           qrAddress: backend.qrAddress,
+          signerIssuance: backend.signerIssuance,
         },
       });
     }
@@ -297,4 +305,62 @@ test("a QR this machine no longer answers at is called out with both addresses, 
   await expect(notice).toContainText("Restart the vet stack");
   // The warning sits BESIDE the QR — the operator can still choose to proceed if they know better.
   await expect(page.getByTestId("qr-waiting")).toBeVisible();
+});
+
+test("a signing key that may not issue refuses IN PLACE — no QR, and the refusal stays under the form", async ({
+  page,
+}) => {
+  const refusal =
+    "cannot start dog-tag issuance: this clinic's signing key 0xabc is not approved to issue dog " +
+    "tags. the DogTag registrar has not granted it the ISSUE right — ask DogTag to grant it from " +
+    "the admin portal's Providers page; and this clinic's own DOG_PROFILE contract has not " +
+    "admitted it — the contract owner admits it on this portal's Signing keys page. Nothing was " +
+    "allocated and no QR was drawn.";
+  const backend: Backend = {
+    startTtlSecs: 600,
+    qrAddress: SELF,
+    statuses: [pendingStatus()],
+    polls: 0,
+    startRefusal: refusal,
+  };
+  await mockBackend(page, backend);
+  await startIssuance(page);
+
+  // The refusal is DURABLE (a toast scrolls away) and names both halves and both portals.
+  const card = page.getByTestId("issue-gate-refusal");
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("ISSUE right");
+  await expect(card).toContainText("Providers page");
+  await expect(card).toContainText("Signing keys page");
+  await expect(card).toContainText("Nothing was allocated");
+  // No QR exists for a second human to scan, and the form is still there to retry from.
+  await expect(page.getByTestId("qr-waiting")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start issuance" })).toBeVisible();
+});
+
+test("an issue check that could not run WARNS beside the QR and never refuses", async ({ page }) => {
+  const backend: Backend = {
+    startTtlSecs: 600,
+    qrAddress: SELF,
+    statuses: [pendingStatus()],
+    polls: 0,
+    signerIssuance: {
+      state: "unknown",
+      detail:
+        "the registrar's ISSUE grant and the contract's own signer list could not be checked from " +
+        "here — if the issuance later fails with \"not approved\", the registrar grant (admin " +
+        "portal, Providers) and this portal's Signing keys page are where to fix it",
+    },
+  };
+  await mockBackend(page, backend);
+  await startIssuance(page);
+
+  // Could-not-check is not a refusal: the QR is drawn, the warning sits beside it with the
+  // remedies a later failure would need.
+  await expect(page.getByTestId("qr-waiting")).toBeVisible();
+  const warn = page.getByTestId("issue-gate-unknown");
+  await expect(warn).toBeVisible();
+  await expect(warn).toContainText("Could not check");
+  await expect(warn).toContainText("Signing keys");
+  await expect(page.getByTestId("issue-gate-refusal")).toHaveCount(0);
 });

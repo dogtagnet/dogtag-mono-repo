@@ -592,7 +592,7 @@ async fn an_empty_history_is_a_definite_refusal() {
 /// cannot reach its error classification, so this is a claim about the interface, not the transport.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unreadable_authority_is_undetermined_not_a_forgery_verdict() {
-    let (app, op, backend, mem) = boot().await;
+    let (app, op, _backend, mem) = boot().await;
     let (_id, root, doc) = issue_doc(&app, &op, "51").await;
     mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
 

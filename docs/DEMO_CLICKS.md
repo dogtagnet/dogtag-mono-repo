@@ -1211,6 +1211,13 @@ device scans it, folds the profile tree on the phone and posts only the resultin
 never holds the owner's secret, which is why binding a tag to its owner is the one step in this
 guide a desktop cannot perform.
 
+The QR waits up to 10 minutes to be scanned, and once a device picks it up it always has at least
+5 more minutes to finish the bind. The card beside it reports what actually happened rather than a
+bare "expired": no device ever picked it up (check the phone reaches your `LAN_IP`), a device
+picked it up and went quiet, the deadline passed, or - the silent killer - this machine's network
+address changed after the stack started, in which case the card names both addresses and the fix
+is a stack restart.
+
 > **Note the dog tag id** (`1` on a fresh set). Use cases 2 and 3 both use it.
 
 You can see exactly what the phone receives:

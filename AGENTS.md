@@ -3416,6 +3416,21 @@ one-time token is consumed; and `GET /health` carries the config facts as `dogTa
   `stacks/vet/web/e2e/register-pet-gate.spec.ts` (runs in `make e2e-web`).
 - **The Setup page renders the same card persistently** - the boot warning scrolls away in a
   terminal, so `demo-up.sh` warns AND the portal shows it where an operator actually looks.
+- **The session-start gate also asks the TWO-LAYER ISSUE question, and could-not-check WARNS
+  rather than refuses.** Same screen, same class, measured live 2026-08-07: with the registrar's
+  address-keyed ISSUE grant absent (`rightsOf` bit unset) AND the clone's own `issuanceAllowed`
+  missing the backend signer, the portal drew a QR and a second human scanned for an issuance the
+  clone was always going to refuse - the 403 surfaced on the owner's phone.
+  `/profiles/issue/session/start` now asks BOTH halves (`ChainClient::issuance_capability` +
+  the new `ChainClient::issuance_allowed`) against `PROFILE_ISSUER_ADDR` and the custody signer: a
+  DEFINITE `false` on either refuses 503 BEFORE anything is allocated, naming which half is
+  missing and which portal fixes it (registrar grant -> admin portal Providers; clone list -> this
+  portal's Signing keys). An UNREADABLE half - including a generation-1 clone, which has neither
+  getter - proceeds and the response carries `signerIssuance: {state:"unknown", detail}`, which
+  the portal renders as a warning beside the QR; refusing there would shut a healthy clinic out
+  over an RPC blip. Pinned by `tests/register_pet_issue_gate.rs`; MemChain's unseeded default is
+  deliberately could-not-check (mirroring `with_registry`) so every pre-existing suite exercises
+  the warn arm rather than being refused by fixture accident.
 - **The `502 preflight: rpc: ABI decoding failed: buffer overrun while deserializing` was this same
   misconfiguration wearing a chain fault's clothes.** `demo-up.sh` exports
   `VACCINATION_ISSUER_ADDR=` EMPTY-BUT-SET when no clone is configured, `main.rs` used to insert

@@ -524,6 +524,16 @@ export interface QrAddressCheck {
   currentAddress?: string;
   detail?: string;
 }
+/**
+ * The two-layer issue gate's answer at session start. A definite "this signer may not issue" never
+ * appears here — that refuses the start itself (503) before anything is allocated. "unknown" means
+ * one or both layers could not be checked; it WARNS and never refuses, and `detail` says what could
+ * not be checked and where a later failure gets fixed.
+ */
+export interface SignerIssuanceCheck {
+  state: "authorized" | "unknown";
+  detail?: string;
+}
 export interface ProfileIssueStartResp {
   token: string;
   dogTagId: string;
@@ -532,6 +542,7 @@ export interface ProfileIssueStartResp {
   /** Seconds the QR waits to be scanned, counted from response receipt (never a wall-clock deadline). */
   ttlSecs?: number;
   qrAddress?: QrAddressCheck;
+  signerIssuance?: SignerIssuanceCheck;
 }
 /** GET /profiles/issue/session/{sessionId} response. */
 export interface ProfileIssueStatusResp {

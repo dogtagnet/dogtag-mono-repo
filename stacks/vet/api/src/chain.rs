@@ -294,6 +294,15 @@ pub trait ChainClient: Send + Sync {
         issuer_addr: &str,
         signer: &str,
     ) -> Result<IssuanceCapability, ChainError>;
+    /// LAYER 2 as a single storage read: `issuer_addr.issuanceAllowed(signer)` NOW.
+    ///
+    /// The clone's `onlyIssuanceCapable` requires BOTH the authority's `canIssue` (layer 1, read by
+    /// [`ChainClient::issuance_capability`]) AND this, its own list — so a pre-QR gate that asks
+    /// only layer 1 still hands a QR to a second human for an issuance the clone itself will
+    /// refuse. A generation-1 clone has no such getter; the call then REVERTS and the caller must
+    /// treat the `Err` as could-not-check, never as a refusal.
+    async fn issuance_allowed(&self, issuer_addr: &str, signer: &str)
+        -> Result<bool, ChainError>;
     /// Was `signer` authorised for `record_type` at the moment `root` was anchored on `issuer_addr`?
     ///
     /// The issuer-whitelist pillar's read. It takes NO registry address: the authority comes off the
@@ -1039,6 +1048,28 @@ impl ChainClient for MemChain {
             IssuanceCapability::NotAuthorized
         })
     }
+    async fn issuance_allowed(
+        &self,
+        issuer_addr: &str,
+        signer: &str,
+    ) -> Result<bool, ChainError> {
+        let g = self.inner.lock().unwrap();
+        let clone = issuer_addr.to_lowercase();
+        if let Some(v) = g.issuance_allowed.get(&(clone.clone(), signer.to_lowercase())) {
+            return Ok(*v);
+        }
+        // A clone this fake HAS been taught about answers storage's default (`false` — a definite
+        // refusal, as a real getter would give); a clone it was never taught about is a read the
+        // fake cannot make — could-not-check, mirroring `with_registry`'s posture so an unseeded
+        // suite exercises the warn arm rather than being refused by fixture accident.
+        let known = g.issuance_allowed.keys().any(|(c, _)| c == &clone)
+            || g.issuance_allowed_named.contains_key(&clone);
+        if known {
+            Ok(false)
+        } else {
+            Err(ChainError::NotFound)
+        }
+    }
     /// Composed from the same reads the Alloy implementation makes, in the same order, so this fake
     /// models the real answer rather than short-circuiting to one.
     async fn whitelisted_at_issuance(
@@ -1518,6 +1549,25 @@ impl ChainClient for AlloyChain {
             }),
             Err(_) => Ok(IssuanceCapability::Undetermined),
         }
+    }
+    async fn issuance_allowed(
+        &self,
+        issuer_addr: &str,
+        signer: &str,
+    ) -> Result<bool, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        // One storage getter. A generation-1 clone lacks the selector and REVERTS at the
+        // dispatcher; that surfaces as Err — could-not-check for the caller, never a refusal.
+        let r = IDogTagIssuer::new(parse_addr(issuer_addr), provider)
+            .issuanceAllowed(parse_addr(signer))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
     }
     async fn whitelisted_at_issuance(
         &self,
