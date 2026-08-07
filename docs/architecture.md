@@ -450,7 +450,9 @@ PET ONBOARDING (vet "Register pet" - the device supplies only the root R):
   vet web → vet API: POST /profiles/issue/session/start  (operator-session gated)
   vet API: allocate a numeric HANDLE (skip ids already TAKEN under field_of_value(handle) - the
            write-once profileRoot(id) is the taken-marker, and it SURVIVES a burn)
-           persist ProfileIssueSession + a fresh 16-byte one-time BIND TOKEN (180s TTL)
+           persist ProfileIssueSession + a fresh 16-byte one-time BIND TOKEN (600s scan TTL,
+           extended to >=300s remaining at the FIRST /p/ resolve so the deadline cannot land
+           mid-bind; routes.rs BIND_TOKEN_* constants)
            → {token, dogTagId(handle), sessionId, qr = <vetHost>/p/<token>}
   device scans /p/<token> → GET /p/{token} → session meta (NON-consuming) + unverifiedClaims
            {protocolVersion,chainId,verificationRegistry,issuerClone,purpose:"DOG_PROFILE"} — the platform's

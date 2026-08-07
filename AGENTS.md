@@ -3359,8 +3359,9 @@ server-side**; that produces an owner-revealing root that `consent.circom` canno
 **No wallet, no signature, by design.** `mintCustodial` has no recipient - the tag goes to the
 immutable custodian - so the retired flow's EIP-191 wallet signature has nothing to attest, and
 accepting one would hand the server exactly the owner link the model removes. The authorization is
-the one-time, operator-minted, 180s bind token alone; whoever redeems it defines ownership via the
-owner-secret inside `R`.
+the one-time, operator-minted bind token alone (600s scan window from mint, extended to a >=300s
+bind window at the first `/p/` resolve so the deadline cannot land mid-bind - `routes.rs`
+`BIND_TOKEN_*`); whoever redeems it defines ownership via the owner-secret inside `R`.
 
 **Ordering is load-bearing: `issue(R)` FIRST, then `mintCustodial(id, R)`** (the contract says so at
 `DogTagSBTConsent.sol:139-143`). The mint is the irreversible half - `profileRoot[id]` is write-once

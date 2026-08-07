@@ -35,9 +35,14 @@ import {
 import { useApp } from "../app/AppContext";
 import { env } from "../lib/env";
 
-/** Token expiry the backend enforces (180s). After this the device can no longer bind. */
-const TOKEN_TTL_MS = 180_000;
 const POLL_MS = 2_000;
+/**
+ * Consecutive polls that must report the token dead (server's clock, `tokenSecondsLeft === 0`,
+ * session still pending) before the card declares it. The grace absorbs the race where a device's
+ * bind consumed the token in its final seconds and the row is about to flip to "minting" — a
+ * single observation would declare dead an issuance that is already anchoring.
+ */
+const DEAD_POLLS = 3;
 
 interface OwnerForm {
   countryOfIdentification: string;
@@ -121,7 +126,11 @@ export function IssueDogTag() {
 
   const [session, setSession] = useState<ProfileIssueStartResp | null>(null);
   const [status, setStatus] = useState<ProfileIssueStatusResp | null>(null);
-  const [expired, setExpired] = useState(false);
+  // Consecutive polls on which the SERVER reported the token dead while the session was still
+  // pending. The portal holds no deadline clock of its own: it once declared "expired" from a
+  // hardcoded 180s while the backend would still have accepted a bind — and showed the same
+  // "expired" for a phone that never reached this machine at all.
+  const [deadPolls, setDeadPolls] = useState(0);
 
   function fillDemo() {
     setOwner({ ...DEMO_OWNER });
@@ -192,7 +201,7 @@ export function IssueDogTag() {
       const resp = await api.startProfileIssue(buildBody());
       setSession(resp);
       setStatus(null);
-      setExpired(false);
+      setDeadPolls(0);
       toast({ title: "Issuance started", description: `Dog tag ${resp.dogTagId} allocated.`, variant: "success" });
     } catch (err) {
       toast({ title: "Start failed", description: (err as Error).message, variant: "danger" });
@@ -204,32 +213,37 @@ export function IssueDogTag() {
   function restart() {
     setSession(null);
     setStatus(null);
-    setExpired(false);
+    setDeadPolls(0);
   }
 
   const bound = status?.status === "bound";
+  const errored = status?.status === "error";
 
-  // Poll the session status every ~2s until it binds or the token expires.
-  const startedAtRef = useRef<number>(0);
+  // Poll the session status every ~2s until a terminal state. There is deliberately NO local
+  // deadline: what the card says comes from the server's own facts (status, resolvedAt,
+  // tokenSecondsLeft, qrAddress), so it can tell "nobody picked this QR up" from "a device
+  // resolved it and went quiet" from "the deadline passed" — three different faults with three
+  // different remedies. Polling continues even after the token dies, so a bind that landed in the
+  // token's final seconds still flips the card to "anchoring" instead of being declared dead.
+  const deadPollsRef = useRef(0);
   useEffect(() => {
-    if (!session || bound || expired) return;
-    startedAtRef.current = Date.now();
+    if (!session || bound || errored) return;
+    deadPollsRef.current = 0;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
 
     const tick = async () => {
       if (cancelled) return;
-      if (Date.now() - startedAtRef.current > TOKEN_TTL_MS) {
-        setExpired(true);
-        return;
-      }
       try {
         const s = await api.profileIssueStatus(session.sessionId);
         if (cancelled) return;
         setStatus(s);
-        if (s.status === "bound") return; // effect re-runs; bound short-circuits at the top
+        if (s.status === "bound" || s.status === "error") return; // effect re-runs; terminal
+        const dead = s.status === "pending" && s.tokenSecondsLeft !== undefined && s.tokenSecondsLeft <= 0;
+        deadPollsRef.current = dead ? deadPollsRef.current + 1 : 0;
+        setDeadPolls(deadPollsRef.current);
       } catch {
-        /* transient — keep polling until expiry */
+        /* transient — keep polling; a fetch failure is not evidence about the session */
       }
       if (!cancelled) timer = setTimeout(tick, POLL_MS);
     };
@@ -238,7 +252,7 @@ export function IssueDogTag() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [session, bound, expired, api]);
+  }, [session, bound, errored, api]);
 
   if (session && bound && status) {
     return (
@@ -277,6 +291,29 @@ export function IssueDogTag() {
   }
 
   if (session) {
+    // Everything this card claims comes from the SERVER's facts, never a local clock.
+    const qrAddr = status?.qrAddress ?? session.qrAddress;
+    const mismatch = qrAddr?.check === "notSelfAddressed" ? qrAddr : null;
+    const resolved = Boolean(status?.resolvedAt);
+    const anchoring = status?.status === "minting";
+    const tokenDead = deadPolls >= DEAD_POLLS;
+    const secondsLeft = status?.tokenSecondsLeft ?? session.ttlSecs ?? null;
+
+    // The machine no longer answers at the address printed inside the QR: phones post into the
+    // void and this backend's log records nothing — shown wherever the QR is shown, because it is
+    // the one fault the operator can neither see nor debug from this screen.
+    const mismatchNotice = mismatch && (
+      <div
+        data-testid="qr-address-mismatch"
+        className="max-w-sm rounded-md border border-danger/40 bg-danger/10 p-3 text-sm text-danger"
+      >
+        Phones cannot reach this QR: it points at <span className="font-mono">{mismatch.host}</span>,
+        but this machine now answers at <span className="font-mono">{mismatch.currentAddress}</span> —
+        the network address changed after the vet stack started. Restart the vet stack so new QRs
+        carry the current address, then draw a new QR.
+      </div>
+    );
+
     return (
       <Card>
         <CardHeader>
@@ -286,21 +323,69 @@ export function IssueDogTag() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {expired ? (
-            <div className="space-y-3 text-center">
+          {errored ? (
+            <div data-testid="qr-error" className="space-y-3 text-center">
               <p className="text-sm text-danger">
-                The QR token expired before the owner's device bound the dog tag (180s limit).
+                This issuance failed: {status?.txHash ?? "the backend reported an error"}
               </p>
+              <Button onClick={restart}>Start over</Button>
+            </div>
+          ) : anchoring ? (
+            <div data-testid="qr-anchoring" className="flex flex-col items-center gap-3">
+              <p className="max-w-sm text-center text-sm text-onSurface">
+                The owner's device sent its profile — the dog tag is being anchored on-chain now.
+                This can take a minute or two; leave this page open.
+              </p>
+              <Badge variant="neutral">Status: anchoring on-chain</Badge>
+            </div>
+          ) : tokenDead && !resolved ? (
+            <div data-testid="qr-dead-unclaimed" className="space-y-3 text-center">
+              <p className="mx-auto max-w-sm text-sm text-danger">
+                No device ever picked this QR up before it expired. If the owner did scan it, their
+                phone could not reach this machine
+                {qrAddr?.host ? (
+                  <>
+                    {" "}
+                    at <span className="font-mono">{qrAddr.host}</span>
+                  </>
+                ) : null}
+                — check both are on the same network, then draw a new QR.
+              </p>
+              <div className="flex flex-col items-center gap-3">{mismatchNotice}</div>
+              <Button onClick={restart}>Start over</Button>
+            </div>
+          ) : tokenDead && resolved ? (
+            <div data-testid="qr-dead-after-pickup" className="space-y-3 text-center">
+              <p className="mx-auto max-w-sm text-sm text-danger">
+                The owner's device picked this QR up but never sent its profile before the deadline —
+                the phone may have lost its connection to this machine, or the owner stopped partway.
+                Draw a new QR and have the owner scan again.
+              </p>
+              <div className="flex flex-col items-center gap-3">{mismatchNotice}</div>
               <Button onClick={restart}>Start over</Button>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-3">
+              {mismatchNotice}
               <QrCode value={session.qr} caption={session.qr} />
-              <p className="max-w-sm text-center text-sm text-muted">
-                Owner scans this in the DogTag app to receive their dog tag. Waiting for the device to
-                bind…
-              </p>
-              <Badge variant="neutral">Status: {status?.status ?? "pending"}</Badge>
+              {resolved ? (
+                <p data-testid="qr-picked-up" className="max-w-sm text-center text-sm text-muted">
+                  The owner's device has picked this up — it is building the private owner profile
+                  and sending it to this clinic. Waiting for the profile…
+                </p>
+              ) : (
+                <p data-testid="qr-waiting" className="max-w-sm text-center text-sm text-muted">
+                  Owner scans this in the DogTag app to receive their dog tag. Waiting for a device
+                  to scan…
+                </p>
+              )}
+              {secondsLeft !== null && (
+                // Counted from the server's ttl at response receipt (refreshed every poll) — never
+                // from a browser-side deadline, whose clock the backend does not share.
+                <Badge variant="neutral" data-testid="qr-seconds-left">
+                  QR valid for about {Math.floor(secondsLeft / 60)}m {secondsLeft % 60}s
+                </Badge>
+              )}
               <Button variant="ghost" size="sm" onClick={restart}>
                 Cancel / start over
               </Button>

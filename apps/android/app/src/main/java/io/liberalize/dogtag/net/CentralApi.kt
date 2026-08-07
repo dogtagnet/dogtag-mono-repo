@@ -128,6 +128,23 @@ object CentralApi {
         }
     }
 
+    /** The bind POST's outcome, kept three-way because its two "no result" cases mean different
+     * things and need different endings on the screen (mirrors iOS `CustodialBindResult`). */
+    sealed class CustodialBindOutcome {
+        data class Accepted(val bind: CustodialBind) : CustodialBindOutcome()
+
+        /** 410: the one-time token is missing, expired or already used. AMBIGUOUS on its own — for
+         * a tag this phone has bound before, a lost earlier response consumed the token and the
+         * anchor may exist; for a FRESH tag, this phone's bind definitively did not happen. The
+         * caller resolves it with that local fact; folding this into [Inconclusive] made a refused
+         * first-time bind read as "Submitted" after a pointless 3-minute chain poll. */
+        object Gone : CustodialBindOutcome()
+
+        /** Network failure or an unreadable body: the server may have accepted the bind, so the
+         * caller confirms from the public chain. */
+        object Inconclusive : CustodialBindOutcome()
+    }
+
     /**
      * POST `{token, root, leaves, reservedLeafHashes}`. No owner address or signature crosses this
      * boundary. `leaves` opens EVERY attribute leaf of the tree (pet and identity alike) and
@@ -142,8 +159,8 @@ object CentralApi {
         root: String,
         leaves: List<BackedUpAttribute>,
         reservedLeafHashes: List<String>,
-    ): CustodialBind? {
-        if (token.isBlank() || root.isBlank()) return null
+    ): CustodialBindOutcome {
+        if (token.isBlank() || root.isBlank()) return CustodialBindOutcome.Inconclusive
         val body = JSONObject()
             .put("token", token)
             .put("root", root)
@@ -170,20 +187,25 @@ object CentralApi {
                 readTimeoutMs = 20_000,
             )
             if (!response.ok) {
-                if (response.code == 410) return null
+                if (response.code == 410) return CustodialBindOutcome.Gone
                 throw CustodialBindRejectedException(response.code, response.body)
             }
             val o = JSONObject(response.body)
-            CustodialBind(
-                dogTagId = o.string("dogTagId", "dog_tag_id"),
-                root = o.string("root", "R"),
-                status = o.optString("status", ""),
-                txHash = o.string("txHash", "tx_hash").ifBlank { null },
+            CustodialBindOutcome.Accepted(
+                CustodialBind(
+                    dogTagId = o.string("dogTagId", "dog_tag_id"),
+                    root = o.string("root", "R"),
+                    status = o.optString("status", ""),
+                    txHash = o.string("txHash", "tx_hash").ifBlank { null },
+                ),
             )
         } catch (rejected: CustodialBindRejectedException) {
             throw rejected
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            // The owner left the screen; never fabricate a network outcome from it.
+            throw cancelled
         } catch (_: Exception) {
-            null
+            CustodialBindOutcome.Inconclusive
         }
     }
 

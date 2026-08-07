@@ -511,19 +511,41 @@ export interface ProfileIssueStartReq {
   pet: ProfilePet;
 }
 /** POST /profiles/issue/session/start response. `qr` is the full <deployment_url>/p/<token> URL. */
+/**
+ * Whether the backend machine still answers at the address its QRs carry. The address is baked at
+ * boot, so a machine that changed networks prints QRs no phone can reach — this is the backend's
+ * own route-table check. `notSelfAddressed` carries the machine's CURRENT address (the remedy);
+ * `unknown` (a hostname, or a failed lookup) carries why and must never be rendered as either
+ * verdict — could-not-check is not an answer.
+ */
+export interface QrAddressCheck {
+  host: string;
+  check: "selfAddressed" | "notSelfAddressed" | "unknown";
+  currentAddress?: string;
+  detail?: string;
+}
 export interface ProfileIssueStartResp {
   token: string;
   dogTagId: string;
   sessionId: string;
   qr: string;
+  /** Seconds the QR waits to be scanned, counted from response receipt (never a wall-clock deadline). */
+  ttlSecs?: number;
+  qrAddress?: QrAddressCheck;
 }
 /** GET /profiles/issue/session/{sessionId} response. */
 export interface ProfileIssueStatusResp {
-  status: "pending" | "bound";
+  /** pending = waiting for a device; minting = a bind was accepted, chain writes in flight. */
+  status: "pending" | "minting" | "bound" | "error";
   dogTagId: string;
   walletAddress?: string | null;
   root?: string | null;
   txHash?: string | null;
+  /** Unix seconds a device FIRST resolved the QR; null until any device picks it up. */
+  resolvedAt?: number | null;
+  /** The SERVER's remaining token life (meaningful while pending). 0 + pending = no bind can ever arrive. */
+  tokenSecondsLeft?: number;
+  qrAddress?: QrAddressCheck;
 }
 
 // ---- central: issuer applications (admin/api §4.3) ----

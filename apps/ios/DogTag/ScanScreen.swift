@@ -226,7 +226,11 @@ struct ScanScreen: View {
             issued = nil
             issueErr = ""
             guard let session = await CentralApi.resolveDogTagIssue(host: host, token: token) else {
-                issueErr = "Could not resolve issuance session (expired or offline)."
+                // Two different faults arrive here identically (this API cannot tell them apart):
+                // the vet's machine was unreachable, or the QR's one-time token has expired. Name
+                // both remedies rather than picking one.
+                issueErr = "Could not reach the vet at \(host) — or the QR has expired. "
+                    + "Check this phone is on the same Wi-Fi network as the vet, then ask for a fresh QR."
                 return
             }
             issueSession = session
@@ -247,7 +251,7 @@ struct ScanScreen: View {
             status = "Building private owner profile on this device…"
             Task {
                 do {
-                    let (root, leaves, reservedLeafHashes) = try buildOrReuseIssueRoot(
+                    let (root, leaves, reservedLeafHashes, reused) = try buildOrReuseIssueRoot(
                         session: session, seedHex: seedHex, ownerAddress: wallet.ethAddress)
                     await MainActor.run { status = "Sending the profile commitment to your vet…" }
                     let bindResult = await CentralApi.bindDogTagIssue(
@@ -265,6 +269,20 @@ struct ScanScreen: View {
                         }
                     case .inconclusive:
                         accepted = nil
+                    case .gone where reused:
+                        // This phone has bound this tag before, so the consumed token is plausibly
+                        // our own earlier bind whose response was lost — the chain poll below is
+                        // what settles it either way.
+                        accepted = nil
+                    case .gone:
+                        // A FRESH tag: this phone's bind definitively did not happen — a consumed
+                        // or expired token refused it before any chain write. Say so instead of
+                        // polling three minutes for an anchor that cannot arrive and then claiming
+                        // "Submitted".
+                        throw issueFailure(
+                            "the vet's QR expired or was already used before this phone could send "
+                                + "the profile. Nothing was issued — ask the vet to draw a new QR, "
+                                + "then scan it again.")
                     case let .rejected(statusCode, body):
                         throw issueFailure(
                             "custodial bind rejected (\(statusCode)): \(String(body.prefix(160)))")
@@ -279,7 +297,12 @@ struct ScanScreen: View {
                     // poll even when the POST result is inconclusive and never rebuild with new salts.
                     let roax = RoaxConfig.load()
                     let onchainId = try dogTagIdFieldHex(dogTagIdDec: session.dogTagId)
-                    await MainActor.run { status = "Anchoring your dog tag on-chain…" }
+                    // The slow phase is the NETWORK's confirmation, not proof generation — say so,
+                    // with how long it may reasonably take, or the wait reads as a hang.
+                    await MainActor.run {
+                        status = "Profile sent. Waiting for the network to confirm your dog tag — "
+                            + "this can take a minute or two…"
+                    }
                     var anchored = false
                     var delayNanos: UInt64 = 2_000_000_000
                     for _ in 0..<40 {
@@ -300,7 +323,17 @@ struct ScanScreen: View {
                     guard anchored else {
                         await MainActor.run {
                             working = false
-                            issueErr = "Submitted; anchoring is still pending. Check the vet portal for completion."
+                            // "Submitted" may only be claimed when the vet actually ACCEPTED the
+                            // bind. On the inconclusive path nothing is known to have arrived, and
+                            // claiming otherwise sends the owner away believing a dead issuance is
+                            // in flight.
+                            issueErr = accepted != nil
+                                ? "The vet accepted the profile, but the network has not confirmed "
+                                    + "the anchor yet. The vet portal shows when it completes; "
+                                    + "this dog tag appears here after that."
+                                : "Could not confirm the vet received the profile. Check the vet "
+                                    + "portal: if this issuance is not shown there, ask the vet to "
+                                    + "draw a new QR and scan again."
                         }
                         return
                     }
@@ -340,11 +373,13 @@ struct ScanScreen: View {
     /// the owner-secret store, so the same list feeds issuance, the consent-proof rebuild, and
     /// later disclosures. Returns `R` plus the bind's full-leaf-list commitment: the opening of
     /// every attribute leaf and the three OPAQUE reserved leaf hashes (never their preimages).
+    /// `reused` reports whether a persisted record for this dogTagId already existed — the local
+    /// fact that disambiguates a 410 on the bind (see `CustodialBindResult.gone`).
     private func buildOrReuseIssueRoot(
         session: CentralApi.DogTagIssueSession,
         seedHex: String,
         ownerAddress: String
-    ) throws -> (root: String, leaves: [[String: Any]], reservedLeafHashes: [String]) {
+    ) throws -> (root: String, leaves: [[String: Any]], reservedLeafHashes: [String], reused: Bool) {
         let requested = session.pet.profileAttributeValues
         let identity = session.identityLeaves.map {
             ProfileTreeStore.BackedUpAttribute(
@@ -389,7 +424,8 @@ struct ScanScreen: View {
                     AttributeLeafFfi(keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
                 })
             return (tree.rootHex, bindLeafOpenings(existing.attributes),
-                    [tree.ownerAddressLeafHex, tree.consentKeyLeafHex, tree.ownerSecretLeafHex])
+                    [tree.ownerAddressLeafHex, tree.consentKeyLeafHex, tree.ownerSecretLeafHex],
+                    true)
         }
         var attributes = try requested.map { item -> ProfileTreeStore.BackedUpAttribute in
             let salted = try ProfileTreeStore.randomStringAttribute(
@@ -404,7 +440,8 @@ struct ScanScreen: View {
             ownerAddress: ownerAddress,
             attributes: attributes)
         return (tree.rootHex, bindLeafOpenings(attributes),
-                [tree.ownerAddressLeafHex, tree.consentKeyLeafHex, tree.ownerSecretLeafHex])
+                [tree.ownerAddressLeafHex, tree.consentKeyLeafHex, tree.ownerSecretLeafHex],
+                false)
     }
 
     /// The bind's `leaves`: the opening of every attribute leaf, `{keyPath, saltHex, tag, value}`.

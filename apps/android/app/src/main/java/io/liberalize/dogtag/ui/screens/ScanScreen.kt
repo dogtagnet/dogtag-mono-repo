@@ -295,8 +295,15 @@ private fun IssuePanel(
         val resolved = withContext(Dispatchers.IO) {
             CentralApi.resolveProfileIssueSession(qr.host, qr.token)
         }
-        if (resolved == null) resolveErr = "Could not resolve issuance session (expired or offline)."
-        else session = resolved
+        // Two different faults arrive here identically (this API cannot tell them apart): the
+        // vet's machine was unreachable, or the QR's one-time token has expired. Name both
+        // remedies rather than picking one.
+        if (resolved == null) {
+            resolveErr = "Could not reach the vet at ${qr.host} — or the QR has expired. Check this " +
+                "phone is on the same Wi-Fi network as the vet, then ask for a fresh QR."
+        } else {
+            session = resolved
+        }
     }
 
     Card {
@@ -391,18 +398,39 @@ private fun IssuePanel(
                                     )
 
                                     status = "Sending the profile commitment to the vet…"
-                                    val bind = withContext(Dispatchers.IO) {
+                                    val bindOutcome = withContext(Dispatchers.IO) {
                                         CentralApi.bindCustodialIssue(
                                             qr.host, qr.token, root, attributes, reservedLeafHashes,
                                         )
                                     }
-                                    if (bind != null) {
-                                        check(bind.dogTagId.isBlank() || bind.dogTagId == resolved.dogTagId) {
-                                            "issuer returned a different dogTagId"
+                                    val bind: CentralApi.CustodialBind? = when (bindOutcome) {
+                                        is CentralApi.CustodialBindOutcome.Accepted -> {
+                                            val b = bindOutcome.bind
+                                            check(b.dogTagId.isBlank() || b.dogTagId == resolved.dogTagId) {
+                                                "issuer returned a different dogTagId"
+                                            }
+                                            check(b.root.isBlank() || b.root.equals(root, ignoreCase = true)) {
+                                                "issuer returned a different profile root"
+                                            }
+                                            b
                                         }
-                                        check(bind.root.isBlank() || bind.root.equals(root, ignoreCase = true)) {
-                                            "issuer returned a different profile root"
+                                        // A consumed token on a tag this phone has bound before is
+                                        // plausibly our own earlier bind whose response was lost —
+                                        // the chain poll below settles it. On a FRESH tag the bind
+                                        // definitively did not happen: say so instead of polling
+                                        // three minutes for an anchor that cannot arrive.
+                                        CentralApi.CustodialBindOutcome.Gone -> {
+                                            if (existing == null) {
+                                                working = false
+                                                err = "The vet's QR expired or was already used before " +
+                                                    "this phone could send the profile. Nothing was " +
+                                                    "issued — ask the vet to draw a new QR, then scan " +
+                                                    "it again."
+                                                return@launch
+                                            }
+                                            null
                                         }
+                                        CentralApi.CustodialBindOutcome.Inconclusive -> null
                                     }
 
                                     // A null bind means the response may have been lost after the
@@ -412,7 +440,11 @@ private fun IssuePanel(
                                     // writes `DogTagSBTConsent.profileRoot(id) = R` once both txs mine,
                                     // keyed by the CANONICAL field-hashed id (never the raw handle).
                                     // Poll the already-persisted root; never generate a second set of salts.
-                                    status = "Issuing owner-hidden root on-chain…"
+                                    // The slow phase is the NETWORK's confirmation, not proof
+                                    // generation — say so, with how long it may reasonably take,
+                                    // or the wait reads as a hang.
+                                    status = "Profile sent. Waiting for the network to confirm your " +
+                                        "dog tag — this can take a minute or two…"
                                     val rpcUrl = rpcSettings.selectedRpcUrl()
                                     val onchainId = dogTagIdFieldHex(resolved.dogTagId)
                                     var anchored = false
@@ -437,7 +469,18 @@ private fun IssuePanel(
                                     }
                                     if (!anchored) {
                                         working = false
-                                        status = "Submitted; anchoring is still pending. Check the vet portal for completion."
+                                        // "Submitted" may only be claimed when the vet actually
+                                        // ACCEPTED the bind; on the inconclusive path nothing is
+                                        // known to have arrived.
+                                        status = if (bind != null) {
+                                            "The vet accepted the profile, but the network has not " +
+                                                "confirmed the anchor yet. The vet portal shows when " +
+                                                "it completes; this dog tag appears here after that."
+                                        } else {
+                                            "Could not confirm the vet received the profile. Check " +
+                                                "the vet portal: if this issuance is not shown there, " +
+                                                "ask the vet to draw a new QR and scan again."
+                                        }
                                         return@launch
                                     }
                                     store.upsertPet(
