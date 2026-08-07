@@ -3385,6 +3385,47 @@ constant and its producers are deleted; every issuer stamps the unified key.)
 Coverage: `stacks/vet/api/tests/custodial_issuance_bridge.rs` (real device-built `R`, both on-chain
 conditions, raw-handle and skip-issue fail-closed cases, unconfigured/malformed fail-closed cases).
 
+### The dog-tag ANCHOR gate: refuse where the OPERATOR can act, never only on the owner's phone
+
+The bind-time 503 above is correct and stays - but it surfaces on the OWNER'S PHONE, after the
+operator has already allocated a tag and had a second human scan a QR for an issuance the backend
+knew at boot it could not complete (measured on a live walk, 2026-08-07, with `PROFILE_ISSUER_ADDR`
+unset). So the same predicate is asked earlier, and there is exactly ONE of it:
+`Config::dog_tag_anchor_refusal` (`app.rs`, shape-checks BOTH `PROFILE_ISSUER_ADDR` and
+`SBT_CONSENT_ADDR` via `verify::valid_contract_addr` and composes the operator-vocabulary message).
+Three surfaces ask it: `POST /profiles/issue/session/start` refuses 503 BEFORE allocating a tag or
+minting a QR token; `POST /profiles/issue/custodial-bind` keeps its fail-closed 503 before the
+one-time token is consumed; and `GET /health` carries the config facts as `dogTagIssuance`
+(`ready`/`profileIssuerConfigured`/`sbtConsentConfigured`) so the portal can refuse the SCREEN.
+
+- **The bind arm looks unreachable now and is NOT** - sessions OUTLIVE a process under the Mongo
+  store, so a bind can arrive on a restart whose env lost the addresses the starting process had.
+  The bridge tests model exactly that (two routers over one store/custody); do not "simplify" the
+  bind check away as redundant with the start gate.
+- **`/health`'s block exists only on an issuance-enabled role.** A groomer sends NO block, and the
+  portal decision (`packages/ui/src/issuance/anchorReadiness.ts`, `dogTagAnchorReadiness`) reads an
+  ABSENT block - and a FAILED probe - as could-not-check: only a DEFINITE `blocked` answer replaces
+  the Register pet form (`stacks/vet/web/src/app/AnchorReadiness.tsx`); `unknown` warns and leaves
+  the form usable, because the backend refuses an unanchorable start itself with nothing allocated.
+  `ready` claims CONFIGURATION, never that the contracts work - no chain read anywhere on this path.
+- **The two missing-contract sentences point at DIFFERENT remedies on purpose** - the DOG_PROFILE
+  clone at the Provider page (the clinic deploys it itself), the SBT at the deployment ledger.
+  Pinned in `packages/ui/test/dogTagAnchorReadiness.test.ts` and
+  `stacks/vet/api/tests/anchor_readiness.rs`; the render layer in
+  `stacks/vet/web/e2e/register-pet-gate.spec.ts` (runs in `make e2e-web`).
+- **The Setup page renders the same card persistently** - the boot warning scrolls away in a
+  terminal, so `demo-up.sh` warns AND the portal shows it where an operator actually looks.
+- **The `502 preflight: rpc: ABI decoding failed: buffer overrun while deserializing` was this same
+  misconfiguration wearing a chain fault's clothes.** `demo-up.sh` exports
+  `VACCINATION_ISSUER_ADDR=` EMPTY-BUT-SET when no clone is configured, `main.rs` used to insert
+  that empty string into `issuer_addrs`, `chain::parse_addr` coerces it to the zero address, and
+  `registry()` on a codeless address answers empty returndata - which alloy reports as the decode
+  error above, through prepare's `preflight: {e}` arm. Reproduced live against ROAX on the old
+  binary before fixing. Now: `main.rs` treats an empty-but-set variable as UNSET, and `prepare`
+  refuses a present-but-blank/malformed issuer address by NAME (503) before any chain read.
+  If a new env-wired address is added, keep both halves: filter empty-set at ingest, shape-check at
+  the point of use.
+
 ### Level-B unified submission path (M-3) - now `POST /v1/verify/consent`
 
 The other half of M-2: the network layer that carries an owner-hidden consent proof to the chain.
