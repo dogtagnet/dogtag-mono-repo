@@ -61,6 +61,7 @@ export {
 export {
   checkBlock,
   briefActionBlock,
+  firstSentence,
   renderReason,
   sequenceReasons,
   describeActionBlock,
@@ -73,6 +74,13 @@ export {
   type PlanRetirementReason,
   type RenderedReason,
 } from "./actionAvailability";
+
+export {
+  PROVIDER_ID_STORAGE_PREFIX,
+  providerIdStorageKey,
+  recallProviderId,
+  rememberProviderId,
+} from "./providerIdMemory";
 
 export {
   assessCandidateClone,

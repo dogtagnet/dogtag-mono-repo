@@ -102,6 +102,8 @@ import {
   planCloneDeployment,
   planDirectoryPublication,
   readDeploymentHistory,
+  recallProviderId,
+  rememberProviderId,
   REPOINT_SCOPE_NOTICE,
   sendExplorerHref,
   sendRecord,
@@ -476,6 +478,10 @@ export function ProviderSelfServiceFlows({
   const { writeContractAsync } = useWriteContract();
 
   const [providerId, setProviderId] = useState(defaultProviderId);
+  // Whether the operator has typed into the provider-id field THIS session. Their typing wins over
+  // anything remembered, same rule as `nonceEdited`: a restore is a convenience, and a page that
+  // overwrote a value being typed would be deciding whose record this is on their behalf.
+  const [providerIdEdited, setProviderIdEdited] = useState(false);
   const [recordType, setRecordType] = useState("VACCINATION");
   const [cloneNonce, setCloneNonce] = useState("0");
   const [candidate, setCandidate] = useState("");
@@ -641,6 +647,35 @@ export function ProviderSelfServiceFlows({
     };
   }, [reader, providerId, providerIdOk, mirrorBase, sent.length]);
   const caller = address as `0x${string}` | undefined;
+
+  // A REFRESH MUST NOT EMPTY THE PROVIDER ID. It is a stable identity DogTag assigned, not a
+  // transient input, and losing it deadens three flows at once with reasons pointing at a card the
+  // operator has scrolled past - which is how a captain came to be told a field was empty on a card
+  // whose only visible field he had just filled. Remembered per wallet (see `providerIdMemory.ts`),
+  // restored when the wallet arrives, and switched with it: wallet B's remembered id - or the
+  // deployment default when B has none - replaces wallet A's, so one provider's id is never shown
+  // as another's. Flow 2's contract address is deliberately NOT given this treatment; the module
+  // header owns that argument.
+  const providerIdScope = useRef<string | null>(null);
+  useEffect(() => {
+    if (!caller || providerIdScope.current === caller) return;
+    const firstScope = providerIdScope.current === null;
+    providerIdScope.current = caller;
+    if (firstScope && providerIdEdited) {
+      // Typed before the wallet arrived: now there is a scope to remember it under.
+      rememberProviderId(caller, providerId);
+      return;
+    }
+    const stored = recallProviderId(caller);
+    if (stored !== null) {
+      setProviderId(stored);
+      setProviderIdEdited(false);
+    } else if (!firstScope) {
+      // A wallet switch with nothing remembered must not carry the previous wallet's id across.
+      setProviderId(defaultProviderId);
+      setProviderIdEdited(false);
+    }
+  }, [caller, providerIdEdited, providerId, defaultProviderId]);
 
   // WHAT THIS WALLET HAS DEPLOYED. Read on mount and after every settled transaction, so a provider
   // returning to this page - on this browser or any other - sees their contracts without having
@@ -1063,9 +1098,10 @@ export function ProviderSelfServiceFlows({
     // The groomer mounts this component with `issuance: false`, so flows 1-3 are not rendered at
     // all - and they are first in this order. Passing their blocks unconditionally assigned the full
     // sentence to a control that does not exist, and the only reason a groomer could see degraded to
-    // the brief form: "Unavailable while a field it needs is still empty", which names no field. A
-    // groomer landing here with nothing typed had a disabled Check and nothing anywhere telling them
-    // to enter their provider id.
+    // the brief form. NOT redundant now that a brief reason keeps its identity: the brief form still
+    // drops the remedy half only the full sentence carries - "using the button in the top right" for
+    // a disconnected wallet is the pinned example - so the full sentence must still land on a
+    // control that exists.
     //
     // Same rule as the withdraw-pin entry being last, applied one level up: there the gate is the
     // button's own condition, here it is the capability block around three whole flows.
@@ -1143,7 +1179,14 @@ export function ProviderSelfServiceFlows({
             <Input
               id="providerId"
               value={providerId}
-              onChange={(e) => setProviderId(e.target.value)}
+              onChange={(e) => {
+                setProviderIdEdited(true);
+                setProviderId(e.target.value);
+                // Written through as typed, so a refresh restores it. A no-op while no wallet is
+                // connected - there is no scope to remember it under yet; the restore effect
+                // catches up when one arrives. Clearing the field forgets it.
+                rememberProviderId(caller, e.target.value);
+              }}
               placeholder="0x…"
               className="font-mono"
             />

@@ -108,6 +108,8 @@ afterEach(() => {
   root = null;
   host = null;
   disconnect();
+  // The provider id is remembered in localStorage per wallet; a test must not inherit one.
+  window.localStorage.clear();
 });
 
 const reason = (id: string) => host!.querySelector(`[data-testid='${id}']`);
@@ -153,6 +155,32 @@ describe("a control that cannot be used says why", () => {
     expect(el.querySelector("[data-testid='repoint-check-reason']")!.textContent).toMatch(
       /contract you deployed in step 1/i,
     );
+  });
+
+  it("names the provider id on flow 2 even when flow 1 already said it in full", async () => {
+    // THE CAPTAIN'S STATE, exactly: provider id empty, an address typed into flow 2's only visible
+    // field, and the deduped reason under its buttons reading "Unavailable while a field it needs
+    // is still empty" - an empty-field claim on a card whose only field he had just filled, with
+    // the actually-empty field in a different card above. The brief form is now the sentence's own
+    // first sentence, so the field survives the shortening on every control the obstacle blocks.
+    connect(135);
+    const el = await mount({ issuance: true, listing: true });
+    type("candidate", "0x1111111111111111111111111111111111111111");
+    await turn();
+
+    // Flow 1's Check carries the identical sentence and comes first, so it keeps the full style...
+    const deploy = reason("deploy-check-reason")!;
+    expect(deploy.getAttribute("data-style")).toBe("full");
+    // ...and flow 2's is deduped to brief, which must still name the field.
+    const repoint = reason("repoint-check-reason")!;
+    expect(repoint.getAttribute("data-block")).toBe("missingInput");
+    expect(repoint.getAttribute("data-style")).toBe("brief");
+    expect(repoint.textContent).toBe("Enter your provider id to check.");
+
+    // Flow 4 shares the obstacle and names it too - and no reason anywhere on the page is the
+    // nameless constant this replaces.
+    expect(reason("publish-check-reason")!.textContent).toMatch(/provider id/i);
+    expect(el.textContent).not.toMatch(/a field it needs is still empty/i);
   });
 });
 

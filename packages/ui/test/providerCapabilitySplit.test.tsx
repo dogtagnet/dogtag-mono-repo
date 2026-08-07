@@ -60,6 +60,8 @@ afterEach(() => {
   host?.remove();
   root = null;
   host = null;
+  // The provider id is remembered in localStorage per wallet; a test must not inherit one.
+  window.localStorage.clear();
 });
 
 const sendIds = (el: HTMLElement) =>
@@ -133,7 +135,9 @@ describe("a groomer is a provider that does NOT issue, so three flows are inappl
     // Reasons are said in full once and briefly after, in source order - and the first entries in
     // that order belong to flows 1-3, which a groomer does not render at all. So the full sentence
     // was assigned to a control that does not exist and the only reason on the page degraded to
-    // "Unavailable while a field it needs is still empty", which names no field.
+    // the brief form - which at the time named no field at all. A brief reason now keeps its
+    // obstacle's identity, but it still drops the remedy half only the full sentence carries
+    // (where the connect button IS, asserted below), so the rule this pins is unchanged.
     //
     // Same rule as the withdraw-pin reason being placed last: a sentence may only be spent on a
     // control that is actually rendered. Here the gate is the capability block, one level up.
