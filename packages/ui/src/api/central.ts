@@ -44,6 +44,9 @@ import type {
   VerifierCapabilitiesResp,
   VerifierCapabilityReq,
   VerifierCapabilityResp,
+  MintRoleResp,
+  MintRoleSetReq,
+  MintRoleSetResp,
   ResolversResp,
   ResolverApprovalReq,
   ResolverApprovalResp,
@@ -314,6 +317,15 @@ export function createCentralClient(opts: CentralClientOptions) {
     /** POST /v1/admin/verifier-capabilities - grant/withdraw a relayer's right to verify. */
     setVerifierCapability: (body: VerifierCapabilityReq) =>
       request<VerifierCapabilityResp>("POST", "/v1/admin/verifier-capabilities", body),
+    /**
+     * GET /v1/admin/sbt/mint-role - who may mint dog tags (`DogTagSBTConsent.ISSUER_ROLE`, the
+     * role `mintCustodial` is gated on). An empty holder list is the misprovisioning that makes a
+     * vet's first issuance die as a silent estimation revert.
+     */
+    mintRole: () => request<MintRoleResp>("GET", "/v1/admin/sbt/mint-role"),
+    /** POST /v1/admin/sbt/mint-role - grant/withdraw a vet signer's right to mint dog tags. */
+    setMintRole: (body: MintRoleSetReq) =>
+      request<MintRoleSetResp>("POST", "/v1/admin/sbt/mint-role", body),
     /** GET /v1/admin/resolvers - the typed resolver allowlist, both kinds. */
     listResolvers: () => request<ResolversResp>("GET", "/v1/admin/resolvers"),
     /**

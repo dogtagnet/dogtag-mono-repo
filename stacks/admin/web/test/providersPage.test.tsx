@@ -58,6 +58,14 @@ function journeyStub(url: string): Response | null {
   if (url.includes("/verifier-capabilities")) {
     return json({ registry: REGISTRY, purposes: [] });
   }
+  if (url.includes("/sbt/mint-role")) {
+    return json({
+      sbt: "0x00000000000000000000000000000000000000b2",
+      roleKey: "0x76afa8a5929fef1b4c03674b2152ae5aaad1d974b8a4021c59477bcc846ccc1e",
+      holders: { state: "resolved", accounts: [] },
+      defaultAdmin: null,
+    });
+  }
   if (url.includes("/resolvers")) {
     return json({ registry: REGISTRY, kinds: [] });
   }
@@ -1060,6 +1068,14 @@ describe("Providers - the capability dialog", () => {
             headers: { "content-type": "application/json" },
           });
         if (url.includes("/verifier-capabilities")) return json({ registry: REGISTRY, purposes: [] });
+        if (url.includes("/sbt/mint-role")) {
+          return json({
+            sbt: "0xb2",
+            roleKey: "0x00",
+            holders: { state: "resolved", accounts: [] },
+            defaultAdmin: null,
+          });
+        }
         if (url.includes("/resolvers")) {
           return json({
             registry: REGISTRY,
@@ -1079,5 +1095,71 @@ describe("Providers - the capability dialog", () => {
     buttonWithText("Approve / pull")!.click();
     await settle();
     expect(directionButtons().map((b) => b.textContent?.trim())).toEqual(["Approve", "Pull"]);
+  });
+});
+
+/**
+ * The dog-tag MINT-ROLE card (DogTagSBTConsent ISSUER_ROLE). It exists because a live vet
+ * issuance died at the mint (2026-08-07) with NOBODY holding the role and nothing on any screen
+ * saying so — and the captain's ruling that the remedy is a button here, never a cast command.
+ */
+describe("Providers - the dog-tag mint role card", () => {
+  function mintRoleStub(holders: unknown) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const json = (b: unknown) =>
+        new Response(JSON.stringify(b), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      if (url.includes("/sbt/mint-role")) {
+        const req = input instanceof Request ? input : null;
+        void req;
+        return json({
+          sbt: "0x00000000000000000000000000000000000000b2",
+          roleKey: "0x76afa8a5929fef1b4c03674b2152ae5aaad1d974b8a4021c59477bcc846ccc1e",
+          holders,
+          defaultAdmin: "0x00000000000000000000000000000000000000ad",
+        });
+      }
+      return journeyStub(url) ?? json(listBody([oneProvider()]));
+    });
+  }
+
+  it("renders ZERO holders as the loud broken state, not a quiet none", async () => {
+    vi.stubGlobal("fetch", mintRoleStub({ state: "resolved", accounts: [] }));
+    await mount();
+    expect(container.textContent).toContain("Nobody holds the mint role");
+    expect(container.textContent).toContain("No vet backend can mint a dog tag");
+  });
+
+  it("renders a failed enumeration as could-not-read with its reason, never as nobody-holds-it", async () => {
+    vi.stubGlobal("fetch", mintRoleStub({ state: "unavailable", reason: "eth_call timed out" }));
+    await mount();
+    const card = container.querySelector('[data-testid="mint-role"]')!;
+    expect(card.textContent).toContain("Could not be read");
+    expect(card.textContent).toContain("eth_call timed out");
+    expect(card.textContent).not.toContain("Nobody holds the mint role");
+  });
+
+  it("grants through the reviewed dialog and POSTs the signer — a button, not a command", async () => {
+    const fetchMock = mintRoleStub({ state: "resolved", accounts: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    const set = container.querySelector<HTMLButtonElement>('[data-testid="mint-role-set"]');
+    expect(set).not.toBeNull();
+    set!.click();
+    await settle();
+    // The dialog names what is (and is not) being granted.
+    expect(document.body.textContent).toContain("Dog-tag mint role");
+    expect(document.body.textContent).toContain("no issuance right, no verify capability");
+    type(byId("cap-addr"), "0x00000000000000000000000000000000000000e7");
+    await settle();
+    capabilitySubmit()!.click();
+    await settle();
+    const post = lastPost(fetchMock);
+    expect(post.url).toContain("/v1/admin/sbt/mint-role");
+    expect(post.body.signer).toBe("0x00000000000000000000000000000000000000e7");
+    expect(post.body.allowed).toBe(true);
   });
 });

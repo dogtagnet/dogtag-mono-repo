@@ -141,6 +141,13 @@ contract Deploy is Script {
         providerRegistry = address(new ProviderRegistry(admin));
         issuerImpl = address(new DogTagIssuer());
         factory = address(new DogTagIssuerFactory(issuerImpl, providerRegistry));
+        // DELIBERATELY grants ISSUER_ROLE to NOBODY: the role gates `mintCustodial`, and the vet
+        // signers who need it are custody keys that do not exist at deploy time. The grant is a
+        // post-deploy registrar action — the admin portal's Providers page carries the "Dog-tag
+        // mint role" card (DEMO_CLICKS.md §4.5), and `scripts/demo-bootstrap.sh` grants it for a
+        // demo signer. Skipping it makes every dog-tag issuance fail at the mint with the root
+        // already anchored (measured live, 2026-08-07), which is why the vet's Register pet
+        // screen refuses up front when its signer lacks the role.
         sbt = address(new DogTagSBTConsent(admin, custodian));
         verifier = address(new Groth16VerifierConsent());
         verificationRegistry = address(

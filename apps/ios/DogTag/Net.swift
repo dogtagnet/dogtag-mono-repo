@@ -1237,6 +1237,31 @@ enum CentralApi {
             bound: (o["bound"] as? Bool) ?? false))
     }
 
+    /// The device's bind-status peek: the derived session status and, on "error", the server's
+    /// device-safe stage sentence.
+    struct DogTagIssueStatus {
+        let status: String
+        let reason: String
+    }
+
+    /// GET `<host>/p/<token>/status` — the bind-status peek, keyed by the SAME one-time token the
+    /// QR carried. Unlike the resolve it keeps answering AFTER the bind consumed the token (the
+    /// server retains consumed tokens), because the phone's need for it BEGINS at the bind: a
+    /// session settled to "error" is a definite answer the chain poll could never observe. `nil`
+    /// = could not check (unreachable, expired, or an older backend without the route) — never a
+    /// verdict.
+    static func dogTagIssueStatus(host: String, token: String) async -> DogTagIssueStatus? {
+        guard !token.isEmpty else { return nil }
+        let resp = await Http.getJSON("\(host)/p/\(token)/status")
+        guard resp.ok, let data = resp.body.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return nil
+        }
+        let status = jsonString(o["status"])
+        guard !status.isEmpty else { return nil }
+        return DogTagIssueStatus(status: status, reason: jsonString(o["reason"]))
+    }
+
     private static func jsonString(_ value: Any?) -> String {
         if let string = value as? String { return string }
         if let number = value as? NSNumber { return number.stringValue }

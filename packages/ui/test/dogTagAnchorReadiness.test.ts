@@ -6,9 +6,11 @@
 import { describe, expect, it } from "vitest";
 import {
   ANCHOR_BLOCKED_HEADLINE,
+  ANCHOR_MISSING_MINT_ROLE,
   ANCHOR_MISSING_PROFILE_ISSUER,
   ANCHOR_MISSING_SBT,
   ANCHOR_UNKNOWN_INCOHERENT,
+  ANCHOR_UNKNOWN_MINT_ROLE,
   ANCHOR_UNKNOWN_NO_BLOCK,
   dogTagAnchorProbeFailure,
   dogTagAnchorReadiness,
@@ -20,9 +22,14 @@ function health(block?: HealthResp["dogTagIssuance"]): HealthResp {
 }
 
 describe("dogTagAnchorReadiness", () => {
-  it("is ready only when the backend says both anchor contracts are configured", () => {
+  it("is ready only when both anchor contracts are configured AND the mint role is held", () => {
     const r = dogTagAnchorReadiness(
-      health({ ready: true, profileIssuerConfigured: true, sbtConsentConfigured: true }),
+      health({
+        ready: true,
+        profileIssuerConfigured: true,
+        sbtConsentConfigured: true,
+        mintRole: "held",
+      }),
     );
     expect(r).toEqual({ state: "ready" });
   });
@@ -82,6 +89,73 @@ describe("dogTagAnchorReadiness", () => {
       health({ ready: false, profileIssuerConfigured: true, sbtConsentConfigured: true }),
     );
     expect(r).toEqual({ state: "unknown", reason: ANCHOR_UNKNOWN_INCOHERENT });
+  });
+
+  it("a DEFINITELY missing mint role blocks, preferring the backend's own remedy sentence", () => {
+    const r = dogTagAnchorReadiness(
+      health({
+        ready: true,
+        profileIssuerConfigured: true,
+        sbtConsentConfigured: true,
+        mintRole: "missing",
+        mintRoleDetail: "the vet signing key 0xabc does not hold the dog-tag mint role — grant it",
+      }),
+    );
+    if (r.state !== "blocked") throw new Error(`expected blocked, got ${r.state}`);
+    expect(r.problems).toEqual([
+      "the vet signing key 0xabc does not hold the dog-tag mint role — grant it",
+    ]);
+  });
+
+  it("a missing mint role with no backend detail still names the admin-portal card — a button, never a command", () => {
+    const r = dogTagAnchorReadiness(
+      health({
+        ready: true,
+        profileIssuerConfigured: true,
+        sbtConsentConfigured: true,
+        mintRole: "missing",
+      }),
+    );
+    if (r.state !== "blocked") throw new Error(`expected blocked, got ${r.state}`);
+    expect(r.problems).toEqual([ANCHOR_MISSING_MINT_ROLE]);
+    expect(r.problems[0]).toContain("Dog-tag mint role");
+    expect(r.problems[0]).not.toContain("cast ");
+  });
+
+  it("the mint-role problem COMPOSES with a config problem rather than replacing it", () => {
+    const r = dogTagAnchorReadiness(
+      health({
+        ready: false,
+        profileIssuerConfigured: false,
+        sbtConsentConfigured: true,
+        mintRole: "missing",
+      }),
+    );
+    if (r.state !== "blocked") throw new Error(`expected blocked, got ${r.state}`);
+    expect(r.problems).toEqual([ANCHOR_MISSING_PROFILE_ISSUER, ANCHOR_MISSING_MINT_ROLE]);
+  });
+
+  it("an UNKNOWN mint role warns and never blocks — could-not-check is not a refusal", () => {
+    const r = dogTagAnchorReadiness(
+      health({
+        ready: true,
+        profileIssuerConfigured: true,
+        sbtConsentConfigured: true,
+        mintRole: "unknown",
+        mintRoleDetail: "custody is locked, so the signing key's address cannot be resolved",
+      }),
+    );
+    expect(r).toEqual({
+      state: "unknown",
+      reason: "custody is locked, so the signing key's address cannot be resolved",
+    });
+  });
+
+  it("a backend too old to report the mint role at all is could-not-check, never silently green", () => {
+    const r = dogTagAnchorReadiness(
+      health({ ready: true, profileIssuerConfigured: true, sbtConsentConfigured: true }),
+    );
+    expect(r).toEqual({ state: "unknown", reason: ANCHOR_UNKNOWN_MINT_ROLE });
   });
 
   it("a FAILED probe is could-not-check carrying its own cause — an unreachable backend is not an unconfigured one", () => {

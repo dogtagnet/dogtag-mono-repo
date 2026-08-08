@@ -46,6 +46,9 @@ interface StatusResp {
   resolvedAt?: number | null;
   tokenSecondsLeft?: number;
   qrAddress?: QrAddress;
+  /** A failed bind's operator-vocabulary reason (the server folds legacy tx_hash prose in too). */
+  error?: string | null;
+  errorStage?: string | null;
 }
 
 interface Backend {
@@ -255,6 +258,9 @@ test("a bind landing in the token's final seconds still flips the card to anchor
 });
 
 test("a server-reported failure renders as the failure it is, never as expiry", async ({ page }) => {
+  // The wire shape is the merged backend's: a failed bind settles `error` + `errorStage`
+  // (routes.rs `settle_bind_error`; legacy rows' tx_hash prose is folded into `error` by the
+  // status route), and `txHash` is a REAL hash or absent — never prose.
   const backend: Backend = {
     startTtlSecs: 600,
     qrAddress: SELF,
@@ -262,7 +268,8 @@ test("a server-reported failure renders as the failure it is, never as expiry", 
       {
         status: "error",
         dogTagId: "7",
-        txHash: "identity attestation integrity failed: bad opening — start a FRESH session",
+        error: "identity attestation integrity failed: bad opening — start a FRESH session",
+        errorStage: "attestation",
         resolvedAt: 1_770_000_000,
         tokenSecondsLeft: 100,
         qrAddress: SELF,
@@ -273,9 +280,13 @@ test("a server-reported failure renders as the failure it is, never as expiry", 
   await mockBackend(page, backend);
   await startIssuance(page);
 
-  const errorCard = page.getByTestId("qr-error");
+  const errorCard = page.getByTestId("issuance-error");
   await expect(errorCard).toBeVisible({ timeout: 10_000 });
-  await expect(errorCard).toContainText("identity attestation integrity failed");
+  await expect(page.getByTestId("issuance-error-reason")).toContainText(
+    "identity attestation integrity failed",
+  );
+  // The failure card offers the one path that can complete a stranded root: retry THIS session.
+  await expect(page.getByTestId("issuance-retry")).toBeVisible();
   await expect(page.getByTestId("qr-dead-after-pickup")).toHaveCount(0);
   await expect(page.getByTestId("qr-dead-unclaimed")).toHaveCount(0);
 });

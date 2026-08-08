@@ -54,6 +54,7 @@ import io.liberalize.dogtag.data.ZkeyAsset
 import io.liberalize.dogtag.BuildConfig
 import io.liberalize.dogtag.net.AnchorResolver
 import io.liberalize.dogtag.net.CentralApi
+import io.liberalize.dogtag.net.IssuanceWait
 import io.liberalize.dogtag.net.RoaxRpc
 import io.liberalize.dogtag.profile.ProfileTreeStore
 import io.liberalize.dogtag.qr.QrPayload
@@ -464,15 +465,37 @@ private fun IssuePanel(
                                             RoaxRpc.ProfileRootObservation.Mismatch ->
                                                 error("dog tag is already anchored to a different profile root")
                                         }
+                                        // The server's own answer, through the consumed token's
+                                        // status peek: a session settled to "error" is DEFINITE and
+                                        // the chain poll could only ever wait past it — measured
+                                        // live 2026-08-07, where the mint had reverted minutes
+                                        // earlier and this screen kept forging.
+                                        val peek = withContext(Dispatchers.IO) {
+                                            CentralApi.issueBindStatus(qr.host, qr.token)
+                                        }
+                                        if (peek?.status == "error") {
+                                            error(IssuanceWait.failureText(peek.reason ?: ""))
+                                        }
                                         kotlinx.coroutines.delay(delayMs)
                                         delayMs = minOf(delayMs + 500L, 5_000L)
                                     }
                                     if (!anchored) {
+                                        // The wait is OVER — say what was observed, never that the
+                                        // work is still coming (`IssuanceWait` owns the sentences,
+                                        // mirrored with iOS).
+                                        val peek = withContext(Dispatchers.IO) {
+                                            CentralApi.issueBindStatus(qr.host, qr.token)
+                                        }
                                         working = false
-                                        // "Submitted" may only be claimed when the vet actually
-                                        // ACCEPTED the bind; on the inconclusive path nothing is
-                                        // known to have arrived.
-                                        status = if (bind != null) {
+                                        // The server's own answer outranks local knowledge; when
+                                        // the peek itself is unreachable, what this phone knows
+                                        // locally — whether the vet ACCEPTED the bind — is still
+                                        // stated accurately. "Submitted" may only be claimed when
+                                        // the vet actually accepted; on the inconclusive path
+                                        // nothing is known to have arrived.
+                                        err = if (peek != null) {
+                                            IssuanceWait.timeoutText(peek.status, peek.reason)
+                                        } else if (bind != null) {
                                             "The vet accepted the profile, but the network has not " +
                                                 "confirmed the anchor yet. The vet portal shows when " +
                                                 "it completes; this dog tag appears here after that."

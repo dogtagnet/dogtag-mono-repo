@@ -43,10 +43,10 @@ use crate::auth::{self, keccak256_hex, ShareClaims};
 // it on another type. And the grant reaches every service in effective standing, including another
 // provider's - see `ProviderRegistry.rightsOf`.
 use crate::chain::{
-    attach_service_calldata, create_issuer_calldata, default_admin_role, purpose_key,
-    record_type_key, register_provider_calldata, set_rights_calldata,
-    set_provider_standing_calldata, set_resolver_approved_calldata,
-    set_service_creation_approval_calldata, set_service_standing_calldata,
+    attach_service_calldata, create_issuer_calldata, default_admin_role,
+    grant_issuer_role_calldata, purpose_key, record_type_key, register_provider_calldata,
+    revoke_issuer_role_calldata, set_provider_standing_calldata, set_resolver_approved_calldata,
+    set_rights_calldata, set_service_creation_approval_calldata, set_service_standing_calldata,
     set_verifier_capability_calldata, whitelist_admin_role,
 };
 use crate::crypto;
@@ -753,7 +753,11 @@ async fn register_business(
     // would take the whole directory to `unavailable` for every consumer. Absence is first class;
     // nonsense is not.
     if let (Some(lat), Some(lng)) = (body.lat, body.lng) {
-        if !lat.is_finite() || !lng.is_finite() || !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+        if !lat.is_finite()
+            || !lng.is_finite()
+            || !(-90.0..=90.0).contains(&lat)
+            || !(-180.0..=180.0).contains(&lng)
+        {
             return err(
                 StatusCode::BAD_REQUEST,
                 "lat must be within ±90 and lng within ±180",
@@ -1805,11 +1809,20 @@ async fn provider_view_with_approvals(
         .chain
         .provider_record(registry, provider_id)
         .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("provider({provider_id}): {e}")))?;
+        .map_err(|e| {
+            err(
+                StatusCode::BAD_GATEWAY,
+                &format!("provider({provider_id}): {e}"),
+            )
+        })?;
     // The anchor is only meaningful for a registered provider; for an unregistered id the contract
     // answers a zero-filled struct, which would render as a real anchor with revision 0.
     let anchor = if record.registered {
-        match st.chain.provider_identity_anchor(registry, provider_id).await {
+        match st
+            .chain
+            .provider_identity_anchor(registry, provider_id)
+            .await
+        {
             Ok(a) => json!(a),
             Err(e) => json!({ "unavailable": e.to_string() }),
         }
@@ -1872,7 +1885,9 @@ async fn providers_list(State(st): State<AppState>, headers: HeaderMap) -> Resp 
             // answer, so it is an empty `Resolved` and never a could-not-check.
             Ok(by_provider) => ApprovalsRead::Resolved {
                 entries: fold_approvals(
-                    by_provider.get(&id.to_lowercase()).map_or(&[][..], |e| &e[..]),
+                    by_provider
+                        .get(&id.to_lowercase())
+                        .map_or(&[][..], |e| &e[..]),
                     &|k| record_type_label(k),
                 ),
             },
@@ -2293,7 +2308,10 @@ fn valid_service_addr(addr: &str) -> Result<String, Resp> {
 ///
 /// The `Unavailable` arm's ONE spelling, so a failed issuance read and a failed verifier read cannot
 /// describe the same class of failure two different ways.
-fn capabilities_from(result: Result<Vec<(String, bool)>, crate::chain::ChainError>, what: &str) -> CapabilitiesRead {
+fn capabilities_from(
+    result: Result<Vec<(String, bool)>, crate::chain::ChainError>,
+    what: &str,
+) -> CapabilitiesRead {
     match result {
         Ok(events) => CapabilitiesRead::Resolved {
             entries: fold_capabilities(&events),
@@ -2386,10 +2404,8 @@ async fn provider_services(
         // REGISTRY-WIDE now, and identical for every service in this list: a grant is on the
         // address and names no service. Reported per service anyway, because "who may issue here" is
         // still the question an operator is asking on this row — the answer just stopped varying.
-        let issuance = capabilities_from(
-            st.chain.issuance_rights_log(&registry).await,
-            "RightsSet",
-        );
+        let issuance =
+            capabilities_from(st.chain.issuance_rights_log(&registry).await, "RightsSet");
         services.push(json!({
             "service": record,
             "effective": effective,
@@ -2543,9 +2559,15 @@ async fn provider_service_preflight(
             ),
         )
     } else if generation["state"] == "none" {
-        ("refused", generation["reason"].as_str().unwrap_or("").to_string())
+        (
+            "refused",
+            generation["reason"].as_str().unwrap_or("").to_string(),
+        )
     } else if metadata["state"] == "refused" {
-        ("refused", metadata["reason"].as_str().unwrap_or("").to_string())
+        (
+            "refused",
+            metadata["reason"].as_str().unwrap_or("").to_string(),
+        )
     } else if generation["state"] == "resolved" && metadata["state"] == "resolved" {
         ("ready", String::new())
     } else {
@@ -2995,6 +3017,145 @@ async fn verifier_capability_set(
     }))
 }
 
+/// The `DogTagSBTConsent` the mint-role card administers, loud when unconfigured — a zero address
+/// would read back as "nobody holds the role", a definite claim about a contract never asked.
+fn sbt_target_addr(st: &AppState) -> Result<String, Resp> {
+    let addr = st.cfg.sbt_addr.trim();
+    if addr.is_empty() || is_zero_addr(addr) {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "SBT_ADDR not configured - the dog-tag mint-role surface cannot read or write without \
+             it. Set it to the deployed DogTagSBTConsent (deployments/roax.json key \
+             `DogTagSBTConsent`) and restart.",
+        ));
+    }
+    if !is_valid_addr(addr) {
+        return Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "SBT_ADDR is malformed (expected a 0x-prefixed 20-byte address)",
+        ));
+    }
+    Ok(addr.to_lowercase())
+}
+
+/// `GET /v1/admin/sbt/mint-role` - who may `mintCustodial` dog tags.
+///
+/// The card this feeds exists because of a measured failure (2026-08-07): `mintCustodial` is
+/// `onlyRole(ISSUER_ROLE)`, Deploy.s.sol grants that role to NOBODY, and the first vet issuance
+/// died as a silent estimation revert. "Who holds it" is therefore a first-class read: an EMPTY
+/// holder list on a live SBT is exactly that misprovisioning, shown where the admin can fix it.
+///
+/// The holders arm is tri-state like the approvals read: a failed enumeration is `unavailable`
+/// with its reason, never an empty list — "nobody holds the mint role" is an accusation only a
+/// successful read may make.
+async fn sbt_mint_role(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let sbt = match sbt_target_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let holders = match st.chain.issuer_role_holders(&sbt).await {
+        Ok(list) => json!({ "state": "resolved", "accounts": list }),
+        Err(e) => json!({ "state": "unavailable", "reason": e.to_string() }),
+    };
+    // Who can grant: the SBT's DEFAULT_ADMIN (AccessControlDefaultAdminRules exposes the single
+    // holder). Best-effort — an unreadable holder is `null`, never a guess.
+    let admin = st.chain.default_admin(&sbt).await.ok();
+    ok(json!({
+        "sbt": sbt,
+        "roleKey": crate::chain::issuer_role_key(),
+        "holders": holders,
+        "defaultAdmin": admin,
+    }))
+}
+
+#[derive(Deserialize)]
+struct MintRoleReq {
+    /// The vet backend's signing key (its portal Settings / `GET /health` names it).
+    signer: String,
+    /// `true` grants, `false` revokes — one lever, both directions, like every capability card.
+    allowed: bool,
+}
+
+/// `POST /v1/admin/sbt/mint-role` - grant or withdraw a signer's right to mint dog tags
+/// (`DogTagSBTConsent.grantRole/revokeRole(ISSUER_ROLE, signer)`, gated by the SBT's
+/// DEFAULT_ADMIN). Routed through `governance::dispatch` like every privileged write: executed
+/// when the hosted key IS the admin, else returned as an unsigned proposal for the holder — and
+/// the tri-state `outcome` keeps "proposed by design" apart from "you booted the wrong key".
+async fn sbt_mint_role_set(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<MintRoleReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let sbt = match sbt_target_addr(&st) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let signer = body.signer.trim().to_lowercase();
+    if !is_valid_addr(&signer) || is_zero_addr(&signer) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "signer must be a valid non-zero 0x-prefixed 20-byte address (the vet backend's \
+             signing key)",
+        );
+    }
+    // A DEFINITE already-in-that-state read refuses a no-op: OZ grant/revoke would succeed
+    // silently (no revert, no event), reporting "executed" while changing nothing. A FAILED read
+    // does not refuse — could-not-check may not stand in for a definite answer, and the write
+    // itself is idempotent.
+    if let Ok(held) = st.chain.has_issuer_role(&sbt, &signer).await {
+        if held == body.allowed {
+            return err_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": format!(
+                        "this signer {} the dog-tag mint role — granting again would report a \
+                         transaction that changes nothing",
+                        if held { "already holds" } else { "already lacks" }
+                    ),
+                    "signer": signer,
+                    "allowed": body.allowed,
+                }),
+            );
+        }
+    }
+
+    let (verb, calldata) = if body.allowed {
+        ("grant", grant_issuer_role_calldata(&signer))
+    } else {
+        ("revoke", revoke_issuer_role_calldata(&signer))
+    };
+    let action = GovernanceAction {
+        target: sbt.clone(),
+        calldata,
+        authority: Authority::Role {
+            role_target: sbt.clone(),
+            role: default_admin_role(),
+            default_admin: true,
+        },
+        summary: format!("{verb}Role(ISSUER_ROLE, {signer}) on DogTagSBTConsent"),
+    };
+    let results = match dispatch_all(&st, &[action]).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
+    ok(json!({
+        "sbt": sbt,
+        "signer": signer,
+        "allowed": body.allowed,
+        "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
+    }))
+}
+
 /// `GET /v1/admin/resolvers` - the typed resolver allowlist, both kinds.
 ///
 /// A typed resolver answers NOTHING until BOTH halves hold: the registrar approves it here, AND each
@@ -3123,7 +3284,6 @@ async fn resolver_set_approved(
 // above are now their only callers, and the tri-state `outcome` they produce is what keeps a
 // designed out-of-band proposal apart from a stack booted on a key that lost its authority.
 // ============================================================================================
-
 
 /// Annotate a grant/revoke response with what the request actually did: the tri-state `outcome`, the
 /// back-compat `executed` boolean, and the matching operator note.
@@ -3375,7 +3535,10 @@ pub fn admin_router(state: AppState) -> Router {
         // replaced the deleted `whitelistFor` console: that console called `isWhitelistedFor` and
         // `whitelistFor` on the single authority, which answers the first off an orthogonal axis
         // (a definite `false` for every genuine issuer signer) and does not implement the second.
-        .route("/v1/admin/providers", get(providers_list).post(provider_register))
+        .route(
+            "/v1/admin/providers",
+            get(providers_list).post(provider_register),
+        )
         .route("/v1/admin/providers/:providerId", get(provider_detail))
         .route(
             "/v1/admin/providers/:providerId/standing",
@@ -3397,13 +3560,16 @@ pub fn admin_router(state: AppState) -> Router {
             "/v1/admin/services/:serviceAddress/standing",
             post(service_set_standing),
         )
-        .route(
-            "/v1/admin/rights/:account/issue",
-            post(rights_set_issue),
-        )
+        .route("/v1/admin/rights/:account/issue", post(rights_set_issue))
         .route(
             "/v1/admin/verifier-capabilities",
             get(verifier_capabilities).post(verifier_capability_set),
+        )
+        // The dog-tag MINT role (DogTagSBTConsent ISSUER_ROLE) — who may mintCustodial, and the
+        // grant/withdraw lever. A button, because the captain ruled the remedy must be one.
+        .route(
+            "/v1/admin/sbt/mint-role",
+            get(sbt_mint_role).post(sbt_mint_role_set),
         )
         .route(
             "/v1/admin/resolvers",
@@ -3721,7 +3887,10 @@ mod tests {
                     "{name}: fixture says NaN but haversine_km returned {d}"
                 ),
                 Some(want) => {
-                    assert!(!d.is_nan(), "{name}: haversine_km returned NaN, fixture has {want}");
+                    assert!(
+                        !d.is_nan(),
+                        "{name}: haversine_km returned NaN, fixture has {want}"
+                    );
                     // Tight: the fixture came from this same function, so only JSON round-tripping
                     // is allowed to move it.
                     assert!(

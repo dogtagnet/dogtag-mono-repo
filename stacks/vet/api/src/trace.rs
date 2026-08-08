@@ -255,9 +255,10 @@ pub fn build_index(
     }
 
     // Dog-tag mints: a bound session's device-computed profile root is what `issue(R)` anchored, so
-    // the on-chain `RootIssued` event joins by root; the mint tx is a belt. A session whose bind
-    // errored has an error STRING in `tx_hash` (routes.rs settles it that way) - root-only for those,
-    // and the error text can never collide with a real `0x…` tx key anyway.
+    // the on-chain `RootIssued` event joins by root; the mint tx is a belt. A failed bind's reason
+    // now lives in `error_reason` (tx_hash stays a real hash or None), but rows written before that
+    // field existed carry an error STRING in `tx_hash` — the `status == "bound"` gate is what keeps
+    // BOTH shapes out of the tx join, so it stays even though new error rows have no tx_hash.
     for m in mints {
         let summary = mint_summary(m);
         if let Some(root) = &m.root {
@@ -469,6 +470,8 @@ mod tests {
             root: Some("0xM1NT".to_string()),
             tx_hash: Some("0xminttx".to_string()),
             protocol_version: Some("dogtag-levelb/1".to_string()),
+            error_stage: None,
+            error_reason: None,
         };
         let idx = build_index(&[], &[], &[mint]);
 
@@ -485,7 +488,10 @@ mod tests {
         // feed is subject-less by design, even on the operator's own portal.
         let text = local.to_string();
         for leaked in ["Jane", "S1234567A", "Bella", "ownerIdentity", "petName"] {
-            assert!(!text.contains(leaked), "mint join leaked `{leaked}`: {text}");
+            assert!(
+                !text.contains(leaked),
+                "mint join leaked `{leaked}`: {text}"
+            );
         }
 
         // The mint tx joins as a belt.
@@ -496,8 +502,9 @@ mod tests {
 
     #[test]
     fn errored_mint_session_never_joins_by_its_error_text() {
-        // A failed bind stores an error STRING in tx_hash (routes.rs settles the row that way); it
-        // must not enter the tx join index. No root was anchored either.
+        // A failed bind now stores its reason in `error_reason`, but rows written BEFORE that
+        // field existed carry an error STRING in tx_hash (routes.rs used to settle the row that
+        // way); such a row must not enter the tx join index. No root was anchored either.
         let errored = crate::store::ProfileIssueSession {
             session_id: "ps-err".to_string(),
             dog_tag_id: "43".to_string(),
@@ -513,9 +520,14 @@ mod tests {
             root: None,
             tx_hash: Some("issue(R) error: boom".to_string()),
             protocol_version: None,
+            error_stage: None,
+            error_reason: None,
         };
         let idx = build_index(&[], &[], &[errored]);
-        assert!(idx.is_empty(), "an errored, rootless session indexes nothing");
+        assert!(
+            idx.is_empty(),
+            "an errored, rootless session indexes nothing"
+        );
     }
 
     #[test]

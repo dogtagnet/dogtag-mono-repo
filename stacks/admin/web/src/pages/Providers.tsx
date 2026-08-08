@@ -57,6 +57,7 @@ import {
   type ProviderApprovalsRead,
   type ProviderRegistrarView,
   type ProviderServicesResp,
+  type MintRoleResp,
   type ProviderServiceView,
   type ProviderStanding,
   type ProvidersResp,
@@ -526,6 +527,123 @@ function ServiceRow({
  * purpose and a relayer and no service at all, so rendering it inside a service would present it as
  * a property of that service. An issuer is not implicitly a verifier.
  */
+/**
+ * The dog-tag MINT role (`DogTagSBTConsent.ISSUER_ROLE`) — who may `mintCustodial`.
+ *
+ * This card exists because of a measured failure (2026-08-07): `Deploy.s.sol` grants this role to
+ * NOBODY, and the first vet dog-tag issuance died as a silent estimation revert at the mint, after
+ * `issue(R)` had already anchored the root. The remedy is THIS button, in the operator's
+ * vocabulary — never a cast command (captain's ruling).
+ *
+ * The holder list is tri-state like every capability read: a failed enumeration renders its reason
+ * and never an empty list — "nobody may mint" is an accusation only a successful read may make. An
+ * EMPTY resolved list gets the loud treatment, because it is the exact broken state.
+ */
+function MintRoleCard({
+  data,
+  loadError,
+  busy,
+  onSet,
+  onRefresh,
+}: {
+  data: MintRoleResp | null;
+  loadError: string | null;
+  busy: boolean;
+  onSet: () => void;
+  onRefresh: () => void;
+}) {
+  // Defensive on a REQUIRED field, same rule as `DispatchEntry`: this card renders beside the
+  // whole registrar page, so a payload whose `holders` block is missing or unrecognized must
+  // degrade to its own could-not-read state rather than throw and unmount everything around it.
+  const holders: MintRoleResp["holders"] =
+    data?.holders &&
+    (data.holders.state === "resolved" || data.holders.state === "unavailable")
+      ? data.holders
+      : { state: "unavailable", reason: "the backend's answer carried no holders block" };
+  return (
+    <Card data-testid="mint-role">
+      <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
+        <div>
+          <CardTitle className="text-base">Dog-tag mint role</CardTitle>
+          <CardDescription>
+            Who may mint dog tags — <span className="font-mono text-xs">mintCustodial</span> on the
+            DogTagSBTConsent is gated on its <span className="font-mono text-xs">ISSUER_ROLE</span>,
+            and a fresh deployment grants it to <span className="font-medium">nobody</span>. Grant
+            it to each vet backend's signing key or every dog-tag issuance fails at the mint with
+            the root already anchored.
+          </CardDescription>
+        </div>
+        <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy}>
+          <RefreshCw className="mr-2 h-4 w-4" />
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {loadError ? (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              <span className="font-medium">The mint role could not be read.</span>{" "}
+              <span className="text-muted-foreground">{loadError}</span>
+            </span>
+          </div>
+        ) : !data ? (
+          <Spinner />
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2">
+            <div className="flex flex-wrap items-center gap-2" data-testid="mint-role-holders">
+              {holders.state === "unavailable" ? (
+                <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500">
+                  <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    <span className="font-medium">Could not be read.</span>{" "}
+                    <span className="text-muted-foreground">{holders.reason}</span>
+                  </span>
+                </div>
+              ) : holders.accounts.length === 0 ? (
+                // The exact live-walk misprovisioning, so it is loud rather than a quiet "none".
+                <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    <span className="font-medium">Nobody holds the mint role.</span>{" "}
+                    <span className="text-muted-foreground">
+                      No vet backend can mint a dog tag until it is granted.
+                    </span>
+                  </span>
+                </div>
+              ) : (
+                holders.accounts.map((who) => (
+                  <span key={who} className="flex items-center gap-1">
+                    <Badge variant="success" className="font-mono text-[11px]">
+                      {shortAddr(who)}
+                    </Badge>
+                    <CopyButton value={who} label="holder" />
+                  </span>
+                ))
+              )}
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={onSet}
+              data-testid="mint-role-set"
+            >
+              Grant / withdraw
+            </Button>
+          </div>
+        )}
+        {data?.defaultAdmin ? (
+          <p className="text-[11px] text-muted-foreground">
+            Granting is gated by the SBT's admin, {shortAddr(data.defaultAdmin)} — when the hosted
+            key is not that admin, the action comes back as unsigned calldata for it to execute.
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 function VerifierCapabilities({
   data,
   loadError,
@@ -691,7 +809,8 @@ function Resolvers({
 type CapabilityTarget =
   | { kind: "issuance"; providerId: string; service: string }
   | { kind: "verify"; purpose: string }
-  | { kind: "resolver"; resolverKind: ResolverKind };
+  | { kind: "resolver"; resolverKind: ResolverKind }
+  | { kind: "mintRole" };
 
 /**
  * The shared grant/withdraw dialog.
@@ -750,7 +869,19 @@ function CapabilityDialog({
               "The relayer that may submit verifications for this purpose. This grants no issuance: " +
               "the verify axis is orthogonal, and an issuer is not implicitly a verifier.",
           }
-        : {
+        : target.kind === "mintRole"
+          ? {
+              title: "Dog-tag mint role",
+              what: "on the DogTagSBTConsent",
+              label: "Vet backend signing key",
+              hint:
+                "The key the vet backend signs with — its portal names it, and the vet /health " +
+                "reports whether it holds this role. mintCustodial is gated on it, so without it " +
+                "every dog-tag issuance dies at the mint after the root is already anchored. " +
+                "Granting is the SBT admin's call: it lets this key seal profile roots, nothing " +
+                "else — no issuance right, no verify capability.",
+            }
+          : {
             title: `${target.resolverKind === "directory" ? "Directory" : "Domain"} resolver`,
             what: "",
             label: "Resolver address",
@@ -883,6 +1014,8 @@ export function Providers() {
   const [verifierError, setVerifierError] = useState<string | null>(null);
   const [resolvers, setResolvers] = useState<ResolversResp | null>(null);
   const [resolverError, setResolverError] = useState<string | null>(null);
+  const [mintRole, setMintRole] = useState<MintRoleResp | null>(null);
+  const [mintRoleError, setMintRoleError] = useState<string | null>(null);
 
   // ---- attach dialog: same check-then-send discipline as registration --------------------------
   const [attachFor, setAttachFor] = useState<string | null>(null);
@@ -968,11 +1101,22 @@ export function Providers() {
     }
   }, [central]);
 
+  const loadMintRole = useCallback(async () => {
+    setMintRoleError(null);
+    try {
+      setMintRole(await central.mintRole());
+    } catch (e) {
+      setMintRole(null);
+      setMintRoleError(e instanceof Error ? e.message : String(e));
+    }
+  }, [central]);
+
   useEffect(() => {
     void load();
     void loadVerifiers();
     void loadResolvers();
-  }, [load, loadVerifiers, loadResolvers]);
+    void loadMintRole();
+  }, [load, loadVerifiers, loadResolvers, loadMintRole]);
 
   function resetDialog() {
     setProviderId("");
@@ -1212,6 +1356,16 @@ export function Providers() {
           summary: `issue right ${allowed ? "granted to" : "withdrawn from"} ${shortAddr(address)} (every service in standing)`,
         });
         await loadServices(target.providerId);
+      } else if (target.kind === "mintRole") {
+        const resp = await central.setMintRole({ signer: address, allowed });
+        recordDispatch({
+          providerId: "dog-tag mint role",
+          outcome: resp.outcome ?? (resp.executed ? "executed" : "proposed_unauthorized"),
+          warning: resp.warning,
+          actions: resp.actions,
+          summary: `dog-tag mint role ${allowed ? "granted to" : "withdrawn from"} ${shortAddr(address)}`,
+        });
+        await loadMintRole();
       } else if (target.kind === "verify") {
         const resp = await central.setVerifierCapability({
           purpose: target.purpose,
@@ -1519,9 +1673,17 @@ export function Providers() {
         </CardContent>
       </Card>
 
-      {/* The two ORTHOGONAL levers, deliberately outside the provider table: neither is keyed by a
-          provider. `setVerifierCapability` takes a purpose and a relayer; `setResolverApproved` is
-          fleet-wide. Rendering either inside a provider row would misstate what it applies to. */}
+      {/* The ORTHOGONAL levers, deliberately outside the provider table: none is keyed by a
+          provider. The mint role is on the SBT (per vet SIGNING KEY, reaching every provider that
+          key serves); `setVerifierCapability` takes a purpose and a relayer; `setResolverApproved`
+          is fleet-wide. Rendering any inside a provider row would misstate what it applies to. */}
+      <MintRoleCard
+        data={mintRole}
+        loadError={mintRoleError}
+        busy={busy !== null}
+        onSet={() => setCapability({ kind: "mintRole" })}
+        onRefresh={() => void loadMintRole()}
+      />
       <VerifierCapabilities
         data={verifiers}
         loadError={verifierError}
