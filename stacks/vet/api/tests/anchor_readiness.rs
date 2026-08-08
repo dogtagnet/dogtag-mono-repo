@@ -10,8 +10,10 @@
 //!    token, with a message that names the missing contract in the operator's vocabulary and points
 //!    at the fixing step.
 //! 2. `GET /health` reports the same config facts (`dogTagIssuance`) so the portal can refuse the
-//!    screen in place before the operator fills a form. Config facts only — never a chain read, so
-//!    `ready` claims configuration, not function.
+//!    screen in place before the operator fills a form. `ready` claims configuration, not
+//!    function; the ONE chain fact beside it is `mintRole` (bounded, three-state), because a fully
+//!    configured stack whose signer was never granted the SBT's ISSUER_ROLE cannot mint a single
+//!    tag — measured live 2026-08-07, surfacing as a silent estimation revert.
 //! 3. `POST /credentials/prepare` names a blank/malformed issuer clone address instead of passing
 //!    it into a chain read as the zero address — which used to surface as
 //!    `502 preflight: rpc: ABI decoding failed: buffer overrun while deserializing`, a config hole
@@ -74,7 +76,11 @@ async fn register_pet_refuses_before_allocating_when_the_profile_issuer_is_unset
         Some(start_body()),
     )
     .await;
-    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "must refuse up front: {b}");
+    assert_eq!(
+        s,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "must refuse up front: {b}"
+    );
 
     let msg = b["error"].as_str().expect("refusal carries a message");
     assert!(
@@ -234,5 +240,100 @@ async fn an_unknown_record_type_names_the_missing_issuer_configuration() {
     assert!(
         msg.contains("no issuer contract is configured for recordType BOARDING"),
         "{msg}"
+    );
+}
+
+// ============================================================================================
+// The SBT mint role on /health: held / missing / unknown, and could-not-check WARNS, never
+// refuses (the gate half is pinned in custodial_issuance_bridge.rs).
+// ============================================================================================
+
+/// Custody LOCKED (nobody has unlocked since boot): the signer's address cannot be resolved, so
+/// the answer is "unknown" — never either verdict — while the config half still reports ready.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn health_reports_mint_role_unknown_while_custody_is_locked() {
+    let app = vet_api::router(issuing_state());
+    let (s, b) = call(&app, "GET", "/health", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    let block = &b["dogTagIssuance"];
+    assert_eq!(block["ready"], true, "config half unaffected: {b}");
+    assert_eq!(block["mintRole"], "unknown", "{b}");
+    assert!(
+        block["mintRoleDetail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("custody is locked"),
+        "the unknown names its cause: {b}"
+    );
+}
+
+/// Unlocked + the fake's default (a provisioned SBT): "held", no detail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn health_reports_mint_role_held_once_unlocked_on_a_provisioned_sbt() {
+    let app = vet_api::router(issuing_state());
+    let _ = boot_custody(&app).await;
+    let (s, b) = call(&app, "GET", "/health", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(b["dogTagIssuance"]["mintRole"], "held", "{b}");
+    assert!(b["dogTagIssuance"]["mintRoleDetail"].is_null(), "{b}");
+}
+
+/// Unlocked + the role NOT held: "missing", and the detail is the operator remedy — it names the
+/// signer and the ADMIN portal's "Dog-tag mint role" card, never a cast command.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn health_reports_mint_role_missing_with_the_admin_portal_remedy() {
+    let mem = MemChain::new();
+    let state = state_with(
+        Arc::new(mem.clone()),
+        "memchain".to_string(),
+        "0x00000000000000000000000000000000000000aa".to_string(),
+        "0x00000000000000000000000000000000000000bb".to_string(),
+        "vet.example".to_string(),
+        1,
+    );
+    let app = vet_api::router(state);
+    let (_admin, _op, signer) = boot_custody(&app).await;
+    mem.set_sbt_issuer_role(SBT_CONSENT_ADDR, &signer, false);
+
+    let (s, b) = call(&app, "GET", "/health", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(b["dogTagIssuance"]["mintRole"], "missing", "{b}");
+    let detail = b["dogTagIssuance"]["mintRoleDetail"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        detail.contains("Dog-tag mint role")
+            && detail.contains(&signer.to_lowercase())
+            && !detail.contains("cast "),
+        "the remedy is a portal card naming the signer, never a command: {detail}"
+    );
+}
+
+/// A FAILED role read is "unknown" with the failure named — could-not-check is not a verdict, and
+/// /health must keep answering (the read is bounded, the probe never hangs the liveness check).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn health_reports_mint_role_unknown_when_the_read_fails() {
+    let mem = MemChain::new();
+    let state = state_with(
+        Arc::new(mem.clone()),
+        "memchain".to_string(),
+        "0x00000000000000000000000000000000000000aa".to_string(),
+        "0x00000000000000000000000000000000000000bb".to_string(),
+        "vet.example".to_string(),
+        1,
+    );
+    let app = vet_api::router(state);
+    let _ = boot_custody(&app).await;
+    mem.set_sbt_role_reads_failing(true);
+
+    let (s, b) = call(&app, "GET", "/health", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(b["dogTagIssuance"]["mintRole"], "unknown", "{b}");
+    assert!(
+        b["dogTagIssuance"]["mintRoleDetail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("could not check"),
+        "the unknown says it could not check: {b}"
     );
 }

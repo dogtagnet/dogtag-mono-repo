@@ -661,11 +661,15 @@ async fn a_collision_opened_after_session_start_is_refused_before_anything_reach
     assert_eq!(s, StatusCode::OK);
     assert_eq!(row["status"], "error", "the session row must be settled");
     assert!(
-        row["txHash"]
+        row["error"]
             .as_str()
             .unwrap_or_default()
             .contains(&dog_tag_id),
-        "the operator must see WHY it failed: {row}"
+        "the operator must see WHY it failed, in the reason's own field: {row}"
+    );
+    assert!(
+        row["txHash"].is_null(),
+        "a failed bind's txHash is never prose — the reason has its own field: {row}"
     );
 
     // THE LOAD-BEARING ASSERTION: `issue(R)` never ran, so the device's `R` was not burned. Assert
@@ -694,5 +698,476 @@ async fn a_collision_opened_after_session_start_is_refused_before_anything_reach
             .unwrap(),
         other_root.to_lowercase(),
         "the refused bind must not have disturbed the concurrent issuance's seal"
+    );
+}
+
+// ============================================================================================
+// A FAILED on-chain mint tells everyone (2026-08-07 live failure): the operator's log gets a
+// line naming the stage, the session row carries the stage + reason in their own fields, and
+// the DEVICE can learn it through the token status peek instead of chain-polling into a guess.
+// ============================================================================================
+
+/// Poll the device status peek (`GET /p/{token}/status`) until it leaves pending/minting.
+async fn await_device_status(app: &axum::Router, token: &str) -> serde_json::Value {
+    for _ in 0..200 {
+        let (s, b) = call(app, "GET", &format!("/p/{token}/status"), None, None).await;
+        assert_eq!(s, StatusCode::OK, "device peek must answer: {b}");
+        if b["status"] != "pending" && b["status"] != "minting" {
+            return b;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("device peek never settled");
+}
+
+/// The captain's exact failure, end to end: nobody holds the SBT's ISSUER_ROLE, `issue(R)` lands,
+/// `mintCustodial` reverts — and NOW the session names the stage and reason in their own fields
+/// (never `txHash`), and the device learns "error" through the consumed token's status peek.
+///
+/// The role READ is failed alongside (fault injection) so the bind's could-not-check gate lets the
+/// attempt through — which also pins the gate's license: could-not-check never refuses. A READABLE
+/// missing role is refused before the token is consumed (its own test below).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_mint_settles_the_session_and_the_device_learns_it() {
+    let mem = MemChain::new();
+    let chain: Arc<dyn ChainClient> = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, signer) = boot_custody(&app).await;
+
+    // The live-walk state: the role is NOT held, and the gate cannot see that (read fails).
+    mem.set_sbt_issuer_role(SBT_CONSENT_ADDR, &signer, false);
+    mem.set_sbt_role_reads_failing(true);
+
+    let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
+    let wire = device_wire(canonical_field(&dog_tag_id));
+    let root = wire.root.clone();
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(wire.bind_body(&token)),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "bind accepted (gate could not check): {b}"
+    );
+
+    let settled = await_settled(&app, &op, &session_id).await;
+    assert_eq!(settled["status"], "error", "the row must settle: {settled}");
+    assert_eq!(
+        settled["errorStage"], "mint",
+        "the stage is named in its own field: {settled}"
+    );
+    let reason = settled["error"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("mintCustodial") && reason.contains("Retry issuance"),
+        "the reason names the failed call AND the way forward: {reason}"
+    );
+    assert!(
+        settled["txHash"].is_null(),
+        "txHash never carries prose: {settled}"
+    );
+
+    // The stranded-root state is real: issue(R) landed, the mint did not.
+    assert!(
+        !chain
+            .issued_at(PROFILE_ISSUER_ADDR, &root)
+            .await
+            .unwrap()
+            .is_zero(),
+        "issue(R) landed before the mint failed"
+    );
+    let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
+    assert!(
+        chain
+            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
+            .await
+            .is_err(),
+        "nothing was minted"
+    );
+
+    // THE DEVICE LEARNS IT — through the CONSUMED token, with a stage sentence and no operator
+    // detail (no chain error text, no env vars).
+    let peek = await_device_status(&app, &token).await;
+    assert_eq!(peek["status"], "error");
+    let device_reason = peek["reason"].as_str().unwrap_or_default();
+    assert!(
+        device_reason.contains("could not be minted")
+            && device_reason.contains("retry this same issuance"),
+        "the device gets the mint-stage sentence: {device_reason}"
+    );
+    assert!(
+        !device_reason.contains("mintCustodial") && !device_reason.contains("sbt role read"),
+        "the device sentence must not carry the operator's chain detail: {device_reason}"
+    );
+
+    // The pre-bind resolve is CONSUMED (404) even though the status peek still answers: retention
+    // must not reopen the identity-bearing resolve.
+    let (s, _b) = call(&app, "GET", &format!("/p/{token}"), None, None).await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "the resolve must 404 after the bind consumed the token"
+    );
+}
+
+/// A READABLE missing role refuses at every operator surface BEFORE anything is spent: session
+/// start refuses with nothing allocated, and a bind against an already-issued QR refuses WITHOUT
+/// consuming the one-time token — the same QR completes once the role is granted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_mint_role_refuses_at_start_and_preserves_the_bind_token() {
+    let mem = MemChain::new();
+    let chain: Arc<dyn ChainClient> = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, signer) = boot_custody(&app).await;
+
+    // Start a session while the role is held, so a QR exists…
+    let (token, dog_tag_id, _session_id) = start_session(&app, &op).await;
+
+    // …then the role turns out missing (readable this time).
+    mem.set_sbt_issuer_role(SBT_CONSENT_ADDR, &signer, false);
+
+    // Session START refuses in the operator's vocabulary, pointing at the admin portal's card.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/session/start",
+        Some(&op),
+        Some(start_body()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "start must refuse: {b}");
+    let msg = b["error"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("Dog-tag mint role") && msg.contains(&signer.to_lowercase()),
+        "the refusal names the signer and the admin-portal card: {msg}"
+    );
+
+    // The BIND refuses too — before consuming the token.
+    let wire = device_wire(canonical_field(&dog_tag_id));
+    let (s, _b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(wire.bind_body(&token)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "bind must refuse");
+
+    // Grant the role: the SAME QR now completes — the refusal spent nothing.
+    mem.set_sbt_issuer_role(SBT_CONSENT_ADDR, &signer, true);
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(wire.bind_body(&token)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "the preserved token binds: {b}");
+}
+
+/// A failing `issue(R)` (root already registered by a FOREIGN clone — globally write-once) settles
+/// the session at stage "issue" and the device learns it. Nothing was minted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_issue_settles_the_session_and_the_device_learns_it() {
+    let mem = MemChain::new().with_factory(FACTORY_ADDR);
+    let chain: Arc<dyn ChainClient> = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, _signer) = boot_custody(&app).await;
+
+    let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
+    let wire = device_wire(canonical_field(&dog_tag_id));
+    let root = wire.root.clone();
+
+    // A foreign clone registers the same root first — `registerRoot` is globally write-once, so
+    // OUR issue(R) can only revert "root taken".
+    chain
+        .issue(0, "0x00000000000000000000000000000000000000cc", &root)
+        .await
+        .expect("foreign clone takes the root");
+
+    let (s, _b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(wire.bind_body(&token)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let settled = await_settled(&app, &op, &session_id).await;
+    assert_eq!(settled["status"], "error");
+    assert_eq!(settled["errorStage"], "issue", "stage named: {settled}");
+    let reason = settled["error"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("issue(R)") && reason.contains("root taken"),
+        "the reason carries the underlying revert: {reason}"
+    );
+
+    let peek = await_device_status(&app, &token).await;
+    assert_eq!(peek["status"], "error");
+    assert!(
+        peek["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("anchoring of this dog tag failed"),
+        "the device gets the issue-stage sentence: {peek}"
+    );
+}
+
+/// THE RECOVERY, end to end — the captain's stranded root completed. An earlier attempt anchored
+/// R (issue(R) landed) and the mint failed; the operator fixes the cause (grants the role) and
+/// RETRIES THE SAME SESSION. The device re-posts the same root off its persisted record, the
+/// resume check skips the impossible re-issue, and the mint completes the tag.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_completes_a_stranded_root_after_the_cause_is_fixed() {
+    let mem = MemChain::new();
+    let chain: Arc<dyn ChainClient> = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, signer) = boot_custody(&app).await;
+
+    // ---- the failure: role missing, gate blind, mint reverts, root stranded ----
+    mem.set_sbt_issuer_role(SBT_CONSENT_ADDR, &signer, false);
+    mem.set_sbt_role_reads_failing(true);
+    let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
+    let wire = device_wire(canonical_field(&dog_tag_id));
+    let root = wire.root.clone();
+    let (s, _b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(wire.bind_body(&token)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let settled = await_settled(&app, &op, &session_id).await;
+    assert_eq!(settled["status"], "error");
+    assert_eq!(settled["errorStage"], "mint");
+
+    // ---- the fix: the admin grants ISSUER_ROLE (the admin portal's card does this on chain) ----
+    mem.set_sbt_issuer_role(SBT_CONSENT_ADDR, &signer, true);
+    mem.set_sbt_role_reads_failing(false);
+
+    // ---- the retry: same session, fresh token, same dogTagId + identity salts ----
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/profiles/issue/session/{session_id}/retry"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "retry must re-arm the session: {b}");
+    assert_eq!(
+        b["dogTagId"].as_str().unwrap(),
+        dog_tag_id,
+        "the SAME dogTagId — a fresh session would derive a DIFFERENT root and strand this one"
+    );
+    let retry_token = b["token"].as_str().unwrap().to_string();
+    assert_ne!(retry_token, token, "a fresh one-time token is minted");
+
+    // The device re-scans: same session metadata, same identity salts -> the persisted profile
+    // record rebuilds the SAME root, and the bind resumes at the mint.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(wire.bind_body(&retry_token)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "retry bind: {b}");
+    let settled = await_settled(&app, &op, &session_id).await;
+    assert_eq!(
+        settled["status"], "bound",
+        "the stranded root completes: {settled}"
+    );
+    assert!(settled["txHash"].as_str().is_some(), "mint tx recorded");
+    assert!(
+        settled["error"].is_null() && settled["errorStage"].is_null(),
+        "a completed retry clears the failure fields: {settled}"
+    );
+
+    // Both on-chain conditions hold — the tag is verifiable.
+    let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
+    assert_eq!(
+        chain
+            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
+            .await
+            .unwrap()
+            .to_lowercase(),
+        root.to_lowercase()
+    );
+    assert!(chain.is_valid(PROFILE_ISSUER_ADDR, &root).await.unwrap());
+
+    // A retry of the now-BOUND session is refused: only failed issuances re-arm.
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/profiles/issue/session/{session_id}/retry"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "bound sessions cannot re-arm: {b}");
+}
+
+/// The device peek follows the whole HAPPY path too: pending before the bind, bound after — and
+/// the peek keeps answering through the token the bind consumed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_device_peek_reports_pending_then_bound_across_the_consumed_token() {
+    let mem = MemChain::new();
+    let chain: Arc<dyn ChainClient> = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, _signer) = boot_custody(&app).await;
+
+    let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
+    let (s, b) = call(&app, "GET", &format!("/p/{token}/status"), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(b["status"], "pending", "before the bind: {b}");
+    assert!(b["reason"].is_null(), "no failure, no reason: {b}");
+
+    let wire = device_wire(canonical_field(&dog_tag_id));
+    let (s, _b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(wire.bind_body(&token)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let _ = await_settled(&app, &op, &session_id).await;
+
+    let peek = await_device_status(&app, &token).await;
+    assert_eq!(peek["status"], "bound", "after completion: {peek}");
+    assert_eq!(peek["dogTagId"].as_str().unwrap(), dog_tag_id);
+
+    // An unknown token stays a 404 — the peek is not an enumeration surface.
+    let (s, _b) = call(
+        &app,
+        "GET",
+        "/p/00ff00ff00ff00ff00ff00ff00ff00ff/status",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// An interrupted issuance (anchored, unminted — e.g. a crash between the two transactions)
+/// resumes at the mint on an ordinary bind: `issued_at != 0` on OUR clone means stage (1) is
+/// already done, and re-running it could only revert "root taken".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_already_anchored_root_resumes_at_the_mint_instead_of_reissuing() {
+    let mem = MemChain::new().with_factory(FACTORY_ADDR);
+    let chain: Arc<dyn ChainClient> = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, _signer) = boot_custody(&app).await;
+
+    let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
+    let wire = device_wire(canonical_field(&dog_tag_id));
+    let root = wire.root.clone();
+
+    // The earlier attempt's issue(R) already landed on OUR clone. With the factory modelled,
+    // a second issue(R) would revert "root taken" — so completing proves the resume skipped it.
+    chain
+        .issue(0, PROFILE_ISSUER_ADDR, &root)
+        .await
+        .expect("the interrupted attempt anchored the root");
+
+    let (s, _b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(wire.bind_body(&token)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let settled = await_settled(&app, &op, &session_id).await;
+    assert_eq!(
+        settled["status"], "bound",
+        "resumed and completed: {settled}"
+    );
+
+    let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
+    assert_eq!(
+        chain
+            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
+            .await
+            .unwrap()
+            .to_lowercase(),
+        root.to_lowercase()
+    );
+}
+
+/// THE LOG LINE — the change that turns a two-hour hunt into one line. A failing background arm
+/// must emit a real `tracing::error!` naming the stage, the dogTagId and the underlying error,
+/// where an operator tailing the backend actually looks. Captured through a real subscriber; the
+/// 2026-08-07 failure emitted NOTHING.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_background_arm_logs_where_the_operator_looks() {
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+        fn make_writer(&'a self) -> Capture {
+            self.clone()
+        }
+    }
+
+    let sink = Capture(Arc::new(Mutex::new(Vec::new())));
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(sink.clone())
+        .with_ansi(false)
+        .finish();
+    // Global, not thread-scoped: the arm runs inside a spawned tokio task on another worker
+    // thread, which a `set_default` guard would not cover.
+    let _ = tracing::subscriber::set_global_default(subscriber);
+
+    let mem = MemChain::new();
+    let chain: Arc<dyn ChainClient> = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, signer) = boot_custody(&app).await;
+    mem.set_sbt_issuer_role(SBT_CONSENT_ADDR, &signer, false);
+    mem.set_sbt_role_reads_failing(true);
+
+    let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
+    let wire = device_wire(canonical_field(&dog_tag_id));
+    let (s, _b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(wire.bind_body(&token)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let _ = await_settled(&app, &op, &session_id).await;
+
+    let log = String::from_utf8_lossy(&sink.0.lock().unwrap()).to_string();
+    assert!(
+        log.contains("mintCustodial") && log.contains(&dog_tag_id) && log.contains("ERROR"),
+        "the operator's log must name the stage and the dogTagId at ERROR level; got:\n{log}"
     );
 }

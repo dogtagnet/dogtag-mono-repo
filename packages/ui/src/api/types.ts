@@ -490,15 +490,22 @@ export interface ProfilePet {
 /**
  * The `dogTagIssuance` block on an issuance-enabled backend's `GET /health`: whether the two
  * owner-hidden ANCHOR contracts (the DOG_PROFILE issuer clone and the DogTagSBTConsent) are
- * configured. Config facts only — the backend makes no chain read for this, so `ready` claims the
- * addresses are set and well-formed, never that the contracts work. A groomer backend (no issuance
- * surface) sends no block at all; consumers must read absence as could-not-check, never as either
- * verdict (`dogTagAnchorReadiness` encodes that rule).
+ * configured, and whether the vet signing key holds the SBT's mint role. `ready` is config facts
+ * only (the addresses are set and well-formed, never that the contracts work); `mintRole` is the
+ * ONE chain fact beside them — `mintCustodial` is `onlyRole(ISSUER_ROLE)` and a fresh SBT grants
+ * it to nobody, so a fully configured stack can still be unable to mint a single tag (measured
+ * live 2026-08-07). A groomer backend (no issuance surface) sends no block at all; consumers must
+ * read absence — of the block, or of `mintRole` on an older backend — as could-not-check, never as
+ * either verdict (`dogTagAnchorReadiness` encodes that rule).
  */
 export interface DogTagIssuanceReadiness {
   ready: boolean;
   profileIssuerConfigured: boolean;
   sbtConsentConfigured: boolean;
+  /** "held" | "missing" | "unknown"; absent on an older backend (= could-not-check). */
+  mintRole?: "held" | "missing" | "unknown";
+  /** The operator-vocabulary remedy (missing) or the could-not-check cause (unknown). */
+  mintRoleDetail?: string | null;
 }
 /** GET /health — the unauthenticated liveness probe, plus the anchor-readiness block above. */
 export interface HealthResp {
@@ -551,12 +558,17 @@ export interface ProfileIssueStatusResp {
   dogTagId: string;
   walletAddress?: string | null;
   root?: string | null;
+  /** A REAL transaction hash (bound sessions) — a failed bind's reason lives in `error`. */
   txHash?: string | null;
   /** Unix seconds a device FIRST resolved the QR; null until any device picks it up. */
   resolvedAt?: number | null;
   /** The SERVER's remaining token life (meaningful while pending). 0 + pending = no bind can ever arrive. */
   tokenSecondsLeft?: number;
   qrAddress?: QrAddressCheck;
+  /** WHY a failed bind failed, in the operator's vocabulary. Set iff `status === "error"`. */
+  error?: string | null;
+  /** WHERE it failed: "attestation" | "seal" | "issue" | "mint" | "verify". */
+  errorStage?: string | null;
 }
 
 // ---- central: issuer applications (admin/api §4.3) ----
@@ -1124,6 +1136,40 @@ export interface VerifierCapabilityResp {
   purpose: string;
   purposeKey: string;
   relayer: string;
+  allowed: boolean;
+  actions: GovernanceDisposition[];
+  outcome?: DispatchOutcome;
+  executed?: boolean;
+  warning?: string | null;
+}
+
+/**
+ * GET /v1/admin/sbt/mint-role - who may `mintCustodial` dog tags.
+ *
+ * `mintCustodial` is `onlyRole(ISSUER_ROLE)` on `DogTagSBTConsent` and a fresh deployment grants
+ * that role to NOBODY, so an EMPTY resolved holder list is the exact misprovisioning that made a
+ * live vet issuance die as a silent estimation revert (2026-08-07). The holders arm is tri-state:
+ * a failed enumeration is `unavailable` with its reason, never an empty list.
+ */
+export interface MintRoleResp {
+  sbt: string;
+  /** keccak256("ISSUER") — shown so an operator can verify against the contract. */
+  roleKey: string;
+  holders:
+    | { state: "resolved"; accounts: string[] }
+    | { state: "unavailable"; reason: string };
+  /** The SBT's DEFAULT_ADMIN — the only key that can grant. `null` when unreadable. */
+  defaultAdmin?: string | null;
+}
+/** POST /v1/admin/sbt/mint-role */
+export interface MintRoleSetReq {
+  /** The vet backend's signing key. */
+  signer: string;
+  allowed: boolean;
+}
+export interface MintRoleSetResp {
+  sbt: string;
+  signer: string;
   allowed: boolean;
   actions: GovernanceDisposition[];
   outcome?: DispatchOutcome;

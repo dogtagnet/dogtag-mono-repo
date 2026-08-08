@@ -226,6 +226,8 @@ async fn dog_tag_mint_joins_by_profile_root_on_the_profile_clone() {
             root: Some(PROFILE_ROOT.to_string()),
             tx_hash: Some("0xminttx".to_string()),
             protocol_version: Some("dogtag-levelb/1".to_string()),
+            error_stage: None,
+            error_reason: None,
         })
         .await;
     let op = mint_operator(&state).await;
@@ -243,7 +245,10 @@ async fn dog_tag_mint_joins_by_profile_root_on_the_profile_clone() {
     // Subject-less: the vet-collected identity/pet block never reaches the activity feed.
     let text = local.to_string();
     for leaked in ["Jane", "S1234567A", "Bella", "ownerIdentity", "petName"] {
-        assert!(!text.contains(leaked), "mint join leaked `{leaked}`: {text}");
+        assert!(
+            !text.contains(leaked),
+            "mint join leaked `{leaked}`: {text}"
+        );
     }
 }
 
@@ -326,6 +331,8 @@ async fn trace_stats_counts_only_bound_mints() {
                 root: None,
                 tx_hash: None,
                 protocol_version: None,
+                error_stage: None,
+                error_reason: None,
             })
             .await;
     }

@@ -18,8 +18,8 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *  4. The rest of the portal keeps working while the gate is blocked.
  *
  * Mocked payloads are transcribed from the real vet-api handlers: `GET /health` emits
- * `{ status, dogTagIssuance: { ready, profileIssuerConfigured, sbtConsentConfigured } }` on an
- * issuance-enabled role (routes.rs `health`).
+ * `{ status, dogTagIssuance: { ready, profileIssuerConfigured, sbtConsentConfigured, mintRole,
+ * mintRoleDetail } }` on an issuance-enabled role (routes.rs `health`).
  *
  * Like the sibling suites this is NOT in `pnpm test` / CI (needs a served portal + browsers):
  *   VITE_DEMO_MODE=1 pnpm --filter @dogtag/vet-web dev   # one shell (port 41873)
@@ -33,6 +33,8 @@ interface DogTagIssuance {
   ready: boolean;
   profileIssuerConfigured: boolean;
   sbtConsentConfigured: boolean;
+  mintRole?: "held" | "missing" | "unknown";
+  mintRoleDetail?: string | null;
 }
 
 /** Counts session-start calls so a test can assert nothing was ever allocated. */
@@ -100,7 +102,12 @@ test("a backend that cannot anchor refuses Register pet in place — no form, no
 
 test("a ready backend renders the Register pet form exactly as before", async ({ page }) => {
   const backend: Backend = {
-    health: { ready: true, profileIssuerConfigured: true, sbtConsentConfigured: true },
+    health: {
+      ready: true,
+      profileIssuerConfigured: true,
+      sbtConsentConfigured: true,
+      mintRole: "held",
+    },
     sessionStarts: 0,
   };
   await mockBackend(page, backend);
@@ -112,6 +119,59 @@ test("a ready backend renders the Register pet form exactly as before", async ({
   await expect(start).toBeEnabled();
   await expect(page.getByTestId("anchor-blocked")).toHaveCount(0);
   await expect(page.getByTestId("anchor-unknown")).toHaveCount(0);
+});
+
+test("a DEFINITELY missing SBT mint role blocks with the backend's own remedy — the admin portal card, never a command", async ({
+  page,
+}) => {
+  const backend: Backend = {
+    health: {
+      ready: true,
+      profileIssuerConfigured: true,
+      sbtConsentConfigured: true,
+      mintRole: "missing",
+      mintRoleDetail:
+        "the vet signing key 0xa1 does not hold the dog-tag mint role — DogTagSBTConsent's " +
+        'ISSUER_ROLE, which every mint is gated on — so minting reverts before broadcasting. On ' +
+        'the ADMIN portal\'s Providers page, use the "Dog-tag mint role" card to grant it to ' +
+        "this signer, then retry",
+    },
+    sessionStarts: 0,
+  };
+  await mockBackend(page, backend);
+  await page.goto("/issue-dog-tag");
+
+  const blocked = page.getByTestId("anchor-blocked");
+  await expect(blocked).toBeVisible();
+  await expect(blocked).toContainText("Dog-tag mint role");
+  // The remedy is the admin-portal CARD, never a terminal command (`toContainText` collapses
+  // whitespace, so a bare "cast " needle would false-match "broadcasting" — assert the command
+  // form instead).
+  await expect(blocked).not.toContainText("cast send");
+  await expect(blocked).toContainText("ADMIN portal");
+  await expect(page.getByRole("button", { name: "Start issuance" })).toHaveCount(0);
+  expect(backend.sessionStarts).toBe(0);
+});
+
+test("an UNKNOWN mint role warns and leaves the form usable — could-not-check is never a refusal", async ({
+  page,
+}) => {
+  const backend: Backend = {
+    health: {
+      ready: true,
+      profileIssuerConfigured: true,
+      sbtConsentConfigured: true,
+      mintRole: "unknown",
+      mintRoleDetail: "custody is locked, so the signing key's address cannot be resolved",
+    },
+    sessionStarts: 0,
+  };
+  await mockBackend(page, backend);
+  await page.goto("/issue-dog-tag");
+
+  await expect(page.getByTestId("anchor-unknown")).toBeVisible();
+  await expect(page.getByTestId("anchor-unknown")).toContainText("custody is locked");
+  await expect(page.getByRole("button", { name: "Start issuance" })).toBeEnabled();
 });
 
 test("a FAILED readiness probe warns and leaves the form usable — could-not-check is never a refusal", async ({

@@ -829,8 +829,8 @@ That page also says *"No issuing contract is configured on this deployment"*, wh
 now - you have not deployed one yet. It fills in after §5.3, which is the step that tells the backend
 about them.
 
-> Do this before deploying, even though deploying does not need it: §4.4 has to grant a right to
-> that address, and the address does not exist until the key does.
+> Do this before deploying, even though deploying does not need it: §4.4 and §4.5 each grant a
+> right to that address, and the address does not exist until the key does.
 
 > ### ⚠ The prefilled passphrase encrypts the shop's signing seed
 >
@@ -968,7 +968,23 @@ already holds the right and that one grant covered every service - which is the 
 the other side, not a failure. That is deliberate, and it is
 exactly why issuing needs a second permission that only the provider can give (§5.4).
 
-## 4.5 Confirm the typed resolvers are approved
+## 4.5 Grant the dog-tag mint role to the vet's signing key
+
+**Do:** **Providers** → the **Dog-tag mint role** card (below the provider table, beside Verify
+capability). Click **Grant / withdraw**, enter the signer address from §3.2, pick **Grant**,
+confirm. The card's holder list now shows that address.
+
+**Means:** that address may now **mint dog tags** — `mintCustodial` on the DogTagSBTConsent is
+gated on its ISSUER_ROLE, and a fresh deployment grants it to **nobody**. This is a third,
+separate permission from §4.4 and §5.4, on a different contract: those two let the key anchor
+records; this one lets it seal a dog tag's profile root. Miss it and use case 1 fails at the very
+end — the pet is registered, the owner scans, the root is anchored, and the mint reverts — so the
+Register pet screen refuses up front and names this card until the grant is made. Granting is the
+SBT admin's call: with the deployed set that is the same admin key this portal signs with, so the
+card executes directly; on another topology it returns the unsigned transaction for the SBT's
+admin to sign.
+
+## 4.6 Confirm the typed resolvers are approved
 
 **Do:** in **Typed resolvers**, confirm both kinds show their address in the success style. Confirm
 from the chain if you want certainty:
@@ -998,9 +1014,9 @@ of them are not:
 | 5.1 / 5.2 select your contracts | DogTag attached and activated them (§4.2, §4.3) | the check stops at *Waiting on DogTag* |
 | **5.3 tell the backend** | the addresses from §3.4 / §3.5 | nothing - this is the step that unblocks 5.4 |
 | **5.4 admit your key** | **5.3, including the restart** | **Signing keys lists no contracts and shows no Admit button at all** |
-| 5.5 pick your registers | DogTag approved them (§4.5) | the register check refuses, naming the approval |
+| 5.5 pick your registers | DogTag approved them (§4.6) | the register check refuses, naming the approval |
 
-Only 5.5 is independent of the rest of this section; it needs §4.5 and nothing here.
+Only 5.5 is independent of the rest of this section; it needs §4.6 and nothing here.
 
 ## 5.1 Make the DOG_PROFILE contract current
 
@@ -1075,7 +1091,7 @@ writing it - so neither party can put a signer on somebody else's contract alone
   the directory register**, then **Use this directory register**.
 
 **Means:** a typed register answers nothing until BOTH halves hold - DogTag approves it fleet-wide
-(§4.5, theirs) and you select it for your own record (this, yours). The registrar cannot make this
+(§4.6, theirs) and you select it for your own record (this, yours). The registrar cannot make this
 selection for you: `setDirectoryResolver` admits your controller key and `setDomainResolver` the
 contract's owner, and neither admits the protocol admin. Until you do it, the rest of flows 3 and 4
 refuse - your listing is not published, so you do not appear in the directory and nothing a pet owner
@@ -1246,6 +1262,10 @@ continue**.
 ## 8.2 Register the pet and mint the QR
 
 **Do:** **Register pet** in the nav → **Fill demo data** → **Start issuance**.
+
+> If the screen refuses with *"does not hold the dog-tag mint role"*, §4.5 was skipped — grant it
+> on the admin portal's card and come back. The refusal is deliberate: without that role the mint
+> reverts at the very end of the owner's scan, after the root is already anchored.
 
 **Means:** a dog tag is allocated and the page shows a QR plus a URL on your `LAN_IP`. The tag now
 exists and use case 2 can anchor records against it. What the QR is *for* is §8.3: the owner's

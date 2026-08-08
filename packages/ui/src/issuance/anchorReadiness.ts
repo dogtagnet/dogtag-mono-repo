@@ -60,6 +60,20 @@ export const ANCHOR_UNKNOWN_INCOHERENT =
   "this backend reported it cannot anchor dog tags but did not say which contract is missing";
 
 /**
+ * The MINT-ROLE half, when the backend answered "missing" WITHOUT its own remedy sentence (the
+ * normal missing answer carries `mintRoleDetail`, which names the signer — prefer it). The remedy
+ * is a BUTTON on the admin portal, never a command.
+ */
+export const ANCHOR_MISSING_MINT_ROLE =
+  "The vet signing key does not hold the dog-tag mint role (DogTagSBTConsent ISSUER_ROLE), so " +
+  "every mint reverts before broadcasting. On the ADMIN portal's Providers page, use the " +
+  "\"Dog-tag mint role\" card to grant it to this backend's signing key.";
+
+/** The backend reported it could not check the mint role and gave no cause. */
+export const ANCHOR_UNKNOWN_MINT_ROLE =
+  "this backend could not check whether its signing key holds the dog-tag mint role";
+
+/**
  * The could-not-check sentence both screens render around the `unknown` reason. It says what was
  * not established and what still stands — never a verdict in either direction.
  */
@@ -70,16 +84,33 @@ export const ANCHOR_UNKNOWN_NOTICE =
 export function dogTagAnchorReadiness(health: HealthResp): DogTagAnchorReadiness {
   const block = health.dogTagIssuance;
   if (!block) return { state: "unknown", reason: ANCHOR_UNKNOWN_NO_BLOCK };
-  if (block.ready) return { state: "ready" };
   const problems: string[] = [];
-  if (!block.profileIssuerConfigured) problems.push(ANCHOR_MISSING_PROFILE_ISSUER);
-  if (!block.sbtConsentConfigured) problems.push(ANCHOR_MISSING_SBT);
-  if (problems.length === 0) {
-    // "Not ready" with both halves claiming configured is not a shape this build understands, and a
-    // refusal built on it could name nothing to fix. Could-not-check, not a guess.
-    return { state: "unknown", reason: ANCHOR_UNKNOWN_INCOHERENT };
+  if (!block.ready) {
+    if (!block.profileIssuerConfigured) problems.push(ANCHOR_MISSING_PROFILE_ISSUER);
+    if (!block.sbtConsentConfigured) problems.push(ANCHOR_MISSING_SBT);
+    if (problems.length === 0) {
+      // "Not ready" with both halves claiming configured is not a shape this build understands, and
+      // a refusal built on it could name nothing to fix. Could-not-check, not a guess.
+      return { state: "unknown", reason: ANCHOR_UNKNOWN_INCOHERENT };
+    }
   }
-  return { state: "blocked", headline: ANCHOR_BLOCKED_HEADLINE, problems };
+  // The mint role — a DEFINITE "missing" blocks exactly as a missing contract does (the SBT would
+  // refuse every mint from this signer), preferring the backend's own remedy sentence, which names
+  // the signer. It composes with the config problems rather than replacing them.
+  if (block.mintRole === "missing") {
+    problems.push(block.mintRoleDetail || ANCHOR_MISSING_MINT_ROLE);
+  }
+  if (problems.length > 0) {
+    return { state: "blocked", headline: ANCHOR_BLOCKED_HEADLINE, problems };
+  }
+  // Config ready and the role not definitely missing: "held" is the full green; "unknown" — or a
+  // backend too old to report the field at all — is could-not-check, which WARNS and never blocks
+  // (the backend refuses an unmintable start itself, allocating nothing).
+  if (block.mintRole === "held") return { state: "ready" };
+  return {
+    state: "unknown",
+    reason: block.mintRoleDetail || ANCHOR_UNKNOWN_MINT_ROLE,
+  };
 }
 
 /** Classify a FAILED probe. A backend we could not reach is never accused of being unconfigured. */

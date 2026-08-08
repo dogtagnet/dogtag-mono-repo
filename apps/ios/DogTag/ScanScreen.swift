@@ -317,23 +317,40 @@ struct ScanScreen: View {
                             anchored = true
                             break
                         }
+                        // The server's own answer, through the consumed token's status peek: a
+                        // session settled to "error" is DEFINITE and the chain poll could only
+                        // ever wait past it — measured live 2026-08-07, where the mint had
+                        // reverted minutes earlier and this screen kept forging.
+                        if let peek = await CentralApi.dogTagIssueStatus(host: host, token: token),
+                           peek.status == "error" {
+                            throw issueFailure(IssuanceWait.failureText(reason: peek.reason))
+                        }
                         try? await Task.sleep(nanoseconds: delayNanos)
                         delayNanos = min(delayNanos + 500_000_000, 5_000_000_000)
                     }
                     guard anchored else {
+                        // The wait is OVER — say what was observed, never that the work is still
+                        // coming (`IssuanceWait` owns the sentences, mirrored with Android).
+                        let peek = await CentralApi.dogTagIssueStatus(host: host, token: token)
                         await MainActor.run {
                             working = false
-                            // "Submitted" may only be claimed when the vet actually ACCEPTED the
-                            // bind. On the inconclusive path nothing is known to have arrived, and
-                            // claiming otherwise sends the owner away believing a dead issuance is
-                            // in flight.
-                            issueErr = accepted != nil
-                                ? "The vet accepted the profile, but the network has not confirmed "
-                                    + "the anchor yet. The vet portal shows when it completes; "
-                                    + "this dog tag appears here after that."
-                                : "Could not confirm the vet received the profile. Check the vet "
-                                    + "portal: if this issuance is not shown there, ask the vet to "
-                                    + "draw a new QR and scan again."
+                            // The server's own answer outranks local knowledge; when the peek
+                            // itself is unreachable, what this phone knows locally — whether the
+                            // vet ACCEPTED the bind — is still stated accurately. "Submitted" may
+                            // only be claimed when the vet actually accepted; on the inconclusive
+                            // path nothing is known to have arrived.
+                            if let peek = peek {
+                                issueErr = IssuanceWait.timeoutText(
+                                    serverStatus: peek.status, reason: peek.reason)
+                            } else if accepted != nil {
+                                issueErr = "The vet accepted the profile, but the network has not "
+                                    + "confirmed the anchor yet. The vet portal shows when it "
+                                    + "completes; this dog tag appears here after that."
+                            } else {
+                                issueErr = "Could not confirm the vet received the profile. Check "
+                                    + "the vet portal: if this issuance is not shown there, ask "
+                                    + "the vet to draw a new QR and scan again."
+                            }
                         }
                         return
                     }

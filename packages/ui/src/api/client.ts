@@ -274,6 +274,14 @@ export function createApiClient(opts: ApiClientOptions) {
     // ---- profile / dog-tag issuance (operator session, custody unlocked) ----
     startProfileIssue: (body: ProfileIssueStartReq) =>
       request<ProfileIssueStartResp>("POST", "/profiles/issue/session/start", body),
+
+    /**
+     * Re-arm a FAILED issuance with a fresh one-time QR: same session, same dogTagId, same
+     * identity salts — the only path that can complete a stranded (anchored, unminted) root,
+     * because a fresh session derives a DIFFERENT root from its new dogTagId.
+     */
+    retryProfileIssue: (sessionId: string) =>
+      request<ProfileIssueStartResp>("POST", `/profiles/issue/session/${sessionId}/retry`),
     /** GET /profiles/issue/session/{sessionId} — operator-gated status poll (pending → bound). */
     profileIssueStatus: (sessionId: string) =>
       request<ProfileIssueStatusResp>("GET", `/profiles/issue/session/${sessionId}`),

@@ -211,6 +211,15 @@ pub struct PetProfile {
     pub weight_history: Vec<WeightEntry>,
 }
 
+/// How long a CONSUMED bind token keeps answering the device status peek
+/// (`GET /p/{token}/status`), measured from the token's own 180s expiry.
+///
+/// The phone's chain poll runs ~190s after the bind, and an owner who pockets the phone deserves
+/// to still get the answer when they look again — an hour covers both without turning the token
+/// into a long-lived credential (what it unlocks post-consumption is a derived status word and a
+/// fixed stage sentence, never the session row).
+pub const BIND_STATUS_GRACE_SECS: u64 = 3_600;
+
 /// A VET-side DOG_PROFILE issuance session. Created at `POST /profiles/issue/session/start` with a
 /// fresh one-time QR token; consumed at `POST /profiles/issue/custodial-bind` when the device posts
 /// its owner-hidden root.
@@ -231,8 +240,9 @@ pub struct ProfileIssueSession {
     pub pet_name: String,
     pub microchip: Microchip,
     pub profile: PetProfile,
-    /// "pending" -> "minting" -> "bound" (or "error"). "pending" = waiting for a device to bind;
-    /// "minting" = a device's bind was accepted and the chain writes are in flight.
+    /// "pending" -> "minting" -> "bound", or "error" once a bind attempt settled without
+    /// completing. "pending" = waiting for a device to bind; "minting" = a device's bind was
+    /// accepted and the chain writes are in flight.
     pub status: String,
     pub created_at: u64,
     /// When a device FIRST resolved the QR (`GET /p/{token}`). `None` until then. This is what lets
@@ -250,12 +260,25 @@ pub struct ProfileIssueSession {
     /// set on bind: the DOG_PROFILE merkle root (== SBT profileRoot[dogTagId]).
     #[serde(default)]
     pub root: Option<String>,
-    /// set on bind: the mint txHash.
+    /// set on bind: the mint txHash. A REAL transaction hash or `None`, never prose — a failed
+    /// bind's reason lives in `error_reason` (rows written before that field existed may still
+    /// carry error text here; readers keep guarding on `status == "bound"` before treating this
+    /// as a tx key).
     #[serde(default)]
     pub tx_hash: Option<String>,
     /// set on bind: the owner-hidden protocol version used by `mintCustodial` + `issue(R)`.
     #[serde(default)]
     pub protocol_version: Option<String>,
+    /// WHERE a failed bind failed: `attestation` | `seal` | `issue` | `mint` | `verify`.
+    /// Machine-readable so the device-facing status peek can render a stage-appropriate sentence
+    /// without ever carrying the operator-facing detail. Set together with `error_reason`.
+    #[serde(default)]
+    pub error_stage: Option<String>,
+    /// WHY a failed bind failed, in the operator's vocabulary — the full underlying error plus
+    /// what to do next. Shown on the portal's issuance card and returned by the operator status
+    /// route; never sent to the device (the device peek derives its sentence from `error_stage`).
+    #[serde(default)]
+    pub error_reason: Option<String>,
 }
 
 /// Persisted per-issuer settings (impl §3.8).
@@ -831,11 +854,22 @@ pub trait Store: Send + Sync {
     async fn list_profile_sessions(&self) -> Vec<ProfileIssueSession>;
     /// Store a one-time bind token mapping to `session_id`, expiring at unix-seconds `exp`.
     async fn put_bind_token(&self, token: &str, session_id: &str, exp: u64);
-    /// NON-consuming lookup: the bind token's `session_id` iff present and unexpired (`GET /p/{token}`).
+    /// NON-consuming lookup: the bind token's `session_id` iff present, unexpired AND not yet
+    /// consumed (`GET /p/{token}`). A consumed token must keep 404-ing here — a token that still
+    /// resolves implies the pre-bind state, and the resolve hands out the session's identity block.
     async fn peek_bind_token(&self, token: &str) -> Option<String>;
-    /// Atomically REMOVE the bind token (one-time consume) and return its `session_id` iff present and
-    /// unexpired. Used by `POST /profiles/issue/custodial-bind` for replay protection.
+    /// Atomically CONSUME the bind token (one-time; a second call returns `None`) and return its
+    /// `session_id` iff present and unexpired. Used by `POST /profiles/issue/custodial-bind` for
+    /// replay protection. Consumption MARKS the token rather than deleting it, so
+    /// [`Store::bind_session_for_status`] can keep answering the device's status peek afterwards.
     async fn take_bind_token(&self, token: &str) -> Option<String>;
+    /// The STATUS-PEEK lookup (`GET /p/{token}/status`): the token's `session_id` whether or not
+    /// the bind has consumed it, honoured until `exp + BIND_STATUS_GRACE_SECS`. The device's need
+    /// for this BEGINS at consumption — the bind response can be lost after the token is spent —
+    /// so unlike `peek_bind_token` a consumed token still answers. Strictly narrower capability
+    /// than the token already granted: the peek route returns status + a stage sentence, never
+    /// the session row.
+    async fn bind_session_for_status(&self, token: &str) -> Option<String>;
 
     // ---- issuer settings ----
     async fn get_settings(&self) -> IssuerSettings;
@@ -1026,7 +1060,9 @@ struct MemInner {
     /// profile-issue sessions keyed by session_id.
     profile_sessions: HashMap<String, ProfileIssueSession>,
     /// one-time bind tokens: token -> (session_id, exp unix-seconds).
-    bind_tokens: HashMap<String, (String, u64)>,
+    /// token -> (session_id, exp, consumed). Consumed tokens are RETAINED (marked) rather than
+    /// removed, so the device status peek keeps answering after the bind spent the token.
+    bind_tokens: HashMap<String, (String, u64, bool)>,
     /// client calendar-handoff tokens: token -> the booking it names. NON-consuming.
     appointment_shares: HashMap<String, AppointmentShare>,
     settings: Option<IssuerSettings>,
@@ -1057,7 +1093,11 @@ fn search_matches(search_key: &str, needle: Option<&String>) -> bool {
 /// Take one bounded page out of an already-sorted match set, returning it with the total count.
 fn paginate<T: Clone>(matched: Vec<T>, limit: usize, offset: usize) -> Page<T> {
     let total = matched.len() as u64;
-    let rows = matched.into_iter().skip(offset).take(clamp_limit(limit)).collect();
+    let rows = matched
+        .into_iter()
+        .skip(offset)
+        .take(clamp_limit(limit))
+        .collect();
     Page { rows, total }
 }
 
@@ -1361,11 +1401,32 @@ impl Store for MemStore {
             .write()
             .unwrap()
             .bind_tokens
-            .insert(token.to_string(), (session_id.to_string(), exp));
+            .insert(token.to_string(), (session_id.to_string(), exp, false));
     }
     async fn peek_bind_token(&self, token: &str) -> Option<String> {
         let inner = self.inner.read().unwrap();
-        let (session_id, exp) = inner.bind_tokens.get(token)?;
+        let (session_id, exp, consumed) = inner.bind_tokens.get(token)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // A consumed token 404s here exactly as a deleted one used to: the resolve implies the
+        // pre-bind state (and hands out the identity block), so retention must not widen it.
+        if *consumed || now > *exp {
+            None
+        } else {
+            Some(session_id.clone())
+        }
+    }
+    async fn take_bind_token(&self, token: &str) -> Option<String> {
+        // atomic mark-consumed under the write lock == one-time consume. Marked rather than
+        // removed so `bind_session_for_status` keeps answering the device's status peek.
+        let mut inner = self.inner.write().unwrap();
+        let (session_id, exp, consumed) = inner.bind_tokens.get_mut(token)?;
+        if *consumed {
+            return None;
+        }
+        *consumed = true;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1376,18 +1437,17 @@ impl Store for MemStore {
             Some(session_id.clone())
         }
     }
-    async fn take_bind_token(&self, token: &str) -> Option<String> {
-        // atomic remove under the write lock == one-time consume.
-        let mut inner = self.inner.write().unwrap();
-        let (session_id, exp) = inner.bind_tokens.remove(token)?;
+    async fn bind_session_for_status(&self, token: &str) -> Option<String> {
+        let inner = self.inner.read().unwrap();
+        let (session_id, exp, _consumed) = inner.bind_tokens.get(token)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        if now > exp {
+        if now > exp.saturating_add(BIND_STATUS_GRACE_SECS) {
             None
         } else {
-            Some(session_id)
+            Some(session_id.clone())
         }
     }
 
@@ -1434,7 +1494,9 @@ impl Store for MemStore {
             .fail_client_cache_reads
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(StoreReadError("injected client cache read failure".to_string()));
+            return Err(StoreReadError(
+                "injected client cache read failure".to_string(),
+            ));
         }
         Ok(self
             .inner
@@ -1531,7 +1593,11 @@ impl Store for MemStore {
 
     // ---- shop CRM: clients ----
     async fn put_client(&self, c: Client) {
-        self.inner.write().unwrap().clients.insert(c.client_id.clone(), c);
+        self.inner
+            .write()
+            .unwrap()
+            .clients
+            .insert(c.client_id.clone(), c);
     }
     async fn get_client(&self, id: &str) -> Option<Client> {
         self.inner.read().unwrap().clients.get(id).cloned()
@@ -1549,7 +1615,9 @@ impl Store for MemStore {
             .collect();
         // newest-updated first; client_id breaks ties so paging is stable.
         matched.sort_by(|a, b| {
-            b.updated_at.cmp(&a.updated_at).then_with(|| a.client_id.cmp(&b.client_id))
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.client_id.cmp(&b.client_id))
         });
         paginate(matched, q.limit, q.offset)
     }
@@ -1588,9 +1656,12 @@ impl Store for MemStore {
             return Err(StoreReadError("injected pet read failure".to_string()));
         }
         let g = self.inner.read().unwrap();
-        Ok(g.clients
-            .values()
-            .find_map(|c| c.pets.iter().find(|p| p.pet_id == pet_id).map(|p| c.pet_row(p))))
+        Ok(g.clients.values().find_map(|c| {
+            c.pets
+                .iter()
+                .find(|p| p.pet_id == pet_id)
+                .map(|p| c.pet_row(p))
+        }))
     }
 
     async fn try_find_pets_by_dog_tag(
@@ -1625,7 +1696,11 @@ impl Store for MemStore {
 
     // ---- shop CRM: appointments ----
     async fn put_appointment(&self, a: Appointment) {
-        self.inner.write().unwrap().appointments.insert(a.appointment_id.clone(), a);
+        self.inner
+            .write()
+            .unwrap()
+            .appointments
+            .insert(a.appointment_id.clone(), a);
     }
     async fn try_get_appointment(&self, id: &str) -> Result<Option<Appointment>, StoreReadError> {
         // An in-memory map cannot fail to be read on its own — the fallible shape exists for the
@@ -1635,12 +1710,19 @@ impl Store for MemStore {
             .fail_appointment_reads
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(StoreReadError("injected appointment read failure".to_string()));
+            return Err(StoreReadError(
+                "injected appointment read failure".to_string(),
+            ));
         }
         Ok(self.inner.read().unwrap().appointments.get(id).cloned())
     }
     async fn delete_appointment(&self, id: &str) -> bool {
-        self.inner.write().unwrap().appointments.remove(id).is_some()
+        self.inner
+            .write()
+            .unwrap()
+            .appointments
+            .remove(id)
+            .is_some()
     }
     async fn list_appointments(&self, q: &AppointmentQuery) -> Page<Appointment> {
         let g = self.inner.read().unwrap();
@@ -1659,7 +1741,9 @@ impl Store for MemStore {
             .collect();
         // calendar order: earliest first.
         matched.sort_by(|a, b| {
-            a.start_at.cmp(&b.start_at).then_with(|| a.appointment_id.cmp(&b.appointment_id))
+            a.start_at
+                .cmp(&b.start_at)
+                .then_with(|| a.appointment_id.cmp(&b.appointment_id))
         });
         paginate(matched, q.limit, q.offset)
     }
@@ -1696,7 +1780,9 @@ impl Store for MemStore {
             .fail_appointment_reads
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(StoreReadError("injected appointment read failure".to_string()));
+            return Err(StoreReadError(
+                "injected appointment read failure".to_string(),
+            ));
         }
         let inner = self.inner.read().unwrap();
         let Some(share) = inner.appointment_shares.get(token) else {
@@ -1734,7 +1820,12 @@ impl Store for MemStore {
             .insert(v.verification_id.clone(), v);
     }
     async fn get_verification_log(&self, id: &str) -> Option<VerificationLog> {
-        self.inner.read().unwrap().verification_logs.get(id).cloned()
+        self.inner
+            .read()
+            .unwrap()
+            .verification_logs
+            .get(id)
+            .cloned()
     }
     async fn list_verification_logs(&self, q: &VerificationQuery) -> Page<VerificationLog> {
         let g = self.inner.read().unwrap();

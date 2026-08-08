@@ -24,7 +24,11 @@ sol! {
     contract IDogTagSBT {
         // AccessControl surface — the DEFAULT_ADMIN holder grants ISSUER_ROLE to owner-hidden issuers.
         function grantRole(bytes32 role, address account) external;
+        function revokeRole(bytes32 role, address account) external;
         function hasRole(bytes32 role, address account) external view returns (bool);
+        // AccessControlEnumerable — the mint-role card's "who holds it" read.
+        function getRoleMemberCount(bytes32 role) external view returns (uint256);
+        function getRoleMember(bytes32 role, uint256 index) external view returns (address);
     }
 
     #[sol(rpc)]
@@ -323,6 +327,12 @@ pub trait ChainClient: Send + Sync {
     /// DogTagSBT.hasRole(ISSUER_ROLE, account) — read so approve can skip an already-granted role.
     async fn has_issuer_role(&self, sbt_addr: &str, account: &str) -> Result<bool, ChainError>;
 
+    /// Every current ISSUER_ROLE holder, via `AccessControlEnumerable` (`getRoleMemberCount` +
+    /// `getRoleMember`). The mint-role card's "who holds it" — an EMPTY list is the exact
+    /// misprovisioning the 2026-08-07 live walk hit, so it must be a definite answer, apart from a
+    /// failed read.
+    async fn issuer_role_holders(&self, sbt_addr: &str) -> Result<Vec<String>, ChainError>;
+
     // ---- factory / governance surface (PR-A) --------------------------------------------------
 
     /// The lowercase `0x..` address of the signer registered at `index`, if any. The `GovernanceAction`
@@ -468,8 +478,7 @@ pub trait ChainClient: Send + Sync {
     /// `DogTagIssuer.owner()` and `.recordType()` off the service itself - the two facts
     /// `attachService` resolves. A generation-1 clone has no `owner()`, so this read FAILS for one,
     /// which is the honest way to say it can never be attached.
-    async fn service_metadata(&self, service_addr: &str)
-        -> Result<(String, String), ChainError>;
+    async fn service_metadata(&self, service_addr: &str) -> Result<(String, String), ChainError>;
 
     /// The `RightsSet` log for the whole registry, ascending `(block, logIndex)`, as
     /// `(account, holds_issue)` pairs. `rightsOf` is a POINT read with no enumeration, so this log is
@@ -724,10 +733,16 @@ impl MemChain {
         let registry = registry_addr.to_lowercase();
         let gid = generation_id.to_lowercase();
         if g.factory_generations
-            .insert((registry.clone(), gid.clone()), (factory_addr.to_lowercase(), active))
+            .insert(
+                (registry.clone(), gid.clone()),
+                (factory_addr.to_lowercase(), active),
+            )
             .is_none()
         {
-            g.factory_generation_ids.entry(registry).or_default().push(gid);
+            g.factory_generation_ids
+                .entry(registry)
+                .or_default()
+                .push(gid);
         }
     }
 
@@ -761,7 +776,9 @@ impl MemChain {
         if g.failing_capability_log_reads
             .contains(&registry_addr.to_lowercase())
         {
-            return Err(ChainError::Rpc("capability log read failed (seeded)".into()));
+            return Err(ChainError::Rpc(
+                "capability log read failed (seeded)".into(),
+            ));
         }
         Ok(())
     }
@@ -803,6 +820,24 @@ fn apply_provider_registry_calldata(
     }
     let registry = target.to_lowercase();
 
+    // DogTagSBTConsent role writes (the mint-role card). OZ AccessControl semantics: grant and
+    // revoke are IDEMPOTENT (no revert on a no-op; the route's own pre-check is what refuses one),
+    // and only the ISSUER_ROLE key is modelled — an unrelated role neither mutates nor errors.
+    if let Ok(c) = IDogTagSBT::grantRoleCall::abi_decode(&data, true) {
+        if format!("0x{}", hex::encode(c.role.as_slice())) == issuer_role_key() {
+            let who = format!("{:#x}", c.account);
+            g.issuer_roles.insert((registry.clone(), who));
+        }
+        return Ok(());
+    }
+    if let Ok(c) = IDogTagSBT::revokeRoleCall::abi_decode(&data, true) {
+        if format!("0x{}", hex::encode(c.role.as_slice())) == issuer_role_key() {
+            let who = format!("{:#x}", c.account);
+            g.issuer_roles.remove(&(registry.clone(), who));
+        }
+        return Ok(());
+    }
+
     if let Ok(c) = IProviderRegistry::registerProviderCall::abi_decode(&data, true) {
         let id = format!("0x{}", hex::encode(c.providerId.as_slice()));
         if c.providerId.is_zero() {
@@ -830,7 +865,10 @@ fn apply_provider_registry_calldata(
                 registered: true,
             },
         );
-        g.provider_ids.entry(registry.clone()).or_default().push(id.clone());
+        g.provider_ids
+            .entry(registry.clone())
+            .or_default()
+            .push(id.clone());
         g.identity_anchors.insert(
             (registry, id),
             IdentityAnchor {
@@ -871,7 +909,9 @@ fn apply_provider_registry_calldata(
             return Err(ChainError::Other("tx reverted: UnknownProvider".into()));
         }
         if c.recordType.is_zero() {
-            return Err(ChainError::Other("tx reverted: InvalidServiceMetadata".into()));
+            return Err(ChainError::Other(
+                "tx reverted: InvalidServiceMetadata".into(),
+            ));
         }
         let key = format!("0x{}", hex::encode(c.recordType.as_slice()));
         let log = g.approval_log.entry((registry, id)).or_default();
@@ -898,15 +938,24 @@ fn apply_provider_registry_calldata(
         if c.serviceAddress.is_zero() || c.expectedOwner.is_zero() {
             return Err(ChainError::Other("tx reverted: ZeroAddress".into()));
         }
-        if g.services.contains_key(&(registry.clone(), service.clone())) {
+        if g.services
+            .contains_key(&(registry.clone(), service.clone()))
+        {
             return Err(ChainError::Other("tx reverted: AlreadyRegistered".into()));
         }
-        let Some((factory, active)) = g.factory_generations.get(&(registry.clone(), gid.clone())).cloned()
+        let Some((factory, active)) = g
+            .factory_generations
+            .get(&(registry.clone(), gid.clone()))
+            .cloned()
         else {
-            return Err(ChainError::Other("tx reverted: UnknownFactoryGeneration".into()));
+            return Err(ChainError::Other(
+                "tx reverted: UnknownFactoryGeneration".into(),
+            ));
         };
         if !active {
-            return Err(ChainError::Other("tx reverted: FactoryGenerationInactive".into()));
+            return Err(ChainError::Other(
+                "tx reverted: FactoryGenerationInactive".into(),
+            ));
         }
         if !g.clones.contains(&(factory, service.clone())) {
             return Err(ChainError::Other("tx reverted: NotFactoryClone".into()));
@@ -914,15 +963,24 @@ fn apply_provider_registry_calldata(
         // An unseeded service answers neither `owner()` nor `recordType()`, which is exactly a
         // generation-1 clone. The contract folds that into `InvalidServiceMetadata()`.
         let Some((live_owner, record_type_key)) = g.service_metadata.get(&service).cloned() else {
-            return Err(ChainError::Other("tx reverted: InvalidServiceMetadata".into()));
+            return Err(ChainError::Other(
+                "tx reverted: InvalidServiceMetadata".into(),
+            ));
         };
         if live_owner == zero_addr()
-            || record_type_key.trim_start_matches("0x").chars().all(|ch| ch == '0')
+            || record_type_key
+                .trim_start_matches("0x")
+                .chars()
+                .all(|ch| ch == '0')
         {
-            return Err(ChainError::Other("tx reverted: InvalidServiceMetadata".into()));
+            return Err(ChainError::Other(
+                "tx reverted: InvalidServiceMetadata".into(),
+            ));
         }
         if !live_owner.eq_ignore_ascii_case(&format!("{:#x}", c.expectedOwner)) {
-            return Err(ChainError::Other("tx reverted: UnexpectedServiceOwner".into()));
+            return Err(ChainError::Other(
+                "tx reverted: UnexpectedServiceOwner".into(),
+            ));
         }
         g.services.insert(
             (registry.clone(), service.clone()),
@@ -1179,6 +1237,20 @@ impl ChainClient for MemChain {
             .contains(&(sbt_addr.to_lowercase(), account.to_lowercase())))
     }
 
+    async fn issuer_role_holders(&self, sbt_addr: &str) -> Result<Vec<String>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        let key = sbt_addr.to_lowercase();
+        // Sorted for determinism — a HashSet's iteration order is not a wire contract.
+        let mut holders: Vec<String> = g
+            .issuer_roles
+            .iter()
+            .filter(|(sbt, _)| *sbt == key)
+            .map(|(_, who)| who.clone())
+            .collect();
+        holders.sort();
+        Ok(holders)
+    }
+
     async fn signer_address(&self, index: u32) -> Option<String> {
         self.inner.lock().unwrap().signers.get(&index).cloned()
     }
@@ -1373,12 +1445,19 @@ impl ChainClient for MemChain {
             .map(|p| p.standing)
             .unwrap_or(Standing::None);
         let factory_active = rec
-            .and_then(|s| g.factory_generations.get(&(registry.clone(), s.factory_generation.clone())))
-            .map(|(factory, active)| *active && g.clones.contains(&(factory.clone(), service.clone())))
+            .and_then(|s| {
+                g.factory_generations
+                    .get(&(registry.clone(), s.factory_generation.clone()))
+            })
+            .map(|(factory, active)| {
+                *active && g.clones.contains(&(factory.clone(), service.clone()))
+            })
             .unwrap_or(false);
         // The fake stores the RESOLVED owner at attachment and models no post-attach handover, so a
         // service that exists is owner-confirmed. `confirmServiceOwner` is a separate lever.
-        let owner_confirmed = rec.map(|s| s.confirmed_owner != zero_addr()).unwrap_or(false);
+        let owner_confirmed = rec
+            .map(|s| s.confirmed_owner != zero_addr())
+            .unwrap_or(false);
         let service_standing = rec.map(|s| s.standing).unwrap_or(Standing::None);
         // `_issueRightHolders != 0` — a REGISTRY-WIDE count now, because a grant names no service.
         let any_grant = g
@@ -1458,10 +1537,7 @@ impl ChainClient for MemChain {
             .unwrap_or_default())
     }
 
-    async fn service_metadata(
-        &self,
-        service_addr: &str,
-    ) -> Result<(String, String), ChainError> {
+    async fn service_metadata(&self, service_addr: &str) -> Result<(String, String), ChainError> {
         let g = self.inner.lock().unwrap();
         g.service_metadata
             .get(&service_addr.to_lowercase())
@@ -1583,6 +1659,18 @@ fn zero_addr() -> String {
 pub fn grant_issuer_role_calldata(grantee: &str) -> String {
     use alloy::sol_types::SolCall;
     let call = IDogTagSBT::grantRoleCall {
+        role: parse_b256(&issuer_role_key()),
+        account: parse_addr(grantee),
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// ABI-encoded `DogTagSBTConsent.revokeRole(ISSUER_ROLE, account)` — the withdrawal direction of
+/// the mint-role card. A control that could only grant would imply a state it gives no way to
+/// reach (the standing lever rule).
+pub fn revoke_issuer_role_calldata(grantee: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IDogTagSBT::revokeRoleCall {
         role: parse_b256(&issuer_role_key()),
         account: parse_addr(grantee),
     };
@@ -1730,7 +1818,10 @@ pub fn set_resolver_approved_calldata(
 /// refuses on-chain with `ZeroProviderId()` - but the routes validate the shape first, so a
 /// malformed id is a 400 rather than a wasted transaction.
 fn parse_b160(h: &str) -> FixedBytes<20> {
-    let s = h.strip_prefix("0x").or_else(|| h.strip_prefix("0X")).unwrap_or(h);
+    let s = h
+        .strip_prefix("0x")
+        .or_else(|| h.strip_prefix("0X"))
+        .unwrap_or(h);
     let mut out = [0u8; 20];
     if let Ok(b) = hex::decode(s) {
         if b.len() == 20 {
@@ -1954,6 +2045,36 @@ impl ChainClient for AlloyChain {
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
+    }
+
+    async fn issuer_role_holders(&self, sbt_addr: &str) -> Result<Vec<String>, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagSBT::new(parse_addr(sbt_addr), provider);
+        let role = parse_b256(&issuer_role_key());
+        let count = c
+            .getRoleMemberCount(role)
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?
+            ._0;
+        // Bounded defensively: the SBT grants this role to a handful of vet signers, so a count
+        // beyond this reads as a wrong contract rather than a bigger fleet.
+        let count = usize::try_from(count).unwrap_or(usize::MAX).min(256);
+        let mut holders = Vec::with_capacity(count);
+        for i in 0..count {
+            let member = c
+                .getRoleMember(role, U256::from(i))
+                .call()
+                .await
+                .map_err(|e| ChainError::Rpc(e.to_string()))?
+                ._0;
+            holders.push(format!("{member:#x}"));
+        }
+        Ok(holders)
     }
 
     async fn signer_address(&self, index: u32) -> Option<String> {
@@ -2311,10 +2432,7 @@ impl ChainClient for AlloyChain {
         Ok(out)
     }
 
-    async fn service_metadata(
-        &self,
-        service_addr: &str,
-    ) -> Result<(String, String), ChainError> {
+    async fn service_metadata(&self, service_addr: &str) -> Result<(String, String), ChainError> {
         use alloy::sol_types::SolCall;
         // Both reads must SUCCEED. A generation-1 `DogTagIssuer` implements `recordType()` but has
         // no `owner()` at all, so the owner read reverts - and reporting that as a zero address
@@ -2397,9 +2515,10 @@ impl ChainClient for AlloyChain {
                     resolver: r,
                 };
                 let a_raw = self.raw_call(registry_addr, &a_call.abi_encode()).await?;
-                let approved = IProviderRegistry::isResolverApprovedCall::abi_decode_returns(&a_raw, true)
-                    .map_err(|e| ChainError::Other(format!("isResolverApproved decode: {e}")))?
-                    ._0;
+                let approved =
+                    IProviderRegistry::isResolverApprovedCall::abi_decode_returns(&a_raw, true)
+                        .map_err(|e| ChainError::Other(format!("isResolverApproved decode: {e}")))?
+                        ._0;
                 out.push((format!("{r:#x}"), approved));
             }
             if empty || next <= cursor {
@@ -2536,7 +2655,10 @@ impl AlloyChain {
         // real event, which can present a superseded grant as current; dropping it discards the
         // event that may itself have been the withdrawal. Both invent an answer, so the whole read
         // fails and the caller renders `Unavailable`.
-        if entries.iter().any(|(b, i, _, _)| b.is_none() || i.is_none()) {
+        if entries
+            .iter()
+            .any(|(b, i, _, _)| b.is_none() || i.is_none())
+        {
             return Err(ChainError::Other(format!(
                 "a {event_name} log carried no (blockNumber, logIndex), so the capability could not \
                  be ordered - the last write per holder is what makes this the current state, and an \
@@ -2591,11 +2713,19 @@ impl AlloyChain {
                 .map_err(|e| ChainError::Other(format!("RightsSet decode: {e}")))?;
             let addr = format!("0x{}", hex::encode(&subject.as_slice()[12..32]));
             // Masked in the FULL 256-bit width — never truncated to a u64 first.
-            entries.push((log.block_number, log.log_index, addr, rights & settable != U256::ZERO));
+            entries.push((
+                log.block_number,
+                log.log_index,
+                addr,
+                rights & settable != U256::ZERO,
+            ));
         }
 
         // Same rule as `bool_log_ordered`: an unpositioned log may be neither placed nor dropped.
-        if entries.iter().any(|(b, i, _, _)| b.is_none() || i.is_none()) {
+        if entries
+            .iter()
+            .any(|(b, i, _, _)| b.is_none() || i.is_none())
+        {
             return Err(ChainError::Other(
                 "a RightsSet log carried no (blockNumber, logIndex), so the rights could not be \
                  ordered - the last write per holder is what makes this the current state, and an \
@@ -2734,7 +2864,12 @@ mod tests {
             .is_ok());
 
         // A derived bit, and a bit at an unallocated position, are both refused.
-        for bad in [1u64 << 1, 1 << 5, 1 << 6, dogtag_standard::verify::RIGHT_ISSUE | (1 << 1)] {
+        for bad in [
+            1u64 << 1,
+            1 << 5,
+            1 << 6,
+            dogtag_standard::verify::RIGHT_ISSUE | (1 << 1),
+        ] {
             let e = c.set_rights(0, reg, who, bad).await.unwrap_err();
             assert!(
                 format!("{e}").contains("UnsettableRights"),
@@ -2830,7 +2965,10 @@ mod tests {
             out.get(PROVIDER_A).unwrap(),
             &vec![(RT_A.to_string(), true), (RT_B.to_string(), false)]
         );
-        assert_eq!(out.get(PROVIDER_B).unwrap(), &vec![(RT_B.to_string(), true)]);
+        assert_eq!(
+            out.get(PROVIDER_B).unwrap(),
+            &vec![(RT_B.to_string(), true)]
+        );
     }
 
     /// The indexed `bytes20 providerId` is LEFT-aligned in its topic word. Right-aligning it (the
@@ -2997,5 +3135,4 @@ mod tests {
             .unwrap();
         assert_ne!(p1, p3);
     }
-
 }

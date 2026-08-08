@@ -117,6 +117,11 @@ sol! {
     contract IDogTagSBT {
         function mintCustodial(uint256 id, bytes32 root) external;
         function profileRoot(uint256 id) external view returns (bytes32);
+        // `mintCustodial` is `onlyRole(ISSUER_ROLE)` (`DogTagSBTConsent.sol:139`), and a fresh
+        // deployment grants that role to NOBODY — so this read is what lets the operator surfaces
+        // refuse an issuance the mint would revert, where someone can act on it, instead of the
+        // refusal surfacing as a silent estimation revert inside the bind's background task.
+        function hasRole(bytes32 role, address account) external view returns (bool);
     }
 
     /// Owner-hidden verification registry. The event and calldata contain no owner/subject address.
@@ -423,6 +428,13 @@ pub trait ChainClient: Send + Sync {
     ) -> Result<String, ChainError> {
         Err(ChainError::NotFound)
     }
+    /// `DogTagSBTConsent.hasRole(ISSUER_ROLE, account)` — whether `account` may `mintCustodial`.
+    ///
+    /// REQUIRED, no default body: a default `Err` would quietly render every deployment's mint-role
+    /// gate as could-not-check, which warns instead of refusing — the fail-open direction. Each
+    /// implementor decides what it can actually answer.
+    async fn sbt_issuer_role_held(&self, sbt_addr: &str, account: &str)
+        -> Result<bool, ChainError>;
     /// Encode issue(bytes32) calldata for `root`.
     fn encode_issue(&self, root: &str) -> String {
         issue_calldata(root)
@@ -446,6 +458,31 @@ fn parse_b256(h: &str) -> B256 {
 
 fn parse_addr(h: &str) -> Address {
     h.parse::<Address>().unwrap_or(Address::ZERO)
+}
+
+/// `DogTagSBTConsent.ISSUER_ROLE == keccak256("ISSUER")` — the role `mintCustodial` is
+/// `onlyRole()` on. Derived, never a literal: a mistyped 32-byte constant queries a role nobody
+/// holds and reads as "not granted" about a correctly-provisioned signer.
+pub fn sbt_issuer_role() -> B256 {
+    alloy::primitives::keccak256(b"ISSUER")
+}
+
+/// How long `sign_and_send` waits for an ACCEPTED transaction to mine before reporting it as
+/// stuck. ~7 ROAX blocks: generous for a correctly priced tx, and short enough that the bind's
+/// issue + mint pair both settle inside the phone's own wait when one of them hangs.
+const RECEIPT_WAIT_SECS: u64 = 90;
+
+/// The minimum legacy gas price this backend will broadcast at, in wei.
+///
+/// `GAS_PRICE_FLOOR_WEI` overrides (0 disables the floor and trusts the node's suggestion). The
+/// default is 50 gwei — the price measured to mine in the next ROAX block on 2026-08-07 while the
+/// node's own ~1000007-wei suggestion sat unmined through 2+ minutes of EMPTY blocks. Read per
+/// send rather than cached so a running backend can be repriced without a restart.
+fn gas_price_floor_wei() -> u128 {
+    std::env::var("GAS_PRICE_FLOOR_WEI")
+        .ok()
+        .and_then(|v| v.trim().parse::<u128>().ok())
+        .unwrap_or(50_000_000_000)
 }
 
 /// Exact typed calldata encoders (canonical selectors).
@@ -638,6 +675,20 @@ struct MemChainInner {
     consent_verified: HashMap<String, ConsentVerifiedEvent>,
     /// (sbt_addr, dog_tag_id) -> profileRoot (DogTagSBT.profileRoot).
     sbt_roots: HashMap<(String, String), String>,
+    /// (sbt_addr, account) -> explicit `hasRole(ISSUER_ROLE, account)` override.
+    ///
+    /// ABSENT means HELD: this fake defaults to a correctly-provisioned SBT so the many suites
+    /// that exercise the happy issuance path need no seeding, and the misprovisioned case — the
+    /// one the live walk hit, where NOBODY holds the role — is opt-in via
+    /// [`MemChain::set_sbt_issuer_role`]. `mint_custodial` enforces it, mirroring the contract's
+    /// `onlyRole(ISSUER_ROLE)`, so clearing the role drives the bind's failing-mint arm for real.
+    sbt_issuer_roles: HashMap<(String, String), bool>,
+    /// Fault injection for the ROLE READ alone (its own switch, following
+    /// `set_failing_approval_log_reads`' reasoning): the mint-role GATE must answer
+    /// could-not-check while `mint_custodial` itself still enforces the stored role — the state
+    /// that drives the bind's failing-mint arm, since a readable missing role is refused at the
+    /// gate before any token is consumed.
+    sbt_role_reads_failing: bool,
     nonce: u64,
     clock: u64,
 }
@@ -911,6 +962,23 @@ impl MemChain {
             .unwrap()
             .unanswerable_registries
             .insert(registry.to_lowercase());
+    }
+    /// Declare whether `account` holds `ISSUER_ROLE` on `sbt_addr`. ABSENT defaults to HELD (a
+    /// provisioned SBT); set `false` to model the live-walk misprovisioning where nobody holds it
+    /// — `mint_custodial` then refuses exactly as the contract's `onlyRole(ISSUER_ROLE)` does.
+    pub fn set_sbt_issuer_role(&self, sbt_addr: &str, account: &str, held: bool) {
+        self.inner
+            .lock()
+            .unwrap()
+            .sbt_issuer_roles
+            .insert((sbt_addr.to_lowercase(), account.to_lowercase()), held);
+    }
+    /// Make `sbt_issuer_role_held` FAIL (a refused eth_call) while the role's stored value keeps
+    /// gating `mint_custodial`. Default-off fault injection: this is the only state that can carry
+    /// a bind past the could-not-check gate into a mint the SBT then refuses — the background
+    /// failing-mint arm, whose renderer would otherwise be untestable.
+    pub fn set_sbt_role_reads_failing(&self, failing: bool) {
+        self.inner.lock().unwrap().sbt_role_reads_failing = failing;
     }
     /// Decode an issue(bytes32)/revoke(bytes32) calldata into (is_issue, root_hex).
     fn decode_b32_call(calldata: &str) -> Option<(bool, String)> {
@@ -1315,10 +1383,24 @@ impl ChainClient for MemChain {
         // Emulate DogTagSBTConsent.mintCustodial(id, root). No per-tag owner is modelled; write-once is
         // keyed by profileRoot, mirroring `profileRoot[id] != 0` in the contract.
         let mut g = self.inner.lock().unwrap();
-        g.signers
+        let signer = g
+            .signers
             .get(&account_index)
             .cloned()
             .ok_or_else(|| ChainError::Other("no issuer signer for index".into()))?;
+        // `onlyRole(ISSUER_ROLE)` — the gate the 2026-08-07 live walk hit with nobody holding the
+        // role. Checked BEFORE any mutation, exactly as a real estimation revert leaves no state.
+        let role_held = g
+            .sbt_issuer_roles
+            .get(&(sbt_addr.to_lowercase(), signer.clone()))
+            .copied()
+            .unwrap_or(true);
+        if !role_held {
+            return Err(ChainError::Other(format!(
+                "execution reverted: AccessControlUnauthorizedAccount({signer}, ISSUER_ROLE) — \
+                 mintCustodial is onlyRole(ISSUER_ROLE) and this signer does not hold it"
+            )));
+        }
         if parse_b256(root) == B256::ZERO {
             return Err(ChainError::Other("BadRoot: zero root".into()));
         }
@@ -1341,6 +1423,20 @@ impl ChainClient for MemChain {
             .get(&(sbt_addr.to_lowercase(), normalize_id(dog_tag_id)))
             .cloned()
             .ok_or(ChainError::NotFound)
+    }
+    async fn sbt_issuer_role_held(
+        &self,
+        sbt_addr: &str,
+        account: &str,
+    ) -> Result<bool, ChainError> {
+        let g = self.inner.lock().unwrap();
+        if g.sbt_role_reads_failing {
+            return Err(ChainError::Rpc("sbt role read failed".into()));
+        }
+        Ok(g.sbt_issuer_roles
+            .get(&(sbt_addr.to_lowercase(), account.to_lowercase()))
+            .copied()
+            .unwrap_or(true))
     }
 }
 
@@ -1390,6 +1486,24 @@ impl ChainClient for AlloyChain {
         {
             self.signers.lock().unwrap().insert(index, s);
         }
+    }
+    async fn sbt_issuer_role_held(
+        &self,
+        sbt_addr: &str,
+        account: &str,
+    ) -> Result<bool, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagSBT::new(parse_addr(sbt_addr), provider);
+        let r = c
+            .hasRole(sbt_issuer_role(), parse_addr(account))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
     }
     async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError> {
         use alloy::providers::ProviderBuilder;
@@ -1777,10 +1891,17 @@ impl ChainClient for AlloyChain {
         // ~1 gwei eth_gasPrice. Alloy's EIP-1559 filler derives maxFeePerGas from the (tiny) base fee,
         // producing an underpriced tx that the node ACCEPTS but never mines (stuck forever). Read
         // eth_gasPrice and send a legacy tx (mirrors the working `cast send --legacy`).
+        //
+        // FLOORED, because the suggestion itself is not reliably enough: measured live on ROAX
+        // 2026-08-07, a tx at the suggested ~1000007 wei sat unmined for 2+ minutes while blocks
+        // produced EMPTY, and a 50 gwei replacement mined in the next block (tx 0xed082f1b..020b,
+        // block 362312). An accepted-but-never-mined write is a silent hang with no error — the
+        // exact failure shape a suggested price must not be able to produce.
         let gp = provider
             .get_gas_price()
             .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+            .map_err(|e| ChainError::Rpc(e.to_string()))?
+            .max(gas_price_floor_wei());
         let tx = TransactionRequest::default()
             .with_to(parse_addr(to))
             .with_input(data)
@@ -1795,10 +1916,26 @@ impl ChainClient for AlloyChain {
         // Wait for the tx to be MINED before returning, so the immediate confirm step's
         // get_tx_view / issuedAt reads (and any cast isValid read) reflect the on-chain effect.
         // Returning at broadcast time made confirm race the mempool and fail with tx NotFound.
-        let receipt = pending
-            .get_receipt()
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        //
+        // BOUNDED: an accepted tx the mempool never mines must surface as loudly as a revert, not
+        // sit here forever looking like a slow chain (the caller's session row would read
+        // "minting" for good). ~7 ROAX blocks is generous for a correctly priced tx.
+        let tx_hash = format!("{:#x}", *pending.tx_hash());
+        let receipt = match tokio::time::timeout(
+            std::time::Duration::from_secs(RECEIPT_WAIT_SECS),
+            pending.get_receipt(),
+        )
+        .await
+        {
+            Ok(r) => r.map_err(|e| ChainError::Rpc(e.to_string()))?,
+            Err(_) => {
+                return Err(ChainError::Other(format!(
+                    "tx {tx_hash} was accepted but not mined within {RECEIPT_WAIT_SECS}s at gas \
+                     price {gp} wei — likely underpriced for this chain's mempool floor \
+                     (GAS_PRICE_FLOOR_WEI raises the floor); it may still mine later"
+                )))
+            }
+        };
         let tx_hash = format!("{:#x}", receipt.transaction_hash);
         if !receipt.status() {
             return Err(ChainError::Other(format!("tx reverted: {tx_hash}")));
@@ -2102,5 +2239,4 @@ mod tests {
         assert_eq!(k.len(), 66);
         assert_ne!(k, record_type_key(""));
     }
-
 }

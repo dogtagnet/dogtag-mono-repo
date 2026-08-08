@@ -84,6 +84,11 @@ targets:
       # could pin the verdict rules the way RoaxRpcSelectorTest pins Android; Models.swift above already
       # depends on it, so it must be here regardless.
       - path: DogTag/VerdictDisplay.swift
+      # IssuanceWait is Foundation-only: the pure sentences the dog-tag issuance wait ends in —
+      # a server-settled failure with its device-safe reason, or an honest could-not-confirm that
+      # never promises the work is still coming. Mirrors Android's IssuanceWait.kt case for case;
+      # the network peek that feeds it stays in Net.swift, outside this host-less target.
+      - path: DogTag/IssuanceWait.swift
       # ExportAvailability is Foundation-only: the pure decision behind the export panel's
       # "Approve & export" control — whether it may fire, and WHY not when it may not. Extracted so
       # this bundle can pin the no-silent-refusal invariant (a blocked state must carry a reason),

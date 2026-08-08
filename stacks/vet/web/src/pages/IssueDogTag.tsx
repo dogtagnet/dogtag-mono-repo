@@ -25,7 +25,7 @@ import {
   type ProfileOwnerIdentity,
   type ProfilePet,
 } from "@dogtag/ui";
-import { CheckCircle2, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   AnchorBlockedCard,
@@ -232,6 +232,8 @@ export function IssueDogTag() {
   // resolved it and went quiet" from "the deadline passed" — three different faults with three
   // different remedies. Polling continues even after the token dies, so a bind that landed in the
   // token's final seconds still flips the card to "anchoring" instead of being declared dead.
+  // An errored session is a definite terminal answer — polling past it can only overwrite the
+  // reason with nothing.
   const deadPollsRef = useRef(0);
   useEffect(() => {
     if (!session || bound || errored) return;
@@ -260,6 +262,29 @@ export function IssueDogTag() {
       clearTimeout(timer);
     };
   }, [session, bound, errored, api]);
+
+  // Re-arm a FAILED issuance: same session, same dogTagId, same identity salts, fresh QR. This is
+  // the ONLY path that can complete a stranded (anchored, unminted) root — a fresh session
+  // allocates a new dogTagId and the device derives a DIFFERENT root from it.
+  async function retry() {
+    if (!session) return;
+    setBusy(true);
+    try {
+      const resp = await api.retryProfileIssue(session.sessionId);
+      setSession(resp);
+      setStatus(null);
+      setDeadPolls(0);
+      toast({
+        title: "Issuance re-armed",
+        description: `Fresh QR for dog tag ${resp.dogTagId} — the owner scans again.`,
+        variant: "success",
+      });
+    } catch (err) {
+      toast({ title: "Retry refused", description: (err as Error).message, variant: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   if (session && bound && status) {
     return (
@@ -297,6 +322,49 @@ export function IssueDogTag() {
     );
   }
 
+  // A FAILED issuance is a definite answer and renders as one — never as "the QR token expired",
+  // and never as a silent stall. The reason is the backend's own operator-vocabulary sentence
+  // (`error`), and Retry re-arms THIS session because a stranded (anchored, unminted) root can
+  // only ever be completed through it.
+  if (session && errored && status) {
+    return (
+      <Card data-testid="issuance-error">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-danger">
+            <AlertTriangle className="h-5 w-5" /> Issuance failed
+          </CardTitle>
+          <CardDescription>
+            Dog tag <Badge variant="neutral">{status.dogTagId || session.dogTagId}</Badge> — the
+            owner's device bound, but the on-chain issuance did not complete
+            {status.errorStage ? ` (failed at: ${status.errorStage})` : ""}.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p
+            data-testid="issuance-error-reason"
+            className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-onSurface"
+          >
+            {status.error ||
+              "The backend did not record a reason. Check the vet backend's log for the failing stage."}
+          </p>
+          <div className="flex gap-2">
+            <Button onClick={retry} loading={busy} data-testid="issuance-retry">
+              Retry this issuance
+            </Button>
+            <Button variant="ghost" onClick={restart}>
+              Start over
+            </Button>
+          </div>
+          <p className="text-xs text-muted">
+            Retry keeps the same dog tag and shows a fresh QR for the owner to scan — if the root
+            was already anchored on-chain, the retry completes the remaining mint instead of
+            re-anchoring. Start over abandons this session and allocates a new dog tag.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
   if (session) {
     // Everything this card claims comes from the SERVER's facts, never a local clock.
     const qrAddr = status?.qrAddress ?? session.qrAddress;
@@ -330,14 +398,7 @@ export function IssueDogTag() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {errored ? (
-            <div data-testid="qr-error" className="space-y-3 text-center">
-              <p className="text-sm text-danger">
-                This issuance failed: {status?.txHash ?? "the backend reported an error"}
-              </p>
-              <Button onClick={restart}>Start over</Button>
-            </div>
-          ) : anchoring ? (
+          {anchoring ? (
             <div data-testid="qr-anchoring" className="flex flex-col items-center gap-3">
               <p className="max-w-sm text-center text-sm text-onSurface">
                 The owner's device sent its profile — the dog tag is being anchored on-chain now.

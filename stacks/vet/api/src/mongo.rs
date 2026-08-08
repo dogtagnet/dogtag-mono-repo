@@ -56,23 +56,35 @@ impl MongoStore {
         // searchKey is the single free-text field (scanned, never seeked — see above); updatedAt is
         // the list sort.
         clients.create_index(plain(doc! { "searchKey": 1 })).await?;
-        clients.create_index(plain(doc! { "updatedAt": -1 })).await?;
+        clients
+            .create_index(plain(doc! { "updatedAt": -1 }))
+            .await?;
         // A pet is addressed in its own right (`/pets/{petId}`) but stored inside its owner, so the
         // by-id lookup is a multikey seek into the embedded array rather than a top-level key.
-        clients.create_index(plain(doc! { "pets.petId": 1 })).await?;
+        clients
+            .create_index(plain(doc! { "pets.petId": 1 }))
+            .await?;
         // Same shape, and now on a HOT path: the one-pet-per-tag check runs `try_find_pets_by_dog_tag`
         // once per tagged pet on `POST /clients` and `PUT /clients/{id}`, the CRM's most frequent
         // writes. Unindexed each of those is a collection scan that also deserializes every matching
         // client document; indexed it is a multikey seek.
-        clients.create_index(plain(doc! { "pets.dogTagId": 1 })).await?;
+        clients
+            .create_index(plain(doc! { "pets.dogTagId": 1 }))
+            .await?;
 
         let appts: Collection<Document> = self.db.collection("crm_appointments");
-        appts.create_index(unique(doc! { "appointmentId": 1 })).await?;
+        appts
+            .create_index(unique(doc! { "appointmentId": 1 }))
+            .await?;
         // startAt leads: it is BOTH the calendar's range filter and the list sort, so a compound
         // index with the equality filters after it serves both without a separate sort stage.
         appts.create_index(plain(doc! { "startAt": 1 })).await?;
-        appts.create_index(plain(doc! { "clientId": 1, "startAt": 1 })).await?;
-        appts.create_index(plain(doc! { "status": 1, "startAt": 1 })).await?;
+        appts
+            .create_index(plain(doc! { "clientId": 1, "startAt": 1 }))
+            .await?;
+        appts
+            .create_index(plain(doc! { "status": 1, "startAt": 1 }))
+            .await?;
         appts.create_index(plain(doc! { "searchKey": 1 })).await?;
         // `.ics` import dedup. UNIQUE but PARTIAL: only rows that actually carry an `externalUid`
         // participate, so the (many) bookings made in the portal — which have no external id at all —
@@ -84,7 +96,9 @@ impl MongoStore {
                     .options(
                         IndexOptions::builder()
                             .unique(true)
-                            .partial_filter_expression(doc! { "externalUid": { "$type": "string" } })
+                            .partial_filter_expression(
+                                doc! { "externalUid": { "$type": "string" } },
+                            )
                             .build(),
                     )
                     .build(),
@@ -92,13 +106,25 @@ impl MongoStore {
             .await?;
 
         let verifs: Collection<Document> = self.db.collection("crm_verifications");
-        verifs.create_index(unique(doc! { "verificationId": 1 })).await?;
+        verifs
+            .create_index(unique(doc! { "verificationId": 1 }))
+            .await?;
         verifs.create_index(plain(doc! { "createdAt": -1 })).await?;
-        verifs.create_index(plain(doc! { "clientId": 1, "createdAt": -1 })).await?;
-        verifs.create_index(plain(doc! { "petId": 1, "createdAt": -1 })).await?;
-        verifs.create_index(plain(doc! { "appointmentId": 1, "createdAt": -1 })).await?;
-        verifs.create_index(plain(doc! { "status": 1, "createdAt": -1 })).await?;
-        verifs.create_index(plain(doc! { "purpose": 1, "createdAt": -1 })).await?;
+        verifs
+            .create_index(plain(doc! { "clientId": 1, "createdAt": -1 }))
+            .await?;
+        verifs
+            .create_index(plain(doc! { "petId": 1, "createdAt": -1 }))
+            .await?;
+        verifs
+            .create_index(plain(doc! { "appointmentId": 1, "createdAt": -1 }))
+            .await?;
+        verifs
+            .create_index(plain(doc! { "status": 1, "createdAt": -1 }))
+            .await?;
+        verifs
+            .create_index(plain(doc! { "purpose": 1, "createdAt": -1 }))
+            .await?;
         verifs.create_index(plain(doc! { "searchKey": 1 })).await?;
 
         // Client calendar-handoff tokens. Unique because a token IS an identity, and indexed because
@@ -162,7 +188,9 @@ impl Store for MongoStore {
         use futures::TryStreamExt;
         use mongodb::options::FindOptions;
         // Most-recent first (created_at desc). Records with no created_at (legacy) sort last.
-        let opts = FindOptions::builder().sort(doc! { "created_at": -1 }).build();
+        let opts = FindOptions::builder()
+            .sort(doc! { "created_at": -1 })
+            .build();
         match self.records().find(doc! {}).with_options(opts).await {
             Ok(cur) => cur.try_collect().await.unwrap_or_default(),
             Err(_) => Vec::new(),
@@ -333,7 +361,8 @@ impl Store for MongoStore {
         let _ = coll
             .replace_one(
                 doc! { "token": token },
-                doc! { "token": token, "session_id": session_id, "exp": exp as i64 },
+                doc! { "token": token, "session_id": session_id, "exp": exp as i64,
+                "consumed": false },
             )
             .upsert(true)
             .await;
@@ -345,12 +374,40 @@ impl Store for MongoStore {
             .await
             .ok()
             .flatten()?;
+        // A consumed token 404s the resolve exactly as the pre-retention delete did: the resolve
+        // implies the pre-bind state (it hands out the identity block). Rows written before the
+        // `consumed` flag existed have no key, which reads as not-consumed — correct, since a
+        // pre-retention consume DELETED the row.
+        if d.get_bool("consumed").unwrap_or(false) {
+            return None;
+        }
         let exp = d.get_i64("exp").unwrap_or(0) as u64;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
         if now > exp {
+            None
+        } else {
+            d.get_str("session_id").ok().map(|s| s.to_string())
+        }
+    }
+    async fn bind_session_for_status(&self, token: &str) -> Option<String> {
+        // Consumed-or-not, honoured until `exp + BIND_STATUS_GRACE_SECS` — the device's need for
+        // this lookup BEGINS at consumption (the bind response can be lost after the token is
+        // spent), so it deliberately does not filter on `consumed`.
+        let coll: Collection<Document> = self.db.collection("bind_tokens");
+        let d = coll
+            .find_one(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()?;
+        let exp = d.get_i64("exp").unwrap_or(0) as u64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if now > exp.saturating_add(crate::store::BIND_STATUS_GRACE_SECS) {
             None
         } else {
             d.get_str("session_id").ok().map(|s| s.to_string())
@@ -416,10 +473,15 @@ impl Store for MongoStore {
             }))
     }
     async fn take_bind_token(&self, token: &str) -> Option<String> {
-        // find_one_and_delete is atomic == one-time consume; then enforce expiry.
+        // find_one_and_update with a not-yet-consumed filter is atomic == one-time consume (a
+        // second call matches nothing); then enforce expiry. The row is MARKED rather than
+        // deleted so `bind_session_for_status` keeps answering the device's status peek.
         let coll: Collection<Document> = self.db.collection("bind_tokens");
         let d = coll
-            .find_one_and_delete(doc! { "token": token })
+            .find_one_and_update(
+                doc! { "token": token, "consumed": { "$ne": true } },
+                doc! { "$set": { "consumed": true } },
+            )
             .await
             .ok()
             .flatten()?;
@@ -630,7 +692,11 @@ impl Store for MongoStore {
             .await;
     }
     async fn get_client(&self, id: &str) -> Option<Client> {
-        self.crm_clients().find_one(doc! { "clientId": id }).await.ok().flatten()
+        self.crm_clients()
+            .find_one(doc! { "clientId": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn delete_client(&self, id: &str) -> bool {
         self.crm_clients()
@@ -704,20 +770,38 @@ impl Store for MongoStore {
                 use futures::StreamExt;
                 match cur.next().await {
                     Some(Ok(d)) => d,
-                    _ => return Page { rows: Vec::new(), total: 0 },
+                    _ => {
+                        return Page {
+                            rows: Vec::new(),
+                            total: 0,
+                        }
+                    }
                 }
             }
-            Err(_) => return Page { rows: Vec::new(), total: 0 },
+            Err(_) => {
+                return Page {
+                    rows: Vec::new(),
+                    total: 0,
+                }
+            }
         };
         let total = facet
             .get_array("total")
             .ok()
             .and_then(|a| a.first().cloned())
-            .and_then(|v| v.as_document().and_then(|d| d.get_i32("n").ok()).map(|n| n as u64))
+            .and_then(|v| {
+                v.as_document()
+                    .and_then(|d| d.get_i32("n").ok())
+                    .map(|n| n as u64)
+            })
             .unwrap_or(0);
         let rows = facet
             .get_array("rows")
-            .map(|a| a.iter().filter_map(|v| v.as_document().and_then(pet_row_from_unwound)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_document().and_then(pet_row_from_unwound))
+                    .collect()
+            })
             .unwrap_or_default();
         Page { rows, total }
     }
@@ -738,7 +822,12 @@ impl Store for MongoStore {
             .find_one(doc! { "pets.petId": pet_id })
             .await
             .map_err(|e| StoreReadError(e.to_string()))?;
-        Ok(found.and_then(|c| c.pets.iter().find(|p| p.pet_id == pet_id).map(|p| c.pet_row(p))))
+        Ok(found.and_then(|c| {
+            c.pets
+                .iter()
+                .find(|p| p.pet_id == pet_id)
+                .map(|p| c.pet_row(p))
+        }))
     }
 
     /// The `pets.dogTagId` match selects CLIENTS holding a matching pet, so the per-pet filter is
@@ -761,7 +850,11 @@ impl Store for MongoStore {
             .map_err(|e| StoreReadError(e.to_string()))?;
         while let Some(next) = cur.next().await {
             let c = next.map_err(|e| StoreReadError(e.to_string()))?;
-            for p in c.pets.iter().filter(|p| p.dog_tag_id.as_deref() == Some(dog_tag_id)) {
+            for p in c
+                .pets
+                .iter()
+                .filter(|p| p.dog_tag_id.as_deref() == Some(dog_tag_id))
+            {
                 out.push(c.pet_row(p));
             }
         }

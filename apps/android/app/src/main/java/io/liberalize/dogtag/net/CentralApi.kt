@@ -209,6 +209,34 @@ object CentralApi {
         }
     }
 
+    /** The device's bind-status peek: the derived session status and, on "error", the server's
+     *  device-safe stage sentence. */
+    data class IssueBindStatus(val status: String, val reason: String?)
+
+    /**
+     * GET `<host>/p/<token>/status` — the bind-status peek, keyed by the SAME one-time token the QR
+     * carried. Unlike the resolve it keeps answering AFTER the bind consumed the token (the server
+     * retains consumed tokens), because the phone's need for it BEGINS at the bind: a session that
+     * settled to "error" is a definite answer the chain poll could never observe. Null = could not
+     * check (unreachable, expired, or an older backend without the route) — never a verdict.
+     */
+    suspend fun issueBindStatus(host: String, token: String): IssueBindStatus? {
+        if (token.isBlank()) return null
+        return try {
+            val response = Http.getJson("$host/p/$token/status")
+            if (!response.ok) return null
+            val o = JSONObject(response.body)
+            val status = o.optString("status", "")
+            if (status.isBlank()) {
+                null
+            } else {
+                IssueBindStatus(status, o.optString("reason", "").ifBlank { null })
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /** Raw, platform-provided discovery hints. They are checked against ProtocolRegistry on-chain. */
     data class UnverifiedClaims(
         val protocolVersion: String,

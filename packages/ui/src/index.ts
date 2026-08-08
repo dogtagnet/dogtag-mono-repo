@@ -452,9 +452,11 @@ export {
 // unanswered probe is could-not-check and must never render as either verdict.
 export {
   ANCHOR_BLOCKED_HEADLINE,
+  ANCHOR_MISSING_MINT_ROLE,
   ANCHOR_MISSING_PROFILE_ISSUER,
   ANCHOR_MISSING_SBT,
   ANCHOR_UNKNOWN_INCOHERENT,
+  ANCHOR_UNKNOWN_MINT_ROLE,
   ANCHOR_UNKNOWN_NO_BLOCK,
   ANCHOR_UNKNOWN_NOTICE,
   dogTagAnchorProbeFailure,

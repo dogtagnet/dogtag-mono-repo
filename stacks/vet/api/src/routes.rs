@@ -43,8 +43,8 @@ use crate::auth::{self, ShareClaims};
 use crate::chain::{GrantAtIssuance, IssuanceCapability};
 use crate::issuance_allowed::RosterRead;
 use crate::microchip::{MicrochipCheck, NotComparable as MicrochipNotComparable};
-use crate::verify::valid_contract_addr;
 use crate::store::{ApptReplica, Record, RecordStatus, VerifySession};
+use crate::verify::valid_contract_addr;
 
 type Resp = (StatusCode, Json<Value>);
 
@@ -87,13 +87,102 @@ fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
 async fn health(State(st): State<AppState>) -> Resp {
     let mut body = json!({ "status": "ok" });
     if st.cfg.issuance_enabled() {
+        // `mintRole` is the ONE chain fact beside the config facts: `mintCustodial` is
+        // `onlyRole(ISSUER_ROLE)` and a fresh SBT grants that role to nobody, so a stack can be
+        // fully configured and still unable to mint a single tag — measured live 2026-08-07, where
+        // the refusal surfaced as a silent estimation revert inside the bind's background task.
+        // Bounded (3s) so a slow node can never hang the liveness probe; on elapse the answer is
+        // "unknown", which the portal renders as could-not-check and never as either verdict.
+        let mint_role = mint_role_gate(&st).await;
         body["dogTagIssuance"] = json!({
             "ready": st.cfg.dog_tag_anchor_refusal().is_none(),
             "profileIssuerConfigured": valid_contract_addr(&st.cfg.profile_issuer_addr),
             "sbtConsentConfigured": valid_contract_addr(&st.cfg.sbt_consent_addr),
+            "mintRole": mint_role.wire_state(),
+            "mintRoleDetail": mint_role.detail(),
         });
     }
     ok(body)
+}
+
+/// The three-way answer to "may the ACTIVE SIGNER `mintCustodial` on the configured SBT?".
+///
+/// Three states because the two non-held cases have different licenses: only a DEFINITE `Missing`
+/// may refuse anything, while `Unknown` (locked custody, unconfigured SBT, a failed or timed-out
+/// read) is could-not-check — it warns on the portal and never blocks, and the bind's own
+/// background arms report the real failure if one comes.
+enum MintRoleGate {
+    Held,
+    Missing(String),
+    Unknown(String),
+}
+
+impl MintRoleGate {
+    fn wire_state(&self) -> &'static str {
+        match self {
+            MintRoleGate::Held => "held",
+            MintRoleGate::Missing(_) => "missing",
+            MintRoleGate::Unknown(_) => "unknown",
+        }
+    }
+    fn detail(&self) -> Option<&str> {
+        match self {
+            MintRoleGate::Held => None,
+            MintRoleGate::Missing(d) | MintRoleGate::Unknown(d) => Some(d),
+        }
+    }
+}
+
+/// The operator-vocabulary refusal for a signer the SBT would refuse. The remedy is a BUTTON, not
+/// a command: the admin portal's Providers page carries the "Dog-tag mint role" card that grants
+/// exactly this role (captain's ruling 2026-08-07 — no cast command in the operator's path).
+fn mint_role_refusal_message(signer: &str) -> String {
+    format!(
+        "the vet signing key {signer} does not hold the dog-tag mint role — DogTagSBTConsent's \
+         ISSUER_ROLE, which every mint is gated on — so minting reverts before broadcasting. On \
+         the ADMIN portal's Providers page, use the \"Dog-tag mint role\" card to grant it to \
+         this signer, then retry"
+    )
+}
+
+/// Resolve the mint-role gate: active signer -> `hasRole(ISSUER_ROLE, signer)` on the configured
+/// SBT, bounded to 3s. Asked by `/health` (so the portal can refuse where the operator acts), by
+/// session-start and retry (refuse BEFORE a QR exists), and by the bind (refuse BEFORE the
+/// one-time token is consumed).
+async fn mint_role_gate(st: &AppState) -> MintRoleGate {
+    if !valid_contract_addr(&st.cfg.sbt_consent_addr) {
+        return MintRoleGate::Unknown(
+            "the DogTagSBTConsent address is not configured, so the mint role cannot be checked"
+                .to_string(),
+        );
+    }
+    let signer =
+        match st.custody.active_address() {
+            Ok(a) => a,
+            Err(_) => return MintRoleGate::Unknown(
+                "custody is locked, so the signing key's address cannot be resolved to check the \
+                 mint role"
+                    .to_string(),
+            ),
+        };
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        st.chain
+            .sbt_issuer_role_held(&st.cfg.sbt_consent_addr, &signer),
+    )
+    .await
+    {
+        Ok(Ok(true)) => MintRoleGate::Held,
+        Ok(Ok(false)) => MintRoleGate::Missing(mint_role_refusal_message(&signer)),
+        Ok(Err(e)) => MintRoleGate::Unknown(format!(
+            "could not check whether the vet signing key holds the dog-tag mint role: {e}"
+        )),
+        Err(_) => MintRoleGate::Unknown(
+            "could not check whether the vet signing key holds the dog-tag mint role: the chain \
+             read timed out"
+                .to_string(),
+        ),
+    }
 }
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
@@ -147,12 +236,8 @@ async fn require_operator_or_export_token(
             )
         })?;
     let mapped = st.store.peek_export_token(&token).await;
-    let mapped = mapped.ok_or_else(|| {
-        err(
-            StatusCode::UNAUTHORIZED,
-            "export token missing or expired",
-        )
-    })?;
+    let mapped =
+        mapped.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "export token missing or expired"))?;
     if mapped != session_id {
         return Err(err(
             StatusCode::UNAUTHORIZED,
@@ -1098,7 +1183,10 @@ async fn issuance_allowed_roster(State(st): State<AppState>, headers: HeaderMap)
         .map(|(rt, a)| (rt.clone(), a.clone()))
         .collect();
     if !st.cfg.profile_issuer_addr.is_empty() {
-        configured.push(("DOG_PROFILE".to_string(), st.cfg.profile_issuer_addr.clone()));
+        configured.push((
+            "DOG_PROFILE".to_string(),
+            st.cfg.profile_issuer_addr.clone(),
+        ));
     }
     // Deterministic order so two loads render the same list.
     configured.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1767,7 +1855,11 @@ async fn export_session_start(
     // Resolve the OPTIONAL appointment this verification belongs to. An id that does not resolve is
     // a 400, not a silent downgrade to an unlinked verification: the operator asked for the linked
     // flow and must not be told it succeeded when the linkage was dropped.
-    let ctx = match body.appointment_id.as_deref().filter(|s| !s.trim().is_empty()) {
+    let ctx = match body
+        .appointment_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         Some(id) => match crate::crm::resolve_session_context(&st.store, id).await {
             Ok(c) => Some(c),
             Err(e) => return err(StatusCode::BAD_REQUEST, &e),
@@ -1830,12 +1922,8 @@ async fn export_session_resolve(State(st): State<AppState>, Path(token): Path<St
             // type; the purpose is the session's verify purpose. The app validates these against the
             // dogtag ProtocolRegistry / signed-manifest anchor before trusting them.
             let issuer_clone = st.cfg.issuer_addr_for(&s.record_type).unwrap_or_default();
-            let claims = app::convenience_claims(
-                &st.cfg,
-                st.chain.chain_id(),
-                &issuer_clone,
-                &s.purpose,
-            );
+            let claims =
+                app::convenience_claims(&st.cfg, st.chain.chain_id(), &issuer_clone, &s.purpose);
             ok(json!({
                 "sessionId": s.session_id,
                 "relayer": s.relayer,
@@ -1867,17 +1955,13 @@ async fn verify_consent_submit(
             None => String::new(),
         },
     };
-    let authed_by_export_token = match require_operator_or_export_token(
-        &st,
-        &headers,
-        &session_id,
-        body_token.as_deref(),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
+    let authed_by_export_token =
+        match require_operator_or_export_token(&st, &headers, &session_id, body_token.as_deref())
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
     // An operator bearer satisfies the gate without naming a session; that is the cold path, and it
     // mints its own row exactly as the operator-gated route does. Only a resolved session binds.
     //
@@ -1928,8 +2012,7 @@ async fn verify_session_status(
     // — status reads are idempotent and polled repeatedly (peek only). The token arrives via the
     // `?token=` query or the Bearer header.
     if let Err(e) =
-        require_operator_or_export_token(&st, &headers, &session_id, q.token.as_deref())
-            .await
+        require_operator_or_export_token(&st, &headers, &session_id, q.token.as_deref()).await
     {
         return e;
     }
@@ -2038,9 +2121,10 @@ async fn prove_consent(State(st): State<AppState>, Json(body): Json<ProveConsent
             err(StatusCode::BAD_REQUEST, &format!("consent prover: {m}"))
         }
         // No consent artifacts on THIS instance (or they failed to load) — fail closed per request.
-        Err(crate::prover::ProverError::Unavailable(m)) => {
-            err(StatusCode::SERVICE_UNAVAILABLE, &format!("consent prover: {m}"))
-        }
+        Err(crate::prover::ProverError::Unavailable(m)) => err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("consent prover: {m}"),
+        ),
         Err(e) => err(StatusCode::BAD_GATEWAY, &format!("consent prover: {e}")),
     }
 }
@@ -2197,6 +2281,17 @@ async fn profile_issue_session_start(
     // complete, and the refusal surfaces on the owner's phone, where nobody can act on it. This is
     // the same predicate the bind route applies, asked where the OPERATOR is.
     if let Some(refusal) = st.cfg.dog_tag_anchor_refusal() {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("cannot start dog-tag issuance: {refusal}"),
+        );
+    }
+    // The SBT mint role, same placement and same license as the anchor refusal: only a DEFINITE
+    // "the SBT would refuse this signer" answer refuses (could-not-check warns on the portal and
+    // never blocks — the bind's background arms report the real failure if one comes). Without
+    // this, a fully configured stack whose signer was never granted ISSUER_ROLE hands a QR to a
+    // second human for a mint that reverts silently at estimation (measured live, 2026-08-07).
+    if let MintRoleGate::Missing(refusal) = mint_role_gate(&st).await {
         return err(
             StatusCode::SERVICE_UNAVAILABLE,
             &format!("cannot start dog-tag issuance: {refusal}"),
@@ -2370,6 +2465,8 @@ async fn profile_issue_session_start(
             root: None,
             tx_hash: None,
             protocol_version: None,
+            error_stage: None,
+            error_reason: None,
         })
         .await;
     st.store.put_bind_token(&token, &session_id, exp).await;
@@ -2696,6 +2793,13 @@ async fn profile_issue_custodial_bind(
     if let Some(refusal) = st.cfg.dog_tag_anchor_refusal() {
         return err(StatusCode::SERVICE_UNAVAILABLE, &refusal);
     }
+    // The SBT mint role, BEFORE the one-time token is consumed and for the same reason as the
+    // config check above: a definite "the SBT would refuse this signer" means the mint cannot
+    // complete, and refusing here leaves the QR alive for a retry once the role is granted.
+    // Could-not-check proceeds — the background arms report the real failure if one comes.
+    if let MintRoleGate::Missing(refusal) = mint_role_gate(&st).await {
+        return err(StatusCode::SERVICE_UNAVAILABLE, &refusal);
+    }
     // consume the one-time token atomically (second call -> 410).
     let session_id = match st.store.take_bind_token(&body.token).await {
         Some(id) => id,
@@ -2731,8 +2835,7 @@ async fn profile_issue_custodial_bind(
             "identity attestation integrity failed: {reason} — the posted R must commit exactly \
              the vet-collected identity and nothing else in owner.identity.*; start a FRESH session"
         );
-        session.status = "error".to_string();
-        session.tx_hash = Some(msg.clone());
+        settle_bind_error(&mut session, "attestation", &msg);
         st.store.update_profile_session(session).await;
         return err(StatusCode::BAD_REQUEST, &msg);
     }
@@ -2796,8 +2899,7 @@ async fn profile_issue_custodial_bind(
                  survives a burn, so this id is retired forever) — start a FRESH session",
                 session.dog_tag_id
             );
-            session.status = "error".to_string();
-            session.tx_hash = Some(msg.clone());
+            settle_bind_error(&mut session, "seal", &msg);
             st.store.update_profile_session(session).await;
             return err(StatusCode::CONFLICT, &msg);
         }
@@ -2809,8 +2911,7 @@ async fn profile_issue_custodial_bind(
                  session",
                 session.dog_tag_id
             );
-            session.status = "error".to_string();
-            session.tx_hash = Some(msg.clone());
+            settle_bind_error(&mut session, "seal", &msg);
             st.store.update_profile_session(session).await;
             return err(StatusCode::SERVICE_UNAVAILABLE, &msg);
         }
@@ -2823,23 +2924,104 @@ async fn profile_issue_custodial_bind(
     let bg_id = onchain_id.clone();
     let mut bg_session = session.clone();
     tokio::spawn(async move {
-        // (1) ANCHOR FIRST — issue(R) into the DogTagIssuer clone, so `rootIssuer[R]` resolves. If
-        // this fails nothing has been minted and the dogTagId is still free for a retry.
-        if let Err(e) = chain.issue(signer_index, &issuer_addr, &bg_root).await {
-            bg_session.status = "error".to_string();
-            bg_session.tx_hash = Some(format!("issue(R) error: {e}"));
-            store.update_profile_session(bg_session).await;
-            return;
+        // Every failure arm here does THREE things, and all three exist because a live failure
+        // (2026-08-07) did none of them where anyone looked: LOG the stage + cause where an
+        // operator tails the backend, SETTLE the session with the stage + reason (the portal's
+        // issuance card and the device's `/p/<token>/status` peek both read the row), and RETURN.
+        // The phone is chain-polling `profileRoot`, so without the settled row it waits ~190s for
+        // an anchor that will never exist and then guesses.
+
+        // (0) RESUME CHECK. `issue(R)` and `mintCustodial` are two transactions, so a crash or a
+        // mint-stage revert between them leaves R anchored on this clone with the tag unminted —
+        // and `registerRoot` is globally write-once, so re-running `issue(R)` for that R can only
+        // revert "root taken". A root THIS CLONE already anchored is stage (1) already done:
+        // resume at the mint. A failed read falls through to the plain issue — could-not-check
+        // must not invent either answer, and the write itself reports the truth.
+        let already_anchored = matches!(
+            chain.issued_at(&issuer_addr, &bg_root).await,
+            Ok(at) if !at.is_zero()
+        );
+        if already_anchored {
+            // Anchored AND revoked can never verify (`isValid` folds not-revoked), and minting
+            // would retire the dogTagId onto a dead anchor — refuse with the D3 remedy instead.
+            if !matches!(chain.is_valid(&issuer_addr, &bg_root).await, Ok(true)) {
+                let msg = format!(
+                    "this profile root is already anchored on the DOG_PROFILE clone but is not \
+                     valid there (revoked, or the read failed) — it can never verify, and \
+                     minting would retire dogTagId {} onto it. Start a FRESH session (a new \
+                     dogTagId derives a new root)",
+                    bg_session.dog_tag_id
+                );
+                tracing::error!(
+                    stage = "issue(R)",
+                    dog_tag_id = %bg_session.dog_tag_id,
+                    session = %bg_session.session_id,
+                    root = %bg_root,
+                    "dog-tag issuance failed: {msg}"
+                );
+                settle_bind_error(&mut bg_session, "issue", &msg);
+                store.update_profile_session(bg_session).await;
+                return;
+            }
+            tracing::info!(
+                dog_tag_id = %bg_session.dog_tag_id,
+                session = %bg_session.session_id,
+                root = %bg_root,
+                "dog-tag issuance resuming: this clone already anchored the root (an earlier \
+                 attempt's issue(R) landed and its mint did not) — skipping issue(R) and \
+                 completing the mint"
+            );
+        } else {
+            // (1) ANCHOR FIRST — issue(R) into the DogTagIssuer clone, so `rootIssuer[R]`
+            // resolves. If this fails nothing has been minted and the dogTagId is still free.
+            if let Err(e) = chain.issue(signer_index, &issuer_addr, &bg_root).await {
+                let msg = format!(
+                    "issue(R) failed on the DOG_PROFILE clone: {e}. Nothing was minted and \
+                     dogTagId {} is still free — fix the cause, then use Retry issuance on this \
+                     session (the owner re-scans a fresh QR; the phone re-posts the same root)",
+                    bg_session.dog_tag_id
+                );
+                tracing::error!(
+                    stage = "issue(R)",
+                    dog_tag_id = %bg_session.dog_tag_id,
+                    session = %bg_session.session_id,
+                    root = %bg_root,
+                    error = %e,
+                    "dog-tag issuance failed at issue(R); session settled to error"
+                );
+                settle_bind_error(&mut bg_session, "issue", &msg);
+                store.update_profile_session(bg_session).await;
+                return;
+            }
         }
         // (2) THEN SEAL — mintCustodial(id, R). Irreversible past this point.
         let sent = match chain
             .mint_custodial(signer_index, &sbt_addr, &bg_id, &bg_root)
             .await
         {
-            Ok(s) => s,
+            Ok(s) => Some(s),
             Err(e) => {
-                bg_session.status = "error".to_string();
-                bg_session.tx_hash = Some(format!("mintCustodial error: {e}"));
+                // The stranded-root state: R is anchored (issue(R) landed, above or on an earlier
+                // attempt) and the tag is unminted. A FRESH session cannot complete it — a new
+                // dogTagId derives a NEW root, and re-issuing THIS root reverts "root taken" — so
+                // the reason names the one path that can: retry THIS session, which the resume
+                // check above turns into a mint-only completion.
+                let msg = format!(
+                    "mintCustodial failed on the SBT: {e}. The root IS anchored on-chain \
+                     (issue(R) landed), so this dog tag can only be completed by fixing the \
+                     cause and using Retry issuance on THIS session — a fresh session derives a \
+                     different root and strands this one forever",
+                );
+                tracing::error!(
+                    stage = "mintCustodial",
+                    dog_tag_id = %bg_session.dog_tag_id,
+                    session = %bg_session.session_id,
+                    root = %bg_root,
+                    error = %e,
+                    "dog-tag issuance failed at mintCustodial with the root already anchored; \
+                     session settled to error"
+                );
+                settle_bind_error(&mut bg_session, "mint", &msg);
                 store.update_profile_session(bg_session).await;
                 return;
             }
@@ -2857,12 +3039,31 @@ async fn profile_issue_custodial_bind(
         let anchored_ok = matches!(chain.is_valid(&issuer_addr, &bg_root).await, Ok(true));
         if root_ok && anchored_ok {
             bg_session.status = "bound".to_string();
-            bg_session.tx_hash = Some(sent.tx_hash);
+            bg_session.tx_hash = sent.map(|s| s.tx_hash);
+            bg_session.error_stage = None;
+            bg_session.error_reason = None;
+            tracing::info!(
+                dog_tag_id = %bg_session.dog_tag_id,
+                session = %bg_session.session_id,
+                "dog-tag issuance bound: issue(R) + mintCustodial landed and both on-chain \
+                 conditions read back"
+            );
         } else {
-            bg_session.status = "error".to_string();
-            bg_session.tx_hash = Some(format!(
-                "on-chain verify failed (root_ok={root_ok} anchored_ok={anchored_ok})"
-            ));
+            let msg = format!(
+                "the mint transaction landed but the on-chain read-back failed \
+                 (profileRoot-matches={root_ok} isValid={anchored_ok}) — check the vet portal \
+                 and the chain before retrying anything"
+            );
+            tracing::error!(
+                stage = "verify",
+                dog_tag_id = %bg_session.dog_tag_id,
+                session = %bg_session.session_id,
+                root = %bg_root,
+                root_ok,
+                anchored_ok,
+                "dog-tag issuance read-back failed after the mint; session settled to error"
+            );
+            settle_bind_error(&mut bg_session, "verify", &msg);
         }
         store.update_profile_session(bg_session).await;
     });
@@ -2879,6 +3080,189 @@ async fn profile_issue_custodial_bind(
 /// True for a 0x.. word that is not all zeros (an unset `profileRoot` reads back as 0x0..0).
 fn is_nonzero_word(w: &str) -> bool {
     w.trim_start_matches("0x").bytes().any(|b| b != b'0')
+}
+
+/// Settle an issuance session as failed: status, WHERE (`error_stage` — machine-readable, the
+/// device peek's key) and WHY (`error_reason` — the operator's full detail). `tx_hash` is left
+/// alone: it carries a REAL transaction hash or nothing, never prose.
+fn settle_bind_error(session: &mut crate::store::ProfileIssueSession, stage: &str, reason: &str) {
+    session.status = "error".to_string();
+    session.error_stage = Some(stage.to_string());
+    session.error_reason = Some(reason.to_string());
+}
+
+/// The DEVICE-safe sentence for a failed bind, derived from the STAGE alone. The stored
+/// `error_reason` is the operator's — it carries chain errors and backend configuration detail
+/// that belong on the portal, not on an unauthenticated token peek — so the phone gets what the
+/// owner can act on: what happened, and that the clinic's portal names the rest.
+fn device_bind_failure_sentence(stage: Option<&str>) -> &'static str {
+    match stage {
+        Some("attestation") => {
+            "The profile this phone posted did not match the vet's attested records. Ask the \
+             clinic to start a fresh issuance."
+        }
+        Some("seal") => {
+            "The vet could not confirm this dog tag id is still free on-chain. Ask the clinic to \
+             start a fresh issuance."
+        }
+        Some("issue") => {
+            "The vet's on-chain anchoring of this dog tag failed. The vet portal names the reason \
+             — ask the clinic to fix it and retry the issuance."
+        }
+        Some("mint") => {
+            "This dog tag's root was anchored on-chain but the tag itself could not be minted. \
+             The vet portal names the reason — ask the clinic to fix it and retry this same \
+             issuance."
+        }
+        Some("verify") => {
+            "The vet could not confirm this dog tag on-chain after minting. Ask the clinic to \
+             check the vet portal before scanning again."
+        }
+        _ => {
+            "This issuance failed at the vet's backend. The vet portal names the reason — ask \
+              the clinic."
+        }
+    }
+}
+
+/// GET /p/{token}/status — the DEVICE's answer to "did my bind complete?", keyed by the SAME
+/// one-time token the QR carried. Unauthenticated and non-consuming, exactly like `GET /p/{token}`
+/// — but unlike the resolve, it keeps answering AFTER the bind consumed the token (the store
+/// retains consumed tokens for [`crate::store::BIND_STATUS_GRACE_SECS`]), because the phone's
+/// need for it BEGINS at the bind: the bind response can be lost after the token is consumed, and
+/// the chain poll can only ever observe success. A session that settled to "error" is a definite
+/// answer the phone could otherwise never learn — it would poll the chain for an anchor that will
+/// never exist and then guess.
+///
+/// The response is deliberately MINIMAL: derived status, the dogTagId the phone already knows,
+/// and a stage-derived device-safe sentence. Never the session row — it carries the owner's
+/// identity — and never the operator's `error_reason`, which names backend configuration.
+async fn profile_bind_status(State(st): State<AppState>, Path(token): Path<String>) -> Resp {
+    let session_id = match st.store.bind_session_for_status(&token).await {
+        Some(id) => id,
+        None => return err(StatusCode::NOT_FOUND, "bind token unknown or expired"),
+    };
+    let s = match st.store.get_profile_session(&session_id).await {
+        Some(s) => s,
+        None => return err(StatusCode::NOT_FOUND, "session not found"),
+    };
+    // Derived, not stored, so this surface adds no portal-visible state: a pending row whose root
+    // is set is a bind the backend accepted and is still driving ("minting" — the ack's own word).
+    let (status, reason) = match s.status.as_str() {
+        "error" => (
+            "error",
+            Some(device_bind_failure_sentence(s.error_stage.as_deref())),
+        ),
+        "bound" => ("bound", None),
+        _ if s.root.is_some() => ("minting", None),
+        _ => ("pending", None),
+    };
+    ok(json!({
+        "status": status,
+        "dogTagId": s.dog_tag_id,
+        "reason": reason,
+    }))
+}
+
+/// POST /profiles/issue/session/{id}/retry — operator-gated: re-arm an ERRORED issuance session
+/// with a fresh one-time QR token, keeping the SAME dogTagId and the SAME vet-salted identity
+/// leaves.
+///
+/// This exists because of the STRANDED-ROOT state: `issue(R)` and `mintCustodial` are two
+/// transactions, so a mint-stage failure leaves R anchored with the tag unminted — and that R can
+/// only ever be completed through THIS session. A fresh session allocates a new dogTagId, the
+/// device derives a NEW root from it (the id is a KDF input), and re-issuing the old root reverts
+/// "root taken" forever. Retrying the SAME session hands the device the same id and the same
+/// identity salts, so it reuses its persisted profile record, re-posts the SAME root, and the
+/// bind's resume check skips straight to the mint. Measured live 2026-08-07: dog tag 6's root was
+/// anchored at block 362224 with no mint and, before this route, no way forward.
+async fn profile_issue_session_retry(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    if !st.custody.is_unlocked() {
+        return err(StatusCode::CONFLICT, "not unlocked");
+    }
+    if let Some(refusal) = st.cfg.dog_tag_anchor_refusal() {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("cannot retry dog-tag issuance: {refusal}"),
+        );
+    }
+    // Same license as session-start: only a DEFINITE "the SBT would refuse this signer" refuses —
+    // a retry whose mint the SBT will certainly revert re-strands the session it exists to rescue.
+    if let MintRoleGate::Missing(refusal) = mint_role_gate(&st).await {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("cannot retry dog-tag issuance: {refusal}"),
+        );
+    }
+    let mut session = match st.store.get_profile_session(&session_id).await {
+        Some(s) => s,
+        None => return err(StatusCode::NOT_FOUND, "session not found"),
+    };
+    if session.status != "error" {
+        return err(
+            StatusCode::CONFLICT,
+            "only a FAILED issuance can be retried — this session has not errored",
+        );
+    }
+    // The id must still be unsealed: another instance may have minted it meanwhile (the counter
+    // resets on restart under the in-memory store). Definite-taken refuses with the D3 remedy;
+    // an inconclusive read proceeds — the bind's own synchronous seal re-check fails closed.
+    if let Ok(onchain) = onchain_dog_tag_id(&session.dog_tag_id) {
+        if let Ok(r) = st
+            .chain
+            .profile_root_of(&st.cfg.sbt_consent_addr, &onchain)
+            .await
+        {
+            if is_nonzero_word(&r) {
+                return err(
+                    StatusCode::CONFLICT,
+                    &format!(
+                        "dogTagId {} was sealed on-chain since this session failed — it cannot \
+                         be retried; start a FRESH session",
+                        session.dog_tag_id
+                    ),
+                );
+            }
+        }
+    }
+    // Re-arm with a FRESH token under the same deadline model as session-start: the scan window
+    // from now, extended at first resolve (see the BIND_TOKEN_* constants). `resolved_at` is
+    // cleared — no device has picked THIS QR up, and a stale mark would make the portal report
+    // "a device resolved it and went quiet" about a code nobody scanned.
+    let mut bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    let token = hex::encode(bytes);
+    let exp = auth::now() + BIND_TOKEN_SCAN_TTL_SECS;
+    session.status = "pending".to_string();
+    session.root = None;
+    session.tx_hash = None;
+    session.error_stage = None;
+    session.error_reason = None;
+    session.resolved_at = None;
+    session.token_exp = exp;
+    st.store.update_profile_session(session.clone()).await;
+    st.store.put_bind_token(&token, &session_id, exp).await;
+    let qr = format!("{}/p/{}", st.cfg.deployment_url, token);
+    tracing::info!(
+        dog_tag_id = %session.dog_tag_id,
+        session = %session_id,
+        "dog-tag issuance retry armed: fresh bind token minted for the errored session"
+    );
+    ok(json!({
+        "token": token,
+        "dogTagId": session.dog_tag_id,
+        "sessionId": session_id,
+        "qr": qr,
+        "ttlSecs": BIND_TOKEN_SCAN_TTL_SECS,
+        "qrAddress": crate::qr_address::qr_address_json(&st.cfg.deployment_url),
+    }))
 }
 
 /// GET /profiles/issue/session/{id} — operator-gated status poll so the portal can show whether the
@@ -2901,6 +3285,12 @@ async fn profile_issue_session_status(
         Some(s) => s,
         None => return err(StatusCode::NOT_FOUND, "session not found"),
     };
+    // Rows written before `error_reason` existed carry their reason as prose in `tx_hash`; fold
+    // that legacy shape into `error` here so an old failed row still names its reason on the
+    // portal, while `txHash` itself is only ever surfaced as a link on a BOUND session.
+    let legacy_reason = (s.status == "error" && s.error_reason.is_none())
+        .then(|| s.tx_hash.clone())
+        .flatten();
     ok(json!({
         "status": s.status,
         "dogTagId": s.dog_tag_id,
@@ -2912,6 +3302,8 @@ async fn profile_issue_session_status(
         // is dead and, with the session still pending, no bind can ever arrive.
         "tokenSecondsLeft": s.token_exp.saturating_sub(auth::now()),
         "qrAddress": crate::qr_address::qr_address_json(&st.cfg.deployment_url),
+        "error": s.error_reason.clone().or(legacy_reason),
+        "errorStage": s.error_stage,
     }))
 }
 
@@ -3431,6 +3823,13 @@ pub fn public_router(state: AppState) -> Router {
                 "/profiles/issue/session/:id",
                 get(profile_issue_session_status),
             )
+            // re-arm a FAILED issuance with a fresh QR: same session, same dogTagId, same
+            // identity salts — the only path that can complete a stranded (anchored, unminted)
+            // root. Operator-gated like start.
+            .route(
+                "/profiles/issue/session/:id/retry",
+                post(profile_issue_session_retry),
+            )
             // owner-hidden issuance is the sole bind path.
             .route(
                 "/profiles/issue/custodial-bind",
@@ -3438,6 +3837,10 @@ pub fn public_router(state: AppState) -> Router {
             )
             // short one-time bind token resolver (unauthenticated; NON-consuming — consume on bind)
             .route("/p/:token", get(profile_bind_resolve))
+            // the DEVICE's bind-status peek: unauthenticated, non-consuming, and — unlike the
+            // resolve above — still answering after the bind consumed the token, so the phone can
+            // learn a definite "error" instead of chain-polling into a guess.
+            .route("/p/:token/status", get(profile_bind_status))
     } else {
         Router::<AppState>::new()
     };
