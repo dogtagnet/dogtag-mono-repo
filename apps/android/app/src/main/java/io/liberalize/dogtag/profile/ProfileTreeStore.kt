@@ -172,6 +172,12 @@ class ProfileTreeStore(private val context: Context) {
         dogTagIdDec: String,
         ownerAddress: String,
         attributes: List<BackedUpAttribute>,
+        // REQUIRED: a dog tag's identity is (deployment, id), and a record persisted without its
+        // deployment recreates the ambiguity that let one redeploy poison every low id on a
+        // handset. The caller resolves it from the bundled roax.json (`DeploymentScope.of`) and
+        // must fail closed — with the rebuild-the-app remedy named — when the bundle is blank,
+        // rather than pass a guess here.
+        deployment: DeploymentScope,
     ): ProfileTreeFfi {
         if (!SeedBackup.isConfirmed(context, seedHex)) throw SeedBackupNotConfirmedException()
 
@@ -192,6 +198,7 @@ class ProfileTreeStore(private val context: Context) {
                 attributes = attributes,
                 derivationVersion = DERIVATION_VERSION,
                 savedAt = nowIso8601(),
+                deployment = deployment,
             ),
         )
         return tree

@@ -15,10 +15,12 @@
 		09A737AC99AE3E9975BD2BDB /* LocalDataSweepTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3774010D8817B22E7B20E2ED /* LocalDataSweepTests.swift */; };
 		0A013EDB062A80EFCDB5BAD0 /* Consent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8AB4F26FEB853C4B49F7988 /* Consent.swift */; };
 		0CD09CC73CBEBC35C4DE543A /* DogTagCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C7B838A386A4B4C42759D30 /* DogTagCardTests.swift */; };
+		0302C9B90E5D4B89C88A027B /* OwnerSecretScopingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED647321F94966FC799CD70 /* OwnerSecretScopingTests.swift */; };
 		0CD09CC73CBEBC35C4DE543B /* GrantAtIssuanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C7B838A386A4B4C42759D31 /* GrantAtIssuanceTests.swift */; };
 		0FAAB8287B508C32516CFDE9 /* RecordImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0236E3495680C88FA6DA3FD /* RecordImporter.swift */; };
 		0FB8C02159824CEC716035CE /* NearbyDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F429771D8817FCAF6D988417 /* NearbyDecisionTests.swift */; };
 		147EEC920E43D6B126D4DC97 /* DogTagCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0338C98CEC9DA9E969E82F12 /* DogTagCard.swift */; };
+		0F23C9C9A83AD38CB7D2C263 /* OwnerSecretScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09783790FE041D1842F60075 /* OwnerSecretScope.swift */; };
 		16A3ABD01E2E1ABC9CE51F94 /* RpcEndpointSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DEC7E3F44BE4B254D3F66FF /* RpcEndpointSettingsTests.swift */; };
 		20F038D3B3ECF7634BEC4266 /* TravelScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */; };
 		25DE54A9AD9062ED98EEC699 /* ZkeyAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */; };
@@ -64,6 +66,7 @@
 		8CCF26157DAEF743762A190D /* NearbyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C11CA1B0355D326B91CE598 /* NearbyDecision.swift */; };
 		8DC3271C7F17FD669803A4B0 /* AppReset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75EF39B011D7887690A4A543 /* AppReset.swift */; };
 		8E263851C0C8BCE97196C224 /* DogTagCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0338C98CEC9DA9E969E82F12 /* DogTagCard.swift */; };
+		CA9D97707319FC3DC5280DAF /* OwnerSecretScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09783790FE041D1842F60075 /* OwnerSecretScope.swift */; };
 		9421ADB0903957A8202C15A8 /* RpcEndpointSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68DE565B890849516CEFD273 /* RpcEndpointSettings.swift */; };
 		95966E12D4F0950D42E83A0A /* Secp256k1.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EFC25577C3EDAD52BEDCE9F /* Secp256k1.swift */; };
 		A3F8875BCFAE4F889D5255FA /* Secp256k1.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EFC25577C3EDAD52BEDCE9F /* Secp256k1.swift */; };
@@ -93,6 +96,7 @@
 
 /* Begin PBXFileReference section */
 		0338C98CEC9DA9E969E82F12 /* DogTagCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagCard.swift; sourceTree = "<group>"; };
+		09783790FE041D1842F60075 /* OwnerSecretScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnerSecretScope.swift; sourceTree = "<group>"; };
 		05A35C55F156CE4480CF763C /* HomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreen.swift; sourceTree = "<group>"; };
 		144F9FDA42E1E4D6D587F38B /* VerdictDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerdictDisplayTests.swift; sourceTree = "<group>"; };
 		AF72737FDB019B822F969138 /* IssuanceWaitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssuanceWaitTests.swift; sourceTree = "<group>"; };
@@ -134,6 +138,7 @@
 		9B1231C86A044F3FAC1BDBAA /* consent_final.zkey */ = {isa = PBXFileReference; path = consent_final.zkey; sourceTree = "<group>"; };
 		9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZkeyAsset.swift; sourceTree = "<group>"; };
 		9C7B838A386A4B4C42759D30 /* DogTagCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagCardTests.swift; sourceTree = "<group>"; };
+		0ED647321F94966FC799CD70 /* OwnerSecretScopingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnerSecretScopingTests.swift; sourceTree = "<group>"; };
 		9C7B838A386A4B4C42759D31 /* GrantAtIssuanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrantAtIssuanceTests.swift; sourceTree = "<group>"; };
 		A38289E086F9DD77EF41997A /* QrPayloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrPayloadTests.swift; sourceTree = "<group>"; };
 		A7926F506647E68F6A59FDAF /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -184,6 +189,7 @@
 				3E7C0DECAD4479B4092A46E3 /* AnchorResolverTests.swift */,
 				CD27D8383FB0A2606530FE01 /* DirectoryCacheTests.swift */,
 				9C7B838A386A4B4C42759D30 /* DogTagCardTests.swift */,
+				0ED647321F94966FC799CD70 /* OwnerSecretScopingTests.swift */,
 				9C7B838A386A4B4C42759D31 /* GrantAtIssuanceTests.swift */,
 				E5DC35D1F973834F7739F3F4 /* IssuerDomainBindingTests.swift */,
 				3774010D8817B22E7B20E2ED /* LocalDataSweepTests.swift */,
@@ -215,6 +221,7 @@
 				58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */,
 				3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */,
 				0338C98CEC9DA9E969E82F12 /* DogTagCard.swift */,
+				09783790FE041D1842F60075 /* OwnerSecretScope.swift */,
 				05A35C55F156CE4480CF763C /* HomeScreen.swift */,
 				1F0A5F7F5D703C32FA3502B1 /* InclusionProof.swift */,
 				811220B1CBE49685874502F4 /* IssuerDomainBinding.swift */,
@@ -378,6 +385,7 @@
 				3F1ED6BFE55CC539565CF5B3 /* DocumentsScreen.swift in Sources */,
 				2D898909BA2816F7807E1DAC /* DogTagApp.swift in Sources */,
 				147EEC920E43D6B126D4DC97 /* DogTagCard.swift in Sources */,
+				0F23C9C9A83AD38CB7D2C263 /* OwnerSecretScope.swift in Sources */,
 				01CA1C7AB95C7C234B95A403 /* HomeScreen.swift in Sources */,
 				FF53152641B9534CBD704A74 /* InclusionProof.swift in Sources */,
 				535C463988C089AF30FFAE0E /* IssuerDomainBinding.swift in Sources */,
@@ -422,7 +430,9 @@
 				2CB74FCDA1A48DF33F88CF3A /* BigUInt.swift in Sources */,
 				69CFF59AC693CA9D8CD20EB8 /* DirectoryCacheTests.swift in Sources */,
 				8E263851C0C8BCE97196C224 /* DogTagCard.swift in Sources */,
+				CA9D97707319FC3DC5280DAF /* OwnerSecretScope.swift in Sources */,
 				0CD09CC73CBEBC35C4DE543A /* DogTagCardTests.swift in Sources */,
+				0302C9B90E5D4B89C88A027B /* OwnerSecretScopingTests.swift in Sources */,
 				0CD09CC73CBEBC35C4DE543B /* GrantAtIssuanceTests.swift in Sources */,
 				403BF3AED72312547418E1EF /* IssuerDomainBinding.swift in Sources */,
 				73E6081D0C350292AAAA9739 /* IssuerDomainBindingTests.swift in Sources */,

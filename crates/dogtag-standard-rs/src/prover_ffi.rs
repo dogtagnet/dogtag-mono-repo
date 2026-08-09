@@ -100,6 +100,33 @@ fn graph_witness(json_input: &str) -> anyhow::Result<Vec<u8>> {
     circom_witnesscalc::calc_witness(json_input, bytes).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// Run a proving-dependency call with a PANIC BACKSTOP, downgrading any panic to a rendered
+/// [`FfiError`].
+///
+/// This exists because `circom-prover 0.1.4` panics where it should return errors — receipts, from
+/// the dependency's own source: `witness.rs:48` unwraps the witness callback's `Result` inside the
+/// witness thread; `prover/arkworks.rs:38-41` maps the thread join to
+/// `anyhow!("witness thread panicked")` and then UNWRAPS that; `:42` unwraps proving errors too. A
+/// panic that escapes a `#[uniffi::export]` reaches the app as `rustPanic` — uncatchable, rendered
+/// as a crash — which is exactly how a mismatched witness artifact surfaced on the captain's phone
+/// (2026-08-09). A prover must never crash the app: it returns an error the app can render.
+fn catch_prover_panic<T>(
+    stage: &str,
+    f: impl FnOnce() -> Result<T, FfiError>,
+) -> Result<T, FfiError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_string());
+            Err(err(format!("{stage} panicked: {msg}")))
+        }
+    }
+}
+
 /// A Groth16 proof formatted exactly as the on-chain Solidity calldata expects (mirrors
 /// `dogtag-prover-rs::Groth16Output`): `a`/`c` are G1 `[x,y]`; `b` is G2 with the snarkjs->Solidity
 /// coordinate swap applied (`b[0]=[bx_c1,bx_c0]`, `b[1]=[by_c1,by_c0]`); `pub_signals` is the
@@ -291,15 +318,41 @@ pub fn prove_consent(
 
     // Graph-witness plumbing: cached per path, read on circom-prover's own thread through the
     // process-global cell.
-    load_graph(&graph_path)?;
+    let graph = load_graph(&graph_path)?;
 
-    let proof = CircomProver::prove(
-        ProofLib::Arkworks,
-        WitnessFn::CircomWitnessCalc(graph_witness),
-        input_json,
-        zkey_path,
-    )
-    .map_err(|e| err(format!("circom-prover prove consent: {e}")))?;
+    // PRE-FLIGHT the witness on THIS thread, behind the panic backstop, before any proving
+    // machinery runs. Inside `CircomProver::prove` the same calculation happens on a spawned
+    // thread whose failures are UNWRAPPED (circom-prover 0.1.4 `witness.rs:48`,
+    // `prover/arkworks.rs:41` — and `circom_witnesscalc` itself unwraps graph parsing at
+    // `lib.rs:165`), so an input the calculator rejects — or a graph from another generation, the
+    // reproduced "Invalid magic" case — reached the app as an uncatchable `rustPanic` instead of
+    // an error it can render (measured on the captain's phone, 2026-08-09). A successful run here
+    // is deterministic proof the dependency's own witness thread will succeed on the identical
+    // bytes; the calculation is milliseconds against a proving step of tens of seconds.
+    if let Err(cause) = catch_prover_panic("consent witness calculation", || {
+        circom_witnesscalc::calc_witness(&input_json, graph)
+            .map(drop)
+            .map_err(|e| err(format!("consent witness rejected: {e}")))
+    }) {
+        return Err(err(format!(
+            "{cause} — the assembled circuit input and the bundled witness graph ({graph_path}) \
+             do not agree ({} attribute leaves + 3 reserved inclusion paths were assembled). If \
+             this credential or profile was recorded under a superseded deployment or artifact \
+             set, re-import or re-issue it on the current one; if the artifact bundle is stale, \
+             rebuild and reinstall the app.",
+            parsed.attributes.len()
+        )));
+    }
+
+    let proof = catch_prover_panic("circom-prover prove consent", || {
+        CircomProver::prove(
+            ProofLib::Arkworks,
+            WitnessFn::CircomWitnessCalc(graph_witness),
+            input_json.clone(),
+            zkey_path.clone(),
+        )
+        .map_err(|e| err(format!("circom-prover prove consent: {e}")))
+    })?;
 
     let pub_signals: Vec<String> = proof.pub_inputs.0.iter().map(|b| b.to_string()).collect();
     if pub_signals.len() != NUM_PUBLIC_CONSENT {
@@ -334,6 +387,82 @@ mod consent_tests {
         let mut w = [0u8; 32];
         w[24..].copy_from_slice(&hi.to_be_bytes());
         format!("0x{}", hex::encode(w))
+    }
+
+    /// THE CAPTAIN'S CRASH (live walk 2026-08-09), reproduced and pinned: proving against a
+    /// witness graph that does not match this build's circuit — any artifact from a superseded
+    /// generation, or a corrupt copy — used to reach the app as an UNCATCHABLE `rustPanic`
+    /// ("called `Result::unwrap()` on an `Err` value" / "witness thread panicked"), because
+    /// `circom-prover 0.1.4` unwraps the witness callback's `Result` inside its witness thread
+    /// (`witness.rs:48`) and unwraps the thread join again (`prover/arkworks.rs:38-41`). Verified
+    /// red before the pre-flight existed: this exact test died with that panic instead of
+    /// returning `Err`.
+    ///
+    /// The prover's contract is: NEVER a panic — an inconsistent input comes back as a rendered
+    /// error naming what was rejected.
+    #[test]
+    fn a_mismatched_witness_graph_is_a_named_error_never_a_panic() {
+        let seed = b"ffi graph mismatch test wallet seed - TEST MATERIAL ONLY".to_vec();
+        let salt = [7u8; SALT_LEN];
+        let attributes_json = format!(
+            r#"[{{"keyPath":"credentialSubject.name","salt":"0x{}","tag":2,"value":"Rex"}}]"#,
+            hex::encode(salt)
+        );
+        // A graph file from "another generation": bytes that are not THIS build's consent.graph.
+        let dir = std::env::temp_dir().join(format!("dogtag-graph-mismatch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let bad_graph = dir.join("not-the-consent.graph");
+        std::fs::write(&bad_graph, b"wtns.graph.999 this is not a witness graph").expect("write");
+
+        // The committed zkey; post-fix it is never read (the witness pre-flight refuses first),
+        // and its absence would mean an incomplete checkout.
+        let zkey = "../../circuits/build/consent_final.zkey";
+        assert!(
+            std::path::Path::new(zkey).exists(),
+            "incomplete checkout: {zkey} is committed and must exist"
+        );
+
+        let res = prove_consent(
+            format!("0x{}", hex::encode(&seed)),
+            "424242".into(),
+            format!("0x{}", hex::encode([0xabu8; 20])),
+            attributes_json,
+            word32(1),
+            format!("0x{}", hex::encode([0x11u8; 20])),
+            word32(2),
+            word32(3),
+            "1893456000".into(),
+            zkey.into(),
+            bad_graph.to_string_lossy().into_owned(),
+        );
+        match res {
+            Err(FfiError::Invalid(m)) => {
+                assert!(
+                    m.contains("witness"),
+                    "the refusal names the rejected stage: {m}"
+                );
+                assert!(
+                    m.contains("superseded deployment") || m.contains("artifact"),
+                    "the refusal points at the mismatched-artifact cause: {m}"
+                );
+            }
+            Ok(_) => panic!("a mismatched graph must not prove"),
+        }
+    }
+
+    /// The panic backstop itself: a panic inside the proving dependency is downgraded to a
+    /// rendered error, never re-raised across the FFI.
+    #[test]
+    fn a_panicking_prover_call_is_downgraded_to_a_rendered_error() {
+        let r: Result<(), FfiError> =
+            catch_prover_panic("test stage", || panic!("boom from the dependency"));
+        match r {
+            Err(FfiError::Invalid(m)) => {
+                assert!(m.contains("test stage"), "{m}");
+                assert!(m.contains("boom from the dependency"), "{m}");
+            }
+            _ => panic!("expected the panic to arrive as FfiError::Invalid"),
+        }
     }
 
     /// The FFI param parsing produces exactly the witness a caller would build in-Rust: parse the

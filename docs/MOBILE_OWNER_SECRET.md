@@ -209,7 +209,11 @@ mirrors the guarantees rather than the API; see [The Android file](#the-android-
       {"keyPath": "credentialSubject.name", "saltHex": "0x…", "tag": 2, "value": "Rex"}
     ],
     "derivationVersion": "DogTag/owner-secret/v1",
-    "savedAt": "2026-07-15T00:00:00Z"
+    "savedAt": "2026-07-15T00:00:00Z",
+    "deployment": {                 // OPTIONAL: which deployment this tag was issued on
+      "chainId": 135,
+      "sbtAddress": "0x…"           // the DogTagSBTConsent the tag is a token on
+    }
     // --- re-issue bookkeeping (M6, D3); all OPTIONAL and DEVICE-LOCAL, absent on a normal tag ---
     // on an ABANDONED record:  "abandonedAt": "2026-07-16T…", "replacedByDogTagIdDec": "515151"
     // on the RE-ISSUED record: "replacesDogTagIdDec": "424242"
@@ -225,6 +229,16 @@ The three re-issue fields (`abandonedAt`, `replacedByDogTagIdDec`, `replacesDogT
 by `ProfileTreeStore.reissue` and are all optional, so a record written before M6 decodes unchanged.
 They link an abandoned tag to the fresh tag that replaced it (decision D3), and they stay device-local
 like every other field here - never transmit the old<->new link.
+
+`deployment` scopes the record to the deployment its tag lives on - a dog tag's on-chain identity
+is (chain, SBT contract, id), and the SAME decimal id exists independently on every deployment.
+It is stamped from the bundled `roax.json` at build time (`DeploymentScope.of`), and it is what
+stops a redeploy from poisoning every low id a handset had seen: the same id on a new deployment is
+a NEW tag, looked up and written beside the old record rather than colliding with it.
+A record written before deployments were tracked decodes unchanged as a LEGACY record (no
+`deployment` key); it is kept, still answers when no scoped record does, and is stamped in place
+the first time content evidence ties it to the current deployment (the same-root upsert).
+The rules live in `OwnerSecretScope.swift` / Android `OwnerSecretRecords`, mirrored case for case.
 
 ### The Android file
 

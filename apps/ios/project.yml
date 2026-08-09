@@ -107,6 +107,11 @@ targets:
       # rather than depending on ProfileTreeStore.OwnerSecretRecord or LocalStore, both of which would
       # drag the FFI into this host-less bundle. Mirrors Android's DogTagCard.kt case for case.
       - path: DogTag/DogTagCard.swift
+      # OwnerSecretScope is Foundation-only on purpose: the deployment-scoping decisions behind the
+      # owner-secret store (a dog tag's identity is (deployment, id) - one redeploy used to poison
+      # every low id on a handset). The FFI-coupled store half (ProfileTreeStore.applyUpsert) stays
+      # outside this bundle; Android's JVM suite pins that half on its identical mirror.
+      - path: DogTag/OwnerSecretScope.swift
       # LocalDataSweep is Foundation-only by design so the destructive reset actions' file removal
       # (staging-sibling sweep, idempotence, partial-failure reporting) is covered here; the callers
       # that pull in Keychain/FFI/SwiftUI live in AppReset and the stores.

@@ -604,6 +604,24 @@ async fn prepare(
             ),
         );
     }
+    // Deployment lineage, before anything is built or persisted: the record-type clone variables
+    // (`VACCINATION_ISSUER_ADDR`, ...) are per-provider and deliberately survive the env sync, so
+    // after a redeploy they are the addresses guaranteed stale — and a root anchored through a
+    // superseded generation's clone is unattributable by every verifier on this deployment
+    // (integrity and isValid read fine; the mandatory issuer-whitelist pillar never resolves).
+    // Only a DEFINITE mismatch refuses; could-not-check proceeds and the existing
+    // issuance-capability preflight below still stands.
+    if let crate::deployment::DeploymentLineage::Foreign(detail) =
+        crate::deployment::issuer_clone_lineage(
+            st.chain.as_ref(),
+            &crate::deployment::DeploymentRefs::of(&st.cfg),
+            &issuer_addr,
+            &format!("{}_ISSUER_ADDR", body.record_type),
+        )
+        .await
+    {
+        return err(StatusCode::SERVICE_UNAVAILABLE, &detail);
+    }
     // build (ALWAYS server-side, identical both modes).
     let meta = app::issuer_meta(&st.cfg, &body.record_type, &issuer_addr);
     let vc = app::build_vc(&body.record_type, &body.fields, &body.dog_tag_id);
@@ -2297,6 +2315,29 @@ async fn profile_issue_session_start(
             &format!("cannot start dog-tag issuance: {refusal}"),
         );
     }
+    // DEPLOYMENT LINEAGE, asked before anything is allocated: the configured DOG_PROFILE clone
+    // must belong to the SAME deployment as the factory / SBT / verification registry in use. A
+    // redeploy moves every ledger-owned address while the env sync deliberately preserves the
+    // per-provider clone variables — so after a redeploy the clone is the one address guaranteed
+    // stale, and an issuance through it anchors a root no verifier on this deployment can ever
+    // attribute (measured live 2026-08-09). Only a DEFINITE mismatch refuses; could-not-check
+    // rides the response as a warning, exactly like `signerIssuance`.
+    let lineage = crate::deployment::issuer_clone_lineage(
+        st.chain.as_ref(),
+        &crate::deployment::DeploymentRefs::of(&st.cfg),
+        &st.cfg.profile_issuer_addr,
+        "PROFILE_ISSUER_ADDR",
+    )
+    .await;
+    if let crate::deployment::DeploymentLineage::Foreign(detail) = &lineage {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!(
+                "cannot start dog-tag issuance: {detail}. Nothing was allocated and no QR was \
+                 drawn."
+            ),
+        );
+    }
     if body.pet.name.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "pet.name must not be blank");
     }
@@ -2376,24 +2417,62 @@ async fn profile_issue_session_start(
     // survives a burn. Getting this wrong is expensive: `issue(R)` runs BEFORE the mint and
     // `registerRoot` is globally write-once, so a collision burns both the operator's one-time QR and
     // the device-computed `R`.
+    //
+    // THE CONTRACT IS THE AUTHORITY AND THIS LOOP IS FAIL-CLOSED: an id is handed out only once the
+    // SBT itself answered that its profileRoot is unset. It used to `break` on a failed read — which
+    // hands out exactly the id this backend could not vouch for, and the collision then surfaces on
+    // the owner's phone as a stranded root after the QR is burned. Refusing here costs the operator
+    // one retry; guessing costs a write-once root. (Contrast the two-layer signer gate above, whose
+    // could-not-check WARNS: a wrong signer fails cleanly later with nothing irreversible spent.)
     let sbt = &st.cfg.sbt_consent_addr;
     let mut dog_tag_id = st.store.next_dog_tag_id().await.to_string();
+    let mut vouched = false;
     for _ in 0..256 {
         // The SBT keys state by the field-hashed id, so query field_of_value(handle), not the raw handle.
         let onchain = match onchain_dog_tag_id(&dog_tag_id) {
             Ok(v) => v,
-            Err(_) => break, // non-numeric handle can't collide via this path; proceed
+            Err(_) => {
+                // Unreachable from the u64 counter, and nothing to vouch against if it were: the
+                // SBT is keyed by field-hashed NUMERIC handles, so a non-numeric handle has no
+                // slot to collide with.
+                vouched = true;
+                break;
+            }
         };
         let taken = match st.chain.profile_root_of(sbt, &onchain).await {
             // A real node returns 0x0..0 for an id that was never sealed; MemChain returns NotFound.
             Ok(r) => is_nonzero_word(&r),
             Err(crate::chain::ChainError::NotFound) => false,
-            Err(_) => break,
+            Err(e) => {
+                return err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &format!(
+                        "cannot start dog-tag issuance: could not establish on the SBT that dog \
+                         tag id {dog_tag_id} is unminted ({e}) — refusing to hand out an id this \
+                         backend cannot vouch for. Nothing was allocated and no QR was drawn; \
+                         retry when the chain is reachable."
+                    ),
+                );
+            }
         };
         if !taken {
+            vouched = true;
             break;
         }
         dog_tag_id = st.store.next_dog_tag_id().await.to_string();
+    }
+    if !vouched {
+        // 256 consecutive minted ids: the counter is far behind the chain (a lost journal on a
+        // long-lived SBT). Every probe above advanced the persisted counter, so retrying makes
+        // progress; proceeding here would hand out an id the SBT just said is TAKEN.
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!(
+                "cannot start dog-tag issuance: the local dog-tag counter is more than 256 ids \
+                 behind the chain (every probe up to {dog_tag_id} is already minted). The counter \
+                 has advanced past them; retry to continue from there."
+            ),
+        );
     }
 
     let owner_identity = crate::store::OwnerIdentity {
@@ -2486,6 +2565,19 @@ async fn profile_issue_session_start(
         // with what could not be checked. A definite refusal never reaches this response — it is
         // the 503 above, before anything was allocated.
         "signerIssuance": signer_issuance,
+        // The deployment-lineage answer, same discipline: "confirmed" (the clone provably belongs
+        // to the deployment in use) or "unknown" with what could not be established. A definite
+        // mismatch never reaches this response — it is the 503 above.
+        "deploymentLineage": match &lineage {
+            crate::deployment::DeploymentLineage::Member => json!({ "state": "confirmed" }),
+            crate::deployment::DeploymentLineage::Unknown(detail) => {
+                json!({ "state": "unknown", "detail": detail })
+            }
+            // Foreign refused above; unreachable here.
+            crate::deployment::DeploymentLineage::Foreign(detail) => {
+                json!({ "state": "unknown", "detail": detail })
+            }
+        },
     }))
 }
 
@@ -2799,6 +2891,28 @@ async fn profile_issue_custodial_bind(
     // Could-not-check proceeds — the background arms report the real failure if one comes.
     if let MintRoleGate::Missing(refusal) = mint_role_gate(&st).await {
         return err(StatusCode::SERVICE_UNAVAILABLE, &refusal);
+    }
+    // Deployment lineage, BEFORE the token is consumed and for the same restart reason as the
+    // config check above: an env that changed across a restart can point this bind at a clone of
+    // a superseded deployment, and `issue(R)` into it anchors a root no verifier here can ever
+    // attribute — with the write-once damage done before any honest verdict can say so. A
+    // DEFINITE mismatch refuses with the QR still alive; could-not-check proceeds (warned in the
+    // log), since the chain writes below exercise the chain themselves.
+    match crate::deployment::issuer_clone_lineage(
+        st.chain.as_ref(),
+        &crate::deployment::DeploymentRefs::of(&st.cfg),
+        &issuer_addr,
+        "PROFILE_ISSUER_ADDR",
+    )
+    .await
+    {
+        crate::deployment::DeploymentLineage::Foreign(detail) => {
+            return err(StatusCode::SERVICE_UNAVAILABLE, &detail);
+        }
+        crate::deployment::DeploymentLineage::Unknown(detail) => {
+            tracing::warn!("custodial bind proceeding with unestablished deployment lineage: {detail}");
+        }
+        crate::deployment::DeploymentLineage::Member => {}
     }
     // consume the one-time token atomically (second call -> 410).
     let session_id = match st.store.take_bind_token(&body.token).await {
@@ -3291,6 +3405,23 @@ async fn profile_issue_session_retry(
         return err(
             StatusCode::SERVICE_UNAVAILABLE,
             &format!("cannot retry dog-tag issuance: {refusal}"),
+        );
+    }
+    // Deployment lineage, same license again: a retry re-runs `issue(R)`/`mintCustodial`, and a
+    // restart can have repointed the env at a superseded deployment's clone since the session
+    // failed. A definite mismatch refuses; could-not-check proceeds.
+    if let crate::deployment::DeploymentLineage::Foreign(detail) =
+        crate::deployment::issuer_clone_lineage(
+            st.chain.as_ref(),
+            &crate::deployment::DeploymentRefs::of(&st.cfg),
+            &st.cfg.profile_issuer_addr,
+            "PROFILE_ISSUER_ADDR",
+        )
+        .await
+    {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("cannot retry dog-tag issuance: {detail}"),
         );
     }
     let mut session = match st.store.get_profile_session(&session_id).await {

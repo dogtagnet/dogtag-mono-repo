@@ -56,6 +56,8 @@ import io.liberalize.dogtag.net.AnchorResolver
 import io.liberalize.dogtag.net.CentralApi
 import io.liberalize.dogtag.net.IssuanceWait
 import io.liberalize.dogtag.net.RoaxRpc
+import io.liberalize.dogtag.profile.DeploymentScope
+import io.liberalize.dogtag.profile.OwnerSecretRecords
 import io.liberalize.dogtag.profile.ProfileTreeStore
 import io.liberalize.dogtag.qr.QrPayload
 import io.liberalize.dogtag.qr.QrScannerView
@@ -341,8 +343,22 @@ private fun IssuePanel(
                             scope.launch {
                                 try {
                                     val treeStore = ProfileTreeStore(context)
+                                    // A dog tag's identity is (deployment, id): the same decimal
+                                    // id exists independently on every deployment, so the stored
+                                    // record is looked up WITHIN the deployment this app is
+                                    // bundled against. A record scoped to another deployment
+                                    // never answers here (that collision is how one redeploy
+                                    // poisoned every low id on a handset); a legacy record
+                                    // (written before scoping) still answers, and is stamped once
+                                    // the content evidence below ties it to this deployment.
+                                    val deployment =
+                                        DeploymentScope.of(roax.chainId, roax.dogTagSbt)
                                     val existing = withContext(Dispatchers.IO) {
-                                        treeStore.load().firstOrNull { it.dogTagIdDec == resolved.dogTagId }
+                                        OwnerSecretRecords.preferredFor(
+                                            treeStore.load(),
+                                            resolved.dogTagId,
+                                            deployment,
+                                        )
                                     }
                                     // D1: identity leaves keep the VET's salts (the bind-time
                                     // full-leaf-list gate requires the posted identity openings to
@@ -351,41 +367,89 @@ private fun IssuePanel(
                                     // pet-then-identity - feeds the build, the retry compare, the
                                     // persisted openings, and the bind's leaf openings alike.
                                     val identityAttrs = resolved.identityLeaves.map { it.asAttribute() }
+                                    // "Content" is the whole pairing claim: the wallet AND the
+                                    // byte-exact vet-salted metadata. A match means THIS session
+                                    // already built here; a mismatch on a legacy record means
+                                    // another deployment's tag (the vet's allocator never
+                                    // re-hands a minted id within one deployment), so the id is
+                                    // genuinely free and a fresh witness is built beside the old
+                                    // record rather than refusing the owner forever.
+                                    val contentMatches = existing != null &&
+                                        existing.ownerAddress.equals(wallet.ethAddress, ignoreCase = true) &&
+                                        resolved.matchesStored(existing.attributes)
+                                    val decision = if (existing == null) {
+                                        OwnerSecretRecords.ReuseDecision.BUILD_FRESH
+                                    } else {
+                                        OwnerSecretRecords.reuseDecision(
+                                            existing.deployment,
+                                            deployment,
+                                            contentMatches,
+                                        )
+                                    }
                                     val attributes: List<BackedUpAttribute>
                                     val tree: ProfileTreeFfi
-                                    if (existing != null) {
-                                        check(existing.derivationVersion == ProfileTreeStore.DERIVATION_VERSION) {
-                                            "existing owner secret uses an unsupported derivation version"
+                                    when (decision) {
+                                        OwnerSecretRecords.ReuseDecision.REUSE -> {
+                                            checkNotNull(existing)
+                                            check(existing.derivationVersion == ProfileTreeStore.DERIVATION_VERSION) {
+                                                "existing owner secret uses an unsupported derivation version"
+                                            }
+                                            attributes = existing.attributes
+                                            tree = withContext(Dispatchers.Default) {
+                                                treeStore.verifyRecoverable(seedHex, existing)
+                                                // Deterministic rebuild from the persisted record for
+                                                // the reserved leaf hashes; nothing new is persisted.
+                                                ProfileTreeBuilder.buildForIdField(
+                                                    seedHex = seedHex,
+                                                    dogTagIdFieldHex = existing.dogTagIdHex,
+                                                    ownerAddress = existing.ownerAddress,
+                                                    attributes = existing.attributes.map {
+                                                        ProfileTreeBuilder.Attribute(it.keyPath, it.saltHex, it.tag, it.value)
+                                                    },
+                                                )
+                                            }
+                                            // MIGRATION: the byte-identical vet-salted identity
+                                            // leaves prove this record is the session's — stamp
+                                            // it with the deployment being anchored into (the
+                                            // same-root upsert replaces the legacy entry).
+                                            if (existing.deployment == null && deployment != null) {
+                                                withContext(Dispatchers.IO) {
+                                                    treeStore.upsert(existing.copy(deployment = deployment))
+                                                }
+                                            }
                                         }
-                                        check(existing.ownerAddress.equals(wallet.ethAddress, ignoreCase = true)) {
-                                            "this dog tag belongs to a different wallet on this device"
+                                        OwnerSecretRecords.ReuseDecision.REFUSE_CONFLICT -> {
+                                            checkNotNull(existing)
+                                            // Same deployment (or no way to tell one), same id,
+                                            // different content: refuse before the stored witness
+                                            // — unrecoverable salts — is disturbed, with the two
+                                            // causes kept apart as before.
+                                            check(existing.ownerAddress.equals(wallet.ethAddress, ignoreCase = true)) {
+                                                "this dog tag belongs to a different wallet on this device"
+                                            }
+                                            error("issuance retry metadata differs from the persisted profile")
                                         }
-                                        check(resolved.matchesStored(existing.attributes)) {
-                                            "issuance retry metadata differs from the persisted profile"
-                                        }
-                                        attributes = existing.attributes
-                                        tree = withContext(Dispatchers.Default) {
-                                            treeStore.verifyRecoverable(seedHex, existing)
-                                            // Deterministic rebuild from the persisted record for
-                                            // the reserved leaf hashes; nothing new is persisted.
-                                            ProfileTreeBuilder.buildForIdField(
-                                                seedHex = seedHex,
-                                                dogTagIdFieldHex = existing.dogTagIdHex,
-                                                ownerAddress = existing.ownerAddress,
-                                                attributes = existing.attributes.map {
-                                                    ProfileTreeBuilder.Attribute(it.keyPath, it.saltHex, it.tag, it.value)
-                                                },
-                                            )
-                                        }
-                                    } else {
-                                        attributes = resolved.pet.attributes(::randomSalt16) + identityAttrs
-                                        tree = withContext(Dispatchers.Default) {
-                                            treeStore.buildAndPersist(
-                                                seedHex = seedHex,
-                                                dogTagIdDec = resolved.dogTagId,
-                                                ownerAddress = wallet.ethAddress,
-                                                attributes = attributes,
-                                            )
+                                        OwnerSecretRecords.ReuseDecision.BUILD_FRESH -> {
+                                            // A record persisted without its deployment recreates
+                                            // the collision this scoping removes, so a blank
+                                            // bundle fails closed here with the remedy named —
+                                            // consistent with every other consumer of a stale
+                                            // bundle.
+                                            checkNotNull(deployment) {
+                                                "this app build carries no deployment configuration " +
+                                                    "(roax.json is missing or stale) — rebuild and " +
+                                                    "reinstall the app after gen-mobile-roax-config"
+                                            }
+                                            attributes = resolved.pet.attributes(::randomSalt16) + identityAttrs
+                                            tree = withContext(Dispatchers.Default) {
+                                                treeStore.buildAndPersist(
+                                                    seedHex = seedHex,
+                                                    dogTagIdDec = resolved.dogTagId,
+                                                    ownerAddress = wallet.ethAddress,
+                                                    attributes = attributes,
+                                                    deployment = deployment,
+                                                )
+                                            }
                                         }
                                     }
                                     // The bind's full-leaf-list commitment: every attribute opening
@@ -641,8 +705,14 @@ private fun ExportPanel(
         revealKeyPaths = emptySet()
         identityLeaves = if (sel == null) emptyList() else withContext(Dispatchers.IO) {
             runCatching {
+                // Scoped like every store lookup: another deployment's record for the same
+                // decimal id must not supply identity leaves for THIS deployment's tag.
                 identityAttributesFor(
-                    ProfileTreeStore(context).load().firstOrNull { it.dogTagIdDec == sel.dogTagId },
+                    OwnerSecretRecords.preferredFor(
+                        ProfileTreeStore(context).load(),
+                        sel.dogTagId,
+                        RoaxConfig.load(context).let { DeploymentScope.of(it.chainId, it.dogTagSbt) },
+                    ),
                 )
             }.getOrDefault(emptyList())
         }
@@ -858,11 +928,17 @@ private suspend fun runLevelBFlow(
             return
         }
         // Use the throwing accessor: an encrypted store that exists but cannot be read is not the
-        // same as "no secret", and owner-hidden proving must fail closed in that case.
-        val owner = ProfileTreeStore(context).load()
-            .firstOrNull { it.dogTagIdDec == credential.dogTagId }
+        // same as "no secret", and owner-hidden proving must fail closed in that case. Scoped to
+        // the bundled deployment: a record from a superseded deployment holds an `R` this
+        // deployment's `profileRoot(dogTagId)` can never equal, so proving with it would fail far
+        // from the cause — refuse here with the reason instead.
+        val owner = OwnerSecretRecords.preferredFor(
+            ProfileTreeStore(context).load(),
+            credential.dogTagId,
+            DeploymentScope.of(roax.chainId, roax.dogTagSbt),
+        )
         if (owner == null) {
-            onDone("No owner-hidden secret exists for this dog tag.")
+            onDone("No owner-hidden secret exists for this dog tag on this deployment.")
             return
         }
         if (owner.derivationVersion != ProfileTreeStore.DERIVATION_VERSION) {

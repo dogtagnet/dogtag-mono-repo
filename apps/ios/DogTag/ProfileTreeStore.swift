@@ -86,6 +86,12 @@ enum ProfileTreeStore {
         var replacedByDogTagIdDec: String? = nil
         /// The abandoned tag's decimal id this one replaced (set on the re-issued record).
         var replacesDogTagIdDec: String? = nil
+
+        /// The deployment this tag was issued on — see `DeploymentScope`. Optional under the same
+        /// rule as the M6 fields above: a record written before deployments were tracked decodes
+        /// unchanged as a LEGACY record (`nil`), kept and never orphaned; the scoping rules live
+        /// in `OwnerSecretScoping` and the store's `applyUpsert`.
+        var deployment: DeploymentScope? = nil
     }
 
     /// Which step of a store read failed, recorded at the throw site rather than inferred later from
@@ -194,7 +200,13 @@ enum ProfileTreeStore {
         seedHex: String,
         dogTagIdDec: String,
         ownerAddress: String,
-        attributes: [BackedUpAttribute]
+        attributes: [BackedUpAttribute],
+        // REQUIRED: a dog tag's identity is (deployment, id), and a record persisted without its
+        // deployment recreates the ambiguity that let one redeploy poison every low id on a
+        // handset. The caller resolves it from the bundled roax.json (`DeploymentScope.of`) and
+        // must fail closed — with the rebuild-the-app remedy named — when the bundle is blank,
+        // rather than pass a guess here.
+        deployment: DeploymentScope
     ) throws -> ProfileTreeFfi {
         guard SeedBackup.isConfirmed(forSeedHex: seedHex) else {
             throw StoreError.seedBackupNotConfirmed
@@ -216,7 +228,8 @@ enum ProfileTreeStore {
             ownerAddress: ownerAddress,
             attributes: attributes,
             derivationVersion: derivationVersion,
-            savedAt: Date()
+            savedAt: Date(),
+            deployment: deployment
         )
         try upsert(record)
         return tree
@@ -249,7 +262,10 @@ enum ProfileTreeStore {
         abandoningDogTagIdDec: String,
         newDogTagIdDec: String,
         ownerAddress: String,
-        attributes: [BackedUpAttribute]
+        attributes: [BackedUpAttribute],
+        // Same rule as `buildAndPersist`: the fresh tag is being issued on ONE deployment and the
+        // record must say which.
+        deployment: DeploymentScope
     ) throws -> ProfileTreeFfi {
         guard newDogTagIdDec != abandoningDogTagIdDec else {
             throw StoreError.reissueRequiresFreshId(dogTagId: newDogTagIdDec)
@@ -275,7 +291,8 @@ enum ProfileTreeStore {
             attributes: attributes,
             derivationVersion: derivationVersion,
             savedAt: Date(),
-            replacesDogTagIdDec: abandoningDogTagIdDec
+            replacesDogTagIdDec: abandoningDogTagIdDec,
+            deployment: deployment
         )
         try withStoreLock {
             var records = try loadUnlocked()
@@ -347,8 +364,11 @@ enum ProfileTreeStore {
         (try? load()) ?? []
     }
 
-    static func record(forDogTagIdDec dec: String) -> OwnerSecretRecord? {
-        all().first { $0.dogTagIdDec == dec }
+    /// The record answering for `dec` on the CURRENT deployment: an exact scope match first, else
+    /// a legacy (pre-scoping) record — never another deployment's record, whose `R` this
+    /// deployment's `profileRoot(dogTagId)` can never equal. See `OwnerSecretScoping.preferred`.
+    static func record(forDogTagIdDec dec: String, deployment: DeploymentScope?) -> OwnerSecretRecord? {
+        OwnerSecretScoping.preferred(all(), forDogTagIdDec: dec, current: deployment)
     }
 
     /// Records for tags NOT abandoned by a re-issue - what the UI should present as usable. An
@@ -393,15 +413,27 @@ enum ProfileTreeStore {
         }
     }
 
-    /// Conflict-checked insert/replace keyed by canonical `dogTagIdHex`. Fail-closed for the
-    /// write-once root: an identical root is an idempotent retry, a different root for the same id is
-    /// rejected before the existing witness is touched. Caller MUST hold the store lock.
+    /// Conflict-checked insert/replace keyed by (deployment, canonical `dogTagIdHex`). Mirrors
+    /// Android `OwnerSecretRecords.upsert` — change both together.
+    ///
+    /// Fail-closed for the write-once root WITHIN one deployment: an identical root is an
+    /// idempotent retry, a different root for the same id ON THE SAME deployment is rejected
+    /// before the existing witness is touched. The same id on a DIFFERENT deployment is a
+    /// different tag entirely and the two records coexist — refusing there is how one redeploy
+    /// used to poison every low id on a handset, and overwriting would destroy the old tag's
+    /// unrecoverable salts.
+    ///
+    /// MIGRATION is the one cross-scope write: a scoped record whose root equals a legacy
+    /// (untracked) record's root REPLACES that record — stamping it with the deployment the
+    /// content evidence just tied it to — rather than duplicating the tag. Caller MUST hold the
+    /// store lock.
     private static func applyUpsert(
         _ records: inout [OwnerSecretRecord],
         _ record: OwnerSecretRecord
     ) throws {
         if let idx = records.firstIndex(where: {
             $0.dogTagIdHex.caseInsensitiveCompare(record.dogTagIdHex) == .orderedSame
+                && OwnerSecretScoping.sameScope($0.deployment, record.deployment)
         }) {
             let existing = records[idx]
             guard existing.rootHex.caseInsensitiveCompare(record.rootHex) == .orderedSame else {
@@ -412,6 +444,13 @@ enum ProfileTreeStore {
                 )
             }
             records[idx] = record
+        } else if record.deployment != nil,
+                  let legacyIdx = records.firstIndex(where: {
+                      $0.dogTagIdHex.caseInsensitiveCompare(record.dogTagIdHex) == .orderedSame
+                          && $0.deployment == nil
+                          && $0.rootHex.caseInsensitiveCompare(record.rootHex) == .orderedSame
+                  }) {
+            records[legacyIdx] = record
         } else {
             records.append(record)
         }
@@ -494,3 +533,7 @@ enum ProfileTreeStore {
         try url.setResourceValues(values)
     }
 }
+
+/// The stored record participates in the pure scoping decisions (`OwnerSecretScoping`), which live
+/// in the FFI-free `OwnerSecretScope.swift` so the host-less test bundle can pin them.
+extension ProfileTreeStore.OwnerSecretRecord: DeploymentScopedRecord {}
