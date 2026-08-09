@@ -30,6 +30,10 @@ class OwnerSecretCodecTest {
         idDec: String = "424242",
         idHex: String = "0x67932",
         root: String = "0xaaaa",
+        // POPULATED by default: the round-trip's whole-record equality only covers a field the
+        // fixture actually sets — a defaulted-null deployment would round-trip trivially with the
+        // codec forgetting to write it (the exact silent drop the stored-copy codecs teach).
+        deployment: DeploymentScope? = DeploymentScope(135, "0x00000000000000000000000000000000000000dd"),
     ) = OwnerSecretRecord(
         dogTagIdHex = idHex,
         dogTagIdDec = idDec,
@@ -44,17 +48,50 @@ class OwnerSecretCodecTest {
         ),
         derivationVersion = ProfileTreeStore.DERIVATION_VERSION,
         savedAt = "2026-07-20T00:00:00Z",
+        deployment = deployment,
     )
 
     /**
      * The whole record must survive a write/read cycle. `OwnerSecretRecord` is a data class, so this
      * single equality covers every field - including any added later, which is the point: a new field
-     * that the codec forgets to write fails here automatically.
+     * that the codec forgets to write fails here automatically. One record carries a deployment and
+     * one is legacy, so BOTH shapes of the optional scope round-trip.
      */
     @Test
     fun `encode then decode round-trips every field`() {
-        val records = listOf(record(), record(idDec = "515151", idHex = "0x7dd57", root = "0xbeef"))
+        val records = listOf(
+            record(),
+            record(idDec = "515151", idHex = "0x7dd57", root = "0xbeef", deployment = null),
+        )
         assertEquals(records, OwnerSecretRecords.decode(OwnerSecretRecords.encode(records)))
+    }
+
+    /**
+     * A store written BEFORE deployment scoping existed decodes unchanged, as a legacy record —
+     * never as an unreadable store (this codec's other reads are required-key `getString`s, so an
+     * accidental required read of the new key would turn every pre-scoping store into
+     * CouldNotDecode) and never with an invented deployment.
+     */
+    @Test
+    fun `a pre-scoping store decodes as legacy records`() {
+        val preScoping = """
+            [{
+              "dogTagIdHex": "0x67932",
+              "dogTagIdDec": "424242",
+              "ownerSecretHex": "0xbbbb",
+              "rootHex": "0xaaaa",
+              "ownerAddress": "0x00000000000000000000000000000000deadbeef",
+              "attributes": [
+                {"keyPath": "credentialSubject.name", "saltHex": "0x0102", "tag": 2, "value": "Rex"}
+              ],
+              "derivationVersion": "${ProfileTreeStore.DERIVATION_VERSION}",
+              "savedAt": "2026-07-20T00:00:00Z"
+            }]
+        """.trimIndent()
+        val decoded = OwnerSecretRecords.decode(preScoping)
+        assertEquals(1, decoded.size)
+        assertEquals(null, decoded[0].deployment)
+        assertEquals("424242", decoded[0].dogTagIdDec)
     }
 
     @Test

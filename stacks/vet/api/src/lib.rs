@@ -26,6 +26,7 @@ pub mod chain;
 pub mod crm;
 pub mod ics;
 pub mod custody;
+pub mod deployment;
 pub mod discovery;
 pub mod issuance_allowed;
 pub mod microchip;

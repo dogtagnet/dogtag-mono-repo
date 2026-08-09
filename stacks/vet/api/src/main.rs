@@ -198,6 +198,20 @@ async fn main() {
         feed,
     };
 
+    // Boot-time deployment-lineage sweep, LOGGED rather than gating (the diagnostic must never
+    // gate liveness): every configured issuer clone is checked against the factory / SBT /
+    // verification registry in use, because a redeploy moves every ledger-owned address while the
+    // env sync deliberately preserves the per-provider clone variables — leaving them the one
+    // thing guaranteed stale. A foreign clone logs at ERROR here and is REFUSED at every issuance
+    // surface (session start, prepare, bind, retry) before anything irreversible is spent.
+    {
+        let chain = state.chain.clone();
+        let cfg = state.cfg.clone();
+        tokio::spawn(async move {
+            vet_api::deployment::log_boot_lineage(chain.as_ref(), &cfg).await;
+        });
+    }
+
     // CORS: explicit allowlist when CORS_ALLOW_ORIGINS is set (prod), else permissive (demo).
     let cors = build_cors();
 

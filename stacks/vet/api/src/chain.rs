@@ -143,6 +143,13 @@ sol! {
             uint256[7] pub
         ) external;
         function consumed(bytes32 nf) external view returns (bool);
+        // The registry's two immutable deployment pins (`VerificationRegistryConsent.sol:99-100`).
+        // `rootIndex` IS the factory whose write-once `rootIssuer` mapping every verifier resolves
+        // roots through; `sbt` is the contract `R == profileRoot(dogTagId)` is checked against.
+        // Together they define WHICH deployment a credential must be anchored into to be
+        // attributable — the fact the deployment-lineage gate compares configuration against.
+        function rootIndex() external view returns (address);
+        function sbt() external view returns (address);
     }
 
 }
@@ -166,6 +173,16 @@ pub enum ChainError {
     NotFound,
     #[error("{0}")]
     Other(String),
+}
+
+/// The two immutable deployment pins a `VerificationRegistryConsent` carries — see
+/// [`ChainClient::verification_registry_pins`].
+#[derive(Clone, Debug)]
+pub struct RegistryPins {
+    /// `rootIndex()` — the `DogTagIssuerFactory` this registry resolves every root through.
+    pub root_index: String,
+    /// `sbt()` — the `DogTagSBTConsent` whose `profileRoot` binds a proof to a tag.
+    pub sbt: String,
 }
 
 /// Result of a broadcast: the tx hash plus the fields confirm must bind against.
@@ -435,6 +452,34 @@ pub trait ChainClient: Send + Sync {
     /// implementor decides what it can actually answer.
     async fn sbt_issuer_role_held(&self, sbt_addr: &str, account: &str)
         -> Result<bool, ChainError>;
+    /// `DogTagIssuerFactory.isClone(clone)` — whether this factory deployed `clone`.
+    ///
+    /// The deployment-membership fact behind the mixed-generation refusal: `isClone` is the
+    /// factory's own write-once storage, so a definite `false` from the CONFIGURED factory means a
+    /// root anchored through that clone resolves to `rootIssuer == 0` on every verifier bound to
+    /// this deployment — integrity green, `isValid` green, and the mandatory issuer-whitelist
+    /// pillar permanently unresolved (measured live 2026-08-09 after a redeploy left
+    /// `PROFILE_ISSUER_ADDR` naming a superseded generation's clone).
+    ///
+    /// REQUIRED, no default body, for `sbt_issuer_role_held`'s reason: a default `Err` would
+    /// quietly render every deployment's lineage gate as could-not-check, which warns instead of
+    /// refusing — the fail-open direction.
+    async fn factory_is_clone(
+        &self,
+        factory_addr: &str,
+        clone_addr: &str,
+    ) -> Result<bool, ChainError>;
+    /// `VerificationRegistryConsent`'s two immutable deployment pins, `(rootIndex(), sbt())`.
+    ///
+    /// These anchor "the deployment in use" to the registry that DEFINES attribution, rather than
+    /// to whichever pair of env vars happened to be exported together: a configured factory or SBT
+    /// that disagrees with the verification registry's own pins is a configuration that mixes
+    /// deployments, however each address got there. REQUIRED, no default body — same reason as
+    /// `factory_is_clone`.
+    async fn verification_registry_pins(
+        &self,
+        registry_addr: &str,
+    ) -> Result<RegistryPins, ChainError>;
     /// Encode issue(bytes32) calldata for `root`.
     fn encode_issue(&self, root: &str) -> String {
         issue_calldata(root)
@@ -689,6 +734,19 @@ struct MemChainInner {
     /// that drives the bind's failing-mint arm, since a readable missing role is refused at the
     /// gate before any token is consumed.
     sbt_role_reads_failing: bool,
+    /// (factory_addr, clone_addr) -> `DogTagIssuerFactory.isClone(clone)`. ABSENT means the read
+    /// FAILS (could-not-check), mirroring `with_registry`'s reasoning: the deployment-lineage gate
+    /// refuses only on a DEFINITE `false`, so an unseeded suite exercises the warn arm rather than
+    /// being refused — or silently passed — by fixture accident.
+    factory_clones: HashMap<(String, String), bool>,
+    /// registry_addr -> its two immutable deployment pins `(rootIndex, sbt)`. ABSENT means the
+    /// read fails, same reasoning as `factory_clones`.
+    registry_pins: HashMap<String, (String, String)>,
+    /// Fault injection for `profile_root_of` alone (its own switch, following
+    /// `set_failing_approval_log_reads`' reasoning): the dogTagId allocator must REFUSE when it
+    /// cannot read the SBT, and a shared switch would fail unrelated reads first and never reach
+    /// the arm this exists to drive.
+    profile_root_reads_failing: bool,
     nonce: u64,
     clock: u64,
 }
@@ -979,6 +1037,38 @@ impl MemChain {
     /// failing-mint arm, whose renderer would otherwise be untestable.
     pub fn set_sbt_role_reads_failing(&self, failing: bool) {
         self.inner.lock().unwrap().sbt_role_reads_failing = failing;
+    }
+    /// Declare whether `factory.isClone(clone)` answers `true` or `false`. UNSEEDED pairs FAIL the
+    /// read (could-not-check), so the lineage gate's warn arm is what every pre-existing suite
+    /// exercises; a definite membership answer is opt-in per test.
+    pub fn set_factory_clone(&self, factory_addr: &str, clone_addr: &str, is_clone: bool) {
+        self.inner.lock().unwrap().factory_clones.insert(
+            (factory_addr.to_lowercase(), clone_addr.to_lowercase()),
+            is_clone,
+        );
+    }
+    /// Declare the two immutable deployment pins a verification registry answers —
+    /// `(rootIndex, sbt)`. UNSEEDED registries FAIL the read, same reasoning as
+    /// [`MemChain::set_factory_clone`].
+    pub fn set_registry_pins(&self, registry_addr: &str, root_index: &str, sbt: &str) {
+        self.inner.lock().unwrap().registry_pins.insert(
+            registry_addr.to_lowercase(),
+            (root_index.to_lowercase(), sbt.to_lowercase()),
+        );
+    }
+    /// Make `profile_root_of` FAIL (a refused eth_call). Default-off fault injection: the dogTagId
+    /// allocator must refuse an id it cannot vouch for, and that arm is unreachable while every
+    /// read answers.
+    pub fn set_failing_profile_root_reads(&self, failing: bool) {
+        self.inner.lock().unwrap().profile_root_reads_failing = failing;
+    }
+    /// Seed `DogTagSBT.profileRoot[id]` directly — a chain whose SBT already holds minted ids this
+    /// backend's counter knows nothing about (the lost-journal state the allocator probes for).
+    pub fn set_profile_root(&self, sbt_addr: &str, dog_tag_id: &str, root: &str) {
+        self.inner.lock().unwrap().sbt_roots.insert(
+            (sbt_addr.to_lowercase(), normalize_id(dog_tag_id)),
+            root.to_lowercase(),
+        );
     }
     /// Decode an issue(bytes32)/revoke(bytes32) calldata into (is_issue, root_hex).
     fn decode_b32_call(calldata: &str) -> Option<(bool, String)> {
@@ -1419,9 +1509,34 @@ impl ChainClient for MemChain {
         dog_tag_id: &str,
     ) -> Result<String, ChainError> {
         let g = self.inner.lock().unwrap();
+        if g.profile_root_reads_failing {
+            return Err(ChainError::Rpc("profileRoot read failed".into()));
+        }
         g.sbt_roots
             .get(&(sbt_addr.to_lowercase(), normalize_id(dog_tag_id)))
             .cloned()
+            .ok_or(ChainError::NotFound)
+    }
+    async fn factory_is_clone(
+        &self,
+        factory_addr: &str,
+        clone_addr: &str,
+    ) -> Result<bool, ChainError> {
+        let g = self.inner.lock().unwrap();
+        g.factory_clones
+            .get(&(factory_addr.to_lowercase(), clone_addr.to_lowercase()))
+            .copied()
+            .ok_or(ChainError::NotFound)
+    }
+    async fn verification_registry_pins(
+        &self,
+        registry_addr: &str,
+    ) -> Result<RegistryPins, ChainError> {
+        let g = self.inner.lock().unwrap();
+        g.registry_pins
+            .get(&registry_addr.to_lowercase())
+            .cloned()
+            .map(|(root_index, sbt)| RegistryPins { root_index, sbt })
             .ok_or(ChainError::NotFound)
     }
     async fn sbt_issuer_role_held(
@@ -2092,6 +2207,51 @@ impl ChainClient for AlloyChain {
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(format!("0x{}", hex::encode(r._0.as_slice())))
+    }
+    async fn factory_is_clone(
+        &self,
+        factory_addr: &str,
+        clone_addr: &str,
+    ) -> Result<bool, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuerFactory::new(parse_addr(factory_addr), provider);
+        let r = c
+            .isClone(parse_addr(clone_addr))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
+    }
+    async fn verification_registry_pins(
+        &self,
+        registry_addr: &str,
+    ) -> Result<RegistryPins, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IVerificationRegistryConsent::new(parse_addr(registry_addr), provider);
+        let root_index = c
+            .rootIndex()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?
+            ._0;
+        let sbt = c
+            .sbt()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?
+            ._0;
+        Ok(RegistryPins {
+            root_index: root_index.to_string().to_lowercase(),
+            sbt: sbt.to_string().to_lowercase(),
+        })
     }
 }
 

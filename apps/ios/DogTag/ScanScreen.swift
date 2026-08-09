@@ -402,18 +402,21 @@ struct ScanScreen: View {
             ProfileTreeStore.BackedUpAttribute(
                 keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
         }
-        if let existing = try ProfileTreeStore.load().first(where: {
-            $0.dogTagIdDec == session.dogTagId
-        }) {
-            guard existing.abandonedAt == nil else {
-                throw issueFailure("this dogTagId was retired and cannot be reused")
-            }
-            guard existing.derivationVersion == ProfileTreeStore.derivationVersion else {
-                throw issueFailure("existing owner secret uses an unsupported derivation version")
-            }
+        // A dog tag's identity is (deployment, id): the same decimal id exists independently on
+        // every deployment, so the stored record is looked up WITHIN the deployment this app is
+        // bundled against. A record scoped to another deployment never answers here (that
+        // collision is how one redeploy poisoned every low id on a handset — this refusal fired
+        // for tags that were genuinely free); a legacy record (written before scoping) still
+        // answers, and is stamped once the content evidence below ties it to this deployment.
+        let roax = RoaxConfig.load()
+        let deployment = DeploymentScope.of(chainId: roax.chainId, sbtAddress: roax.dogTagSbt)
+        if let existing = OwnerSecretScoping.preferred(
+            try ProfileTreeStore.load(), forDogTagIdDec: session.dogTagId, current: deployment
+        ) {
             // Pet attrs compare on (keyPath, value, tag) - their salts are device-random. Identity
             // attrs ALSO compare on the salt: the vet verifies inclusion with ITS stored salt, so a
-            // divergent salt could never bind.
+            // divergent salt could never bind. Together with the wallet this is the whole pairing
+            // claim — a byte-exact match means THIS session already built here.
             let petStored = existing.attributes.prefix(requested.count)
             let identityStored = existing.attributes.dropFirst(requested.count)
             let metadataMatches = existing.attributes.count == requested.count + identity.count
@@ -425,24 +428,56 @@ struct ScanScreen: View {
                 && zip(identityStored, identity).allSatisfy { stored, incoming in
                     stored == incoming
                 }
-            let matches = existing.ownerAddress.caseInsensitiveCompare(ownerAddress) == .orderedSame
+            let contentMatches = existing.ownerAddress.caseInsensitiveCompare(ownerAddress) == .orderedSame
                 && metadataMatches
-            guard matches else {
+            switch OwnerSecretScoping.reuseDecision(
+                recordScope: existing.deployment, current: deployment, contentMatches: contentMatches
+            ) {
+            case .reuse:
+                guard existing.abandonedAt == nil else {
+                    throw issueFailure("this dogTagId was retired and cannot be reused")
+                }
+                guard existing.derivationVersion == ProfileTreeStore.derivationVersion else {
+                    throw issueFailure("existing owner secret uses an unsupported derivation version")
+                }
+                _ = try ProfileTreeStore.verifyRecoverable(seedHex: seedHex, record: existing)
+                // Deterministic rebuild from the persisted record for the reserved leaf hashes;
+                // nothing new is persisted. The record stores the CANONICAL dogTagId field.
+                let tree = try buildProfileTreeHex(
+                    seedHex: seedHex,
+                    dogTagIdHex: existing.dogTagIdHex,
+                    ownerAddressHex: existing.ownerAddress,
+                    attributes: existing.attributes.map {
+                        AttributeLeafFfi(keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
+                    })
+                // MIGRATION: the byte-identical vet-salted identity leaves prove this record is
+                // the session's — stamp a legacy record with the deployment being anchored into
+                // (the same-root upsert replaces the legacy entry rather than duplicating it).
+                if existing.deployment == nil, let deployment {
+                    var stamped = existing
+                    stamped.deployment = deployment
+                    try ProfileTreeStore.upsert(stamped)
+                }
+                return (tree.rootHex, bindLeafOpenings(existing.attributes),
+                        [tree.ownerAddressLeafHex, tree.consentKeyLeafHex, tree.ownerSecretLeafHex],
+                        true)
+            case .refuseConflict:
+                // Same deployment (or no way to tell one), same id, different content: refuse
+                // before the stored witness — unrecoverable salts — can be disturbed.
                 throw issueFailure("this dogTagId already has different private profile metadata")
+            case .buildFresh:
+                // A legacy record whose content differs while the deployment IS known: another
+                // deployment's tag. Fall through to a fresh build; the old record stays beside it.
+                break
             }
-            _ = try ProfileTreeStore.verifyRecoverable(seedHex: seedHex, record: existing)
-            // Deterministic rebuild from the persisted record for the reserved leaf hashes;
-            // nothing new is persisted. The record stores the CANONICAL dogTagId field.
-            let tree = try buildProfileTreeHex(
-                seedHex: seedHex,
-                dogTagIdHex: existing.dogTagIdHex,
-                ownerAddressHex: existing.ownerAddress,
-                attributes: existing.attributes.map {
-                    AttributeLeafFfi(keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
-                })
-            return (tree.rootHex, bindLeafOpenings(existing.attributes),
-                    [tree.ownerAddressLeafHex, tree.consentKeyLeafHex, tree.ownerSecretLeafHex],
-                    true)
+        }
+        // A record persisted without its deployment recreates the collision this scoping removes,
+        // so a blank bundle fails closed here with the remedy named — consistent with every other
+        // consumer of a stale bundle.
+        guard let deployment else {
+            throw issueFailure(
+                "this app build carries no deployment configuration (roax.json is missing or "
+                    + "stale) — rebuild and reinstall the app after gen-mobile-roax-config")
         }
         var attributes = try requested.map { item -> ProfileTreeStore.BackedUpAttribute in
             let salted = try ProfileTreeStore.randomStringAttribute(
@@ -455,7 +490,8 @@ struct ScanScreen: View {
             seedHex: seedHex,
             dogTagIdDec: session.dogTagId,
             ownerAddress: ownerAddress,
-            attributes: attributes)
+            attributes: attributes,
+            deployment: deployment)
         return (tree.rootHex, bindLeafOpenings(attributes),
                 [tree.ownerAddressLeafHex, tree.consentKeyLeafHex, tree.ownerSecretLeafHex],
                 false)
@@ -764,9 +800,15 @@ struct ScanScreen: View {
             }
             // Use the throwing accessor here: an encrypted store that exists but cannot be read is
             // not equivalent to "no secret", and the prover must fail closed rather than hide it.
-            guard let owner = try ProfileTreeStore.load().first(where: {
-                $0.dogTagIdDec == credential.dogTagId
-            }),
+            // Scoped to the bundled deployment: a superseded deployment's record holds an `R` this
+            // deployment's `profileRoot(dogTagId)` can never equal, so proving with it would fail
+            // far from the cause.
+            let proverRoax = RoaxConfig.load()
+            guard let owner = OwnerSecretScoping.preferred(
+                try ProfileTreeStore.load(),
+                forDogTagIdDec: credential.dogTagId,
+                current: DeploymentScope.of(chainId: proverRoax.chainId, sbtAddress: proverRoax.dogTagSbt)
+            ),
                   owner.abandonedAt == nil else {
                 working = false
                 status = ""
@@ -985,7 +1027,13 @@ struct ScanScreen: View {
     /// The selected tag's persisted `owner.identity.*` attribute openings - the leaves the owner
     /// CAN disclose. Empty for tags issued before D1 (nothing to pick, the card hides).
     private func identityAttributes(forDogTagIdDec dec: String) -> [ProfileTreeStore.BackedUpAttribute] {
-        guard let record = ProfileTreeStore.record(forDogTagIdDec: dec) else { return [] }
+        // Scoped like every store lookup: another deployment's record for the same decimal id
+        // must not supply identity leaves for THIS deployment's tag.
+        let roax = RoaxConfig.load()
+        guard let record = ProfileTreeStore.record(
+            forDogTagIdDec: dec,
+            deployment: DeploymentScope.of(chainId: roax.chainId, sbtAddress: roax.dogTagSbt)
+        ) else { return [] }
         return record.attributes.filter { $0.keyPath.hasPrefix("owner.identity.") }
     }
 
