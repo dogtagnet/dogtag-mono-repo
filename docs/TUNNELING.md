@@ -110,23 +110,20 @@ prover-service. See [MOBILE_BUILD.md](./MOBILE_BUILD.md) for the proving model.
 
 ## 4. Commands
 
-Open one tunnel per service. Each `cloudflared` invocation runs in the foreground and prints a
-`https://<sub>.trycloudflare.com` URL — run each in its **own terminal** (or background each) and copy
-the printed URL.
+Open one tunnel per service, in the background, with the helper — it nohups `cloudflared`, logs to
+`.demo/tunnel.<port>.log`, records the pid to `.demo/tunnel.<port>.pid`, and prints the
+`https://<sub>.trycloudflare.com` URL once the tunnel is up. Re-running it for a live port prints
+the SAME URL; stop by recorded pid with `scripts/tunnel-down.sh [port]`, never by name.
 
 ```bash
-# Terminal A — vet api (→ <VET_TUNNEL_URL>)
-cloudflared tunnel --url http://localhost:41874
-
-# Terminal B — groomer api (→ <GROOMER_TUNNEL_URL>)
-cloudflared tunnel --url http://localhost:43618
-
-# Terminal C — prover-service (→ <PROVER_TUNNEL_URL>)   # only if you'll use a 32-bit-only Android
-cloudflared tunnel --url http://localhost:41875
-
-# Terminal D - government api                            # only if a phone will scan a government QR
-cloudflared tunnel --url http://localhost:44832
+scripts/tunnel-up.sh 41874    # vet api        (→ <VET_TUNNEL_URL>)
+scripts/tunnel-up.sh 43618    # groomer api    (→ <GROOMER_TUNNEL_URL>)
+scripts/tunnel-up.sh 41875    # prover-service (→ <PROVER_TUNNEL_URL>)  # only for 32-bit-only Android
+scripts/tunnel-up.sh 44832    # government api                          # only if a phone scans a government QR
 ```
+
+(The raw foreground form still works — `cloudflared tunnel --url http://localhost:41874` in its own
+terminal — it just occupies that terminal and records no pid, so only its own Ctrl-C may stop it.)
 
 > `cloudflared` install: `brew install cloudflared` (macOS) / `sudo apt-get install cloudflared`
 > (Debian/Ubuntu). See [PREREQUISITES.md](./PREREQUISITES.md).

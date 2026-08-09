@@ -19,6 +19,7 @@ import {
   type MicrochipStandard,
   type NeuterStatus,
   type PetSex,
+  type ProfileIssueSessionRow,
   type ProfileIssueStartResp,
   type ProfileIssueStatusResp,
   type ProfileMicrochip,
@@ -136,6 +137,12 @@ export function IssueDogTag() {
   // hardcoded 180s while the backend would still have accepted a bind — and showed the same
   // "expired" for a phone that never reached this machine at all.
   const [deadPolls, setDeadPolls] = useState(0);
+  // FAILED issuances from the backend's store (GET /profiles/issue/sessions) — the route back to a
+  // stranded dog tag once this page no longer holds its session in memory: after a reload, and
+  // above all after a backend restart, which every tunnel rotation forces. Three states, kept
+  // apart: null = not answered yet (render nothing), "failed" = the list could not be read (say
+  // so — absence of the card would otherwise claim nothing needs attention), rows = the answer.
+  const [recovery, setRecovery] = useState<ProfileIssueSessionRow[] | "failed" | null>(null);
 
   function fillDemo() {
     setOwner({ ...DEMO_OWNER });
@@ -263,14 +270,36 @@ export function IssueDogTag() {
     };
   }, [session, bound, errored, api]);
 
+  // While the FORM is showing (no in-page session), ask the backend for failed issuances it still
+  // remembers. Keyed on `session` so returning to the form (Start over / Issue another) re-reads.
+  useEffect(() => {
+    if (session) return;
+    let cancelled = false;
+    setRecovery(null);
+    api
+      .listProfileIssueSessions()
+      .then((resp) => {
+        // `?? []`: a response without the key (e.g. a mocked or older backend) is an empty answer,
+        // not a crash that would misreport itself as could-not-check.
+        if (!cancelled) setRecovery((resp.sessions ?? []).filter((s) => s.status === "error"));
+      })
+      .catch(() => {
+        if (!cancelled) setRecovery("failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session, api]);
+
   // Re-arm a FAILED issuance: same session, same dogTagId, same identity salts, fresh QR. This is
   // the ONLY path that can complete a stranded (anchored, unminted) root — a fresh session
-  // allocates a new dogTagId and the device derives a DIFFERENT root from it.
-  async function retry() {
-    if (!session) return;
+  // allocates a new dogTagId and the device derives a DIFFERENT root from it. `sessionId` is a
+  // parameter because two surfaces re-arm: the in-page failed card, and the recovery list of
+  // sessions this page never held (post-reload / post-restart).
+  async function retrySession(sessionId: string) {
     setBusy(true);
     try {
-      const resp = await api.retryProfileIssue(session.sessionId);
+      const resp = await api.retryProfileIssue(sessionId);
       setSession(resp);
       setStatus(null);
       setDeadPolls(0);
@@ -284,6 +313,10 @@ export function IssueDogTag() {
     } finally {
       setBusy(false);
     }
+  }
+  async function retry() {
+    if (!session) return;
+    await retrySession(session.sessionId);
   }
 
   if (session && bound && status) {
@@ -482,7 +515,66 @@ export function IssueDogTag() {
     return <AnchorBlockedCard readiness={anchor} />;
   }
 
+  // FAILED issuances the backend still remembers — rendered ABOVE the form, because the operator
+  // returning after a crash or restart is exactly who this page is for in that moment. A stranded
+  // (anchored, unminted) root can ONLY be completed by retrying its own session; a fresh
+  // registration for the same pet derives a different root and strands it forever.
+  const recoveryCard =
+    recovery === "failed" ? (
+      <p
+        data-testid="issuance-recovery-unavailable"
+        className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-onSurface"
+      >
+        Could not check for unfinished dog-tag issuances — the list could not be read from the
+        backend. A failed issuance may still be waiting; reload to check again.
+      </p>
+    ) : recovery && recovery.length > 0 ? (
+      <Card data-testid="issuance-recovery">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5 text-warning" /> Unfinished issuances
+          </CardTitle>
+          <CardDescription>
+            These dog-tag issuances failed before completing. Retry re-arms the SAME dog tag with a
+            fresh QR — if its root is already anchored on-chain, the retry completes the remaining
+            mint. Registering the pet again instead would allocate a new tag and strand the old
+            root forever.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {recovery.map((row) => (
+            <div
+              key={row.sessionId}
+              data-testid="issuance-recovery-row"
+              className="space-y-2 rounded-lg border border-outline/40 p-3"
+            >
+              <div className="flex flex-wrap items-center gap-2 text-sm text-onSurface">
+                <span className="font-semibold">{row.petName || "(unnamed pet)"}</span>
+                {row.ownerName && <span className="text-muted">— {row.ownerName}</span>}
+                <Badge variant="neutral">Dog tag {row.dogTagId}</Badge>
+                {row.errorStage && <Badge variant="danger">failed at: {row.errorStage}</Badge>}
+                <span className="text-xs text-muted">
+                  started {new Date(row.createdAt * 1000).toLocaleString()}
+                </span>
+              </div>
+              {row.error && <p className="text-xs text-muted">{row.error}</p>}
+              <Button
+                size="sm"
+                loading={busy}
+                data-testid="issuance-recovery-retry"
+                onClick={() => void retrySession(row.sessionId)}
+              >
+                Retry this issuance
+              </Button>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    ) : null;
+
   return (
+    <div className="space-y-4">
+    {recoveryCard}
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div>
@@ -629,6 +721,7 @@ export function IssueDogTag() {
         </form>
       </CardContent>
     </Card>
+    </div>
   );
 }
 

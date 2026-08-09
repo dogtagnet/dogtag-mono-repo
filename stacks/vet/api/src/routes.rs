@@ -2942,6 +2942,49 @@ async fn profile_issue_custodial_bind(
             Ok(at) if !at.is_zero()
         );
         if already_anchored {
+            // CROSS-SESSION GUARD: an anchored root may only be COMPLETED by the session whose
+            // dogTagId it was derived for. A shipped device can never trip this — it rebuilds a
+            // tree keyed on THIS session's dogTagId, so on a fresh session it posts a fresh root —
+            // but a hand-crafted bind could post another session's stranded root, and the mint
+            // below would then retire THIS session's dogTagId onto a root whose KDF binds a
+            // different id: every consent proof fails `R == profileRoot(dogTagId)` forever. The
+            // owning session still records the root (an errored row keeps it; only its own retry
+            // clears it), so the refusal can name the one path that completes it.
+            let owner = store
+                .list_profile_sessions()
+                .await
+                .into_iter()
+                .find(|s| {
+                    s.session_id != bg_session.session_id
+                        && s.root
+                            .as_deref()
+                            .is_some_and(|r| r.eq_ignore_ascii_case(&bg_root))
+                });
+            if let Some(owner) = owner {
+                let msg = format!(
+                    "this profile root was anchored by the issuance session for dogTagId {} — it \
+                     can only be completed by retrying THAT session, and completing it here would \
+                     retire dogTagId {} onto a root derived for a different tag (every verify \
+                     would fail forever)",
+                    owner.dog_tag_id, bg_session.dog_tag_id
+                );
+                tracing::error!(
+                    stage = "issue(R)",
+                    dog_tag_id = %bg_session.dog_tag_id,
+                    owning_dog_tag_id = %owner.dog_tag_id,
+                    session = %bg_session.session_id,
+                    root = %bg_root,
+                    "dog-tag issuance refused: {msg}"
+                );
+                // Clear the root the handler stamped pre-spawn: THIS session never owned it, and a
+                // retained claim would make the OWNING session's own retry-bind see this row as a
+                // second claimant and refuse — the refused adoption locking out the legitimate
+                // recovery it was refused to protect.
+                bg_session.root = None;
+                settle_bind_error(&mut bg_session, "issue", &msg);
+                store.update_profile_session(bg_session).await;
+                return;
+            }
             // Anchored AND revoked can never verify (`isValid` folds not-revoked), and minting
             // would retire the dogTagId onto a dead anchor — refuse with the D3 remedy instead.
             if !matches!(chain.is_valid(&issuer_addr, &bg_root).await, Ok(true)) {
@@ -3091,6 +3134,51 @@ fn settle_bind_error(session: &mut crate::store::ProfileIssueSession, stage: &st
     session.error_reason = Some(reason.to_string());
 }
 
+/// BOOT RECOVERY: settle every issuance session a dead process left at `"minting"` to a RETRYABLE
+/// error. Called from `main.rs` once the store is built, before the listener binds.
+///
+/// A `"minting"` row means a device's bind was accepted and the spawned chain-write task was
+/// driving `issue(R)` → `mintCustodial`. That task dies with the process, and NOTHING else ever
+/// settles the row — so without this, a restart mid-mint leaves a row the retry route refuses
+/// forever (`only a FAILED issuance can be retried`) while the root may already be anchored
+/// on-chain: the stranded-root state with its one recovery path locked shut. Every tunnel rotation
+/// forces exactly such a restart.
+///
+/// The settled reason does not guess what landed: the retry's own resume check reads the chain
+/// (`issued_at` on the DOG_PROFILE clone) and completes whichever half remains, so "unknown from
+/// here" is honest AND recoverable. Stage `"interrupted"` keeps this apart from a failure the
+/// process itself observed.
+///
+/// Under a SHARED store (Mongo, several instances) a booting instance can settle a sibling's LIVE
+/// minting row; the live task then overwrites with its own terminal state, and the write-once
+/// contracts backstop any operator retry racing it. Transiently mislabelling a live mint as
+/// interrupted is the cheaper wrong against a row that would otherwise be stuck forever.
+pub async fn settle_interrupted_issuances(store: &std::sync::Arc<dyn crate::store::Store>) -> usize {
+    let mut settled = 0;
+    for mut s in store.list_profile_sessions().await {
+        if s.status != "minting" {
+            continue;
+        }
+        let msg = format!(
+            "the vet backend restarted while this issuance's chain writes were in flight — what \
+             landed on-chain is unknown from here. Use Retry issuance on this session: if the root \
+             was already anchored, the retry completes the remaining mint for dogTagId {}; if \
+             nothing landed, it re-anchors and mints",
+            s.dog_tag_id
+        );
+        tracing::warn!(
+            dog_tag_id = %s.dog_tag_id,
+            session = %s.session_id,
+            "dog-tag issuance was interrupted by a restart mid-minting; session settled to a \
+             retryable error"
+        );
+        settle_bind_error(&mut s, "interrupted", &msg);
+        store.update_profile_session(s).await;
+        settled += 1;
+    }
+    settled
+}
+
 /// The DEVICE-safe sentence for a failed bind, derived from the STAGE alone. The stored
 /// `error_reason` is the operator's — it carries chain errors and backend configuration detail
 /// that belong on the portal, not on an unauthenticated token peek — so the phone gets what the
@@ -3117,6 +3205,10 @@ fn device_bind_failure_sentence(stage: Option<&str>) -> &'static str {
         Some("verify") => {
             "The vet could not confirm this dog tag on-chain after minting. Ask the clinic to \
              check the vet portal before scanning again."
+        }
+        Some("interrupted") => {
+            "The clinic's system restarted while this dog tag was being issued. Ask the clinic to \
+             retry the issuance — you scan a fresh QR and the same dog tag completes."
         }
         _ => {
             "This issuance failed at the vet's backend. The vet portal names the reason — ask \
@@ -3305,6 +3397,50 @@ async fn profile_issue_session_status(
         "error": s.error_reason.clone().or(legacy_reason),
         "errorStage": s.error_stage,
     }))
+}
+
+/// How many issuance-session rows `GET /profiles/issue/sessions` returns at most (newest first).
+/// A recovery surface, not an archive: the operator is looking for the handful of recent
+/// failures, and the full history is reachable per-session by id.
+const PROFILE_SESSION_LIST_LIMIT: usize = 50;
+
+/// GET /profiles/issue/sessions — operator-gated: the recent dog-tag issuance sessions, newest
+/// first. This is the OPERATOR'S ROUTE BACK to a failed issuance once the portal page no longer
+/// holds it in memory — after a page reload, and above all after a backend restart, which every
+/// tunnel rotation forces. Before it existed, the Retry card could only reach a session the same
+/// browser page had started: the stranded-root recovery shipped by the retry route was erased by
+/// the restart that most often causes the strand.
+///
+/// Each row is the SUMMARY the operator needs to recognise the issuance (pet name, owner name,
+/// tag id, when, what failed) — never the full session row, which carries the identity leaves'
+/// salts. `error` folds the same legacy shape as the per-session status route.
+async fn profile_issue_sessions_list(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let rows: Vec<serde_json::Value> = st
+        .store
+        .list_profile_sessions()
+        .await
+        .into_iter()
+        .take(PROFILE_SESSION_LIST_LIMIT)
+        .map(|s| {
+            let legacy_reason = (s.status == "error" && s.error_reason.is_none())
+                .then(|| s.tx_hash.clone())
+                .flatten();
+            json!({
+                "sessionId": s.session_id,
+                "dogTagId": s.dog_tag_id,
+                "status": s.status,
+                "createdAt": s.created_at,
+                "petName": s.pet_name,
+                "ownerName": s.owner_identity.name,
+                "error": s.error_reason.clone().or(legacy_reason),
+                "errorStage": s.error_stage,
+            })
+        })
+        .collect();
+    ok(json!({ "sessions": rows }))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -3818,6 +3954,12 @@ pub fn public_router(state: AppState) -> Router {
             .route(
                 "/profiles/issue/session/start",
                 post(profile_issue_session_start),
+            )
+            // the operator's route BACK to a failed issuance once the portal page no longer holds
+            // it (page reload, backend restart) — the Retry card's list source.
+            .route(
+                "/profiles/issue/sessions",
+                get(profile_issue_sessions_list),
             )
             .route(
                 "/profiles/issue/session/:id",

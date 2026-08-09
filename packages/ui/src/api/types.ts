@@ -567,8 +567,28 @@ export interface ProfileIssueStatusResp {
   qrAddress?: QrAddressCheck;
   /** WHY a failed bind failed, in the operator's vocabulary. Set iff `status === "error"`. */
   error?: string | null;
-  /** WHERE it failed: "attestation" | "seal" | "issue" | "mint" | "verify". */
+  /** WHERE it failed: "attestation" | "seal" | "issue" | "mint" | "verify" | "interrupted". */
   errorStage?: string | null;
+}
+/**
+ * One row of GET /profiles/issue/sessions — the operator's route back to a failed issuance after a
+ * page reload or a backend restart. A summary for recognition (pet, owner, tag id, what failed),
+ * never the full session row.
+ */
+export interface ProfileIssueSessionRow {
+  sessionId: string;
+  dogTagId: string;
+  status: "pending" | "minting" | "bound" | "error";
+  /** Unix seconds the session was started. */
+  createdAt: number;
+  petName: string;
+  ownerName: string;
+  error?: string | null;
+  errorStage?: string | null;
+}
+/** GET /profiles/issue/sessions response: recent sessions, newest first. */
+export interface ProfileIssueSessionsResp {
+  sessions: ProfileIssueSessionRow[];
 }
 
 // ---- central: issuer applications (admin/api §4.3) ----

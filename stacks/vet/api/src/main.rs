@@ -169,6 +169,18 @@ async fn main() {
         }
     }
 
+    // Settle issuance sessions a dead process left mid-minting to a RETRYABLE error — the spawned
+    // chain-write task died with that process and nothing else ever settles the row (see
+    // `settle_interrupted_issuances`). Runs for every store: the journaled MemStore is where a
+    // restart now delivers such rows, and Mongo always could.
+    let interrupted = vet_api::routes::settle_interrupted_issuances(&store).await;
+    if interrupted > 0 {
+        tracing::warn!(
+            "{interrupted} dog-tag issuance session(s) were interrupted by the previous shutdown \
+             and are now retryable from the Register pet page"
+        );
+    }
+
     let state = AppState {
         store,
         chain: Arc::new(chain),
@@ -311,11 +323,34 @@ fn build_feed() -> Arc<dyn OversightFeed> {
 }
 
 /// Build the backing store. With `MONGO_URI` set & non-empty: persistent MongoStore (fail-closed on
-/// connect error). Otherwise: ephemeral MemStore (demo/local — unchanged).
+/// connect error). Otherwise: ephemeral MemStore (demo/local — unchanged), optionally with the
+/// dog-tag ISSUANCE JOURNAL at `ISSUANCE_JOURNAL_PATH` so the stranded-root recovery path survives
+/// a restart (see `MemStore::with_issuance_journal` — the retry needs the session row, and under
+/// the default no-Mongo demo stack that row used to die with the process).
 async fn build_store() -> Arc<dyn Store> {
     let uri = std::env::var("MONGO_URI").unwrap_or_default();
     if uri.trim().is_empty() {
-        return Arc::new(MemStore::new());
+        let journal = std::env::var("ISSUANCE_JOURNAL_PATH").unwrap_or_default();
+        let journal = journal.trim();
+        if journal.is_empty() {
+            return Arc::new(MemStore::new());
+        }
+        match MemStore::with_issuance_journal(journal) {
+            Ok(s) => {
+                tracing::info!(
+                    "issuance journal at {journal}: dog-tag issuance sessions survive a restart"
+                );
+                return Arc::new(s);
+            }
+            Err(e) => {
+                // Fail closed, mirroring the CUSTODY_SEAL_PATH load: silently starting empty over
+                // a corrupt journal is exactly the data loss the journal exists to prevent.
+                tracing::error!(
+                    "ISSUANCE_JOURNAL_PATH set but journal load failed: {e}; refusing to start"
+                );
+                std::process::exit(1);
+            }
+        }
     }
 
     #[cfg(feature = "mongo")]

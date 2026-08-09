@@ -3442,6 +3442,40 @@ one-time token is consumed; and `GET /health` carries the config facts as `dogTa
   If a new env-wired address is added, keep both halves: filter empty-set at ingest, shape-check at
   the point of use.
 
+### The stranded-root recovery survives a restart: the issuance journal + the session list
+
+The retry route (#164) completes a stranded root (issue(R) landed, mintCustodial did not) FROM ITS
+SESSION ROW - and that row is the only place the recovery can start, established from the code
+before this was built: chain + phone alone cannot reconstruct it, because BOTH shipped device
+builds refuse a `/p/` resolve whose pet attributes and vet-salted identity leaves do not match
+their persisted record byte-for-byte (`buildOrReuseIssueRoot` in `ScanScreen.swift:405-446`,
+`matchesStored` in `CentralApi.kt:100-106`), and the vet's copy of those identity salts exists
+nowhere but the session row. So the honest fix was durability, not a session-less route - and a
+device-side change is a rebuild+reinstall that would not help phones already in the field.
+
+- **`ISSUANCE_JOURNAL_PATH` (MemStore only) journals the issuance slice**: `dog_tag_seq`,
+  `profile_sessions`, `bind_tokens` WITH their consumed marks - exactly the slice `MongoStore`
+  persists, because each omission is its own defect (a lost consumed mark un-burns a one-time
+  token across a restart; a reset counter re-allocates a stranded session's dogTagId to the next
+  walk-in). Write-through under the store's own write lock, atomic temp+rename, 0600 (session rows
+  carry owner identity). A corrupt journal REFUSES to start, mirroring `CUSTODY_SEAL_PATH`; a
+  mid-run write failure logs at ERROR and does not fail the request. `demo-up.sh` sets it for the
+  VET only - the groomer mounts no issuance routes, so it has nothing to journal.
+- **Boot settles `"minting"` rows to a RETRYABLE error** (`routes::settle_interrupted_issuances`,
+  called from `main.rs` for EVERY store - Mongo always had this gap): the spawned chain-write task
+  dies with the process and nothing else settles the row, so without this the journal would
+  preserve a row the retry route refuses forever (`only a FAILED issuance can be retried`). Stage
+  `"interrupted"`; the retry's resume check then reads the chain and completes only what remains.
+- **`GET /profiles/issue/sessions` (operator-gated, issuance-role-gated) is the route BACK.** The
+  Retry card used to work only off in-page React state, so a page reload - let alone a restart -
+  orphaned the recovery even where the row survived. The Register pet page now lists errored
+  sessions ("Unfinished issuances") with per-row Retry; the list read's failure renders
+  could-not-check, never silence, which would claim nothing needs attention. Rows are summaries
+  (pet, owner name, tag id, stage, reason) - never the identity leaves' salts.
+- Pinned end to end by `stacks/vet/api/tests/issuance_restart_recovery.rs` (a REAL restart shape:
+  fresh store from the same journal + fresh router over the SAME MemChain, custody re-hydrated
+  from the same seal) and `stacks/vet/web/e2e/register-pet-recovery.spec.ts` (in `make e2e-web`).
+
 ### Level-B unified submission path (M-3) - now `POST /v1/verify/consent`
 
 The other half of M-2: the network layer that carries an owner-hidden consent proof to the chain.
