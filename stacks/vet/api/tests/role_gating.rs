@@ -35,7 +35,9 @@ const ISSUANCE_ROUTES: &[(&str, &str)] = &[
     ("PATCH", "/records/some-id"),
     ("GET", "/r/sometoken"),
     ("POST", "/profiles/issue/session/start"),
+    ("GET", "/profiles/issue/sessions"),
     ("GET", "/profiles/issue/session/some-id"),
+    ("POST", "/profiles/issue/session/some-id/retry"),
     ("POST", "/profiles/issue/custodial-bind"),
     ("GET", "/p/sometoken"),
 ];

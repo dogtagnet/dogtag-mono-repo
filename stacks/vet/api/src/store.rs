@@ -1178,11 +1178,141 @@ pub struct MemStore {
     /// a switch, a regression flipping the import arm to a refusal — or to a silent omission —
     /// reddens nothing.
     fail_find_pets_by_dog_tag_reads: Arc<std::sync::atomic::AtomicBool>,
+    /// The DOG-TAG ISSUANCE JOURNAL: when set, the issuance slice — `dog_tag_seq`,
+    /// `profile_sessions`, `bind_tokens` — is written through to this file and loaded back at
+    /// construction, so it survives a process restart exactly as it does under `MongoStore`.
+    ///
+    /// It exists because of the STRANDED-ROOT state: `issue(R)` and `mintCustodial` are two
+    /// transactions, and a mint-stage failure leaves R anchored on-chain with the tag unminted.
+    /// That R can only ever be completed through ITS OWN session — the retry re-arms the row so the
+    /// device re-posts the same root, and the vet's copy of the identity salts the device's reuse
+    /// guard compares against lives nowhere else (chain + phone alone cannot reconstruct the
+    /// resolve the shipped apps require; see `buildOrReuseIssueRoot` in `ScanScreen.swift` and
+    /// `matchesStored` in `CentralApi.kt`). So the session row IS the recovery path, and under the
+    /// default no-Mongo demo stack it used to die with the process — measured on the captain's
+    /// stack 2026-08-09: dog tags 5 and 6, roots anchored, sessions gone, tags unrecoverable.
+    ///
+    /// Journaled, not selectively: the whole slice MongoStore persists (sessions + tokens incl.
+    /// their consumed marks + the id counter), because each omission is its own defect — a lost
+    /// consumed-mark un-burns a one-time token across a restart, and a reset counter re-allocates
+    /// the dogTagId of a stranded session to the next fresh registration.
+    issuance_journal: Option<Arc<std::path::PathBuf>>,
 }
+
+/// The on-disk shape of [`MemStore`]'s issuance journal. Versioned so a future shape change is a
+/// named refusal at load rather than a silent misread.
+#[derive(Serialize, Deserialize)]
+struct IssuanceJournal {
+    version: u32,
+    #[serde(rename = "dogTagSeq")]
+    dog_tag_seq: u64,
+    #[serde(rename = "profileSessions")]
+    profile_sessions: Vec<ProfileIssueSession>,
+    #[serde(rename = "bindTokens")]
+    bind_tokens: Vec<JournaledBindToken>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JournaledBindToken {
+    token: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    exp: u64,
+    /// The one-time mark MUST persist: a restart that forgot it would let an already-spent QR bind
+    /// again.
+    consumed: bool,
+}
+
+const ISSUANCE_JOURNAL_VERSION: u32 = 1;
 
 impl MemStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A `MemStore` whose dog-tag issuance slice is durable at `path` (see the field's doc).
+    ///
+    /// An absent file is a fresh boot; an unreadable or unparseable one is an ERROR the caller must
+    /// treat as fatal — silently starting empty over a corrupt journal is exactly the data loss the
+    /// journal exists to prevent (same posture as `CUSTODY_SEAL_PATH`'s load in `main.rs`).
+    pub fn with_issuance_journal(path: impl Into<std::path::PathBuf>) -> std::io::Result<Self> {
+        let path: std::path::PathBuf = path.into();
+        let mut inner = MemInner::default();
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let j: IssuanceJournal = serde_json::from_slice(&bytes).map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("issuance journal parse ({}): {e}", path.display()),
+                    )
+                })?;
+                if j.version != ISSUANCE_JOURNAL_VERSION {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "issuance journal {} is version {}, this build reads version {}",
+                            path.display(),
+                            j.version,
+                            ISSUANCE_JOURNAL_VERSION
+                        ),
+                    ));
+                }
+                inner.dog_tag_seq = j.dog_tag_seq;
+                for s in j.profile_sessions {
+                    inner.profile_sessions.insert(s.session_id.clone(), s);
+                }
+                for t in j.bind_tokens {
+                    inner
+                        .bind_tokens
+                        .insert(t.token, (t.session_id, t.exp, t.consumed));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        let store = MemStore {
+            issuance_journal: Some(Arc::new(path)),
+            ..Default::default()
+        };
+        *store.inner.write().unwrap() = inner;
+        Ok(store)
+    }
+
+    /// Write the issuance slice through to the journal file, atomically (unique temp sibling +
+    /// rename, 0600 — session rows carry the owner's identity, so the file is owner-only exactly
+    /// like the custody seal). Called under the SAME write lock as the mutation it persists, so the
+    /// on-disk snapshot can never interleave two writers.
+    ///
+    /// A failed write is logged at ERROR and does not fail the request: the live flow still works
+    /// and the next successful write persists the same state; refusing every issuance over a disk
+    /// hiccup on the demo store would be the heavier wrong. Production durability is `MongoStore`'s.
+    fn persist_issuance(&self, inner: &MemInner) {
+        let Some(path) = self.issuance_journal.as_deref() else {
+            return;
+        };
+        let journal = IssuanceJournal {
+            version: ISSUANCE_JOURNAL_VERSION,
+            dog_tag_seq: inner.dog_tag_seq,
+            profile_sessions: inner.profile_sessions.values().cloned().collect(),
+            bind_tokens: inner
+                .bind_tokens
+                .iter()
+                .map(|(token, (session_id, exp, consumed))| JournaledBindToken {
+                    token: token.clone(),
+                    session_id: session_id.clone(),
+                    exp: *exp,
+                    consumed: *consumed,
+                })
+                .collect(),
+        };
+        if let Err(e) = write_issuance_journal(path, &journal) {
+            tracing::error!(
+                path = %path.display(),
+                error = %e,
+                "ISSUANCE JOURNAL WRITE FAILED — a restart before the next successful write \
+                 loses in-flight dog-tag issuance sessions (the stranded-root recovery path)"
+            );
+        }
     }
 
     /// Make every subsequent [`Store::try_get_appointment`] report a read failure. See the field.
@@ -1214,6 +1344,39 @@ impl MemStore {
         self.fail_find_pets_by_dog_tag_reads
             .store(on, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// Atomic owner-only file write for the issuance journal (temp sibling + rename, 0600 on unix —
+/// same discipline as `custody::write_seal_file`).
+fn write_issuance_journal(
+    path: &std::path::Path,
+    journal: &IssuanceJournal,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let bytes = serde_json::to_vec(journal)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(&bytes)?;
+        f.flush()?;
+    }
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    Ok(())
 }
 
 #[async_trait]
@@ -1356,14 +1519,15 @@ impl Store for MemStore {
     async fn next_dog_tag_id(&self) -> u64 {
         let mut g = self.inner.write().unwrap();
         g.dog_tag_seq += 1;
+        // Journaled BEFORE the id is handed out: a restart that forgot the counter re-allocates a
+        // stranded session's dogTagId to the next fresh registration.
+        self.persist_issuance(&g);
         g.dog_tag_seq
     }
     async fn put_profile_session(&self, s: ProfileIssueSession) {
-        self.inner
-            .write()
-            .unwrap()
-            .profile_sessions
-            .insert(s.session_id.clone(), s);
+        let mut g = self.inner.write().unwrap();
+        g.profile_sessions.insert(s.session_id.clone(), s);
+        self.persist_issuance(&g);
     }
     async fn get_profile_session(&self, session_id: &str) -> Option<ProfileIssueSession> {
         self.inner
@@ -1374,11 +1538,9 @@ impl Store for MemStore {
             .cloned()
     }
     async fn update_profile_session(&self, s: ProfileIssueSession) {
-        self.inner
-            .write()
-            .unwrap()
-            .profile_sessions
-            .insert(s.session_id.clone(), s);
+        let mut g = self.inner.write().unwrap();
+        g.profile_sessions.insert(s.session_id.clone(), s);
+        self.persist_issuance(&g);
     }
     async fn list_profile_sessions(&self) -> Vec<ProfileIssueSession> {
         let mut v: Vec<ProfileIssueSession> = self
@@ -1397,11 +1559,10 @@ impl Store for MemStore {
         v
     }
     async fn put_bind_token(&self, token: &str, session_id: &str, exp: u64) {
-        self.inner
-            .write()
-            .unwrap()
-            .bind_tokens
+        let mut g = self.inner.write().unwrap();
+        g.bind_tokens
             .insert(token.to_string(), (session_id.to_string(), exp, false));
+        self.persist_issuance(&g);
     }
     async fn peek_bind_token(&self, token: &str) -> Option<String> {
         let inner = self.inner.read().unwrap();
@@ -1431,11 +1592,15 @@ impl Store for MemStore {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        if now > *exp {
+        let out = if now > *exp {
             None
         } else {
             Some(session_id.clone())
-        }
+        };
+        // The consumed mark is journaled even when the token turned out expired — one-time-ness
+        // must survive a restart in every arm.
+        self.persist_issuance(&inner);
+        out
     }
     async fn bind_session_for_status(&self, token: &str) -> Option<String> {
         let inner = self.inner.read().unwrap();

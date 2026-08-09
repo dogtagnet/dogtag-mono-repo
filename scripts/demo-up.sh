@@ -373,6 +373,12 @@ fi
 # issuer-whitelist pillar resolves the issuing clone from the factory's write-once rootIssuer[R]. A
 # deployment without it cannot evaluate that pillar and reports it `unavailableNoFactoryConfigured` -
 # which is honest, but leaves a forged issuer.documentStore refused by nothing but integrity.
+# ISSUANCE_JOURNAL_PATH makes the VET's dog-tag issuance sessions durable on the default MemStore
+# (sessions + one-time bind tokens + the id counter, written through to .demo/): a stranded root
+# (issue(R) landed, mintCustodial did not) can only be completed by retrying ITS OWN session, and
+# every tunnel rotation forces a vet restart - without the journal that restart erased the one
+# recovery path exactly when it was needed. The groomer gets none: BUSINESS_TYPE=groomer mounts no
+# issuance routes, so it has no sessions to journal.
 if want vet; then
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
@@ -382,6 +388,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
   MONGO_URI="$MONGO_URI" MONGO_DB="$MONGO_DB_VET" \
   CUSTODY_SEAL_PATH="$ROOT/.demo/vet-custody.json" \
+  ISSUANCE_JOURNAL_PATH="$ROOT/.demo/vet-issuance.json" \
   run vet-api ":41874" "$ROOT/target/release/vet-api"
 fi
 if want groomer; then

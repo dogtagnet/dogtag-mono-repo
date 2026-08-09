@@ -475,17 +475,30 @@ on a port something already holds. Booting one role never disturbs another.
 (cellular), guest or office Wi-Fi that isolates clients, or a machine whose address keeps changing.
 On one ordinary home Wi-Fi, skip this - `LAN_IP` is simpler and involves no third party.
 
-**Do:** start the tunnel in its own terminal and leave it running, then add
+**Do:** start the tunnel in the background with the helper - it nohups `cloudflared`, logs to
+`.demo/tunnel.41874.log`, records the pid to `.demo/tunnel.41874.pid`, and prints the URL once the
+tunnel is up (no terminal stays occupied, and the stop step has a recorded pid to act on). Then add
 `VET_PUBLIC_URL=<the printed URL>` to **every** vet boot this guide runs - §3.1, **and the §5.3
 restart**:
 
 ```bash
-cloudflared tunnel --url http://localhost:41874    # prints https://<random-words>.trycloudflare.com
+scripts/tunnel-up.sh                               # prints https://<random-words>.trycloudflare.com
 ```
 
 ```bash
 LAN_IP=$(ipconfig getifaddr en0) VET_PUBLIC_URL=https://<that host> scripts/demo-up.sh vet
 ```
+
+Re-running `tunnel-up.sh` while its tunnel is alive prints the SAME URL rather than minting a new
+one. Stop it when the phone step is done - by the recorded pid, which is the only safe way:
+
+```bash
+scripts/tunnel-down.sh                             # kills only the pids tunnel-up.sh recorded
+```
+
+(A foreground `cloudflared tunnel --url http://localhost:41874` still works if you prefer watching
+it; it occupies that terminal until Ctrl-C, and it records no pid, so nothing but that Ctrl-C may
+stop it - never `pkill cloudflared`, which reaches whatever unrelated tunnel it happens to hit.)
 
 **Means:** `VET_PUBLIC_URL` becomes the vet's `DEPLOYMENT_URL`, the host stamped into every QR it
 mints - so the phone reaches the vet from any network, cellular included. Only the vet needs this
@@ -498,12 +511,19 @@ Three things this costs:
 - **The URL is public and unauthenticated, and this stack runs `DEMO_MODE=1`** - demo passwords,
   prefilled sign-ins. Anyone holding the link reaches the vet's API. Testnet and throwaway data
   bound the damage; it is still not free - stop the tunnel when the phone step is done.
-- **The URL is ephemeral.** Every `cloudflared` run prints a new one, and an idle tunnel can drop.
-  After any tunnel restart, restart the vet onto the new URL the same way; every QR already drawn
-  is dead, and a vet restart also drops its in-memory records.
-- **`scripts/demo-down.sh` does not stop `cloudflared`** - it kills only the pids `demo-up.sh`
-  recorded, and it did not start the tunnel. Stop it yourself: Ctrl-C in its terminal, or kill the
-  pid you noted when you started it - never by name, which can hit an unrelated `cloudflared`.
+- **The URL is ephemeral.** Every fresh `cloudflared` run prints a new one, and an idle tunnel can
+  drop. After any tunnel restart, restart the vet onto the new URL the same way; every QR already
+  drawn is dead. **A vet restart also drops its in-memory shop records** (clients, issued records -
+  the demo runs no Mongo) - but NOT the dog-tag issuance sessions: those are journaled to
+  `.demo/vet-issuance.json`, so an issuance that failed or was mid-mint at the restart shows up on
+  **Register pet** as an *Unfinished issuance* with a **Retry** button, and retrying it completes
+  the SAME dog tag (an anchored-but-unminted root can only ever be completed that way - registering
+  the pet again would allocate a new tag and strand the old root forever).
+- **`scripts/demo-down.sh` does not stop the tunnel** - it kills only the pids `demo-up.sh`
+  recorded, and that is deliberate: a vet restart reuses the still-running tunnel's URL. It prints a
+  note naming any recorded tunnel it left up. Stop tunnels with `scripts/tunnel-down.sh` (recorded
+  pids only); a tunnel you started by hand is stopped where you started it - never by name, which
+  can hit an unrelated `cloudflared`.
 
 **Check it before anything scans:** open `https://<that host>/health` in the phone's own browser.
 An answer containing `"status":"ok"` proves the whole path - phone → Cloudflare → this machine →

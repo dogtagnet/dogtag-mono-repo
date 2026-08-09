@@ -35,6 +35,7 @@ import type {
   PetPatchInput,
   PrepareReq,
   PrepareResp,
+  ProfileIssueSessionsResp,
   ProfileIssueStartReq,
   ProfileIssueStartResp,
   ProfileIssueStatusResp,
@@ -285,6 +286,12 @@ export function createApiClient(opts: ApiClientOptions) {
     /** GET /profiles/issue/session/{sessionId} — operator-gated status poll (pending → bound). */
     profileIssueStatus: (sessionId: string) =>
       request<ProfileIssueStatusResp>("GET", `/profiles/issue/session/${sessionId}`),
+    /**
+     * GET /profiles/issue/sessions — recent issuance sessions, newest first: the route back to a
+     * FAILED issuance after a page reload or a backend restart (the Retry card's list source).
+     */
+    listProfileIssueSessions: () =>
+      request<ProfileIssueSessionsResp>("GET", "/profiles/issue/sessions"),
 
     // ---- issuer signers ----
     issuerSigners: () => request<IssuerSignersResp>("GET", "/issuer/signers"),

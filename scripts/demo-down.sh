@@ -66,3 +66,17 @@ if [ "$stopped" -gt 0 ]; then
 else
   echo "nothing recorded as running for:$ROLES"
 fi
+
+# Tunnels are DELIBERATELY left running: a vet restart onto the SAME tunnel URL is the normal cycle
+# (stopping the tunnel would retire the URL and force redoing the phone steps), and a tunnel this
+# script did not record is not its to stop. Say so rather than leaving the survivor to be
+# discovered — but only when one is actually recorded.
+for f in "$ROOT"/.demo/tunnel.*.pid; do
+  [ -e "$f" ] || continue
+  pid="$(cat "$f" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    port="$(basename "$f")"; port="${port#tunnel.}"; port="${port%.pid}"
+    echo "  note: the port-$port cloudflared tunnel (pid $pid) is still running - kept on purpose;"
+    echo "        stop it with scripts/tunnel-down.sh $port"
+  fi
+done

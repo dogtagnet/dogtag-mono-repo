@@ -87,6 +87,53 @@ pub fn state_with(
     }
 }
 
+/// Build an AppState with the given chain client AND store — for restart-crossing tests, where a
+/// "restart" is a fresh AppState over a store rebuilt from the same on-disk issuance journal (and,
+/// via `custody_seal_path`, the same custody seal). Config mirrors [`state_with`]'s defaults.
+pub fn state_with_store(
+    chain: Arc<dyn ChainClient>,
+    store: Arc<dyn vet_api::store::Store>,
+    custody_seal_path: Option<String>,
+) -> AppState {
+    let mut issuer_addrs = HashMap::new();
+    issuer_addrs.insert(
+        "VACCINATION".to_string(),
+        "0x00000000000000000000000000000000000000bb".to_string(),
+    );
+    let cfg = Config {
+        deployment_url: "http://localhost:41874".to_string(),
+        rpc_url: "memchain".to_string(),
+        issuer_registry_addr: "0x00000000000000000000000000000000000000aa".to_string(),
+        factory_addr: FACTORY_ADDR.to_string(),
+        issuer_addrs,
+        issuer_name: "DogTag Vet".to_string(),
+        issuer_domain: "vet.example".to_string(),
+        verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
+        sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
+        profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
+        vet_signer_index: 0,
+        operator_password: OPERATOR_PW.to_string(),
+        admin_password: ADMIN_PW.to_string(),
+        confirmations: 1,
+        business_id: BUSINESS_ID.to_string(),
+        business_type: BUSINESS_TYPE.to_string(),
+        central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
+        custody_seal_path,
+    };
+    AppState {
+        store,
+        chain,
+        consent_prover: Arc::new(vet_api::prover::ConsentProver::disabled()),
+        calendar: Arc::new(MockCalendar::new()),
+        central: Arc::new(MockCentralClient::new()),
+        custody: Custody::new(),
+        jwt: JwtKeys::generate(),
+        cfg: Arc::new(cfg),
+        ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
+        feed: Arc::new(DisabledFeed),
+    }
+}
+
 /// Build a Phase-7 AppState wired with the supplied `MockCalendar` + `MockCentralClient` so a test
 /// can program list responses, inspect the mirror, and assert appointment-event callbacks.
 pub fn state_for_calendar(
